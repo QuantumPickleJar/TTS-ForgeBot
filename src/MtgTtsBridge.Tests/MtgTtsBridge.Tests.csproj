@@ -26,4 +26,8 @@
     <ProjectReference Include="..\MtgTtsBridge.Contracts\MtgTtsBridge.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="Fixtures\forge-tui-*.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

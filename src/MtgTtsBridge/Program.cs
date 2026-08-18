@@ -7,7 +7,17 @@ var builder = WebApplication.CreateBuilder(args);
 var listenUrl = builder.Configuration["Bridge:ListenUrl"] ?? "http://127.0.0.1:43110";
 builder.WebHost.UseUrls(listenUrl);
 
-builder.Services.AddSingleton<IForgeAdapter, MockForgeAdapter>();
+var adapterName = builder.Configuration["Bridge:Adapter"] ?? "Mock";
+
+if (string.Equals(adapterName, "ForgeTui", StringComparison.OrdinalIgnoreCase))
+{
+	builder.Services.Configure<ForgeTuiOptions>(builder.Configuration.GetSection("Forge"));
+	builder.Services.AddSingleton<IForgeAdapter, ForgeTuiAdapter>();
+}
+else
+{
+	builder.Services.AddSingleton<IForgeAdapter, MockForgeAdapter>();
+}
 
 var app = builder.Build();
 

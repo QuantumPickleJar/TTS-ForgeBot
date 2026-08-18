@@ -1,7 +1,16 @@
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 
+-- Transport seat identity is kept separate from TTS color. Change this table
+-- when the TUI-controlled Forge seat is assigned to another physical player.
+BRIDGE_SEAT_COLORS = {
+    ["forge-player-1"] = "White"
+}
+
 BridgeState = {
     lastDecision = nil,
+    actionByGuid = {},
+    highlightedGuids = {},
+    submitting = false,
 }
 
 BridgeHttp = {}
@@ -83,6 +92,8 @@ function BridgeGetDecision(callback)
     BridgeHttp.requestJson("GET", "/api/v1/decision", nil, function(ok, body, err, request)
         if ok and body ~= nil then
             BridgeState.lastDecision = body
+        else
+            BridgeClearHighlights()
         end
 
         callback(ok, body, err, request)
@@ -110,10 +121,12 @@ function BridgeSubmitChoice(decisionId, actionId)
     }
 
     BridgeHttp.requestJson("POST", "/api/v1/choice", payload, function(ok, body, err)
+        BridgeState.submitting = false
         if not ok then
-            print("[Bridge] choice rejected: " .. tostring(err))
+            BridgeClearHighlights()
+            BridgeShowError("choice rejected: " .. tostring(err))
             if body ~= nil and body.errorCode ~= nil then
-                print("[Bridge] errorCode=" .. tostring(body.errorCode) .. " message=" .. tostring(body.message))
+                BridgeShowError("errorCode=" .. tostring(body.errorCode) .. " message=" .. tostring(body.message))
             end
             return
         end
@@ -129,6 +142,7 @@ function BridgeSubmitChoice(decisionId, actionId)
             printDecision(body.currentDecision)
         else
             BridgeState.lastDecision = nil
+            BridgeClearHighlights()
             print("[Bridge] no pending decision.")
         end
     end)
@@ -149,7 +163,8 @@ end
 function BridgeSmokeTest()
     BridgeGetHealth(function(ok, body, err)
         if not ok then
-            print("[Bridge] health failed: " .. tostring(err))
+            BridgeClearHighlights()
+            BridgeShowError("health failed: " .. tostring(err))
             return
         end
 
@@ -164,7 +179,8 @@ function BridgeSmokeTest()
             print("[Bridge] no active decision, starting session.")
             BridgeStartSession(function(startOk, startBody, startErr)
                 if not startOk then
-                    print("[Bridge] session start failed: " .. tostring(startErr))
+                    BridgeClearHighlights()
+                    BridgeShowError("session start failed: " .. tostring(startErr))
                     return
                 end
 
@@ -174,7 +190,8 @@ function BridgeSmokeTest()
                     if finalOk then
                         printDecision(finalBody)
                     else
-                        print("[Bridge] decision fetch failed: " .. tostring(finalErr))
+                        BridgeClearHighlights()
+                        BridgeShowError("decision fetch failed: " .. tostring(finalErr))
                     end
                 end)
             end)
@@ -189,6 +206,7 @@ function printDecision(decision)
     end
 
     BridgeState.lastDecision = decision
+    BridgeRenderDecision(decision)
 
     print("[Bridge] decision " .. tostring(decision.decisionId) .. " kind=" .. tostring(decision.kind))
 
@@ -203,4 +221,108 @@ function printDecision(decision)
     end
 
     print("[Bridge] use BridgeChoose('<actionId>') to submit an action.")
+end
+
+function BridgeNormalizeCardName(name)
+    if name == nil then
+        return ""
+    end
+
+    local normalized = string.lower(tostring(name))
+    local separator = string.find(normalized, " // ", 1, true)
+    if separator ~= nil then
+        normalized = string.sub(normalized, 1, separator - 1)
+    end
+
+    normalized = string.gsub(normalized, "^%s+", "")
+    normalized = string.gsub(normalized, "%s+$", "")
+    normalized = string.gsub(normalized, "%s+", " ")
+    return normalized
+end
+
+function BridgeClearHighlights()
+    for _, guid in ipairs(BridgeState.highlightedGuids) do
+        local object = getObjectFromGUID(guid)
+        if object ~= nil then
+            object.highlightOff()
+        end
+    end
+
+    BridgeState.highlightedGuids = {}
+    BridgeState.actionByGuid = {}
+end
+
+function BridgeRenderDecision(decision)
+    BridgeClearHighlights()
+
+    if decision == nil or decision.actions == nil then
+        return
+    end
+
+    local highlightColor = {0.53, 0.81, 0.98}
+    if decision.kind == "target_selection" then
+        highlightColor = {1.0, 0.55, 0.0}
+    end
+
+    local cardsByName = {}
+    for _, object in ipairs(getAllObjects()) do
+        if object.tag == "Card" then
+            local normalizedName = BridgeNormalizeCardName(object.getName())
+            if normalizedName ~= "" then
+                cardsByName[normalizedName] = cardsByName[normalizedName] or {}
+                table.insert(cardsByName[normalizedName], object)
+            end
+        end
+    end
+
+    for _, action in ipairs(decision.actions) do
+        local normalizedIdentity = BridgeNormalizeCardName(action.cardIdentity)
+        local matches = cardsByName[normalizedIdentity]
+        if normalizedIdentity ~= "" and matches ~= nil then
+            if #matches > 1 then
+                print(string.format("[Bridge] duplicate card name '%s': highlighting all %d candidates", tostring(action.cardIdentity), #matches))
+            end
+
+            for _, object in ipairs(matches) do
+                local guid = object.getGUID()
+                object.highlightOn(highlightColor)
+                BridgeState.actionByGuid[guid] = action.actionId
+                table.insert(BridgeState.highlightedGuids, guid)
+            end
+        end
+    end
+end
+
+function BridgeShowError(message)
+    local text = "[Bridge] " .. tostring(message)
+    print(text)
+    broadcastToAll(text, {1.0, 0.2, 0.2})
+end
+
+function onObjectPickUp(playerColor, object)
+    if object == nil or BridgeState.submitting then
+        return
+    end
+
+    local actionId = BridgeState.actionByGuid[object.getGUID()]
+    if actionId == nil then
+        return
+    end
+
+    local decision = BridgeState.lastDecision
+    if decision == nil then
+        BridgeClearHighlights()
+        BridgeShowError("highlighted card has no active bridge decision")
+        return
+    end
+
+    local expectedColor = BRIDGE_SEAT_COLORS[decision.seatId]
+    if expectedColor ~= nil and expectedColor ~= playerColor then
+        BridgeShowError("this decision belongs to TTS color " .. tostring(expectedColor))
+        return
+    end
+
+    BridgeState.submitting = true
+    BridgeClearHighlights()
+    BridgeSubmitChoice(decision.decisionId, actionId)
 end

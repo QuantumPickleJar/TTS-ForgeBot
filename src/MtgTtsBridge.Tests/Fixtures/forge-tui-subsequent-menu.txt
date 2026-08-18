@@ -1,0 +1,10 @@
+>> Playing Mountain...
+
++++ Land: Player 1 played Mountain (46)
+
+=== YOUR TURN ===
+[Pre-Combat Main Phase]
+What would you like to do?
+  0. Pass priority (do nothing)
+  1. Cast creature: Hired Claw (1/2) - {R}
+Enter choice (0-1):

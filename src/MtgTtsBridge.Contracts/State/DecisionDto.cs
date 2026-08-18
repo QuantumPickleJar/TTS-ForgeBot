@@ -5,4 +5,5 @@ namespace MtgTtsBridge.Contracts.State;
 public sealed record DecisionDto(
     string DecisionId,
     string Kind,
-    IReadOnlyList<LegalActionDto> Actions);
+    IReadOnlyList<LegalActionDto> Actions,
+    string? SeatId = null);
