@@ -1,4 +1,5 @@
 using MtgTtsBridge.Contracts.Actions;
+using MtgTtsBridge.Contracts.Events;
 using MtgTtsBridge.Contracts.State;
 
 namespace MtgTtsBridge.Forge;
@@ -12,4 +13,6 @@ public interface IForgeAdapter
     Task<AdapterStateDto> StartSessionAsync(CancellationToken cancellationToken);
 
     Task<ForgeChoiceResult> SubmitChoiceAsync(ChoiceRequestDto request, CancellationToken cancellationToken);
+
+    Task<EventBatchDto> GetEventsAsync(long afterSequence, CancellationToken cancellationToken);
 }

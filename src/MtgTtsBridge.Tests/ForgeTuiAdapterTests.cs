@@ -83,4 +83,144 @@ public sealed class ForgeTuiAdapterTests
             File.Delete(script);
         }
     }
+
+    [Fact]
+    public async Task ConcurrentStartsAndAttach_ReuseOneHealthySession()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-start-{Guid.NewGuid():N}.cmd");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo === Forge Text UI Mode ===
+            echo Initializing Forge
+            echo Language 'en-US' loaded successfully.
+            echo Read cards: test
+            echo Card database loaded successfully.
+            echo Starting game: test
+            echo Game starting...
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """);
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                }),
+                NullLogger<ForgeTuiAdapter>.Instance);
+
+            var starts = await Task.WhenAll(
+                adapter.StartSessionAsync(CancellationToken.None),
+                adapter.StartSessionAsync(CancellationToken.None));
+            var attached = await adapter.StartSessionAsync(CancellationToken.None);
+            var healthRead = await adapter.GetStateAsync(CancellationToken.None);
+
+            Assert.Equal(starts[0].SessionId, starts[1].SessionId);
+            Assert.Equal(starts[0].SessionId, attached.SessionId);
+            Assert.Equal(starts[0].SessionId, healthRead.SessionId);
+            Assert.Equal("awaiting_human_decision", healthRead.State);
+            Assert.Contains(healthRead.Diagnostic!.StartupMilestones, item => item.Name == "first_human_decision");
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
+    public async Task UnknownNumericPrompt_PreservesProcessAndDiagnosticState()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-unsupported-{Guid.NewGuid():N}.cmd");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo An unfamiliar blocking controller prompt
+            <nul set /p "=Enter choice (0-1): "
+            set /p choice=
+            """);
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                }),
+                NullLogger<ForgeTuiAdapter>.Instance);
+
+            var unsupported = await adapter.StartSessionAsync(CancellationToken.None);
+            var attached = await adapter.StartSessionAsync(CancellationToken.None);
+
+            Assert.Equal("unsupported_decision", unsupported.State);
+            Assert.Equal("unsupported_numeric_prompt", unsupported.Diagnostic?.Code);
+            Assert.Contains("unfamiliar blocking", unsupported.Diagnostic?.Context);
+            Assert.Equal(unsupported.SessionId, attached.SessionId);
+            Assert.Equal("unsupported_decision", attached.State);
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
+    public async Task AuthoritativeEvents_AreOrderedAndNotReplayedAfterSequence()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-events-{Guid.NewGuid():N}.cmd");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo +++ Land: AI-monored played Mountain (128)
+            echo +++ Mana: Mountain (128) - {T}: Add {R}.
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """);
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                }),
+                NullLogger<ForgeTuiAdapter>.Instance);
+
+            var session = await adapter.StartSessionAsync(CancellationToken.None);
+            var firstBatch = await adapter.GetEventsAsync(0, CancellationToken.None);
+            var acknowledged = await adapter.GetEventsAsync(firstBatch.LatestSequence, CancellationToken.None);
+
+            Assert.False(firstBatch.HasGap);
+            Assert.Equal([1L, 2L], firstBatch.Events.Select(item => item.Sequence));
+            Assert.Equal(["land_played", "mana_ability_used"], firstBatch.Events.Select(item => item.Kind));
+            Assert.All(firstBatch.Events, item => Assert.Equal("forge-player-2", item.SeatId));
+            Assert.Equal($"forge:{session.SessionId}:128", firstBatch.Events[0].CardInstanceId);
+            Assert.Empty(acknowledged.Events);
+            Assert.Equal(firstBatch.LatestSequence, acknowledged.LatestSequence);
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
 }

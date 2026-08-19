@@ -1,0 +1,8 @@
+=== DECLARE BLOCKERS ===
+
+Attacker 0: Emberheart Challenger (2/2) attacking Player 1 (Life: 20)
+
+Who should block this attacker?
+  0. No further blockers
+  1. Hired Claw (1/2)
+Enter choice (0-1):

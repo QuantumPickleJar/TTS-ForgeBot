@@ -19,7 +19,7 @@ public sealed class ForgeTuiParserTests
         Assert.Equal(new[] { "Pass priority (do nothing)", "Play land: Soulstone Sanctuary", "Play land: Mountain" }, decision.Decision.Actions.Select(action => action.DisplayName));
         Assert.Equal("pass_yield", decision.Decision.Actions[0].Type);
         Assert.Equal("Mountain", decision.Decision.Actions[2].CardIdentity);
-        Assert.Equal(2, decision.Inputs[decision.Decision.Actions[2].ActionId]);
+        Assert.Equal("2", decision.Inputs[decision.Decision.Actions[2].ActionId]);
     }
 
     [Fact]
@@ -33,7 +33,7 @@ public sealed class ForgeTuiParserTests
         var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
         Assert.Equal("Cast creature: Hired Claw (1/2) - {R}", decision.Decision.Actions[1].DisplayName);
         Assert.Equal("Hired Claw", decision.Decision.Actions[1].CardIdentity);
-        Assert.Equal(1, decision.Inputs[decision.Decision.Actions[1].ActionId]);
+        Assert.Equal("1", decision.Inputs[decision.Decision.Actions[1].ActionId]);
     }
 
     [Fact]
@@ -44,16 +44,45 @@ public sealed class ForgeTuiParserTests
 
         var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
         Assert.Equal("target_selection", decision.Decision.Kind);
-        Assert.Equal(1, decision.Inputs[decision.Decision.Actions[1].ActionId]);
+        Assert.Equal("1", decision.Inputs[decision.Decision.Actions[1].ActionId]);
     }
 
     [Fact]
-    public void NumericPromptWithoutSupportedMenu_FailsVisibly()
+    public void RealBlockerMenu_BecomesTypedDecisionWithCardIdentity()
+    {
+        var transcript = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "forge-tui-blocker-menu.txt"));
+        var parser = new ForgeTuiParser();
+
+        var result = parser.Append(transcript);
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
+        Assert.Equal("blocker_selection", decision.Decision.Kind);
+        Assert.Equal("finish_blocking", decision.Decision.Actions[0].Type);
+        Assert.Equal("choose_blocker", decision.Decision.Actions[1].Type);
+        Assert.Equal("Hired Claw", decision.Decision.Actions[1].CardIdentity);
+        Assert.Equal("1", decision.Inputs[decision.Decision.Actions[1].ActionId]);
+    }
+
+    [Fact]
+    public void SequentialMenus_HaveStableIncreasingDecisionIds()
+    {
+        var parser = new ForgeTuiParser();
+        var first = parser.Append("What would you like to do?\n  0. Pass priority (do nothing)\nEnter choice (0-0): ");
+        var second = parser.Append(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "forge-tui-blocker-menu.txt")));
+
+        Assert.Equal("forge-tui-1", first.ParsedDecision!.Decision.DecisionId);
+        Assert.Equal("forge-tui-2", second.ParsedDecision!.Decision.DecisionId);
+        Assert.Equal("forge-tui-2-choice-1", second.ParsedDecision.Decision.Actions[1].ActionId);
+    }
+
+    [Fact]
+    public void UnknownNumericPrompt_IsPreservedAsUnsupported()
     {
         var parser = new ForgeTuiParser();
         var result = parser.Append("Unexpected controller output\nEnter choice (0-1, or ?): ");
 
-        Assert.Equal("unrecognized_tui_prompt", result.ErrorCode);
+        Assert.Equal("unsupported_numeric_prompt", result.UnsupportedPrompt?.Code);
+        Assert.Contains("Unexpected controller output", result.UnsupportedPrompt?.Context);
     }
 
     [Fact]

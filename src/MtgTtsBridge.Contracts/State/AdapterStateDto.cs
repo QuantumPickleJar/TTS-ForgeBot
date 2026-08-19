@@ -6,4 +6,5 @@ public sealed record AdapterStateDto(
     string SessionId,
     string State,
     DecisionDto? CurrentDecision,
-    CommittedEventDto? LastCommittedEvent);
+    CommittedEventDto? LastCommittedEvent,
+    AdapterDiagnosticDto? Diagnostic = null);

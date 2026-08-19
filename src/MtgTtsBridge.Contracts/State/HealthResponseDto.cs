@@ -9,4 +9,5 @@ public sealed record HealthResponseDto(
     string SessionId,
     bool HasActiveDecision,
     string? CurrentDecisionId,
-    CommittedEventDto? LastCommittedEvent);
+    CommittedEventDto? LastCommittedEvent,
+    AdapterDiagnosticDto? Diagnostic = null);

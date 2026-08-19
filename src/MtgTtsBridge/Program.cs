@@ -32,7 +32,8 @@ app.MapGet("/health", async (IForgeAdapter adapter, CancellationToken cancellati
 		SessionId: state.SessionId,
 		HasActiveDecision: state.CurrentDecision is not null,
 		CurrentDecisionId: state.CurrentDecision?.DecisionId,
-		LastCommittedEvent: state.LastCommittedEvent));
+		LastCommittedEvent: state.LastCommittedEvent,
+		Diagnostic: state.Diagnostic));
 });
 
 app.MapPost("/api/v1/session/start", async (IForgeAdapter adapter, CancellationToken cancellationToken) =>
@@ -62,6 +63,29 @@ app.MapGet("/api/v1/decision", async (IForgeAdapter adapter, CancellationToken c
 	}
 
 	return Results.Ok(state.CurrentDecision);
+});
+
+app.MapGet("/api/v1/events", async (long? after, IForgeAdapter adapter, CancellationToken cancellationToken) =>
+{
+	var afterSequence = after ?? 0;
+	if (afterSequence < 0)
+	{
+		return Results.BadRequest(new ErrorResponseDto(
+			ErrorCode: "invalid_event_sequence",
+			Message: "The after sequence must be zero or greater.",
+			DecisionId: null));
+	}
+
+	var batch = await adapter.GetEventsAsync(afterSequence, cancellationToken);
+	if (batch.HasGap)
+	{
+		return Results.Conflict(new ErrorResponseDto(
+			ErrorCode: "event_history_gap",
+			Message: $"Events after sequence {afterSequence} are no longer available; oldest available is {batch.OldestAvailableSequence}.",
+			DecisionId: null));
+	}
+
+	return Results.Ok(batch);
 });
 
 app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter adapter, CancellationToken cancellationToken) =>

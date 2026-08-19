@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using MtgTtsBridge.Contracts.Actions;
+using MtgTtsBridge.Contracts.Events;
 using MtgTtsBridge.Contracts.State;
 
 namespace MtgTtsBridge.Tests;
@@ -162,6 +163,22 @@ public sealed class BridgeApiTests
         var decision = await GetDecisionAsync(client);
         Assert.Equal("decision-1-main", decision.DecisionId);
         Assert.Equal(3, decision.Actions.Count);
+    }
+
+    [Fact]
+    public async Task EventsEndpoint_UsesIncrementalSequenceContract()
+    {
+        using var factory = new WebApplicationFactory<Program>();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/v1/events?after=0");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var batch = await response.Content.ReadFromJsonAsync<EventBatchDto>();
+        Assert.NotNull(batch);
+        Assert.Equal(0, batch.RequestedAfterSequence);
+        Assert.Empty(batch.Events);
+        Assert.False(batch.HasGap);
     }
 
     private static async Task StartSessionAsync(HttpClient client)

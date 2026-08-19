@@ -1,0 +1,10 @@
++++ Turn: Turn 1 (Player 1)
++++ Phase: Player 1's Main phase, precombat
++++ Land: Player 1 played Mountain (46)
++++ Mana: Mountain (46) - {T}: Add {R}.
++++ Add To Stack: Player 1 cast Hired Claw
++++ Resolve Stack: Hired Claw - Creature 1 / 2
++++ Land: AI-monored played Mountain (128)
++++ Add To Stack: AI-monored cast Burnout Bashtronaut
++++ Resolve Stack: Burnout Bashtronaut - Creature 1 / 1
++++ Combat: AI-monored assigned Emberheart Challenger (92) and Burnout Bashtronaut (82) to attack Player 1.

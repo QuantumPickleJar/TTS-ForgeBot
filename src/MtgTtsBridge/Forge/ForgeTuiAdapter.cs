@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Options;
 using MtgTtsBridge.Contracts.Actions;
+using MtgTtsBridge.Contracts.Events;
 using MtgTtsBridge.Contracts.State;
 
 namespace MtgTtsBridge.Forge;
@@ -12,19 +13,31 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private readonly ForgeTuiOptions _options;
     private readonly ILogger<ForgeTuiAdapter> _logger;
     private readonly ForgeTuiParser _parser = new();
+    private readonly ForgeTuiEventParser _eventParser;
+    private readonly ForgeStartupTracker _startupTracker;
+    private readonly SemaphoreSlim _sessionStartGate = new(1, 1);
     private readonly HashSet<string> _resolvedDecisionIds = new(StringComparer.Ordinal);
     private Process? _process;
     private CancellationTokenSource? _processCancellation;
     private TaskCompletionSource<ForgeTuiDecision>? _nextDecision;
     private DecisionDto? _currentDecision;
-    private IReadOnlyDictionary<string, int>? _currentInputs;
+    private IReadOnlyDictionary<string, string>? _currentInputs;
     private string _sessionId = "session-not-started";
     private string _state = "not_started";
+    private string? _diagnosticCode;
+    private string? _diagnosticMessage;
+    private string? _diagnosticContext;
+    private readonly List<AuthoritativeEventDto> _events = [];
+    private long _latestEventSequence;
+
+    private const int EventHistoryLimit = 512;
 
     public ForgeTuiAdapter(IOptions<ForgeTuiOptions> options, ILogger<ForgeTuiAdapter> logger)
     {
         _options = options.Value;
         _logger = logger;
+        _startupTracker = new ForgeStartupTracker(logger);
+        _eventParser = new ForgeTuiEventParser(_options.PlayerSeats);
     }
 
     public string Name => "ForgeTuiAdapter";
@@ -35,10 +48,46 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         lock (_sync) return Task.FromResult(CreateState());
     }
 
+    public Task<EventBatchDto> GetEventsAsync(long afterSequence, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            var oldest = _events.Count == 0 ? _latestEventSequence + 1 : _events[0].Sequence;
+            var hasGap = _events.Count > 0 && afterSequence < oldest - 1;
+            var events = hasGap
+                ? []
+                : _events.Where(item => item.Sequence > afterSequence).ToArray();
+            return Task.FromResult(new EventBatchDto(afterSequence, oldest, _latestEventSequence, hasGap, events));
+        }
+    }
+
     public async Task<AdapterStateDto> StartSessionAsync(CancellationToken cancellationToken)
     {
         ValidateConfiguration();
-        await StopProcessAsync().ConfigureAwait(false);
+        await _sessionStartGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            lock (_sync)
+            {
+                if (HasHealthyProcess())
+                {
+                    _logger.LogInformation("Attaching session start request to active Forge session {SessionId}", _sessionId);
+                    return CreateState();
+                }
+            }
+
+            await StopProcessAsync().ConfigureAwait(false);
+            return await StartNewSessionAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _sessionStartGate.Release();
+        }
+    }
+
+    private async Task<AdapterStateDto> StartNewSessionAsync(CancellationToken cancellationToken)
+    {
 
         var startInfo = new ProcessStartInfo
         {
@@ -58,12 +107,19 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
         lock (_sync)
         {
+            _startupTracker.Reset();
             _parser.Reset();
+            _eventParser.Reset();
+            _events.Clear();
+            _latestEventSequence = 0;
             _resolvedDecisionIds.Clear();
             _sessionId = Guid.NewGuid().ToString("N");
             _state = "starting";
             _currentDecision = null;
             _currentInputs = null;
+            _diagnosticCode = null;
+            _diagnosticMessage = null;
+            _diagnosticContext = null;
             _process = process;
             _processCancellation = cancellation;
             initialDecision = NewDecisionWaiter();
@@ -75,6 +131,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             throw new InvalidOperationException("Forge TUI process could not be started.");
         }
 
+        lock (_sync) _startupTracker.MarkProcessLaunched();
+
         _logger.LogInformation("Started Forge TUI process {ProcessId}: {Executable} {Arguments}", process.Id, _options.Executable, _options.Arguments);
         _ = ReadOutputAsync(process.StandardOutput, isError: false, cancellation.Token);
         _ = ReadOutputAsync(process.StandardError, isError: true, cancellation.Token);
@@ -83,6 +141,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         {
             var decision = await WaitForDecisionAsync(initialDecision, _options.StartupTimeoutSeconds, cancellationToken, "startup").ConfigureAwait(false);
             SetDecision(decision);
+            return CreateState();
+        }
+        catch (ForgeUnsupportedPromptException)
+        {
             return CreateState();
         }
         catch
@@ -95,7 +157,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     public async Task<ForgeChoiceResult> SubmitChoiceAsync(ChoiceRequestDto request, CancellationToken cancellationToken)
     {
         TaskCompletionSource<ForgeTuiDecision> waiter;
-        int forgeInput;
+        string forgeInput = string.Empty;
         Process? process;
         lock (_sync)
         {
@@ -109,10 +171,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     ? Reject("stale_decision_id", "The provided decisionId is stale and no longer active.")
                     : Reject("unknown_decision_id", "The provided decisionId is unknown for the current session state.");
             }
-            if (!_currentInputs.TryGetValue(request.ActionId, out forgeInput))
+            if (!_currentInputs.TryGetValue(request.ActionId, out var mappedInput) || mappedInput is null)
             {
                 return Reject("unknown_action_id", "The provided actionId is not legal for this Forge TUI decision.");
             }
+            forgeInput = mappedInput;
             process = _process;
             if (process is null || process.HasExited)
             {
@@ -126,7 +189,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
 
         _logger.LogDebug("Forge TUI stdin: {ForgeInput}", forgeInput);
-        await process.StandardInput.WriteLineAsync(forgeInput.ToString(System.Globalization.CultureInfo.InvariantCulture)).ConfigureAwait(false);
+        await process.StandardInput.WriteLineAsync(forgeInput).ConfigureAwait(false);
         await process.StandardInput.FlushAsync().ConfigureAwait(false);
 
         try
@@ -134,6 +197,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             var decision = await WaitForDecisionAsync(waiter, _options.DecisionTimeoutSeconds, cancellationToken, "decision").ConfigureAwait(false);
             SetDecision(decision);
             return new ForgeChoiceResult(true, CreateState(), null, null);
+        }
+        catch (ForgeUnsupportedPromptException ex)
+        {
+            return Reject("unsupported_decision", ex.Message);
         }
         catch (TimeoutException ex)
         {
@@ -164,8 +231,14 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 }
                 _logger.LogTrace("Forge TUI stdout: {ForgeOutput}", chunk);
                 ForgeTuiParserResult result;
-                lock (_sync) result = _parser.Append(chunk);
+                lock (_sync)
+                {
+                    _startupTracker.Observe(chunk);
+                    foreach (var rawEvent in _eventParser.Append(chunk)) EnqueueEvent(rawEvent);
+                    result = _parser.Append(chunk);
+                }
                 if (result.ParsedDecision is not null) _nextDecision?.TrySetResult(result.ParsedDecision);
+                if (result.UnsupportedPrompt is not null) SetUnsupportedPrompt(result.UnsupportedPrompt);
                 if (result.ErrorCode is not null)
                 {
                     Fail(result.ErrorCode, result.ErrorMessage!);
@@ -198,10 +271,55 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     {
         lock (_sync)
         {
+            if (_currentDecision is null && _state == "starting") _startupTracker.MarkFirstDecision();
             _currentDecision = decision.Decision with { SeatId = _options.HumanSeatId };
             _currentInputs = decision.Inputs;
             _state = "awaiting_human_decision";
         }
+    }
+
+    private void SetUnsupportedPrompt(ForgeTuiUnsupportedPrompt prompt)
+    {
+        lock (_sync)
+        {
+            _logger.LogWarning("Forge TUI paused on unsupported prompt {Code}: {Context}", prompt.Code, prompt.Context);
+            _state = "unsupported_decision";
+            _currentDecision = null;
+            _currentInputs = null;
+            _diagnosticCode = prompt.Code;
+            _diagnosticMessage = prompt.Message;
+            _diagnosticContext = prompt.Context;
+            _nextDecision?.TrySetException(new ForgeUnsupportedPromptException(prompt.Message));
+        }
+    }
+
+    private void EnqueueEvent(ForgeTuiRawEvent rawEvent)
+    {
+        _latestEventSequence++;
+        var cardInstanceId = rawEvent.ForgeObjectId is null
+            ? null
+            : $"forge:{_sessionId}:{rawEvent.ForgeObjectId.Value}";
+        var authoritativeEvent = new AuthoritativeEventDto(
+            Sequence: _latestEventSequence,
+            EventId: $"forge-event-{_sessionId}-{_latestEventSequence}",
+            Kind: rawEvent.Kind,
+            SeatId: rawEvent.SeatId,
+            CardName: rawEvent.CardName,
+            ForgeObjectId: rawEvent.ForgeObjectId,
+            CardInstanceId: cardInstanceId,
+            SourceZone: rawEvent.SourceZone,
+            DestinationZone: rawEvent.DestinationZone,
+            Summary: rawEvent.Summary,
+            OccurredAtUtc: DateTimeOffset.UtcNow);
+        _events.Add(authoritativeEvent);
+        if (_events.Count > EventHistoryLimit) _events.RemoveAt(0);
+        _logger.LogDebug(
+            "Forge event {Sequence} {Kind} seat={SeatId} card={CardName} instance={CardInstanceId}",
+            authoritativeEvent.Sequence,
+            authoritativeEvent.Kind,
+            authoritativeEvent.SeatId,
+            authoritativeEvent.CardName,
+            authoritativeEvent.CardInstanceId);
     }
 
     private void HandleProcessExit(int exitCode) => Fail("forge_process_exited", $"Forge TUI process exited with code {exitCode}.");
@@ -212,6 +330,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         {
             _logger.LogError("Forge TUI failure ({Code}): {Message}", code, message);
             _state = "failed";
+            _diagnosticCode = code;
+            _diagnosticMessage = message;
             _currentDecision = null;
             _currentInputs = null;
             _nextDecision?.TrySetException(new InvalidOperationException(message));
@@ -222,7 +342,22 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
     private AdapterStateDto CreateState()
     {
-        lock (_sync) return new AdapterStateDto(_sessionId, _state, _currentDecision, null);
+        lock (_sync)
+        {
+            var diagnostic = new AdapterDiagnosticDto(
+                _diagnosticCode,
+                _diagnosticMessage,
+                _diagnosticContext,
+                _startupTracker.Snapshot());
+            return new AdapterStateDto(_sessionId, _state, _currentDecision, null, diagnostic);
+        }
+    }
+
+    private bool HasHealthyProcess()
+    {
+        if (_process is null || string.Equals(_state, "failed", StringComparison.Ordinal)) return false;
+        try { return !_process.HasExited; }
+        catch (InvalidOperationException) { return false; }
     }
 
     private void ValidateConfiguration()
@@ -248,5 +383,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         cancellation?.Dispose();
     }
 
-    public async ValueTask DisposeAsync() => await StopProcessAsync().ConfigureAwait(false);
+    public async ValueTask DisposeAsync()
+    {
+        await StopProcessAsync().ConfigureAwait(false);
+        _sessionStartGate.Dispose();
+    }
 }
+
+internal sealed class ForgeUnsupportedPromptException(string message) : InvalidOperationException(message);

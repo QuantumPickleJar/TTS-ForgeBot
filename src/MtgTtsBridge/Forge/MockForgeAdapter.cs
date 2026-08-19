@@ -90,6 +90,12 @@ public sealed class MockForgeAdapter : IForgeAdapter
         }
     }
 
+    public Task<EventBatchDto> GetEventsAsync(long afterSequence, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(new EventBatchDto(afterSequence, 1, 0, false, []));
+    }
+
     private ForgeChoiceResult HandleMainDecisionChoice(LegalActionDto action)
     {
         _resolvedDecisionIds.Add(MainDecisionId);
