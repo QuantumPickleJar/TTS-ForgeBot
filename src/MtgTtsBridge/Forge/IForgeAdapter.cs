@@ -12,6 +12,8 @@ public interface IForgeAdapter
 
     Task<AdapterStateDto> StartSessionAsync(CancellationToken cancellationToken);
 
+    Task<AdapterStateDto> ResetSessionAsync(CancellationToken cancellationToken);
+
     Task<ForgeChoiceResult> SubmitChoiceAsync(ChoiceRequestDto request, CancellationToken cancellationToken);
 
     Task<EventBatchDto> GetEventsAsync(long afterSequence, CancellationToken cancellationToken);

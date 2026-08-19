@@ -8,7 +8,11 @@ BRIDGE_SEATS = {
     },
     ["forge-player-2"] = {
         ttsColor = "Blue",
-        animateAuthoritativeEvents = true
+        animateAuthoritativeEvents = true,
+        battlefieldAnchors = {
+            land = {x = 6.5, y = 2.0, z = 11.5},
+            creature = {x = 7.0, y = 2.0, z = 3.5}
+        }
     }
 }
 
@@ -19,8 +23,13 @@ BridgeState = {
     submitting = false,
     pendingIntent = nil,
     eventSessionId = nil,
-    lastEventSequence = 0,
+    lastReceivedEventSequence = 0,
+    lastAppliedEventSequence = 0,
     eventPolling = false,
+    eventPollGeneration = 0,
+    eventRequestInFlight = false,
+    eventPollScheduled = false,
+    eventRetryCount = 0,
     skipExistingEventsOnAttach = false,
     eventQueue = {},
     animationRunning = false,
@@ -112,6 +121,10 @@ end
 
 function BridgeStartSession(callback)
     BridgeHttp.requestJson("POST", "/api/v1/session/start", nil, callback)
+end
+
+function BridgeResetSessionRequest(callback)
+    BridgeHttp.requestJson("POST", "/api/v1/session/reset", nil, callback)
 end
 
 function BridgeGetDecision(callback)
@@ -212,11 +225,14 @@ function BridgeAttachToActiveSession()
         end
 
         print("[Bridge] health ok. adapter=" .. tostring(body.adapter) .. " state=" .. tostring(body.adapterState))
+        if body.sessionId ~= nil and body.sessionId ~= "session-not-started"
+            and body.adapterState ~= "failed" and body.adapterState ~= "not_started" then
+            BridgeStartEventPolling(body.sessionId, true)
+        end
 
         BridgeGetDecision(function(decisionOk, decisionBody, decisionErr)
             if decisionOk and decisionBody ~= nil then
                 printDecision(decisionBody)
-                BridgeStartEventPolling(body.sessionId, true)
                 return
             end
 
@@ -236,7 +252,7 @@ function BridgeRefreshDecision()
     end)
 end
 
-function BridgeStartNewSession()
+function BridgeStartSessionIfNone()
     BridgeClearHighlights()
     BridgeState.lastDecision = nil
 
@@ -246,7 +262,30 @@ function BridgeStartNewSession()
             return
         end
 
-        print("[Bridge] session started: " .. tostring(body and body.sessionId))
+        print("[Bridge] started or attached session: " .. tostring(body and body.sessionId))
+        -- The start route may attach to a match that already exists. Do not replay
+        -- its historical physical events; an explicit reset is the new-match path.
+        BridgeStartEventPolling(body.sessionId, true)
+        if body ~= nil and body.currentDecision ~= nil then
+            printDecision(body.currentDecision)
+        else
+            BridgeRefreshDecision()
+        end
+    end)
+end
+
+function BridgeResetSession()
+    BridgeStopEventPolling()
+    BridgeClearHighlights()
+    BridgeState.lastDecision = nil
+
+    BridgeResetSessionRequest(function(ok, body, err)
+        if not ok then
+            BridgeShowError("explicit session reset failed: " .. tostring(err))
+            return
+        end
+
+        print("[Bridge] active match explicitly replaced: " .. tostring(body and body.sessionId))
         BridgeStartEventPolling(body.sessionId, false)
         if body ~= nil and body.currentDecision ~= nil then
             printDecision(body.currentDecision)
@@ -435,9 +474,17 @@ function BridgeStartEventPolling(sessionId, skipExisting)
         return
     end
 
+    if BridgeState.eventSessionId == sessionId and BridgeState.eventPolling then
+        return
+    end
+
     if BridgeState.eventSessionId ~= sessionId then
+        BridgeStopEventPolling()
         BridgeState.eventSessionId = sessionId
-        BridgeState.lastEventSequence = 0
+        BridgeState.lastReceivedEventSequence = 0
+        BridgeState.lastAppliedEventSequence = 0
+        BridgeState.eventQueue = {}
+        BridgeState.animationRunning = false
         BridgeState.physicalByInstanceId = {}
         BridgeState.physicalSeatByGuid = {}
         BridgeState.physicalZoneByGuid = {}
@@ -445,45 +492,94 @@ function BridgeStartEventPolling(sessionId, skipExisting)
     end
 
     BridgeState.skipExistingEventsOnAttach = skipExisting == true
-    if BridgeState.eventPolling then
-        return
-    end
-
     BridgeState.eventPolling = true
-    BridgePollEvents()
+    BridgeState.eventRetryCount = 0
+    BridgeState.eventPollGeneration = BridgeState.eventPollGeneration + 1
+    BridgePollEvents(BridgeState.eventPollGeneration)
 end
 
-function BridgePollEvents()
-    if not BridgeState.eventPolling then
+function BridgeStopEventPolling()
+    BridgeState.eventPolling = false
+    BridgeState.eventPollGeneration = BridgeState.eventPollGeneration + 1
+    BridgeState.eventRequestInFlight = false
+    BridgeState.eventPollScheduled = false
+end
+
+function BridgeScheduleEventPoll(delay, generation)
+    if not BridgeState.eventPolling or generation ~= BridgeState.eventPollGeneration then
+        return
+    end
+    if BridgeState.eventRequestInFlight or BridgeState.eventPollScheduled then
         return
     end
 
-    local path = "/api/v1/events?after=" .. tostring(BridgeState.lastEventSequence)
+    BridgeState.eventPollScheduled = true
+    Wait.time(function()
+        if not BridgeState.eventPolling or generation ~= BridgeState.eventPollGeneration then
+            return
+        end
+        BridgeState.eventPollScheduled = false
+        BridgePollEvents(generation)
+    end, delay)
+end
+
+function BridgePollEvents(generation)
+    generation = generation or BridgeState.eventPollGeneration
+    if not BridgeState.eventPolling or generation ~= BridgeState.eventPollGeneration then
+        return
+    end
+    if BridgeState.eventRequestInFlight or BridgeState.eventPollScheduled then
+        return
+    end
+
+    local requestedAfter = BridgeState.lastReceivedEventSequence
+    local path = "/api/v1/events?after=" .. tostring(requestedAfter)
+    BridgeState.eventRequestInFlight = true
     BridgeHttp.requestJson("GET", path, nil, function(ok, body, err)
+        if generation ~= BridgeState.eventPollGeneration then
+            return
+        end
+
+        BridgeState.eventRequestInFlight = false
         if not ok or body == nil then
-            BridgeStopOnDesync("event poll failed: " .. tostring(err))
+            if body ~= nil and body.errorCode == "event_history_gap" then
+                BridgeStopOnDesync("event history gap after sequence " .. tostring(requestedAfter) .. ": " .. tostring(body.message))
+                return
+            end
+
+            BridgeState.eventRetryCount = BridgeState.eventRetryCount + 1
+            local retryDelay = math.min(2 ^ (BridgeState.eventRetryCount - 1), 5)
+            print(string.format("[Bridge] transient event poll failure (%s); retrying in %.1f seconds", tostring(err), retryDelay))
+            BridgeScheduleEventPoll(retryDelay, generation)
+            return
+        end
+
+        BridgeState.eventRetryCount = 0
+        if body.hasGap == true then
+            BridgeStopOnDesync("event history gap after sequence " .. tostring(requestedAfter))
             return
         end
 
         if BridgeState.skipExistingEventsOnAttach then
-            BridgeState.lastEventSequence = body.latestSequence or BridgeState.lastEventSequence
+            BridgeState.lastReceivedEventSequence = body.latestSequence or BridgeState.lastReceivedEventSequence
+            BridgeState.lastAppliedEventSequence = BridgeState.lastReceivedEventSequence
             BridgeState.skipExistingEventsOnAttach = false
-            print("[Bridge] attached at authoritative event sequence " .. tostring(BridgeState.lastEventSequence))
+            print("[Bridge] attached at authoritative event sequence " .. tostring(BridgeState.lastAppliedEventSequence))
         else
             for _, event in ipairs(body.events or {}) do
-                local expected = BridgeState.lastEventSequence + 1
+                local expected = BridgeState.lastReceivedEventSequence + 1
                 if event.sequence ~= expected then
                     BridgeStopOnDesync("event sequence gap: expected " .. tostring(expected) .. " but received " .. tostring(event.sequence))
                     return
                 end
 
-                BridgeState.lastEventSequence = event.sequence
+                BridgeState.lastReceivedEventSequence = event.sequence
                 table.insert(BridgeState.eventQueue, event)
             end
             BridgeProcessEventQueue()
         end
 
-        Wait.time(BridgePollEvents, 1)
+        BridgeScheduleEventPoll(1, generation)
     end)
 end
 
@@ -492,10 +588,28 @@ function BridgeProcessEventQueue()
         return
     end
 
+    local event = BridgeState.eventQueue[1]
+    local expected = BridgeState.lastAppliedEventSequence + 1
+    if event.sequence ~= expected then
+        BridgeStopOnDesync("event application gap: expected " .. tostring(expected) .. " but queued " .. tostring(event.sequence))
+        return
+    end
+
     BridgeState.animationRunning = true
-    local event = table.remove(BridgeState.eventQueue, 1)
-    local delay = BridgeApplyAuthoritativeEvent(event)
+    local applied, delay, applyError = BridgeApplyAuthoritativeEvent(event)
+    if not applied then
+        BridgeState.animationRunning = false
+        BridgeStopOnDesync(applyError or ("failed to apply event " .. tostring(event.sequence)))
+        return
+    end
+
+    table.remove(BridgeState.eventQueue, 1)
+    BridgeState.lastAppliedEventSequence = event.sequence
+    local generation = BridgeState.eventPollGeneration
     Wait.time(function()
+        if generation ~= BridgeState.eventPollGeneration then
+            return
+        end
         BridgeState.animationRunning = false
         BridgeProcessEventQueue()
     end, delay or 0.1)
@@ -505,43 +619,53 @@ function BridgeApplyAuthoritativeEvent(event)
     print(string.format("[Bridge] event %s %s seat=%s card=%s", tostring(event.sequence), tostring(event.kind), tostring(event.seatId), tostring(event.cardName)))
 
     local seat = BRIDGE_SEATS[event.seatId]
-    if seat == nil or not seat.animateAuthoritativeEvents then
-        return 0.1
+    if seat == nil then
+        return false, 0, "event " .. tostring(event.sequence) .. " has no configured seat " .. tostring(event.seatId)
+    end
+    if not seat.animateAuthoritativeEvents then
+        return true, 0.1
     end
 
     if event.kind == "land_played" then
-        local object = BridgeResolvePhysicalCard(event, "hand")
-        if object == nil then return 0.1 end
-        BridgeMoveToBattlefield(event, object, "land")
-        return 1.25
+        local object, resolveError = BridgeResolvePhysicalCard(event, "hand")
+        if object == nil then return false, 0, resolveError end
+        local moved, moveError = BridgeMoveToBattlefield(event, object, "land")
+        if not moved then return false, 0, moveError end
+        return true, 1.25
     end
 
     if event.kind == "spell_resolved" and event.destinationZone == "battlefield" then
-        local object = BridgeResolvePhysicalCard(event, "hand")
-        if object == nil then return 0.1 end
-        BridgeMoveToBattlefield(event, object, "creature")
-        return 1.25
+        local object, resolveError = BridgeResolvePhysicalCard(event, "hand")
+        if object == nil then return false, 0, resolveError end
+        local moved, moveError = BridgeMoveToBattlefield(event, object, "creature")
+        if not moved then return false, 0, moveError end
+        return true, 1.25
     end
 
     if event.kind == "mana_ability_used" then
-        local object = BridgeResolvePhysicalCard(event, "battlefield")
-        if object == nil then return 0.1 end
+        local object, resolveError = BridgeResolvePhysicalCard(event, "battlefield")
+        if object == nil then return false, 0, resolveError end
         local rotation = object.getRotation()
-        object.setRotationSmooth({rotation.x, rotation.y, rotation.z + 90}, false, true)
-        return 0.8
+        local rotated, rotationError = pcall(function()
+            object.setRotationSmooth({rotation.x, rotation.y, rotation.z + 90}, false, true)
+        end)
+        if not rotated then
+            return false, 0, "event " .. tostring(event.sequence) .. " could not tap mapped object: " .. tostring(rotationError)
+        end
+        return true, 0.8
     end
 
     if event.kind == "attack_declared" then
-        local object = BridgeResolvePhysicalCard(event, "battlefield")
-        if object == nil then return 0.1 end
+        local object, resolveError = BridgeResolvePhysicalCard(event, "battlefield")
+        if object == nil then return false, 0, resolveError end
         local position = object.getPosition()
         local towardCenter = BridgeUnitTowardTableCenter(position)
         object.setPositionSmooth({position.x + towardCenter.x * 2, position.y, position.z + towardCenter.z * 2}, false, true)
         object.highlightOn({1.0, 0.45, 0.0}, 2)
-        return 1.0
+        return true, 1.0
     end
 
-    return 0.1
+    return true, 0.1
 end
 
 function BridgeResolvePhysicalCard(event, expectedZone)
@@ -550,16 +674,15 @@ function BridgeResolvePhysicalCard(event, expectedZone)
         if existingGuid ~= nil then
             local existing = getObjectFromGUID(existingGuid)
             if existing == nil then
-                BridgeStopOnDesync("mapped object disappeared for " .. tostring(event.cardInstanceId))
+                return nil, BridgePhysicalMappingError(event, expectedZone, 0, "mapped object disappeared")
             end
-            return existing
+            return existing, nil
         end
     end
 
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then
-        BridgeStopOnDesync("event has no configured seat: " .. tostring(event.seatId))
-        return nil
+        return nil, BridgePhysicalMappingError(event, expectedZone, 0, "seat is not configured")
     end
 
     local source = {}
@@ -581,10 +704,7 @@ function BridgeResolvePhysicalCard(event, expectedZone)
     end
 
     if #matches ~= 1 then
-        BridgeStopOnDesync(string.format(
-            "cannot uniquely map event %s card '%s' in %s for seat %s: found %d candidates",
-            tostring(event.sequence), tostring(event.cardName), tostring(expectedZone), tostring(event.seatId), #matches))
-        return nil
+        return nil, BridgePhysicalMappingError(event, expectedZone, #matches, "cannot uniquely identify physical card")
     end
 
     local object = matches[1]
@@ -594,35 +714,54 @@ function BridgeResolvePhysicalCard(event, expectedZone)
     end
     BridgeState.physicalSeatByGuid[guid] = event.seatId
     BridgeState.physicalZoneByGuid[guid] = expectedZone
-    return object
+    return object, nil
+end
+
+function BridgePhysicalMappingError(event, expectedZone, candidateCount, detail)
+    return string.format(
+        "physical mapping failed: event=%s seat=%s card='%s' sourceZone=%s candidates=%d (%s)",
+        tostring(event.sequence), tostring(event.seatId), tostring(event.cardName), tostring(expectedZone), candidateCount, tostring(detail))
 end
 
 function BridgeMoveToBattlefield(event, object, row)
-    local destination = BridgeBattlefieldPosition(event.seatId, row)
-    object.setPositionSmooth(destination, false, true)
+    local destination, positionError = BridgeBattlefieldPosition(event.seatId, row)
+    if destination == nil then
+        return false, positionError
+    end
+
+    local moved, movementError = pcall(function()
+        object.use_hands = false
+        object.setPosition(destination)
+    end)
+    if not moved then
+        return false, "event " .. tostring(event.sequence) .. " could not move physical card: " .. tostring(movementError)
+    end
+
     local guid = object.getGUID()
     BridgeState.physicalSeatByGuid[guid] = event.seatId
     BridgeState.physicalZoneByGuid[guid] = "battlefield"
     if event.cardInstanceId ~= nil then
         BridgeState.physicalByInstanceId[event.cardInstanceId] = guid
     end
+    local rowKey = event.seatId .. ":" .. row
+    BridgeState.battlefieldCounts[rowKey] = (BridgeState.battlefieldCounts[rowKey] or 0) + 1
+    return true, nil
 end
 
 function BridgeBattlefieldPosition(seatId, row)
     local seat = BRIDGE_SEATS[seatId]
-    local hand = Player[seat.ttsColor].getHandTransform()
-    local towardCenter = BridgeUnitTowardTableCenter(hand.position)
-    local perpendicular = {x = -towardCenter.z, z = towardCenter.x}
+    local anchor = seat and seat.battlefieldAnchors and seat.battlefieldAnchors[row]
+    if anchor == nil then
+        return nil, "no battlefield anchor configured for seat " .. tostring(seatId) .. " row " .. tostring(row)
+    end
+
     local rowKey = seatId .. ":" .. row
     local count = BridgeState.battlefieldCounts[rowKey] or 0
-    BridgeState.battlefieldCounts[rowKey] = count + 1
-    local distance = row == "land" and 5 or 8
-    local lateral = (count % 5) * 2.2 - 4.4
     return {
-        x = hand.position.x + towardCenter.x * distance + perpendicular.x * lateral,
-        y = 2,
-        z = hand.position.z + towardCenter.z * distance + perpendicular.z * lateral
-    }
+        x = anchor.x + (count % 5) * 2.2,
+        y = anchor.y,
+        z = anchor.z
+    }, nil
 end
 
 function BridgeUnitTowardTableCenter(position)
@@ -634,9 +773,16 @@ function BridgeUnitTowardTableCenter(position)
 end
 
 function BridgeStopOnDesync(message)
-    BridgeState.eventPolling = false
-    BridgeState.eventQueue = {}
+    BridgeStopEventPolling()
     BridgeState.animationRunning = false
     BridgeClearHighlights()
     BridgeShowError("synchronization stopped: " .. tostring(message))
+end
+
+function BridgePrintEventSyncStatus()
+    print(string.format(
+        "[Bridge] event sync session=%s polling=%s received=%s applied=%s queued=%d retries=%d inFlight=%s",
+        tostring(BridgeState.eventSessionId), tostring(BridgeState.eventPolling),
+        tostring(BridgeState.lastReceivedEventSequence), tostring(BridgeState.lastAppliedEventSequence),
+        #BridgeState.eventQueue, BridgeState.eventRetryCount, tostring(BridgeState.eventRequestInFlight)))
 end

@@ -137,6 +137,48 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
+    public async Task ExplicitReset_ReplacesHealthyProcessAndSession()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-reset-{Guid.NewGuid():N}.cmd");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """);
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                }),
+                NullLogger<ForgeTuiAdapter>.Instance);
+
+            var first = await adapter.StartSessionAsync(CancellationToken.None);
+            var attached = await adapter.StartSessionAsync(CancellationToken.None);
+            var reset = await adapter.ResetSessionAsync(CancellationToken.None);
+
+            Assert.Equal(first.SessionId, attached.SessionId);
+            Assert.NotEqual(first.SessionId, reset.SessionId);
+            Assert.Equal("awaiting_human_decision", reset.State);
+            Assert.NotNull(reset.CurrentDecision);
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
     public async Task UnknownNumericPrompt_PreservesProcessAndDiagnosticState()
     {
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
@@ -215,8 +257,53 @@ public sealed class ForgeTuiAdapterTests
             Assert.Equal(["land_played", "mana_ability_used"], firstBatch.Events.Select(item => item.Kind));
             Assert.All(firstBatch.Events, item => Assert.Equal("forge-player-2", item.SeatId));
             Assert.Equal($"forge:{session.SessionId}:128", firstBatch.Events[0].CardInstanceId);
+            Assert.Equal(firstBatch.Events[0].CardInstanceId, firstBatch.Events[1].CardInstanceId);
             Assert.Empty(acknowledged.Events);
             Assert.Equal(firstBatch.LatestSequence, acknowledged.LatestSequence);
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
+    public async Task EventHistoryOverflow_ReportsAnActualSequenceGap()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-event-gap-{Guid.NewGuid():N}.cmd");
+        var lines = Enumerable.Range(1, 513)
+            .Select(index => $"echo +++ Land: AI-monored played Mountain ({index})")
+            .Prepend("@echo off")
+            .Concat([
+                "echo What would you like to do?",
+                "echo   0. Pass priority (do nothing)",
+                "<nul set /p \"=Enter choice (0-0): \"",
+                "set /p choice=",
+            ]);
+        await File.WriteAllLinesAsync(script, lines);
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                }),
+                NullLogger<ForgeTuiAdapter>.Instance);
+
+            await adapter.StartSessionAsync(CancellationToken.None);
+            var batch = await adapter.GetEventsAsync(0, CancellationToken.None);
+
+            Assert.True(batch.HasGap);
+            Assert.Equal(2, batch.OldestAvailableSequence);
+            Assert.Equal(513, batch.LatestSequence);
+            Assert.Empty(batch.Events);
         }
         finally
         {

@@ -153,16 +153,44 @@ public sealed class BridgeApiTests
 
         Assert.Equal(HttpStatusCode.OK, playMountain.StatusCode);
 
-        var resetResponse = await client.PostAsync("/api/v1/session/start", content: null);
+        var resetResponse = await client.PostAsync("/api/v1/session/reset", content: null);
         Assert.Equal(HttpStatusCode.OK, resetResponse.StatusCode);
 
         var resetStart = await resetResponse.Content.ReadFromJsonAsync<SessionStartResponseDto>();
         Assert.NotNull(resetStart);
+        Assert.NotNull(resetStart.CurrentDecision);
         Assert.Equal("decision-1-main", resetStart.CurrentDecision.DecisionId);
 
         var decision = await GetDecisionAsync(client);
         Assert.Equal("decision-1-main", decision.DecisionId);
         Assert.Equal(3, decision.Actions.Count);
+    }
+
+    [Fact]
+    public async Task Start_AttachesButResetExplicitlyReplacesActiveSession()
+    {
+        using var factory = new WebApplicationFactory<Program>();
+        using var client = factory.CreateClient();
+
+        var firstResponse = await client.PostAsync("/api/v1/session/start", content: null);
+        var first = await firstResponse.Content.ReadFromJsonAsync<SessionStartResponseDto>();
+        Assert.NotNull(first);
+
+        var attachedResponse = await client.PostAsync("/api/v1/session/start", content: null);
+        var attached = await attachedResponse.Content.ReadFromJsonAsync<SessionStartResponseDto>();
+        Assert.NotNull(attached);
+        Assert.Equal(first.SessionId, attached.SessionId);
+
+        var healthResponse = await client.GetAsync("/health");
+        var health = await healthResponse.Content.ReadFromJsonAsync<HealthResponseDto>();
+        Assert.NotNull(health);
+        Assert.Equal(first.SessionId, health.SessionId);
+
+        var resetResponse = await client.PostAsync("/api/v1/session/reset", content: null);
+        var reset = await resetResponse.Content.ReadFromJsonAsync<SessionStartResponseDto>();
+        Assert.NotNull(reset);
+        Assert.NotEqual(first.SessionId, reset.SessionId);
+        Assert.Equal("decision-1-main", reset.CurrentDecision?.DecisionId);
     }
 
     [Fact]

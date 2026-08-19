@@ -86,6 +86,22 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
     }
 
+    public async Task<AdapterStateDto> ResetSessionAsync(CancellationToken cancellationToken)
+    {
+        ValidateConfiguration();
+        await _sessionStartGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            _logger.LogInformation("Explicitly replacing active Forge session {SessionId}", _sessionId);
+            await StopProcessAsync().ConfigureAwait(false);
+            return await StartNewSessionAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _sessionStartGate.Release();
+        }
+    }
+
     private async Task<AdapterStateDto> StartNewSessionAsync(CancellationToken cancellationToken)
     {
 
@@ -125,7 +141,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             initialDecision = NewDecisionWaiter();
         }
 
-        process.Exited += (_, _) => HandleProcessExit(process.ExitCode);
+        process.Exited += (_, _) => HandleProcessExit(process, process.ExitCode);
         if (!process.Start())
         {
             throw new InvalidOperationException("Forge TUI process could not be started.");
@@ -322,7 +338,15 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             authoritativeEvent.CardInstanceId);
     }
 
-    private void HandleProcessExit(int exitCode) => Fail("forge_process_exited", $"Forge TUI process exited with code {exitCode}.");
+    private void HandleProcessExit(Process process, int exitCode)
+    {
+        lock (_sync)
+        {
+            if (!ReferenceEquals(_process, process)) return;
+        }
+
+        Fail("forge_process_exited", $"Forge TUI process exited with code {exitCode}.");
+    }
 
     private void Fail(string code, string message)
     {

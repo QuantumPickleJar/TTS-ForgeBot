@@ -18,6 +18,7 @@ public sealed class MockForgeAdapter : IForgeAdapter
     private DecisionDto? _currentDecision;
     private CommittedEventDto? _lastCommittedEvent;
     private int _eventCounter;
+    private bool _sessionActive;
 
     public string Name => "MockForgeAdapter";
 
@@ -37,14 +38,21 @@ public sealed class MockForgeAdapter : IForgeAdapter
 
         lock (_sync)
         {
-            _sessionId = Guid.NewGuid().ToString("N");
-            _state = "awaiting_human_decision";
-            _pendingFollowupActionId = null;
-            _currentDecision = BuildMainDecision();
-            _lastCommittedEvent = null;
-            _eventCounter = 0;
-            _resolvedDecisionIds.Clear();
+            if (!_sessionActive)
+            {
+                ResetState();
+            }
+            return Task.FromResult(CreateStateSnapshot());
+        }
+    }
 
+    public Task<AdapterStateDto> ResetSessionAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        lock (_sync)
+        {
+            ResetState();
             return Task.FromResult(CreateStateSnapshot());
         }
     }
@@ -94,6 +102,18 @@ public sealed class MockForgeAdapter : IForgeAdapter
     {
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult(new EventBatchDto(afterSequence, 1, 0, false, []));
+    }
+
+    private void ResetState()
+    {
+        _sessionId = Guid.NewGuid().ToString("N");
+        _state = "awaiting_human_decision";
+        _pendingFollowupActionId = null;
+        _currentDecision = BuildMainDecision();
+        _lastCommittedEvent = null;
+        _eventCounter = 0;
+        _resolvedDecisionIds.Clear();
+        _sessionActive = true;
     }
 
     private ForgeChoiceResult HandleMainDecisionChoice(LegalActionDto action)

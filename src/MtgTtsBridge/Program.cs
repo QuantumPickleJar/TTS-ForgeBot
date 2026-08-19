@@ -39,12 +39,14 @@ app.MapGet("/health", async (IForgeAdapter adapter, CancellationToken cancellati
 app.MapPost("/api/v1/session/start", async (IForgeAdapter adapter, CancellationToken cancellationToken) =>
 {
 	var state = await adapter.StartSessionAsync(cancellationToken);
+	return Results.Ok(new SessionStartResponseDto(
+		SessionId: state.SessionId,
+		CurrentDecision: state.CurrentDecision));
+});
 
-	if (state.CurrentDecision is null)
-	{
-		return Results.Problem("The adapter did not provide an initial decision.", statusCode: StatusCodes.Status500InternalServerError);
-	}
-
+app.MapPost("/api/v1/session/reset", async (IForgeAdapter adapter, CancellationToken cancellationToken) =>
+{
+	var state = await adapter.ResetSessionAsync(cancellationToken);
 	return Results.Ok(new SessionStartResponseDto(
 		SessionId: state.SessionId,
 		CurrentDecision: state.CurrentDecision));
