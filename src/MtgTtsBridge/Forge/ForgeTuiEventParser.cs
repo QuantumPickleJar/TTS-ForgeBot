@@ -10,6 +10,8 @@ public sealed partial class ForgeTuiEventParser
     private readonly IReadOnlyDictionary<string, string> _playerSeats;
     private readonly Dictionary<int, (string? SeatId, string CardName)> _knownInstances = [];
     private readonly List<(string? SeatId, string CardName)> _pendingCasts = [];
+    private readonly Dictionary<string, int> _lastLifeBySeat = new(StringComparer.Ordinal);
+    private string? _snapshotPlayerName;
 
     public ForgeTuiEventParser(IReadOnlyDictionary<string, string> playerSeats) => _playerSeats = playerSeats;
 
@@ -18,6 +20,8 @@ public sealed partial class ForgeTuiEventParser
         _lineBuffer.Clear();
         _knownInstances.Clear();
         _pendingCasts.Clear();
+        _lastLifeBySeat.Clear();
+        _snapshotPlayerName = null;
     }
 
     public IReadOnlyList<ForgeTuiRawEvent> Append(string chunk)
@@ -42,6 +46,33 @@ public sealed partial class ForgeTuiEventParser
 
     private IReadOnlyList<ForgeTuiRawEvent> ParseLine(string line)
     {
+        var snapshotHeader = HumanSnapshotHeaderRegex().Match(line);
+        if (snapshotHeader.Success)
+        {
+            _snapshotPlayerName = snapshotHeader.Groups["player"].Value.Trim();
+            return [];
+        }
+
+        var trimmed = line.Trim();
+        if (_playerSeats.ContainsKey(trimmed))
+        {
+            _snapshotPlayerName = trimmed;
+            return [];
+        }
+
+        var snapshotLife = SnapshotLifeRegex().Match(line);
+        if (snapshotLife.Success && _snapshotPlayerName is not null)
+        {
+            var seatId = ResolveSeat(_snapshotPlayerName);
+            var life = int.Parse(snapshotLife.Groups["life"].Value, System.Globalization.CultureInfo.InvariantCulture);
+            if (seatId is not null && (!_lastLifeBySeat.TryGetValue(seatId, out var previous) || previous != life))
+            {
+                _lastLifeBySeat[seatId] = life;
+                return [new ForgeTuiRawEvent("player_state", seatId, null, null, null, null, line, LifeTotal: life)];
+            }
+            return [];
+        }
+
         var match = TurnRegex().Match(line);
         if (match.Success)
         {
@@ -62,6 +93,26 @@ public sealed partial class ForgeTuiEventParser
             var id = int.Parse(match.Groups["id"].Value, System.Globalization.CultureInfo.InvariantCulture);
             _knownInstances[id] = (ResolveSeat(player), card);
             return [Create("land_played", player, card, id, "hand", "battlefield", line)];
+        }
+
+        match = DiscardRegex().Match(line);
+        if (match.Success)
+        {
+            var player = match.Groups["player"].Value;
+            var card = match.Groups["card"].Value;
+            var id = int.Parse(match.Groups["id"].Value, System.Globalization.CultureInfo.InvariantCulture);
+            _knownInstances[id] = (ResolveSeat(player), card);
+            return [Create("card_moved", player, card, id, "hand", "graveyard", line)];
+        }
+
+        match = LifeLogRegex().Match(line);
+        if (match.Success)
+        {
+            var player = match.Groups["player"].Value;
+            var seatId = ResolveSeat(player);
+            var life = int.Parse(match.Groups["new"].Value, System.Globalization.CultureInfo.InvariantCulture);
+            if (seatId is not null) _lastLifeBySeat[seatId] = life;
+            return [new ForgeTuiRawEvent("player_state", seatId, null, null, null, null, line, LifeTotal: life)];
         }
 
         match = ManaRegex().Match(line);
@@ -87,14 +138,16 @@ public sealed partial class ForgeTuiEventParser
             var card = match.Groups["card"].Value;
             var details = match.Groups["details"].Value;
             var pendingIndex = _pendingCasts.FindLastIndex(item => string.Equals(item.CardName, card, StringComparison.OrdinalIgnoreCase));
-            string? seatId = null;
-            if (pendingIndex >= 0)
-            {
-                seatId = _pendingCasts[pendingIndex].SeatId;
-                _pendingCasts.RemoveAt(pendingIndex);
-            }
-            var destination = details.StartsWith("Creature ", StringComparison.Ordinal) ? "battlefield" : null;
-            return [new ForgeTuiRawEvent("spell_resolved", seatId, card, null, "stack", destination, line)];
+            if (pendingIndex < 0) return []; // Trigger/ability resolution is not a card zone transition.
+
+            var seatId = _pendingCasts[pendingIndex].SeatId;
+            _pendingCasts.RemoveAt(pendingIndex);
+            int? id = match.Groups["id"].Success
+                ? int.Parse(match.Groups["id"].Value, System.Globalization.CultureInfo.InvariantCulture)
+                : null;
+            if (id is not null) _knownInstances[id.Value] = (seatId, card);
+            var destination = PermanentDetailsRegex().IsMatch(details) ? "battlefield" : "graveyard";
+            return [new ForgeTuiRawEvent("spell_resolved", seatId, card, id, "stack", destination, line)];
         }
 
         match = CombatRegex().Match(line);
@@ -138,20 +191,35 @@ public sealed partial class ForgeTuiEventParser
     [GeneratedRegex(@"^\+\+\+ Land: (?<player>.+?) played (?<card>.+) \((?<id>\d+)\)$", RegexOptions.CultureInvariant)]
     private static partial Regex LandRegex();
 
+    [GeneratedRegex(@"^\+\+\+ Discard: (?<player>.+?) discards (?<card>.+) \((?<id>\d+)\)\.$", RegexOptions.CultureInvariant)]
+    private static partial Regex DiscardRegex();
+
+    [GeneratedRegex(@"^\+\+\+ Life: Life: (?<player>.+?) (?<old>-?\d+) > (?<new>-?\d+)$", RegexOptions.CultureInvariant)]
+    private static partial Regex LifeLogRegex();
+
     [GeneratedRegex(@"^\+\+\+ Mana: (?<card>.+) \((?<id>\d+)\) - .+$", RegexOptions.CultureInvariant)]
     private static partial Regex ManaRegex();
 
-    [GeneratedRegex(@"^\+\+\+ Add To Stack: (?<player>.+?) cast (?<card>.+)$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^\+\+\+ Add To Stack: (?<player>.+?) cast (?<card>.+?)(?: targeting \[.*\])?$", RegexOptions.CultureInvariant)]
     private static partial Regex CastRegex();
 
-    [GeneratedRegex(@"^\+\+\+ Resolve Stack: (?<card>.+?) - (?<details>.+)$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^\+\+\+ Resolve Stack: (?<card>.+?)(?: \((?<id>\d+)\))? - (?<details>.+)$", RegexOptions.CultureInvariant)]
     private static partial Regex ResolveRegex();
+
+    [GeneratedRegex(@"^(?:Creature|Artifact|Enchantment|Planeswalker|Battle)\b", RegexOptions.CultureInvariant)]
+    private static partial Regex PermanentDetailsRegex();
 
     [GeneratedRegex(@"^\+\+\+ Combat: (?<player>.+?) assigned (?<attackers>.+) to attack .+\.$", RegexOptions.CultureInvariant)]
     private static partial Regex CombatRegex();
 
     [GeneratedRegex(@"(?<card>.+?) \((?<id>\d+)\)(?: and |, |$)", RegexOptions.CultureInvariant)]
     private static partial Regex AttackerRegex();
+
+    [GeneratedRegex(@"^>>> \[YOU\] (?<player>\S(?:.*\S)?)\s*$", RegexOptions.CultureInvariant)]
+    private static partial Regex HumanSnapshotHeaderRegex();
+
+    [GeneratedRegex(@"^\s*(?:>>> \[YOU\]\s+)?Life:\s*(?<life>-?\d+)\s*$", RegexOptions.CultureInvariant)]
+    private static partial Regex SnapshotLifeRegex();
 
     [GeneratedRegex("\\x1B\\[[0-?]*[ -/]*[@-~]", RegexOptions.CultureInvariant)]
     private static partial Regex AnsiEscapeRegex();
@@ -164,4 +232,9 @@ public sealed record ForgeTuiRawEvent(
     int? ForgeObjectId,
     string? SourceZone,
     string? DestinationZone,
-    string Summary);
+    string Summary,
+    int? LifeTotal = null,
+    int? PoisonCounters = null,
+    string? CounterType = null,
+    int? CounterValue = null,
+    string? Keyword = null);

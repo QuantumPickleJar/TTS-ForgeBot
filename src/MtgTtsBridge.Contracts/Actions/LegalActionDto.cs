@@ -6,4 +6,7 @@ public sealed record LegalActionDto(
     string DisplayName,
     bool RequiresFollowup,
     string? CardIdentity,
-    string? ObjectIdentity);
+    string? ObjectIdentity,
+    string? TargetKind = null,
+    string? TargetSeatId = null,
+    string? CardInstanceId = null);

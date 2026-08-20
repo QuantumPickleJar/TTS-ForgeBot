@@ -49,4 +49,71 @@ public sealed class TtsGlobalLuaContractTests
         Assert.True(releaseHand >= 0);
         Assert.True(directMove > releaseHand);
     }
+
+    [Fact]
+    public void HumanIntent_IsStagedUntilDropAndRollbackRestoresPhysicalState()
+    {
+        var pickup = Script.IndexOf("function onObjectPickUp", StringComparison.Ordinal);
+        var drop = Script.IndexOf("function onObjectDrop", StringComparison.Ordinal);
+        var submit = Script.IndexOf("BridgeSubmitChoice(intent.decisionId, intent.action.actionId)", drop, StringComparison.Ordinal);
+
+        Assert.True(pickup >= 0);
+        Assert.True(drop > pickup);
+        Assert.True(submit > drop);
+        Assert.Contains("useHands = object.use_hands", Script);
+        Assert.Contains("object.use_hands = intent.useHands", Script);
+        Assert.Contains("BridgeRenderDecision(BridgeState.lastDecision)", Script);
+    }
+
+    [Fact]
+    public void TurnYield_UsesForgePassAndTurnEventsDriveTtsPresentation()
+    {
+        Assert.Contains("function onPlayerTurnEnd", Script);
+        Assert.Contains("BridgeState.yieldSeatId = decision.seatId", Script);
+        Assert.Contains("if action.type == \"pass_yield\"", Script);
+        Assert.Contains("Turns.turn_color = seat.ttsColor", Script);
+    }
+
+    [Fact]
+    public void PlayerTargets_AreMachineTypedAndUseConfiguredSeatSurface()
+    {
+        Assert.Contains("action.targetKind == \"player\"", Script);
+        Assert.Contains("action.targetSeatId", Script);
+        Assert.Contains("targetSurfaceGuid", Script);
+        Assert.Contains("click_function = \"BridgeSelectPlayerTarget\"", Script);
+        Assert.DoesNotContain("action.displayName == \"Player", Script);
+    }
+
+    [Fact]
+    public void ExistingCardModules_AreUpdatedByAbsoluteAuthoritativeState()
+    {
+        Assert.Contains("APIobjGetPropData", Script);
+        Assert.Contains("propID = \"_MTG_Simplified_UNIFIED\"", Script);
+        Assert.Contains("encoded.tyrantUnified[field] = counterValue", Script);
+        Assert.Contains("propID = \"πKeywords\"", Script);
+        Assert.Contains("data[property] = enabled and 1 or 0", Script);
+        Assert.Contains("APIobjSetPropData", Script);
+        Assert.Contains("APIrebuildButtons", Script);
+    }
+
+    [Fact]
+    public void ManualDrawCannotMutateForgeAuthoritativeLibrary()
+    {
+        var drawStart = Script.IndexOf("function drawSwap", StringComparison.Ordinal);
+        var drawEnd = Script.IndexOf("function BridgeGetHealth", drawStart, StringComparison.Ordinal);
+        var drawFunction = Script[drawStart..drawEnd];
+
+        Assert.Contains("manual Draw is disabled", drawFunction);
+        Assert.DoesNotContain(".deal(", drawFunction);
+    }
+
+    [Fact]
+    public void DeveloperSyncDumpIncludesMappingsZonesAndCursors()
+    {
+        Assert.Contains("function BridgeDumpSyncState", Script);
+        Assert.Contains("physicalByInstanceId", Script);
+        Assert.Contains("physicalZoneByGuid", Script);
+        Assert.Contains("lastReceivedEventSequence", Script);
+        Assert.Contains("lastAppliedEventSequence", Script);
+    }
 }

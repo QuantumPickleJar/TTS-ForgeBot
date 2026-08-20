@@ -16,9 +16,9 @@ public sealed class ForgeTuiParserTests
         Assert.Null(firstChunk.ParsedDecision);
         var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
         Assert.Equal("main_priority", decision.Decision.Kind);
-        Assert.Equal(new[] { "Pass priority (do nothing)", "Play land: Soulstone Sanctuary", "Play land: Mountain" }, decision.Decision.Actions.Select(action => action.DisplayName));
+        Assert.Equal(new[] { "Pass priority (do nothing)", "Play land: Mountain", "Play land: Rockface Village" }, decision.Decision.Actions.Select(action => action.DisplayName));
         Assert.Equal("pass_yield", decision.Decision.Actions[0].Type);
-        Assert.Equal("Mountain", decision.Decision.Actions[2].CardIdentity);
+        Assert.Equal("Rockface Village", decision.Decision.Actions[2].CardIdentity);
         Assert.Equal("2", decision.Inputs[decision.Decision.Actions[2].ActionId]);
     }
 
@@ -39,12 +39,23 @@ public sealed class ForgeTuiParserTests
     [Fact]
     public void TargetMenu_BecomesSeparateDecision()
     {
-        var parser = new ForgeTuiParser();
-        var result = parser.Append("=== Choose Target for Lightning Strike ===\nSelect a target:\n  0. Player 2\n  1. Ember Hauler (2/2)\nEnter choice (0-1, or ?): ");
+        var seats = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Player 1"] = "forge-player-1",
+            ["AI-monored"] = "forge-player-2",
+        };
+        var parser = new ForgeTuiParser(seats);
+        var result = parser.Append("=== Choose Target for Burst Lightning ===\nSelect a target:\n  0. Player 1 (Life: 20)\n  1. AI-monored (Life: 20)\n  2. Hired Claw (1/2) [AI-monored]\nEnter choice (0-2, or ?): ");
 
         var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
         Assert.Equal("target_selection", decision.Decision.Kind);
-        Assert.Equal("1", decision.Inputs[decision.Decision.Actions[1].ActionId]);
+        Assert.Equal("player", decision.Decision.Actions[0].TargetKind);
+        Assert.Equal("forge-player-1", decision.Decision.Actions[0].TargetSeatId);
+        Assert.Null(decision.Decision.Actions[0].CardIdentity);
+        Assert.Equal("forge-player-2", decision.Decision.Actions[1].TargetSeatId);
+        Assert.Equal("card", decision.Decision.Actions[2].TargetKind);
+        Assert.Equal("Hired Claw", decision.Decision.Actions[2].CardIdentity);
+        Assert.Equal("2", decision.Inputs[decision.Decision.Actions[2].ActionId]);
     }
 
     [Fact]

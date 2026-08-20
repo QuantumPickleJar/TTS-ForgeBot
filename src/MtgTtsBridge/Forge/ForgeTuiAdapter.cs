@@ -12,7 +12,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private readonly object _sync = new();
     private readonly ForgeTuiOptions _options;
     private readonly ILogger<ForgeTuiAdapter> _logger;
-    private readonly ForgeTuiParser _parser = new();
+    private readonly ForgeTuiParser _parser;
     private readonly ForgeTuiEventParser _eventParser;
     private readonly ForgeStartupTracker _startupTracker;
     private readonly SemaphoreSlim _sessionStartGate = new(1, 1);
@@ -37,6 +37,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         _options = options.Value;
         _logger = logger;
         _startupTracker = new ForgeStartupTracker(logger);
+        _parser = new ForgeTuiParser(_options.PlayerSeats);
         _eventParser = new ForgeTuiEventParser(_options.PlayerSeats);
     }
 
@@ -326,7 +327,12 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             SourceZone: rawEvent.SourceZone,
             DestinationZone: rawEvent.DestinationZone,
             Summary: rawEvent.Summary,
-            OccurredAtUtc: DateTimeOffset.UtcNow);
+            OccurredAtUtc: DateTimeOffset.UtcNow,
+            LifeTotal: rawEvent.LifeTotal,
+            PoisonCounters: rawEvent.PoisonCounters,
+            CounterType: rawEvent.CounterType,
+            CounterValue: rawEvent.CounterValue,
+            Keyword: rawEvent.Keyword);
         _events.Add(authoritativeEvent);
         if (_events.Count > EventHistoryLimit) _events.RemoveAt(0);
         _logger.LogDebug(

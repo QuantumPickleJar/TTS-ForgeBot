@@ -61,6 +61,8 @@ public sealed class BridgeApiTests
         Assert.True(choice.Accepted);
         Assert.NotNull(choice.CurrentDecision);
         Assert.Equal("decision-2-target", choice.CurrentDecision.DecisionId);
+        var playerTarget = Assert.Single(choice.CurrentDecision.Actions, action => action.TargetKind == "player");
+        Assert.Equal("forge-player-2", playerTarget.TargetSeatId);
     }
 
     [Fact]

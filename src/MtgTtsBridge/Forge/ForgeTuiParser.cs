@@ -13,7 +13,13 @@ namespace MtgTtsBridge.Forge;
 public sealed partial class ForgeTuiParser
 {
     private readonly StringBuilder _buffer = new();
+    private readonly IReadOnlyDictionary<string, string> _playerSeats;
     private int _decisionNumber;
+
+    public ForgeTuiParser(IReadOnlyDictionary<string, string>? playerSeats = null)
+    {
+        _playerSeats = playerSeats ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    }
 
     public void Reset()
     {
@@ -61,13 +67,7 @@ public sealed partial class ForgeTuiParser
         _decisionNumber++;
         var kind = definition?.Definition.Kind ?? "generic_numeric_selection";
         var decisionId = $"forge-tui-{_decisionNumber}";
-        var bridgeActions = actions.Select(option => new LegalActionDto(
-            ActionId: $"{decisionId}-choice-{option.Number}",
-            Type: GetActionType(option.Label, kind),
-            DisplayName: option.Label,
-            RequiresFollowup: false,
-            CardIdentity: GetCardIdentity(option.Label, kind),
-            ObjectIdentity: null)).ToArray();
+        var bridgeActions = actions.Select(option => BuildAction(option, decisionId, kind)).ToArray();
 
         return ForgeTuiParserResult.Decision(new ForgeTuiDecision(
             new DecisionDto(decisionId, kind, bridgeActions),
@@ -75,6 +75,36 @@ public sealed partial class ForgeTuiParser
                 option => $"{decisionId}-choice-{option.Number}",
                 option => option.Number.ToString(CultureInfo.InvariantCulture),
                 StringComparer.Ordinal)));
+    }
+
+    private LegalActionDto BuildAction(ForgeTuiMenuOption option, string decisionId, string kind)
+    {
+        string? targetKind = null;
+        string? targetSeatId = null;
+        if (kind == "target_selection")
+        {
+            var player = PlayerTargetRegex().Match(option.Label);
+            if (player.Success && _playerSeats.TryGetValue(player.Groups["player"].Value.Trim(), out var seatId))
+            {
+                targetKind = "player";
+                targetSeatId = seatId;
+            }
+            else if (CardTargetRegex().IsMatch(option.Label))
+            {
+                targetKind = "card";
+            }
+        }
+
+        return new LegalActionDto(
+            ActionId: $"{decisionId}-choice-{option.Number}",
+            Type: kind == "target_selection" ? "choose_target" : GetActionType(option.Label, kind),
+            DisplayName: option.Label,
+            RequiresFollowup: false,
+            CardIdentity: GetCardIdentity(option.Label, kind),
+            ObjectIdentity: null,
+            TargetKind: targetKind,
+            TargetSeatId: targetSeatId,
+            CardInstanceId: null);
     }
 
     private static (ForgeTuiPromptDefinition Definition, int Index)? FindPromptDefinition(string text)
@@ -93,6 +123,7 @@ public sealed partial class ForgeTuiParser
     {
         ("blocker_selection", var value) when value.StartsWith("No further blockers", StringComparison.OrdinalIgnoreCase) => "finish_blocking",
         ("blocker_selection", _) => "choose_blocker",
+        ("card_selection", _) => "discard_card",
         (_, var value) when value.StartsWith("Pass priority", StringComparison.OrdinalIgnoreCase) => "pass_yield",
         (_, var value) when value.StartsWith("Play land:", StringComparison.OrdinalIgnoreCase) => "play_land",
         (_, var value) when value.StartsWith("Cast ", StringComparison.OrdinalIgnoreCase) => "cast_spell",
@@ -111,7 +142,7 @@ public sealed partial class ForgeTuiParser
 
         if (kind is not ("target_selection" or "blocker_selection" or "attacker_selection" or "card_selection")) return null;
         if (label.StartsWith("No ", StringComparison.OrdinalIgnoreCase) ||
-            label.StartsWith("Player ", StringComparison.OrdinalIgnoreCase) ||
+            PlayerTargetRegex().IsMatch(label) ||
             label.StartsWith("Spell:", StringComparison.OrdinalIgnoreCase)) return null;
 
         return CardOptionSuffixRegex().Replace(label, string.Empty).Trim();
@@ -136,6 +167,12 @@ public sealed partial class ForgeTuiParser
 
     [GeneratedRegex(@"(?:\s+\(\d+/\d+\))?(?:\s+\[[^\]]+\])+$|\s+\(\d+/\d+\)$", RegexOptions.CultureInvariant)]
     private static partial Regex CardOptionSuffixRegex();
+
+    [GeneratedRegex(@"^(?<player>.+?)\s+\(Life:\s*-?\d+\)$", RegexOptions.CultureInvariant)]
+    private static partial Regex PlayerTargetRegex();
+
+    [GeneratedRegex(@"^.+?\s+\(\d+/\d+\)\s+\[[^\]]+\]$", RegexOptions.CultureInvariant)]
+    private static partial Regex CardTargetRegex();
 
     [GeneratedRegex("\\x1B\\[[0-?]*[ -/]*[@-~]", RegexOptions.CultureInvariant)]
     private static partial Regex AnsiEscapeRegex();

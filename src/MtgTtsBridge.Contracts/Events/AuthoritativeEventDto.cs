@@ -11,7 +11,12 @@ public sealed record AuthoritativeEventDto(
     string? SourceZone,
     string? DestinationZone,
     string Summary,
-    DateTimeOffset OccurredAtUtc);
+    DateTimeOffset OccurredAtUtc,
+    int? LifeTotal = null,
+    int? PoisonCounters = null,
+    string? CounterType = null,
+    int? CounterValue = null,
+    string? Keyword = null);
 
 public sealed record EventBatchDto(
     long RequestedAfterSequence,

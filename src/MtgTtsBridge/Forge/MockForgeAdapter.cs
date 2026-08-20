@@ -266,14 +266,18 @@ public sealed class MockForgeAdapter : IForgeAdapter
                     DisplayName: "Target Opponent",
                     RequiresFollowup: false,
                     CardIdentity: null,
-                    ObjectIdentity: "player:opponent"),
+                    ObjectIdentity: "player:opponent",
+                    TargetKind: "player",
+                    TargetSeatId: "forge-player-2"),
                 new LegalActionDto(
                     ActionId: "target_test_creature",
                     Type: "choose_target",
                     DisplayName: "Target Test Creature",
                     RequiresFollowup: false,
                     CardIdentity: "card:test-creature-001",
-                    ObjectIdentity: "tts:test-creature-guid-001"),
+                    ObjectIdentity: "tts:test-creature-guid-001",
+                    TargetKind: "card",
+                    CardInstanceId: "mock:test-creature-001"),
             ]);
     }
 
@@ -291,7 +295,10 @@ public sealed class MockForgeAdapter : IForgeAdapter
                 DisplayName: action.DisplayName,
                 RequiresFollowup: action.RequiresFollowup,
                 CardIdentity: action.CardIdentity,
-                ObjectIdentity: action.ObjectIdentity))
+                ObjectIdentity: action.ObjectIdentity,
+                TargetKind: action.TargetKind,
+                TargetSeatId: action.TargetSeatId,
+                CardInstanceId: action.CardInstanceId))
             .ToArray();
 
         return new DecisionDto(

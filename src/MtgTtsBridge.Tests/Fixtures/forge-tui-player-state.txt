@@ -1,0 +1,11 @@
+>>> [YOU] Player 1
+>>> [YOU]   Life: 20
+>>> [YOU]   Hand: 8 cards
+>>> [YOU]   Library: 52 cards
+>>> [YOU]   Graveyard: 0 cards
+
+    AI-monored
+      Life: 20
+      Hand: 5 cards
+      Library: 53 cards
+      Graveyard: 0 cards

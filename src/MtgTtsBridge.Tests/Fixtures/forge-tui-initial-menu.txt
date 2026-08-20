@@ -2,6 +2,6 @@
 [Pre-Combat Main Phase]
 What would you like to do?
   0. Pass priority (do nothing)
-  1. Play land: Soulstone Sanctuary
-  2. Play land: Mountain
-Enter choice (0-2): 
+  1. Play land: Mountain
+  2. Play land: Rockface Village
+Enter choice (0-2, or ?):
