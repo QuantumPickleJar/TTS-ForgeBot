@@ -17,4 +17,6 @@ public interface IForgeAdapter
     Task<ForgeChoiceResult> SubmitChoiceAsync(ChoiceRequestDto request, CancellationToken cancellationToken);
 
     Task<EventBatchDto> GetEventsAsync(long afterSequence, CancellationToken cancellationToken);
+
+    Task<GameSnapshotDto?> GetSnapshotAsync(CancellationToken cancellationToken);
 }

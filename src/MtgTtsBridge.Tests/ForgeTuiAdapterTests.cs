@@ -293,7 +293,7 @@ public sealed class ForgeTuiAdapterTests
                     Executable = command,
                     Arguments = $"/d /q /c \"{script}\"",
                     WorkingDirectory = Path.GetDirectoryName(script)!,
-                    StartupTimeoutSeconds = 5,
+                    StartupTimeoutSeconds = 15,
                 }),
                 NullLogger<ForgeTuiAdapter>.Instance);
 

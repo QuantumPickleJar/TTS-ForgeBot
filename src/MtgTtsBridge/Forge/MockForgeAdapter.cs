@@ -104,6 +104,12 @@ public sealed class MockForgeAdapter : IForgeAdapter
         return Task.FromResult(new EventBatchDto(afterSequence, 1, 0, false, []));
     }
 
+    public Task<GameSnapshotDto?> GetSnapshotAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<GameSnapshotDto?>(null);
+    }
+
     private void ResetState()
     {
         _sessionId = Guid.NewGuid().ToString("N");

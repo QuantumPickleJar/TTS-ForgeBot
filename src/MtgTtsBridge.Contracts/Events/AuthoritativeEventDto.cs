@@ -16,7 +16,9 @@ public sealed record AuthoritativeEventDto(
     int? PoisonCounters = null,
     string? CounterType = null,
     int? CounterValue = null,
-    string? Keyword = null);
+    string? Keyword = null,
+    bool? Tapped = null,
+    bool ContainsHiddenIdentity = false);
 
 public sealed record EventBatchDto(
     long RequestedAfterSequence,

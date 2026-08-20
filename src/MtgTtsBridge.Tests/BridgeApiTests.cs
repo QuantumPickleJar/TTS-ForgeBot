@@ -211,6 +211,19 @@ public sealed class BridgeApiTests
         Assert.False(batch.HasGap);
     }
 
+    [Fact]
+    public async Task SnapshotEndpoint_IsSeparateAndUnavailableForMockAdapter()
+    {
+        using var factory = new WebApplicationFactory<Program>();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/v1/embodiment/snapshot");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponseDto>();
+        Assert.Equal("snapshot_unavailable", error?.ErrorCode);
+    }
+
     private static async Task StartSessionAsync(HttpClient client)
     {
         var response = await client.PostAsync("/api/v1/session/start", content: null);

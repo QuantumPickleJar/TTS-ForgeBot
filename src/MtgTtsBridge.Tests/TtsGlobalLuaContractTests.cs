@@ -116,4 +116,41 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("lastReceivedEventSequence", Script);
         Assert.Contains("lastAppliedEventSequence", Script);
     }
+
+    [Fact]
+    public void SnapshotBootstrap_MapsUniqueInstancesAndPreservesForgeLibraryPosition()
+    {
+        Assert.Contains("/api/v1/embodiment/snapshot", Script);
+        Assert.Contains("BridgeState.physicalByInstanceId[card.cardInstanceId] = guid", Script);
+        Assert.Contains("count - card.zonePosition", Script);
+        Assert.Contains("BridgeNormalizeCardName(card.cardName)", Script);
+        Assert.Contains("hidden identities redacted", Script);
+    }
+
+    [Fact]
+    public void AuthoritativeDraw_TakesExactMappedGuidFromPhysicalDeckWithoutChatLeak()
+    {
+        Assert.Contains("if event.kind == \"draw\"", Script);
+        Assert.Contains("BridgeFindDeckContainingGuid(guid)", Script);
+        Assert.Contains("deck.takeObject({", Script);
+        Assert.Contains("guid = guid", Script);
+        Assert.Contains("card identity redacted", Script);
+    }
+
+    [Fact]
+    public void StructuredZoneAndTapChanges_UseInstanceMappingAndAbsoluteState()
+    {
+        Assert.Contains("if event.kind == \"card_moved\"", Script);
+        Assert.Contains("if event.kind == \"tap_changed\"", Script);
+        Assert.Contains("BridgeSetPhysicalTapped(object, event.tapped == true)", Script);
+        Assert.Contains("local targetZ = base.z + (tapped and 90 or 0)", Script);
+    }
+
+    [Fact]
+    public void RealDecisionIdentity_WinsOverDuplicateNameFallback()
+    {
+        Assert.Contains("action.cardInstanceId and BridgeState.physicalByInstanceId[action.cardInstanceId]", Script);
+        Assert.Contains("if mappedObject ~= nil then", Script);
+        Assert.Contains("if mappedGuid == nil and #matches > 1 then", Script);
+    }
 }

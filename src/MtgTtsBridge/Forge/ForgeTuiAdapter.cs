@@ -14,6 +14,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private readonly ILogger<ForgeTuiAdapter> _logger;
     private readonly ForgeTuiParser _parser;
     private readonly ForgeTuiEventParser _eventParser;
+    private readonly ForgeStructuredOutputParser _structuredParser;
+    private readonly ForgeStructuredStateReconciler _structuredState;
     private readonly ForgeStartupTracker _startupTracker;
     private readonly SemaphoreSlim _sessionStartGate = new(1, 1);
     private readonly HashSet<string> _resolvedDecisionIds = new(StringComparer.Ordinal);
@@ -39,6 +41,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         _startupTracker = new ForgeStartupTracker(logger);
         _parser = new ForgeTuiParser(_options.PlayerSeats);
         _eventParser = new ForgeTuiEventParser(_options.PlayerSeats);
+        _structuredParser = new ForgeStructuredOutputParser();
+        _structuredState = new ForgeStructuredStateReconciler();
     }
 
     public string Name => "ForgeTuiAdapter";
@@ -61,6 +65,12 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 : _events.Where(item => item.Sequence > afterSequence).ToArray();
             return Task.FromResult(new EventBatchDto(afterSequence, oldest, _latestEventSequence, hasGap, events));
         }
+    }
+
+    public Task<GameSnapshotDto?> GetSnapshotAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync) return Task.FromResult(_structuredState.Current);
     }
 
     public async Task<AdapterStateDto> StartSessionAsync(CancellationToken cancellationToken)
@@ -127,6 +137,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _startupTracker.Reset();
             _parser.Reset();
             _eventParser.Reset();
+            _structuredParser.Reset();
+            _structuredState.Reset();
             _events.Clear();
             _latestEventSequence = 0;
             _resolvedDecisionIds.Clear();
@@ -246,13 +258,32 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     _logger.LogDebug("Forge TUI stderr: {ForgeOutput}", chunk);
                     continue;
                 }
-                _logger.LogTrace("Forge TUI stdout: {ForgeOutput}", chunk);
                 ForgeTuiParserResult result;
                 lock (_sync)
                 {
-                    _startupTracker.Observe(chunk);
-                    foreach (var rawEvent in _eventParser.Append(chunk)) EnqueueEvent(rawEvent);
-                    result = _parser.Append(chunk);
+                    var output = _structuredParser.Append(chunk);
+                    foreach (var snapshot in output.Snapshots)
+                    {
+                        foreach (var rawEvent in _structuredState.Apply(_sessionId, snapshot)) EnqueueEvent(rawEvent);
+                        _logger.LogTrace(
+                            "Forge structured snapshot {ForgeSequence} ({Reason}); hidden payload redacted",
+                            snapshot.Sequence,
+                            snapshot.Reason);
+                    }
+
+                    var tuiText = output.TuiText;
+                    if (tuiText.Length > 0)
+                    {
+                        _logger.LogTrace("Forge TUI stdout: {ForgeOutput}", tuiText);
+                        _startupTracker.Observe(tuiText);
+                        foreach (var rawEvent in _eventParser.Append(tuiText))
+                        {
+                            if (_structuredState.Current is not null
+                                && rawEvent.Kind is "player_state" or "card_moved") continue;
+                            EnqueueEvent(rawEvent);
+                        }
+                    }
+                    result = _parser.Append(tuiText);
                 }
                 if (result.ParsedDecision is not null) _nextDecision?.TrySetResult(result.ParsedDecision);
                 if (result.UnsupportedPrompt is not null) SetUnsupportedPrompt(result.UnsupportedPrompt);
@@ -289,7 +320,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         lock (_sync)
         {
             if (_currentDecision is null && _state == "starting") _startupTracker.MarkFirstDecision();
-            _currentDecision = decision.Decision with { SeatId = _options.HumanSeatId };
+            var actions = decision.Decision.Actions.Select(action =>
+                action.CardInstanceId is not null && action.CardInstanceId.StartsWith("forge-object:", StringComparison.Ordinal)
+                    ? action with { CardInstanceId = $"forge:{_sessionId}:{action.CardInstanceId["forge-object:".Length..]}" }
+                    : action).ToArray();
+            _currentDecision = decision.Decision with { SeatId = _options.HumanSeatId, Actions = actions };
             _currentInputs = decision.Inputs;
             _state = "awaiting_human_decision";
         }
@@ -332,16 +367,29 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             PoisonCounters: rawEvent.PoisonCounters,
             CounterType: rawEvent.CounterType,
             CounterValue: rawEvent.CounterValue,
-            Keyword: rawEvent.Keyword);
+            Keyword: rawEvent.Keyword,
+            Tapped: rawEvent.Tapped,
+            ContainsHiddenIdentity: rawEvent.ContainsHiddenIdentity);
         _events.Add(authoritativeEvent);
         if (_events.Count > EventHistoryLimit) _events.RemoveAt(0);
-        _logger.LogDebug(
-            "Forge event {Sequence} {Kind} seat={SeatId} card={CardName} instance={CardInstanceId}",
-            authoritativeEvent.Sequence,
-            authoritativeEvent.Kind,
-            authoritativeEvent.SeatId,
-            authoritativeEvent.CardName,
-            authoritativeEvent.CardInstanceId);
+        if (authoritativeEvent.ContainsHiddenIdentity)
+        {
+            _logger.LogTrace(
+                "Forge private event {Sequence} {Kind} seat={SeatId}; card identity redacted",
+                authoritativeEvent.Sequence,
+                authoritativeEvent.Kind,
+                authoritativeEvent.SeatId);
+        }
+        else
+        {
+            _logger.LogDebug(
+                "Forge event {Sequence} {Kind} seat={SeatId} card={CardName} instance={CardInstanceId}",
+                authoritativeEvent.Sequence,
+                authoritativeEvent.Kind,
+                authoritativeEvent.SeatId,
+                authoritativeEvent.CardName,
+                authoritativeEvent.CardInstanceId);
+        }
     }
 
     private void HandleProcessExit(Process process, int exitCode)

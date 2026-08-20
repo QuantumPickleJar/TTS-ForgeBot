@@ -5,6 +5,23 @@ namespace MtgTtsBridge.Tests;
 public sealed class ForgeTuiParserTests
 {
     [Fact]
+    public void StructuredCardIdInHeadlessMenu_BindsActionToSessionReplaceableIdentity()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("""
+            What would you like to do?
+              0. Pass priority (do nothing)
+              1. Play land: Mountain [id=42]
+            Enter choice (0-1):
+            """);
+
+        var action = Assert.Single(result.ParsedDecision!.Decision.Actions, item => item.Type == "play_land");
+        Assert.Equal("Mountain", action.CardIdentity);
+        Assert.Equal("forge-object:42", action.CardInstanceId);
+        Assert.DoesNotContain("[id=", action.DisplayName);
+    }
+
+    [Fact]
     public void InitialDecision_ParsesIncrementalTuiOutputAndMapsInputs()
     {
         var transcript = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "forge-tui-initial-menu.txt"));

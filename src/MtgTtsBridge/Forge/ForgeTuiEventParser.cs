@@ -237,4 +237,6 @@ public sealed record ForgeTuiRawEvent(
     int? PoisonCounters = null,
     string? CounterType = null,
     int? CounterValue = null,
-    string? Keyword = null);
+    string? Keyword = null,
+    bool? Tapped = null,
+    bool ContainsHiddenIdentity = false);

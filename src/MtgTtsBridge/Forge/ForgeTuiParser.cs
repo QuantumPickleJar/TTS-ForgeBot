@@ -79,17 +79,19 @@ public sealed partial class ForgeTuiParser
 
     private LegalActionDto BuildAction(ForgeTuiMenuOption option, string decisionId, string kind)
     {
+        var forgeCardId = ForgeCardIdRegex().Match(option.Label);
+        var label = ForgeCardIdRegex().Replace(option.Label, string.Empty).Trim();
         string? targetKind = null;
         string? targetSeatId = null;
         if (kind == "target_selection")
         {
-            var player = PlayerTargetRegex().Match(option.Label);
+            var player = PlayerTargetRegex().Match(label);
             if (player.Success && _playerSeats.TryGetValue(player.Groups["player"].Value.Trim(), out var seatId))
             {
                 targetKind = "player";
                 targetSeatId = seatId;
             }
-            else if (CardTargetRegex().IsMatch(option.Label))
+            else if (CardTargetRegex().IsMatch(label))
             {
                 targetKind = "card";
             }
@@ -97,14 +99,14 @@ public sealed partial class ForgeTuiParser
 
         return new LegalActionDto(
             ActionId: $"{decisionId}-choice-{option.Number}",
-            Type: kind == "target_selection" ? "choose_target" : GetActionType(option.Label, kind),
-            DisplayName: option.Label,
+            Type: kind == "target_selection" ? "choose_target" : GetActionType(label, kind),
+            DisplayName: label,
             RequiresFollowup: false,
-            CardIdentity: GetCardIdentity(option.Label, kind),
+            CardIdentity: GetCardIdentity(label, kind),
             ObjectIdentity: null,
             TargetKind: targetKind,
             TargetSeatId: targetSeatId,
-            CardInstanceId: null);
+            CardInstanceId: forgeCardId.Success ? $"forge-object:{forgeCardId.Groups["id"].Value}" : null);
     }
 
     private static (ForgeTuiPromptDefinition Definition, int Index)? FindPromptDefinition(string text)
@@ -173,6 +175,9 @@ public sealed partial class ForgeTuiParser
 
     [GeneratedRegex(@"^.+?\s+\(\d+/\d+\)\s+\[[^\]]+\]$", RegexOptions.CultureInvariant)]
     private static partial Regex CardTargetRegex();
+
+    [GeneratedRegex(@"\s+\[id=(?<id>\d+)\]", RegexOptions.CultureInvariant)]
+    private static partial Regex ForgeCardIdRegex();
 
     [GeneratedRegex("\\x1B\\[[0-?]*[ -/]*[@-~]", RegexOptions.CultureInvariant)]
     private static partial Regex AnsiEscapeRegex();

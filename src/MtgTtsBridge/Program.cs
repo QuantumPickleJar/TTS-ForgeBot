@@ -90,6 +90,17 @@ app.MapGet("/api/v1/events", async (long? after, IForgeAdapter adapter, Cancella
 	return Results.Ok(batch);
 });
 
+app.MapGet("/api/v1/embodiment/snapshot", async (IForgeAdapter adapter, CancellationToken cancellationToken) =>
+{
+	var snapshot = await adapter.GetSnapshotAsync(cancellationToken);
+	return snapshot is null
+		? Results.NotFound(new ErrorResponseDto(
+			ErrorCode: "snapshot_unavailable",
+			Message: "The active adapter has not produced an authoritative embodiment snapshot.",
+			DecisionId: null))
+		: Results.Ok(snapshot);
+});
+
 app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter adapter, CancellationToken cancellationToken) =>
 {
 	if (string.IsNullOrWhiteSpace(request.DecisionId) || string.IsNullOrWhiteSpace(request.ActionId))
