@@ -1,0 +1,14 @@
+[state]
+humanlife=20
+ailife=20
+humanhand=Witchstalker Frenzy
+humanlibrary=Mountain;Mountain;Mountain;Mountain;Mountain;Mountain;Mountain
+humanbattlefield=Mountain
+humangraveyard=
+aihand=Mountain
+ailibrary=Mountain;Mountain;Mountain;Mountain;Mountain;Mountain;Mountain
+aibattlefield=
+aigraveyard=
+turn=2
+activeplayer=human
+activephase=MAIN1

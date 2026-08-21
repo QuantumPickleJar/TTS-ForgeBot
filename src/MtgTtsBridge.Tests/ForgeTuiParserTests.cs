@@ -22,6 +22,26 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void DuplicateNamedCards_RetainSeparateForgeInstanceActions()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("""
+            What would you like to do?
+              0. Pass priority (do nothing)
+              1. Play land: Mountain [id=42]
+              2. Play land: Mountain [id=43]
+            Enter choice (0-2):
+            """);
+
+        var mountains = result.ParsedDecision!.Decision.Actions.Where(action => action.Type == "play_land").ToArray();
+        Assert.Equal(2, mountains.Length);
+        Assert.Equal(new[] { "forge-object:42", "forge-object:43" }, mountains.Select(action => action.CardInstanceId));
+        Assert.NotEqual(mountains[0].ActionId, mountains[1].ActionId);
+        Assert.Equal("1", result.ParsedDecision.Inputs[mountains[0].ActionId]);
+        Assert.Equal("2", result.ParsedDecision.Inputs[mountains[1].ActionId]);
+    }
+
+    [Fact]
     public void InitialDecision_ParsesIncrementalTuiOutputAndMapsInputs()
     {
         var transcript = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "forge-tui-initial-menu.txt"));
