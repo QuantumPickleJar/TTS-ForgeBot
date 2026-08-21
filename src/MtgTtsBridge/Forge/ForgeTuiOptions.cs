@@ -8,7 +8,7 @@ public sealed class ForgeTuiOptions
 
     public string Arguments { get; init; } = string.Empty;
 
-    public int StartupTimeoutSeconds { get; init; } = 180;
+    public int StartupTimeoutSeconds { get; init; } = 420;
 
     public int DecisionTimeoutSeconds { get; init; } = 300;
 

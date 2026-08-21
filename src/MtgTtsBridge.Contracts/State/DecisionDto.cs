@@ -12,4 +12,12 @@ public sealed record DecisionDto(
     int MaxSelections = 1,
     bool RequiresConfirmation = false,
     bool AllowsCancel = false,
-    bool IsOrdered = false);
+    bool IsOrdered = false)
+{
+    public long? EventCursor { get; init; }
+    public long? ForgeSequence { get; init; }
+    public int? TurnNumber { get; init; }
+    public string? ActiveSeatId { get; init; }
+    public string? PrioritySeatId { get; init; }
+    public string? PhaseName { get; init; }
+}

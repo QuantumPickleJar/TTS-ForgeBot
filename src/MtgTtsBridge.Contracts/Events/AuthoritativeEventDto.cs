@@ -20,7 +20,11 @@ public sealed record AuthoritativeEventDto(
     bool? Tapped = null,
     bool ContainsHiddenIdentity = false,
     IReadOnlyDictionary<string, int>? ManaPool = null,
-    string? Phase = null);
+    string? Phase = null,
+    int? TurnNumber = null,
+    long? ForgeSequence = null,
+    string? ActiveSeatId = null,
+    string? PrioritySeatId = null);
 
 public sealed record EventBatchDto(
     long RequestedAfterSequence,

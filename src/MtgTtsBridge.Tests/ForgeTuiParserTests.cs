@@ -141,6 +141,20 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void DuplicateMountains_KeepDistinctInstanceIds()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("What would you like to do?\n  0. Pass priority (do nothing)\n  1. Play land: Mountain [id=41]\n  2. Play land: Mountain [id=72]\nEnter choice (0-2): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        var mountains = decision.Actions.Where(action => action.Type == "play_land" && action.CardIdentity == "Mountain").ToArray();
+        Assert.Equal(2, mountains.Length);
+        Assert.Equal("forge-object:41", mountains[0].CardInstanceId);
+        Assert.Equal("forge-object:72", mountains[1].CardInstanceId);
+        Assert.NotEqual(mountains[0].CardInstanceId, mountains[1].CardInstanceId);
+    }
+
+    [Fact]
     public void SequentialMenus_HaveStableIncreasingDecisionIds()
     {
         var parser = new ForgeTuiParser();

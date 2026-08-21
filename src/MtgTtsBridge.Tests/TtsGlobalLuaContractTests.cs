@@ -75,10 +75,10 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("object.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0})", Script);
         Assert.Contains("BridgeState.yieldSeatId = decision.seatId", Script);
         Assert.Contains("if action.type == \"pass_priority\"", Script);
-        Assert.Contains("BridgeState.currentTurnSeatId = event.seatId", Script);
-        Assert.Contains("BridgeRecordAuthoritativeTurn(event.seatId)", Script);
+        Assert.Contains("BridgeState.currentTurnSeatId = event.activeSeatId", Script);
+        Assert.Contains("BridgeRecordAuthoritativeTurn(BridgeState.currentTurnSeatId, tonumber(event.turnNumber or 0))", Script);
         Assert.Contains("function BridgeRecordAuthoritativeTurn", Script);
-        Assert.Contains("TABLE TURN", Script);
+        Assert.Contains("TURN\\n", Script);
         Assert.Contains("WHITE TURN", Script);
         Assert.Contains("BLUE TURN", Script);
         Assert.DoesNotContain("Turns.turn_color", Script);
@@ -129,6 +129,32 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeMoveToAttackLane(intent.seatId, object)", Script);
         Assert.Contains("BridgeMoveToBlockerLane(intent.seatId, object)", Script);
         Assert.DoesNotContain("BridgeSubmitChoice(decision.decisionId, action.actionId)\n        return\n    end\n\n    if object.tag == \"Card\" and decision.requiresConfirmation", Script);
+    }
+
+    [Fact]
+    public void CombatDrop_AcceptsExplicitLanePlacementAndLogsIgnoredNearDrops()
+    {
+        Assert.Contains("local droppedInLane", Script);
+        Assert.Contains("math.abs(current.z - laneZ) <= 1.35", Script);
+        Assert.Contains("combat drop ignored", Script);
+        Assert.Contains("combat drop accepted", Script);
+    }
+
+    [Fact]
+    public void StaleDecision_IsIgnoredWhenAuthoritativeEventsAlreadyAdvanced()
+    {
+        Assert.Contains("ignoring stale decision", Script);
+        Assert.Contains("decision.eventCursor", Script);
+        Assert.Contains("BridgeState.lastAppliedEventSequence", Script);
+    }
+
+    [Fact]
+    public void AttackerAndBlockerStatus_CopyUsesPhysicalInstructions()
+    {
+        Assert.Contains("DECLARE ATTACKERS", Script);
+        Assert.Contains("Drag/select highlighted creatures into attack row", Script);
+        Assert.Contains("DECLARE BLOCKERS", Script);
+        Assert.Contains("Drag/select highlighted creatures into block row", Script);
     }
 
     [Fact]
@@ -359,6 +385,17 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void CastSpellIntent_TracksStackIdentityAndResolvedGraveyardBinding()
+    {
+        Assert.Contains("pendingCastBySeatId", Script);
+        Assert.Contains("BridgeState.physicalZoneByGuid[intent.guid] = \"stack\"", Script);
+        Assert.Contains("BridgeState.pendingCastBySeatId[intent.seatId]", Script);
+        Assert.Contains("BridgeResolveResolvedSpellObject", Script);
+        Assert.Contains("BridgeState.physicalByInstanceId[event.cardInstanceId] = pendingCast.guid", Script);
+        Assert.Contains("BridgeState.pendingCastBySeatId[event.seatId] = nil", Script);
+    }
+
+    [Fact]
     public void PhysicalStack_UsesDedicatedStableTablePosition()
     {
         Assert.Contains("BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}", Script);
@@ -411,6 +448,13 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeSetPhysicalTapped(object, event.tapped == true)", Script);
         Assert.Contains("local targetY = base.y + (tapped and 90 or 0)", Script);
         Assert.Contains("object.setRotationSmooth({base.x, targetY, base.z}", Script);
+    }
+
+    [Fact]
+    public void StructuredCardMove_FallsBackToSourceZoneWhenInstanceMappingIsMissing()
+    {
+        Assert.Contains("table.insert(fallbackZones, event.sourceZone or \"hand\")", Script);
+        Assert.Contains("BridgeResolvePhysicalCard(event, zoneName)", Script);
     }
 
     [Fact]

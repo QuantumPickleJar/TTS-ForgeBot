@@ -92,6 +92,7 @@ BridgeState = {
     counterStateByInstanceId = {},
     keywordStateByInstanceId = {},
     untappedRotationByGuid = {},
+    pendingCastBySeatId = {},
     snapshotForgeSequence = 0,
     bootstrapping = false,
     setupBusy = false,
@@ -317,6 +318,15 @@ function BridgeSetStatus(headline, detail)
     BridgeRefreshStatusPanel()
 end
 
+function BridgeTurnLabel()
+    return "TURN " .. tostring(BridgeState.tableTurnCount or 0)
+end
+
+function BridgeCurrentSeatLabel(seatId)
+    local seat = BRIDGE_SEATS[seatId]
+    return tostring((seat and seat.ttsColor) or seatId or "Unknown")
+end
+
 function BridgeRefreshStatusPanel()
     local object = BridgeState.statusObjectGuid and getObjectFromGUID(BridgeState.statusObjectGuid) or nil
     if object ~= nil then
@@ -472,7 +482,7 @@ end
 
 function BridgeRefreshTurnCounterLabels()
     local labels = {
-        Table = "TABLE TURN\n" .. tostring(BridgeState.tableTurnCount or 0),
+        Table = "TURN\n" .. tostring(BridgeState.tableTurnCount or 0),
         White = "WHITE TURN\n" .. tostring(BridgeState.turnCountsBySeatId["forge-player-1"] or 0),
         Blue = "BLUE TURN\n" .. tostring(BridgeState.turnCountsBySeatId["forge-player-2"] or 0)
     }
@@ -483,8 +493,12 @@ function BridgeRefreshTurnCounterLabels()
     end
 end
 
-function BridgeRecordAuthoritativeTurn(seatId)
-    BridgeState.tableTurnCount = (BridgeState.tableTurnCount or 0) + 1
+function BridgeRecordAuthoritativeTurn(seatId, turnNumber)
+    if turnNumber ~= nil and turnNumber > 0 then
+        BridgeState.tableTurnCount = turnNumber
+    else
+        BridgeState.tableTurnCount = (BridgeState.tableTurnCount or 0) + 1
+    end
     BridgeState.turnCountsBySeatId[seatId] = (BridgeState.turnCountsBySeatId[seatId] or 0) + 1
     BridgeRefreshTurnCounterLabels()
 end
@@ -680,17 +694,36 @@ function printDecision(decision)
         return
     end
 
+    local eventCursor = tonumber(decision.eventCursor or 0) or 0
+    if eventCursor > 0 and eventCursor < (BridgeState.lastAppliedEventSequence or 0) then
+        print(string.format(
+            "[Bridge] ignoring stale decision %s (cursor=%s, applied=%s)",
+            tostring(decision.decisionId), tostring(eventCursor), tostring(BridgeState.lastAppliedEventSequence)))
+        return
+    end
+
+    if decision.turnNumber ~= nil and tonumber(decision.turnNumber) ~= nil and tonumber(decision.turnNumber) > 0 then
+        BridgeState.tableTurnCount = tonumber(decision.turnNumber)
+        BridgeRefreshTurnCounterLabels()
+    end
+    if decision.activeSeatId ~= nil then
+        BridgeState.currentTurnSeatId = decision.activeSeatId
+    end
+    if decision.phaseName ~= nil and decision.phaseName ~= "" then
+        BridgeState.currentPhase = decision.phaseName
+    end
+
     BridgeState.lastDecision = decision
     local seat = BRIDGE_SEATS[decision.seatId]
     local actor = seat and seat.ttsColor or decision.seatId
     if decision.kind == "attacker_selection" then
-        BridgeSetStatus("SELECTION REQUIRED", tostring(actor) .. " — DECLARE ATTACKERS")
+        BridgeSetStatus("DECLARE ATTACKERS", "Drag/select highlighted creatures into attack row\nDONE ATTACKING")
     elseif decision.kind == "blocker_selection" then
-        BridgeSetStatus("SELECTION REQUIRED", tostring(actor) .. " — DECLARE BLOCKERS")
+        BridgeSetStatus("DECLARE BLOCKERS", "Drag/select highlighted creatures into block row\nDONE BLOCKING")
     elseif decision.kind == "target_selection" then
-        BridgeSetStatus("SELECTION REQUIRED", tostring(actor) .. " — CHOOSE TARGET")
+        BridgeSetStatus("CHOOSE TARGET", BridgeTurnLabel() .. " - " .. tostring(actor) .. " priority")
     else
-        BridgeSetStatus("YOUR PRIORITY", tostring(actor) .. " — " .. tostring(BridgeState.currentPhase or "Forge decision"))
+        BridgeSetStatus("YOUR PRIORITY", BridgeTurnLabel() .. " - " .. tostring(actor) .. " - " .. tostring(BridgeState.currentPhase or "Forge decision"))
     end
     BridgeRenderDecision(decision)
 
@@ -1252,18 +1285,40 @@ function onObjectDrop(playerColor, object)
             return
         end
         BridgeState.physicalSeatByGuid[intent.guid] = intent.seatId
-        BridgeState.physicalZoneByGuid[intent.guid] = "battlefield"
+        if intent.action.type == "play_land" then
+            BridgeState.physicalZoneByGuid[intent.guid] = "battlefield"
+        else
+            BridgeState.physicalZoneByGuid[intent.guid] = "stack"
+            BridgeState.pendingCastBySeatId[intent.seatId] = {
+                guid = intent.guid,
+                cardIdentity = intent.action.cardIdentity,
+                actionId = intent.action.actionId,
+                decisionId = intent.decisionId,
+            }
+        end
     end
 
     if intent.action.type == "choose_attacker" or intent.action.type == "choose_blocker" then
         local current = object.getPosition()
         local dx = current.x - intent.position.x
         local dz = current.z - intent.position.z
-        if dx * dx + dz * dz < 1.0 then
+        local movedEnough = (dx * dx + dz * dz) >= 1.0
+        local laneZ = intent.action.type == "choose_attacker"
+            and (BRIDGE_SEATS[intent.seatId] and BRIDGE_SEATS[intent.seatId].attackLaneZ or nil)
+            or (BRIDGE_SEATS[intent.seatId] and BRIDGE_SEATS[intent.seatId].blockerLaneZ or nil)
+        local droppedInLane = laneZ ~= nil and math.abs(current.z - laneZ) <= 1.35
+        if not movedEnough and not droppedInLane then
+            print(string.format(
+                "[Bridge] combat drop ignored for %s (guid=%s movedSq=%.3f laneHit=%s)",
+                tostring(intent.action.type), tostring(intent.guid), dx * dx + dz * dz, tostring(droppedInLane)))
             BridgeRollbackPendingIntent()
             BridgeRenderDecision(decision)
             return
         end
+        print(string.format(
+            "[Bridge] combat drop accepted for %s (guid=%s movedSq=%.3f laneHit=%s action=%s decision=%s)",
+            tostring(intent.action.type), tostring(intent.guid), dx * dx + dz * dz, tostring(droppedInLane),
+            tostring(intent.action.actionId), tostring(intent.decisionId)))
         object.use_hands = false
         if intent.action.type == "choose_attacker" then
             BridgeMoveToAttackLane(intent.seatId, object)
@@ -1759,6 +1814,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.counterStateByInstanceId = {}
     BridgeState.keywordStateByInstanceId = {}
     BridgeState.untappedRotationByGuid = {}
+    BridgeState.pendingCastBySeatId = {}
     BridgeState.snapshotForgeSequence = 0
     BridgeState.yieldSeatId = nil
     if BridgeState.turnCounterSessionId ~= sessionId then
@@ -1900,11 +1956,15 @@ function BridgeApplyAuthoritativeEvent(event)
 
     if event.kind == "turn_changed" then
         BridgeReturnAttackPresentation(nil)
-        BridgeState.currentTurnSeatId = event.seatId
-        BridgeRecordAuthoritativeTurn(event.seatId)
-        local turnSeat = BRIDGE_SEATS[event.seatId]
-        BridgeSetStatus("CURRENT TURN: " .. tostring(turnSeat and turnSeat.ttsColor or event.seatId), "AI THINKING")
-        print("[Bridge] authoritative turn changed to seat " .. tostring(event.seatId))
+        if event.activeSeatId ~= nil then
+            BridgeState.currentTurnSeatId = event.activeSeatId
+        else
+            BridgeState.currentTurnSeatId = event.seatId
+        end
+        BridgeRecordAuthoritativeTurn(BridgeState.currentTurnSeatId, tonumber(event.turnNumber or 0))
+        local turnSeat = BRIDGE_SEATS[BridgeState.currentTurnSeatId]
+        BridgeSetStatus("CURRENT TURN: " .. tostring(turnSeat and turnSeat.ttsColor or BridgeState.currentTurnSeatId), BridgeTurnLabel() .. " - AI THINKING")
+        print("[Bridge] authoritative turn changed to seat " .. tostring(BridgeState.currentTurnSeatId) .. " turn=" .. tostring(event.turnNumber))
         if BridgeState.yieldSeatId ~= nil and BridgeState.yieldSeatId ~= event.seatId then
             BridgeState.yieldSeatId = nil
         end
@@ -1913,11 +1973,20 @@ function BridgeApplyAuthoritativeEvent(event)
 
     if event.kind == "phase_changed" then
         BridgeState.currentPhase = event.phase or "Unknown phase"
+        if event.turnNumber ~= nil and tonumber(event.turnNumber) ~= nil and tonumber(event.turnNumber) > 0 then
+            BridgeState.tableTurnCount = tonumber(event.turnNumber)
+            BridgeRefreshTurnCounterLabels()
+        end
+        if event.activeSeatId ~= nil then
+            BridgeState.currentTurnSeatId = event.activeSeatId
+        end
         BridgeClearHighlights()
         if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
             BridgeState.lastDecision = nil
         end
-        BridgeSetStatus("CURRENT TURN: " .. tostring((BRIDGE_SEATS[BridgeState.currentTurnSeatId] or {}).ttsColor or BridgeState.currentTurnSeatId or "Unknown"), "PHASE: " .. tostring(BridgeState.currentPhase))
+        BridgeSetStatus(
+            "CURRENT TURN: " .. tostring((BRIDGE_SEATS[BridgeState.currentTurnSeatId] or {}).ttsColor or BridgeState.currentTurnSeatId or "Unknown"),
+            BridgeTurnLabel() .. " - PHASE: " .. tostring(BridgeState.currentPhase))
         local phase = string.lower(tostring(event.phase or ""))
         if string.find(phase, "main phase", 1, true) ~= nil
             or string.find(phase, "end", 1, true) ~= nil
@@ -2061,6 +2130,18 @@ function BridgeApplyAuthoritativeEvent(event)
 end
 
 function BridgeResolveResolvedSpellObject(event)
+    local pendingCast = BridgeState.pendingCastBySeatId[event.seatId]
+    if event.cardInstanceId ~= nil and pendingCast ~= nil then
+        local pendingObject = getObjectFromGUID(pendingCast.guid)
+        if pendingObject ~= nil and BridgeCardNameMatches(pendingObject.getName(), event.cardName) then
+            BridgeState.physicalByInstanceId[event.cardInstanceId] = pendingCast.guid
+            BridgeState.physicalSeatByGuid[pendingCast.guid] = event.seatId
+            BridgeState.physicalZoneByGuid[pendingCast.guid] = "stack"
+            BridgeState.pendingCastBySeatId[event.seatId] = nil
+            return pendingObject, nil
+        end
+    end
+
     if event.cardInstanceId ~= nil then
         local mapped, mappedError = BridgeResolveMappedInstance(event)
         if mapped ~= nil then return mapped, nil end
@@ -2076,12 +2157,40 @@ end
 
 function BridgeApplyStructuredCardMove(event)
     if event.cardInstanceId == nil then return false, "structured zone change has no cardInstanceId" end
-    local guid = BridgeState.physicalByInstanceId[event.cardInstanceId]
-    if guid == nil then return false, "no physical GUID mapped for authoritative instance " .. tostring(event.cardInstanceId) end
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then return false, "structured zone change has no configured seat" end
 
-    local object = getObjectFromGUID(guid)
+    local guid = BridgeState.physicalByInstanceId[event.cardInstanceId]
+    local object = guid ~= nil and getObjectFromGUID(guid) or nil
+    if object == nil then
+        local fallbackZones = {}
+        table.insert(fallbackZones, event.sourceZone or "hand")
+        if event.destinationZone ~= nil and event.destinationZone ~= "" and event.destinationZone ~= event.sourceZone then
+            table.insert(fallbackZones, event.destinationZone)
+        end
+        for _, zoneName in ipairs({"hand", "battlefield", "graveyard", "stack", "exile", "library"}) do
+            if zoneName ~= event.sourceZone and zoneName ~= event.destinationZone then
+                table.insert(fallbackZones, zoneName)
+            end
+        end
+
+        local resolved, resolveError = nil, nil
+        for _, zoneName in ipairs(fallbackZones) do
+            local candidate, candidateError = BridgeResolvePhysicalCard(event, zoneName)
+            if candidate ~= nil then
+                resolved = candidate
+                resolveError = nil
+                break
+            end
+            resolveError = candidateError
+        end
+        if resolved == nil then
+            return false, resolveError or ("no physical GUID mapped for authoritative instance " .. tostring(event.cardInstanceId))
+        end
+        object = resolved
+        guid = object.getGUID()
+    end
+
     if object == nil and event.sourceZone == "library" then
         local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId]
         if expectedName == nil then return false, "mapped library card has no physical identity" end
@@ -2149,6 +2258,7 @@ function BridgeMoveToGraveyard(event, object)
     local guid = object.getGUID()
     BridgeState.physicalSeatByGuid[guid] = event.seatId
     BridgeState.physicalZoneByGuid[guid] = "graveyard"
+    BridgeState.pendingCastBySeatId[event.seatId] = nil
     if event.cardInstanceId ~= nil then BridgeState.physicalByInstanceId[event.cardInstanceId] = guid end
     return true, nil
 end

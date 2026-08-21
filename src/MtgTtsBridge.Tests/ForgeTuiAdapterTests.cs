@@ -38,6 +38,16 @@ public sealed class ForgeTuiAdapterTests
             var state = await adapter.StartSessionAsync(CancellationToken.None);
             Assert.Equal(1, state.Diagnostic!.InheritedHumanDecisionKinds!["choose_color"]);
             Assert.Contains(state.Diagnostic.RecentControllerDiagnostics!, line => line.StartsWith("[TUI-DIAG priority]"));
+
+            var decision = state.CurrentDecision;
+            Assert.NotNull(decision);
+            Assert.Equal(2, decision.TurnNumber);
+            Assert.Equal("Main", decision.PhaseName);
+            Assert.Equal("forge-player-1", decision.ActiveSeatId);
+
+            var events = await adapter.GetEventsAsync(0, CancellationToken.None);
+            Assert.Contains(events.Events, item => item.Kind == "turn_changed" && item.TurnNumber == 2);
+            Assert.Contains(events.Events, item => item.Kind == "phase_changed" && item.Phase == "Main");
         }
         finally
         {
