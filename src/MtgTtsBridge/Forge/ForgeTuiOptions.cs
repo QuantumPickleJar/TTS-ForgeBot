@@ -10,7 +10,7 @@ public sealed class ForgeTuiOptions
 
     public int StartupTimeoutSeconds { get; init; } = 180;
 
-    public int DecisionTimeoutSeconds { get; init; } = 60;
+    public int DecisionTimeoutSeconds { get; init; } = 300;
 
     public string HumanSeatId { get; init; } = "forge-player-1";
 

@@ -30,6 +30,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private string? _diagnosticMessage;
     private string? _diagnosticContext;
     private readonly List<AuthoritativeEventDto> _events = [];
+    private readonly HashSet<string> _landCardInstanceIds = new(StringComparer.Ordinal);
     private long _latestEventSequence;
 
     private const int EventHistoryLimit = 512;
@@ -70,7 +71,26 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     public Task<GameSnapshotDto?> GetSnapshotAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        lock (_sync) return Task.FromResult(_structuredState.Current);
+        lock (_sync)
+        {
+            var snapshot = _structuredState.Current;
+            if (snapshot is null) return Task.FromResult<GameSnapshotDto?>(null);
+            GameCardSnapshotDto Annotate(GameCardSnapshotDto card) => card with
+            {
+                BattlefieldKind = _landCardInstanceIds.Contains(card.CardInstanceId) ? "land" : null
+            };
+            return Task.FromResult<GameSnapshotDto?>(snapshot with
+            {
+                Seats = snapshot.Seats.Select(seat => seat with
+                {
+                    Zones = seat.Zones.Select(zone => zone with
+                    {
+                        Cards = zone.Cards.Select(Annotate).ToArray()
+                    }).ToArray()
+                }).ToArray(),
+                Stack = snapshot.Stack.Select(Annotate).ToArray()
+            });
+        }
     }
 
     public async Task<AdapterStateDto> StartSessionAsync(CancellationToken cancellationToken)
@@ -140,6 +160,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _structuredParser.Reset();
             _structuredState.Reset();
             _events.Clear();
+            _landCardInstanceIds.Clear();
             _latestEventSequence = 0;
             _resolvedDecisionIds.Clear();
             _sessionId = Guid.NewGuid().ToString("N");
@@ -370,6 +391,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             Keyword: rawEvent.Keyword,
             Tapped: rawEvent.Tapped,
             ContainsHiddenIdentity: rawEvent.ContainsHiddenIdentity);
+        if (authoritativeEvent.Kind == "land_played" && cardInstanceId is not null)
+        {
+            _landCardInstanceIds.Add(cardInstanceId);
+        }
         _events.Add(authoritativeEvent);
         if (_events.Count > EventHistoryLimit) _events.RemoveAt(0);
         if (authoritativeEvent.ContainsHiddenIdentity)

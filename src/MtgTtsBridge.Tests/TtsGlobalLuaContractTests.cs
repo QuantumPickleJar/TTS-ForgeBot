@@ -68,10 +68,15 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void TurnYield_UsesForgePassAndTurnEventsDriveTtsPresentation()
     {
-        Assert.Contains("function onPlayerTurnEnd", Script);
+        Assert.DoesNotContain("function onPlayerTurnEnd", Script);
+        Assert.Contains("function BridgePressEndTurn", Script);
+        Assert.Contains("click_function = \"BridgePressEndTurn\"", Script);
+        Assert.Contains("type = \"BlockSquare\"", Script);
+        Assert.Contains("object.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0})", Script);
         Assert.Contains("BridgeState.yieldSeatId = decision.seatId", Script);
         Assert.Contains("if action.type == \"pass_yield\"", Script);
-        Assert.Contains("Turns.turn_color = seat.ttsColor", Script);
+        Assert.Contains("BridgeState.currentTurnSeatId = event.seatId", Script);
+        Assert.DoesNotContain("Turns.turn_color", Script);
     }
 
     [Fact]
@@ -121,20 +126,176 @@ public sealed class TtsGlobalLuaContractTests
     public void SnapshotBootstrap_MapsUniqueInstancesAndPreservesForgeLibraryPosition()
     {
         Assert.Contains("/api/v1/embodiment/snapshot", Script);
-        Assert.Contains("BridgeState.physicalByInstanceId[card.cardInstanceId] = guid", Script);
+        Assert.Contains("BridgeState.physicalByInstanceId[mapping.card.cardInstanceId] = guid", Script);
         Assert.Contains("count - card.zonePosition", Script);
         Assert.Contains("BridgeNormalizeCardName(card.cardName)", Script);
         Assert.Contains("hidden identities redacted", Script);
     }
 
     [Fact]
-    public void AuthoritativeDraw_TakesExactMappedGuidFromPhysicalDeckWithoutChatLeak()
+    public void SnapshotBootstrap_ExcludesExistingTableUtilityStacksFromPlayerAssets()
+    {
+        Assert.Contains("assetMaxAbsX = 40", Script);
+        Assert.Contains("math.abs(position.x) > seat.assetMaxAbsX", Script);
+        Assert.Contains("libraryAssetRadius = 4", Script);
+        Assert.Contains("if object.tag == \"Deck\" then", Script);
+        Assert.Contains("dx * dx + dz * dz <= radius * radius", Script);
+    }
+
+    [Fact]
+    public void SnapshotBootstrap_EstablishesEventSessionBeforeBuildingInstanceMappings()
+    {
+        var bootstrap = Script.IndexOf("function BridgeBootstrapCurrentSnapshot", StringComparison.Ordinal);
+        var prepare = Script.IndexOf("BridgePrepareEventSession(sessionId, true)", bootstrap, StringComparison.Ordinal);
+        var requestSnapshot = Script.IndexOf("BridgeGetEmbodimentSnapshot", bootstrap, StringComparison.Ordinal);
+
+        Assert.True(bootstrap >= 0);
+        Assert.True(prepare > bootstrap);
+        Assert.True(requestSnapshot > prepare);
+        Assert.Contains("BridgePrepareEventSession(sessionId, false)", Script);
+    }
+
+    [Fact]
+    public void ActiveSessionAttach_RendersDecisionOnlyAfterSnapshotMappingCompletes()
+    {
+        var attach = Script.IndexOf("function BridgeAttachToActiveSession", StringComparison.Ordinal);
+        var bootstrap = Script.IndexOf("BridgeBootstrapCurrentSnapshot", attach, StringComparison.Ordinal);
+        var decision = Script.IndexOf("BridgeFetchDecisionAfterAttach()", bootstrap, StringComparison.Ordinal);
+        var callbackEnd = Script.IndexOf("end)", bootstrap, StringComparison.Ordinal);
+
+        Assert.True(attach >= 0);
+        Assert.True(bootstrap > attach);
+        Assert.True(decision > bootstrap);
+        Assert.True(decision < callbackEnd);
+    }
+
+    [Fact]
+    public void AuthoritativeDraw_TakesVerifiedNamedCardFromPhysicalDeckWithoutChatLeak()
     {
         Assert.Contains("if event.kind == \"draw\"", Script);
-        Assert.Contains("BridgeFindDeckContainingGuid(guid)", Script);
+        Assert.Contains("BridgeFindSeatLibraryDeckWithCard(seat, expectedName)", Script);
         Assert.Contains("deck.takeObject({", Script);
-        Assert.Contains("guid = guid", Script);
+        Assert.Contains("index = matched.index", Script);
+        Assert.Contains("BridgeCardNameMatches(taken.getName(), expectedName)", Script);
         Assert.Contains("card identity redacted", Script);
+    }
+
+    [Fact]
+    public void ImporterDeckExtraction_UsesCurrentNameMatchedIndexAndVerifiesReturnedCard()
+    {
+        Assert.Contains("function BridgeTakeNamedCardFromDeck", Script);
+        Assert.Contains("BridgeCardNameMatches(contained.nickname or contained.name, expectedName)", Script);
+        Assert.Contains("index = matched.index", Script);
+        Assert.Contains("physical library returned a card with the wrong identity", Script);
+        Assert.Contains("BridgeSetPhysicalFaceDown(object, seat, card.faceDown == true)", Script);
+        Assert.Contains("BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)", Script);
+    }
+
+    [Fact]
+    public void CardOrientation_IsAbsoluteAndDoesNotUseAnimatedFlip()
+    {
+        Assert.Contains("faceUpRotation = {x = 0, y = 180, z = 0}", Script);
+        Assert.Contains("faceUpRotation = {x = 0, y = 0, z = 0}", Script);
+        Assert.Contains("object.setRotation(rotation)", Script);
+        Assert.DoesNotContain("object.flip()", Script);
+    }
+
+    [Fact]
+    public void MainPriority_MappedCardMustBelongToDecisionSeatHand()
+    {
+        Assert.Contains("BridgeState.physicalSeatByGuid[mappedGuid] == decision.seatId", Script);
+        Assert.Contains("candidateGuid[mappedGuid] == true", Script);
+        Assert.Contains("BridgeState.physicalZoneByGuid[guid] == \"hand\"", Script);
+        Assert.Contains("BridgeObjectIsOnSeatSide(object, decisionSeat)", Script);
+        Assert.DoesNotContain("candidateObjects = Player[decisionSeat.ttsColor].getHandObjects()", Script);
+    }
+
+    [Fact]
+    public void CardDrop_UsesDeliberatePhysicalDisplacementInsteadOfTtsHandClassification()
+    {
+        Assert.Contains("local dx = current.x - intent.position.x", Script);
+        Assert.Contains("if dx * dx + dz * dz < 1.0 then", Script);
+        Assert.DoesNotContain("function BridgeObjectIsInHand", Script);
+    }
+
+    [Fact]
+    public void MissingTableDecoration_DoesNotStopAuthoritativeSynchronization()
+    {
+        Assert.Contains("optional physical counter decoration skipped", Script);
+        Assert.Contains("optional physical keyword decoration skipped", Script);
+        Assert.Contains("return true, 0.1, nil", Script);
+    }
+
+    [Fact]
+    public void BattlefieldPlacement_ProbesForAFreePhysicalSlot()
+    {
+        Assert.Contains("function BridgeBattlefieldPositionOccupied", Script);
+        Assert.Contains("if not BridgeBattlefieldPositionOccupied(candidate) then", Script);
+        Assert.Contains("dx * dx + dz * dz < 1.5", Script);
+        Assert.Contains("card.battlefieldKind == \"land\"", Script);
+        Assert.Contains("function BridgeAnnotateSnapshotBattlefieldKinds", Script);
+        Assert.Contains("event.kind == \"land_played\"", Script);
+        Assert.Contains("landByInstanceId[card.cardInstanceId]", Script);
+    }
+
+    [Fact]
+    public void DirectHandToBattlefieldMove_WaitsForSemanticLandPlacement()
+    {
+        Assert.Contains("if event.sourceZone ~= \"hand\" then", Script);
+        Assert.Contains("BridgeMoveToBattlefield(event, object, \"land\")", Script);
+    }
+
+    [Fact]
+    public void StructuredBattlefieldMove_IsNotRepeatedByInstanceLessSemanticResolution()
+    {
+        Assert.Contains("event.kind == \"spell_resolved\"", Script);
+        Assert.Contains("if event.cardInstanceId == nil then return true, 0.1 end", Script);
+        Assert.Contains("BridgeResolvePhysicalCard(event, \"stack\")", Script);
+    }
+
+    [Fact]
+    public void PhysicalStack_UsesDedicatedStableTablePosition()
+    {
+        Assert.Contains("BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}", Script);
+        Assert.Contains("object.setPosition(BRIDGE_STACK_POSITION)", Script);
+    }
+
+    [Fact]
+    public void AuthoritativePlayerState_UpdatesConfiguredSeatLifeCounter()
+    {
+        Assert.Contains("if event.kind == \"player_state\" and event.lifeTotal ~= nil then", Script);
+        Assert.Contains("lifeCounter.setValue(event.lifeTotal)", Script);
+    }
+
+    [Fact]
+    public void SnapshotBootstrap_IndexesLibrariesWithoutUnpackingThem()
+    {
+        Assert.Contains("for _, contained in ipairs(object.getObjects() or {})", Script);
+        Assert.Contains("if zone.name == \"library\" or cardIndex > #cards then", Script);
+        Assert.DoesNotContain("BridgeExtractOneDeck", Script);
+        Assert.DoesNotContain("physical deck remainder disappeared", Script);
+    }
+
+    [Fact]
+    public void SnapshotBootstrap_RetriesIncompleteRuntimeInventoryWithoutPublishingPartialMappings()
+    {
+        Assert.Contains("function BridgeTryBootstrapSeatSnapshot", Script);
+        Assert.Contains("if attempt < 4 then", Script);
+        Assert.Contains("BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt + 1, callback)", Script);
+
+        var reconcile = Script.IndexOf("function BridgeReconcileSeatSnapshot", StringComparison.Ordinal);
+        var collectMapping = Script.IndexOf("table.insert(mappings", reconcile, StringComparison.Ordinal);
+        var publishMapping = Script.IndexOf("BridgeState.physicalByInstanceId[mapping.card.cardInstanceId]", reconcile, StringComparison.Ordinal);
+        Assert.True(collectMapping > reconcile);
+        Assert.True(publishMapping > collectMapping);
+    }
+
+    [Fact]
+    public void CardNameNormalization_UsesImporterPrimaryNameLineOnly()
+    {
+        Assert.Contains("string.find(normalized, \"\\n\", 1, true)", Script);
+        Assert.Contains("string.find(normalized, \"\\r\", 1, true)", Script);
+        Assert.Contains("string.sub(normalized, 1, lineBreak - 1)", Script);
     }
 
     [Fact]
@@ -143,14 +304,15 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("if event.kind == \"card_moved\"", Script);
         Assert.Contains("if event.kind == \"tap_changed\"", Script);
         Assert.Contains("BridgeSetPhysicalTapped(object, event.tapped == true)", Script);
-        Assert.Contains("local targetZ = base.z + (tapped and 90 or 0)", Script);
+        Assert.Contains("local targetY = base.y + (tapped and 90 or 0)", Script);
+        Assert.Contains("object.setRotationSmooth({base.x, targetY, base.z}", Script);
     }
 
     [Fact]
     public void RealDecisionIdentity_WinsOverDuplicateNameFallback()
     {
         Assert.Contains("action.cardInstanceId and BridgeState.physicalByInstanceId[action.cardInstanceId]", Script);
-        Assert.Contains("if mappedObject ~= nil then", Script);
+        Assert.Contains("if mappedSeatMatches and mappedZoneMatches then", Script);
         Assert.Contains("if mappedGuid == nil and #matches > 1 then", Script);
     }
 }

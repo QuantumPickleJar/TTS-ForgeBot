@@ -1,14 +1,18 @@
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
+BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
 
 -- Seat identity remains independent of controller type and TTS color.
 BRIDGE_SEATS = {
     ["forge-player-1"] = {
         ttsColor = "White",
         animateAuthoritativeEvents = false,
+        assetMaxAbsX = 40,
+        libraryAssetRadius = 4,
         targetSurfaceGuid = "2a7098",
         lifeCounterGuid = "2a7098",
         libraryZoneGuid = "ddf5c3",
         tableSideZ = -1,
+        faceUpRotation = {x = 0, y = 180, z = 0},
         battlefieldAnchors = {
             land = {x = 6.5, y = 2.0, z = -11.5},
             creature = {x = 7.0, y = 2.0, z = -3.5}
@@ -17,10 +21,13 @@ BRIDGE_SEATS = {
     ["forge-player-2"] = {
         ttsColor = "Blue",
         animateAuthoritativeEvents = true,
+        assetMaxAbsX = 40,
+        libraryAssetRadius = 4,
         targetSurfaceGuid = "3ef92a",
         lifeCounterGuid = "3ef92a",
         libraryZoneGuid = "548812",
         tableSideZ = 1,
+        faceUpRotation = {x = 0, y = 0, z = 0},
         battlefieldAnchors = {
             land = {x = 6.5, y = 2.0, z = 11.5},
             creature = {x = 7.0, y = 2.0, z = 3.5}
@@ -33,6 +40,7 @@ BridgeState = {
     actionByGuid = {},
     highlightedGuids = {},
     targetButtonIndexByGuid = {},
+    endTurnObjectGuidBySeatId = {},
     submitting = false,
     pendingIntent = nil,
     eventSessionId = nil,
@@ -47,9 +55,11 @@ BridgeState = {
     eventQueue = {},
     animationRunning = false,
     physicalByInstanceId = {},
+    cardNameByInstanceId = {},
     physicalSeatByGuid = {},
     physicalZoneByGuid = {},
     battlefieldCounts = {},
+    currentTurnSeatId = nil,
     yieldSeatId = nil,
     counterStateByInstanceId = {},
     keywordStateByInstanceId = {},
@@ -220,16 +230,6 @@ function BridgeGetEmbodimentSnapshot(callback)
     BridgeHttp.requestJson("GET", "/api/v1/embodiment/snapshot", nil, callback)
 end
 
-function onPlayerTurnEnd(playerColor, nextPlayerColor)
-    local decision = BridgeState.lastDecision
-    if decision == nil then return end
-    local seat = BRIDGE_SEATS[decision.seatId]
-    if seat == nil or seat.ttsColor ~= playerColor then return end
-
-    BridgeState.yieldSeatId = decision.seatId
-    BridgeRenderDecision(decision)
-end
-
 function BridgeOnLoad()
     print("[Bridge] ForgeBot integration loaded.")
     Wait.frames(function()
@@ -251,21 +251,27 @@ function BridgeAttachToActiveSession()
             BridgeBootstrapCurrentSnapshot(body.sessionId, function(bootstrapOk, bootstrapError)
                 if bootstrapOk then
                     BridgeStartEventPolling(body.sessionId, true)
+                    BridgeFetchDecisionAfterAttach()
                 else
                     BridgeStopOnDesync(bootstrapError)
                 end
             end)
+            return
         end
 
-        BridgeGetDecision(function(decisionOk, decisionBody, decisionErr)
-            if decisionOk and decisionBody ~= nil then
-                printDecision(decisionBody)
-                return
-            end
+        BridgeFetchDecisionAfterAttach()
+    end)
+end
 
-            print("[Bridge] no active decision available (" .. tostring(decisionErr) .. "). This script will not restart Forge automatically.")
-            print("[Bridge] When Forge reaches a decision, run BridgeRefreshDecision().")
-        end)
+function BridgeFetchDecisionAfterAttach()
+    BridgeGetDecision(function(decisionOk, decisionBody, decisionErr)
+        if decisionOk and decisionBody ~= nil then
+            printDecision(decisionBody)
+            return
+        end
+
+        print("[Bridge] no active decision available (" .. tostring(decisionErr) .. "). This script will not restart Forge automatically.")
+        print("[Bridge] When Forge reaches a decision, run BridgeRefreshDecision().")
     end)
 end
 
@@ -358,6 +364,14 @@ function BridgeNormalizeCardName(name)
     end
 
     local normalized = string.lower(tostring(name))
+    local lineBreak = string.find(normalized, "\n", 1, true)
+    if lineBreak ~= nil then
+        normalized = string.sub(normalized, 1, lineBreak - 1)
+    end
+    lineBreak = string.find(normalized, "\r", 1, true)
+    if lineBreak ~= nil then
+        normalized = string.sub(normalized, 1, lineBreak - 1)
+    end
     local separator = string.find(normalized, " // ", 1, true)
     if separator ~= nil then
         normalized = string.sub(normalized, 1, separator - 1)
@@ -421,6 +435,66 @@ function BridgeInstallTargetButton(object, targetSeatId)
     BridgeState.targetButtonIndexByGuid[object.getGUID()] = nextIndex
 end
 
+function BridgeEnsureEndTurnButton(seatId)
+    local existingGuid = BridgeState.endTurnObjectGuidBySeatId[seatId]
+    if existingGuid ~= nil and getObjectFromGUID(existingGuid) ~= nil then return end
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil then return end
+    spawnObject({
+        type = "BlockSquare",
+        position = {-4.5, 1.6, seat.tableSideZ * 7.0},
+        scale = {3.2, 0.35, 1.6},
+        callback_function = function(object)
+            object.setName("Forge End Turn")
+            object.setLock(true)
+            object.setColorTint({0.12, 0.3, 0.62})
+            object.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0})
+            object.createButton({
+                click_function = "BridgePressEndTurn",
+                function_owner = Global,
+                label = "END TURN\n(YIELD)",
+                position = {0, 0.6, 0},
+                width = 1100,
+                height = 520,
+                font_size = 170,
+                color = {0.15, 0.35, 0.65, 1.0},
+                font_color = {1.0, 1.0, 1.0, 1.0},
+                tooltip = "Yield Forge priority for the rest of this turn"
+            })
+            BridgeState.endTurnObjectGuidBySeatId[seatId] = object.getGUID()
+        end
+    })
+end
+
+function BridgePressEndTurn(object, playerColor, altClick)
+    if BridgeState.submitting then return end
+    local decision = BridgeState.lastDecision
+    if decision == nil or decision.kind ~= "main_priority" then
+        BridgeShowError("End Turn is unavailable without a Forge main-priority decision")
+        return
+    end
+    BridgeClaimHumanTtsColor(decision.seatId, playerColor)
+    for _, action in ipairs(decision.actions or {}) do
+        if action.type == "pass_yield" then
+            BridgeState.yieldSeatId = decision.seatId
+            BridgeClearHighlights()
+            BridgeSubmitChoice(decision.decisionId, action.actionId)
+            return
+        end
+    end
+    BridgeShowError("Forge did not offer a pass/yield action")
+end
+
+function BridgeClaimHumanTtsColor(seatId, playerColor)
+    local seat = BRIDGE_SEATS[seatId]
+    if seat ~= nil and seat.animateAuthoritativeEvents == false and playerColor ~= nil then
+        if seat.ttsColor ~= playerColor then
+            print("[Bridge] bound human seat " .. tostring(seatId) .. " to TTS color " .. tostring(playerColor))
+        end
+        seat.ttsColor = playerColor
+    end
+end
+
 function BridgeSelectPlayerTarget(object, playerColor, altClick)
     if object == nil or BridgeState.submitting then return end
     local action = BridgeState.actionByGuid[object.getGUID()]
@@ -444,6 +518,10 @@ function BridgeRenderDecision(decision)
         return
     end
 
+    if decision.kind == "main_priority" then
+        BridgeEnsureEndTurnButton(decision.seatId)
+    end
+
     if BridgeState.yieldSeatId ~= nil then
         if decision.seatId ~= BridgeState.yieldSeatId or decision.kind ~= "main_priority" then
             BridgeState.yieldSeatId = nil
@@ -462,16 +540,21 @@ function BridgeRenderDecision(decision)
         highlightColor = {1.0, 0.55, 0.0}
     end
 
-    local candidateObjects = getAllObjects()
     local decisionSeat = BRIDGE_SEATS[decision.seatId]
-    if decision.kind == "main_priority" and decisionSeat ~= nil then
-        candidateObjects = Player[decisionSeat.ttsColor].getHandObjects()
-    end
-
     local cards = {}
-    for _, object in ipairs(candidateObjects) do
+    local candidateGuid = {}
+    for _, object in ipairs(getAllObjects()) do
         if object.tag == "Card" then
-            table.insert(cards, object)
+            local guid = object.getGUID()
+            local isCandidate = decision.kind ~= "main_priority"
+                or (BridgeState.physicalSeatByGuid[guid] == decision.seatId
+                    and BridgeState.physicalZoneByGuid[guid] == "hand"
+                    and decisionSeat ~= nil
+                    and BridgeObjectIsOnSeatSide(object, decisionSeat))
+            if isCandidate then
+                table.insert(cards, object)
+                candidateGuid[guid] = true
+            end
         end
     end
 
@@ -493,9 +576,12 @@ function BridgeRenderDecision(decision)
         local matches = {}
         local mappedGuid = action.cardInstanceId and BridgeState.physicalByInstanceId[action.cardInstanceId] or nil
         local mappedObject = mappedGuid and getObjectFromGUID(mappedGuid) or nil
-        if mappedObject ~= nil then
+        local mappedSeatMatches = mappedObject ~= nil and (decision.kind ~= "main_priority"
+            or BridgeState.physicalSeatByGuid[mappedGuid] == decision.seatId)
+        local mappedZoneMatches = decision.kind ~= "main_priority" or candidateGuid[mappedGuid] == true
+        if mappedSeatMatches and mappedZoneMatches then
             table.insert(matches, mappedObject)
-        else
+        elseif action.cardInstanceId == nil then
             for _, object in ipairs(cards) do
                 if BridgeCardNameMatches(object.getName(), action.cardIdentity) then
                     table.insert(matches, object)
@@ -541,12 +627,7 @@ function onObjectPickUp(playerColor, object)
         return
     end
 
-    local decisionSeat = BRIDGE_SEATS[decision.seatId]
-    local expectedColor = decisionSeat and decisionSeat.ttsColor or nil
-    if expectedColor ~= nil and expectedColor ~= playerColor then
-        BridgeShowError("this decision belongs to TTS color " .. tostring(expectedColor))
-        return
-    end
+    BridgeClaimHumanTtsColor(decision.seatId, playerColor)
 
     BridgeState.pendingIntent = {
         guid = object.getGUID(),
@@ -580,7 +661,10 @@ function onObjectDrop(playerColor, object)
     end
 
     if intent.action.type == "play_land" or intent.action.type == "cast_spell" then
-        if BridgeObjectIsInHand(object, playerColor) then
+        local current = object.getPosition()
+        local dx = current.x - intent.position.x
+        local dz = current.z - intent.position.z
+        if dx * dx + dz * dz < 1.0 then
             BridgeRollbackPendingIntent()
             BridgeRenderDecision(decision)
             return
@@ -593,15 +677,6 @@ function onObjectDrop(playerColor, object)
     end
 
     BridgeSubmitChoice(intent.decisionId, intent.action.actionId)
-end
-
-function BridgeObjectIsInHand(object, playerColor)
-    for _, handObject in ipairs(Player[playerColor].getHandObjects()) do
-        if handObject.getGUID() == object.getGUID() then
-            return true
-        end
-    end
-    return false
 end
 
 function BridgeCommitPendingIntent()
@@ -645,6 +720,9 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
         callback(false, "an embodiment bootstrap is already in progress")
         return
     end
+    -- Establish the event session before populating instance mappings. Event
+    -- polling must not clear the authoritative snapshot we just reconciled.
+    BridgePrepareEventSession(sessionId, true)
     BridgeState.bootstrapping = true
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
         if not ok or snapshot == nil then
@@ -658,15 +736,63 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
             return
         end
 
-        BridgeBootstrapSeats(snapshot, 1, function(seatsOk, seatsError)
-            BridgeState.bootstrapping = false
-            if not seatsOk then callback(false, seatsError); return end
-            BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
-            print(string.format(
-                "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
-                #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
-            callback(true, nil)
+        BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
+            if not annotated then
+                BridgeState.bootstrapping = false
+                callback(false, annotationError)
+                return
+            end
+            BridgeBootstrapSeats(snapshot, 1, function(seatsOk, seatsError)
+                BridgeState.bootstrapping = false
+                if not seatsOk then callback(false, seatsError); return end
+                BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
+                print(string.format(
+                    "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
+                    #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
+                callback(true, nil)
+            end)
         end)
+    end)
+end
+
+function BridgeAnnotateSnapshotBattlefieldKinds(snapshot, callback)
+    local needsHistory = false
+    for _, seatSnapshot in ipairs(snapshot.seats or {}) do
+        for _, zone in ipairs(seatSnapshot.zones or {}) do
+            if zone.name == "battlefield" then
+                for _, card in ipairs(zone.cards or {}) do
+                    if card.battlefieldKind == nil then needsHistory = true; break end
+                end
+            end
+        end
+    end
+    if not needsHistory then callback(true, nil); return end
+
+    BridgeHttp.requestJson("GET", "/api/v1/events?after=0", nil, function(ok, body, err)
+        if not ok or body == nil then
+            callback(false, "authoritative event history unavailable for battlefield reconstruction: " .. tostring(err))
+            return
+        end
+        if body.hasGap == true then
+            callback(false, "authoritative event history gap prevents battlefield reconstruction")
+            return
+        end
+        local landByInstanceId = {}
+        for _, event in ipairs(body.events or {}) do
+            if event.kind == "land_played" and event.cardInstanceId ~= nil then
+                landByInstanceId[event.cardInstanceId] = true
+            end
+        end
+        for _, seatSnapshot in ipairs(snapshot.seats or {}) do
+            for _, zone in ipairs(seatSnapshot.zones or {}) do
+                if zone.name == "battlefield" then
+                    for _, card in ipairs(zone.cards or {}) do
+                        if landByInstanceId[card.cardInstanceId] then card.battlefieldKind = "land" end
+                    end
+                end
+            end
+        end
+        callback(true, nil)
     end)
 end
 
@@ -677,93 +803,93 @@ function BridgeBootstrapSeats(snapshot, seatIndex, callback)
     local seat = BRIDGE_SEATS[seatSnapshot.seatId]
     if seat == nil then callback(false, "snapshot has no configured TTS seat " .. tostring(seatSnapshot.seatId)); return end
 
+    BridgeTryBootstrapSeatSnapshot(seatSnapshot, 1, function(ok, bootstrapError)
+        if not ok then callback(false, bootstrapError); return end
+        BridgeBootstrapSeats(snapshot, seatIndex + 1, callback)
+    end)
+end
+
+function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback)
     BridgeCollectSeatAssets(seatSnapshot.seatId, function(ok, assets, collectError)
         if not ok then callback(false, collectError); return end
         local reconciled, reconcileError = BridgeReconcileSeatSnapshot(seatSnapshot, assets)
-        if not reconciled then callback(false, reconcileError); return end
-        Wait.frames(function()
-            BridgeApplySeatSnapshotVisualState(seatSnapshot)
-            BridgeBootstrapSeats(snapshot, seatIndex + 1, callback)
-        end, 90)
+        if not reconciled then
+            if attempt < 4 then
+                local authoritativeCount = 0
+                for _, zone in ipairs(seatSnapshot.zones or {}) do
+                    authoritativeCount = authoritativeCount + #(zone.cards or {})
+                end
+                print(string.format(
+                    "[Bridge] seat asset inventory not ready: seat=%s attempt=%d physical=%d authoritative=%d; retrying",
+                    tostring(seatSnapshot.seatId), attempt, #assets, authoritativeCount))
+                Wait.frames(function()
+                    BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt + 1, callback)
+                end, 60)
+                return
+            end
+            callback(false, reconcileError)
+            return
+        end
+        BridgeMaterializeSeatSnapshot(seatSnapshot, 1, 1, function(materialized, materializeError)
+            if not materialized then callback(false, materializeError); return end
+            Wait.frames(function()
+                BridgeApplySeatSnapshotVisualState(seatSnapshot)
+                callback(true, nil)
+            end, 30)
+        end)
     end)
 end
 
 function BridgeCollectSeatAssets(seatId, callback)
     local seat = BRIDGE_SEATS[seatId]
-    local cards = {}
-    local decks = {}
+    local assets = {}
     for _, object in ipairs(getAllObjects()) do
         if (object.tag == "Card" or object.tag == "Deck") and BridgeObjectIsOnSeatSide(object, seat) then
-            if object.tag == "Card" then table.insert(cards, object)
-            else table.insert(decks, object) end
+            if object.tag == "Card" then
+                table.insert(assets, {
+                    guid = object.getGUID(),
+                    cardName = object.getName(),
+                    object = object
+                })
+            else
+                for _, contained in ipairs(object.getObjects() or {}) do
+                    table.insert(assets, {
+                        guid = contained.guid,
+                        cardName = contained.nickname or contained.name,
+                        object = nil
+                    })
+                end
+            end
         end
     end
-
-    BridgeExtractSeatDecks(decks, 1, cards, seat, function(ok, extractError)
-        if not ok then callback(false, nil, extractError); return end
-        callback(true, cards, nil)
-    end)
+    callback(true, assets, nil)
 end
 
 function BridgeObjectIsOnSeatSide(object, seat)
     local position = object.getPosition()
+    if seat.assetMaxAbsX ~= nil and math.abs(position.x) > seat.assetMaxAbsX then
+        return false
+    end
+    if object.tag == "Deck" then
+        local libraryZone = getObjectFromGUID(seat.libraryZoneGuid)
+        if libraryZone == nil then return false end
+        local libraryPosition = libraryZone.getPosition()
+        local dx = position.x - libraryPosition.x
+        local dz = position.z - libraryPosition.z
+        local radius = seat.libraryAssetRadius or 4
+        return dx * dx + dz * dz <= radius * radius
+    end
     if seat.tableSideZ < 0 then return position.z < -0.25 end
     return position.z > 0.25
 end
 
-function BridgeExtractSeatDecks(decks, index, cards, seat, callback)
-    if index > #decks then callback(true, nil); return end
-    local libraryZone = getObjectFromGUID(seat.libraryZoneGuid)
-    if libraryZone == nil then callback(false, "missing configured library zone " .. tostring(seat.libraryZoneGuid)); return end
-    local origin = libraryZone.getPosition()
-    local staging = {x = origin.x + 4, y = 2.5, z = origin.z}
-    BridgeExtractOneDeck(decks[index], staging, cards, function(ok, extractError)
-        if not ok then callback(false, extractError); return end
-        BridgeExtractSeatDecks(decks, index + 1, cards, seat, callback)
-    end)
-end
-
-function BridgeExtractOneDeck(container, staging, cards, callback)
-    if container == nil then callback(false, "physical deck disappeared during bootstrap"); return end
-    if container.tag == "Card" then table.insert(cards, container); callback(true, nil); return end
-    if container.tag ~= "Deck" then callback(false, "expected a Card or Deck while extracting assets"); return end
-
-    local contents = container.getObjects() or {}
-    if #contents == 0 then callback(false, "physical deck reported no card contents"); return end
-    if #contents == 1 then
-        local remainder = getObjectFromGUID(contents[1].guid)
-        if remainder ~= nil then table.insert(cards, remainder); callback(true, nil)
-        else callback(false, "could not resolve final card in physical deck") end
-        return
-    end
-
-    local take = contents[1]
-    local remainderGuid = #contents == 2 and contents[2].guid or nil
-    container.takeObject({
-        guid = take.guid,
-        position = {staging.x + (#cards % 10) * 0.7, staging.y, staging.z + math.floor(#cards / 10) * 0.9},
-        smooth = false,
-        callback_function = function(card)
-            table.insert(cards, card)
-            Wait.frames(function()
-                if remainderGuid ~= nil then
-                    local remainder = getObjectFromGUID(remainderGuid)
-                    if remainder == nil then callback(false, "physical deck remainder disappeared")
-                    else table.insert(cards, remainder); callback(true, nil) end
-                else
-                    BridgeExtractOneDeck(container, staging, cards, callback)
-                end
-            end, 2)
-        end
-    })
-end
-
 function BridgeReconcileSeatSnapshot(seatSnapshot, assets)
     local byName = {}
-    for _, object in ipairs(assets) do
-        local name = BridgeNormalizeCardName(object.getName())
+    local mappings = {}
+    for _, asset in ipairs(assets) do
+        local name = BridgeNormalizeCardName(asset.cardName)
         byName[name] = byName[name] or {}
-        table.insert(byName[name], object)
+        table.insert(byName[name], asset)
     end
 
     local seat = BRIDGE_SEATS[seatSnapshot.seatId]
@@ -775,16 +901,78 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets)
                 return false, "missing physical asset for authoritative card in seat " .. tostring(seat.ttsColor)
                     .. " (identity redacted from normal chat)"
             end
-            local object = table.remove(candidates, 1)
-            local guid = object.getGUID()
-            BridgeState.physicalByInstanceId[card.cardInstanceId] = guid
-            BridgeState.physicalSeatByGuid[guid] = seatSnapshot.seatId
-            BridgeState.physicalZoneByGuid[guid] = zone.name
-            BridgeState.untappedRotationByGuid[guid] = object.getRotation()
-            BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
+            local asset = table.remove(candidates, 1)
+            table.insert(mappings, {card = card, asset = asset, zoneName = zone.name})
+        end
+    end
+
+    -- Publish mappings only after every authoritative card has a physical
+    -- counterpart. A retry must never inherit a partially reconciled seat.
+    for _, mapping in ipairs(mappings) do
+        local guid = mapping.asset.guid
+        BridgeState.physicalByInstanceId[mapping.card.cardInstanceId] = guid
+        BridgeState.cardNameByInstanceId[mapping.card.cardInstanceId] = mapping.card.cardName
+        BridgeState.physicalSeatByGuid[guid] = seatSnapshot.seatId
+        BridgeState.physicalZoneByGuid[guid] = mapping.zoneName
+        if mapping.asset.object ~= nil then
+            BridgeState.untappedRotationByGuid[guid] = mapping.asset.object.getRotation()
         end
     end
     return true, nil
+end
+
+function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callback)
+    local zones = seatSnapshot.zones or {}
+    if zoneIndex > #zones then callback(true, nil); return end
+    local zone = zones[zoneIndex]
+    local cards = zone.cards or {}
+
+    if zone.name == "library" or cardIndex > #cards then
+        BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex + 1, 1, callback)
+        return
+    end
+
+    local card = cards[cardIndex]
+    local guid = BridgeState.physicalByInstanceId[card.cardInstanceId]
+    if guid == nil then callback(false, "snapshot card has no physical GUID mapping"); return end
+
+    local function continueWith(object)
+        local actualGuid = object.getGUID()
+        if actualGuid ~= guid then
+            BridgeState.physicalSeatByGuid[guid] = nil
+            BridgeState.physicalZoneByGuid[guid] = nil
+        end
+        BridgeState.physicalByInstanceId[card.cardInstanceId] = actualGuid
+        BridgeState.cardNameByInstanceId[card.cardInstanceId] = card.cardName
+        BridgeState.physicalSeatByGuid[actualGuid] = seatSnapshot.seatId
+        BridgeState.physicalZoneByGuid[actualGuid] = zone.name
+        BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
+        Wait.frames(function()
+            BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex + 1, callback)
+        end, 2)
+    end
+
+    local object = getObjectFromGUID(guid)
+    if object ~= nil then continueWith(object); return end
+
+    local seat = BRIDGE_SEATS[seatSnapshot.seatId]
+    local deck = BridgeFindSeatLibraryDeckWithCard(seat, card.cardName)
+    if deck == nil then
+        callback(false, "snapshot card identity is not present in its physical library")
+        return
+    end
+
+    local libraryZone = getObjectFromGUID(seat.libraryZoneGuid)
+    local staging = libraryZone.getPosition()
+    BridgeTakeNamedCardFromDeck(
+        deck,
+        card.cardName,
+        {staging.x + 4, staging.y + 2, staging.z},
+        false,
+        function(taken, takeError)
+            if taken == nil then callback(false, takeError); return end
+            continueWith(taken)
+        end)
 end
 
 function BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
@@ -797,6 +985,7 @@ function BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
         object.setPosition({position.x, position.y + 1.5 + (count - card.zonePosition) * 0.025, position.z})
         return
     end
+    BridgeSetPhysicalFaceDown(object, seat, card.faceDown == true)
     if zone.name == "hand" then
         local hand = Player[seat.ttsColor].getHandTransform(1)
         object.use_hands = true
@@ -804,12 +993,21 @@ function BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
         return
     end
     object.use_hands = false
-    local anchor = seat.battlefieldAnchors.creature
     if zone.name == "battlefield" then
-        object.setPosition({anchor.x + card.zonePosition * 1.4, anchor.y, anchor.z})
+        local row = card.battlefieldKind == "land" and "land" or "creature"
+        local position, positionError = BridgeBattlefieldPosition(seatSnapshot.seatId, row)
+        if position == nil then
+            BridgeStopOnDesync(positionError)
+            return
+        end
+        object.setPosition(position)
+        local rowKey = seatSnapshot.seatId .. ":" .. row
+        BridgeState.battlefieldCounts[rowKey] = (BridgeState.battlefieldCounts[rowKey] or 0) + 1
     elseif zone.name == "graveyard" then
+        local anchor = seat.battlefieldAnchors.creature
         object.setPosition({anchor.x + 8, anchor.y, anchor.z})
     elseif zone.name == "exile" then
+        local anchor = seat.battlefieldAnchors.creature
         object.setPosition({anchor.x + 10, anchor.y, anchor.z})
     end
 end
@@ -849,29 +1047,36 @@ function BridgeStartEventPolling(sessionId, skipExisting)
         return
     end
 
-    if BridgeState.eventSessionId ~= sessionId then
-        BridgeStopEventPolling()
-        BridgeState.eventSessionId = sessionId
-        BridgeState.lastReceivedEventSequence = 0
-        BridgeState.lastAppliedEventSequence = 0
-        BridgeState.eventQueue = {}
-        BridgeState.animationRunning = false
-        BridgeState.physicalByInstanceId = {}
-        BridgeState.physicalSeatByGuid = {}
-        BridgeState.physicalZoneByGuid = {}
-        BridgeState.battlefieldCounts = {}
-        BridgeState.counterStateByInstanceId = {}
-        BridgeState.keywordStateByInstanceId = {}
-        BridgeState.untappedRotationByGuid = {}
-        BridgeState.snapshotForgeSequence = 0
-        BridgeState.yieldSeatId = nil
-    end
+    BridgePrepareEventSession(sessionId, false)
 
     BridgeState.skipExistingEventsOnAttach = skipExisting == true
     BridgeState.eventPolling = true
     BridgeState.eventRetryCount = 0
     BridgeState.eventPollGeneration = BridgeState.eventPollGeneration + 1
     BridgePollEvents(BridgeState.eventPollGeneration)
+end
+
+function BridgePrepareEventSession(sessionId, forceReset)
+    if not forceReset and BridgeState.eventSessionId == sessionId then
+        return
+    end
+
+    BridgeStopEventPolling()
+    BridgeState.eventSessionId = sessionId
+    BridgeState.lastReceivedEventSequence = 0
+    BridgeState.lastAppliedEventSequence = 0
+    BridgeState.eventQueue = {}
+    BridgeState.animationRunning = false
+    BridgeState.physicalByInstanceId = {}
+    BridgeState.cardNameByInstanceId = {}
+    BridgeState.physicalSeatByGuid = {}
+    BridgeState.physicalZoneByGuid = {}
+    BridgeState.battlefieldCounts = {}
+    BridgeState.counterStateByInstanceId = {}
+    BridgeState.keywordStateByInstanceId = {}
+    BridgeState.untappedRotationByGuid = {}
+    BridgeState.snapshotForgeSequence = 0
+    BridgeState.yieldSeatId = nil
 end
 
 function BridgeStopEventPolling()
@@ -1004,7 +1209,8 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "turn_changed" then
-        Turns.turn_color = seat.ttsColor
+        BridgeState.currentTurnSeatId = event.seatId
+        print("[Bridge] authoritative turn changed to seat " .. tostring(event.seatId))
         if BridgeState.yieldSeatId ~= nil and BridgeState.yieldSeatId ~= event.seatId then
             BridgeState.yieldSeatId = nil
         end
@@ -1046,20 +1252,28 @@ function BridgeApplyAuthoritativeEvent(event)
         local object, resolveError = BridgeResolveMappedInstance(event)
         if object == nil then return false, 0, resolveError end
         local applied, counterError = BridgeSetCardCounterState(object, event.counterType, event.counterValue)
-        return applied, 0.1, counterError
+        if not applied then
+            print("[Bridge] optional physical counter decoration skipped: " .. tostring(counterError))
+        end
+        return true, 0.1, nil
     end
 
     if event.kind == "keyword_added" or event.kind == "keyword_removed" then
         local object, resolveError = BridgeResolveMappedInstance(event)
         if object == nil then return false, 0, resolveError end
         local applied, keywordError = BridgeSetCardKeywordState(object, event.keyword, event.kind == "keyword_added")
-        return applied, 0.1, keywordError
+        if not applied then
+            print("[Bridge] optional physical keyword decoration skipped: " .. tostring(keywordError))
+        end
+        return true, 0.1, nil
     end
 
     if not seat.animateAuthoritativeEvents then
         if event.kind == "land_played" and event.cardInstanceId ~= nil then
             local object, resolveError = BridgeResolvePhysicalCard(event, "battlefield")
             if object == nil then return false, 0, resolveError end
+            local moved, moveError = BridgeMoveToBattlefield(event, object, "land")
+            if not moved then return false, 0, moveError end
         end
         if event.kind == "card_moved" and event.destinationZone == "graveyard" and event.cardInstanceId ~= nil then
             local object, resolveError = BridgeResolvePhysicalCard(event, "graveyard")
@@ -1077,7 +1291,11 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "spell_resolved" and event.destinationZone == "battlefield" then
-        local object, resolveError = BridgeResolvePhysicalCard(event, "hand")
+        -- Structured card_moved already moved this exact instance from stack to
+        -- battlefield. The human-readable semantic line has no instance ID and
+        -- must not attempt a second name-based move from an empty stack.
+        if event.cardInstanceId == nil then return true, 0.1 end
+        local object, resolveError = BridgeResolvePhysicalCard(event, "stack")
         if object == nil then return false, 0, resolveError end
         local moved, moveError = BridgeMoveToBattlefield(event, object, "creature")
         if not moved then return false, 0, moveError end
@@ -1116,21 +1334,22 @@ function BridgeApplyStructuredCardMove(event)
 
     local object = getObjectFromGUID(guid)
     if object == nil and event.sourceZone == "library" then
-        local deck = BridgeFindDeckContainingGuid(guid)
-        if deck == nil then return false, "mapped library card is not present in a physical deck" end
+        local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId]
+        if expectedName == nil then return false, "mapped library card has no physical identity" end
+        local deck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
+        if deck == nil then return false, "mapped library card identity is not present in a physical deck" end
         local hand = Player[seat.ttsColor].getHandTransform(1)
-        deck.takeObject({
-            guid = guid,
-            position = hand.position,
-            smooth = true,
-            callback_function = function(drawn)
+        BridgeTakeNamedCardFromDeck(deck, expectedName, hand.position, true, function(drawn, takeError)
+            if drawn == nil then
+                BridgeStopOnDesync(takeError)
+                return
+            end
                 BridgeState.physicalByInstanceId[event.cardInstanceId] = drawn.getGUID()
                 BridgeState.physicalSeatByGuid[drawn.getGUID()] = event.seatId
                 BridgeState.physicalZoneByGuid[drawn.getGUID()] = event.destinationZone
-                BridgeState.untappedRotationByGuid[drawn.getGUID()] = drawn.getRotation()
                 drawn.use_hands = true
-            end
-        })
+                BridgeSetPhysicalFaceDown(drawn, seat, event.faceDown == true)
+        end)
         return true, nil
     end
     if object == nil then return false, "mapped physical card is unavailable for structured zone change" end
@@ -1138,13 +1357,18 @@ function BridgeApplyStructuredCardMove(event)
     if event.destinationZone == "hand" then
         local hand = Player[seat.ttsColor].getHandTransform(1)
         object.use_hands = true
+        BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
         object.setPositionSmooth(hand.position, false, true)
     elseif event.destinationZone == "battlefield" then
-        local moved, moveError = BridgeMoveToBattlefield(event, object, "creature")
-        if not moved then return false, moveError end
+        object.use_hands = false
+        if event.sourceZone ~= "hand" then
+            local moved, moveError = BridgeMoveToBattlefield(event, object, "creature")
+            if not moved then return false, moveError end
+        end
     elseif event.destinationZone == "stack" then
         object.use_hands = false
-        object.setPositionSmooth({0, 2.5, seat.tableSideZ * 1.2}, false, true)
+        BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
+        object.setPosition(BRIDGE_STACK_POSITION)
     elseif event.destinationZone == "graveyard" then
         local anchor = seat.battlefieldAnchors.creature
         object.use_hands = false
@@ -1164,15 +1388,61 @@ function BridgeApplyStructuredCardMove(event)
     return true, nil
 end
 
-function BridgeFindDeckContainingGuid(guid)
+function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
     for _, object in ipairs(getAllObjects()) do
-        if object.tag == "Deck" then
-            for _, card in ipairs(object.getObjects() or {}) do
-                if card.guid == guid then return object end
+        if object.tag == "Deck" and BridgeObjectIsOnSeatSide(object, seat) then
+            for _, contained in ipairs(object.getObjects() or {}) do
+                if BridgeCardNameMatches(contained.nickname or contained.name, expectedName) then
+                    return object
+                end
             end
         end
     end
     return nil
+end
+
+function BridgeTakeNamedCardFromDeck(deck, expectedName, position, smooth, callback)
+    local matched = nil
+    for _, contained in ipairs(deck.getObjects() or {}) do
+        if BridgeCardNameMatches(contained.nickname or contained.name, expectedName) then
+            matched = contained
+            break
+        end
+    end
+    if matched == nil or matched.index == nil then
+        callback(nil, "physical library has no indexed card matching the authoritative identity")
+        return
+    end
+
+    deck.takeObject({
+        index = matched.index,
+        position = position,
+        smooth = smooth,
+        callback_function = function(taken)
+            if not BridgeCardNameMatches(taken.getName(), expectedName) then
+                deck.putObject(taken)
+                callback(nil, "physical library returned a card with the wrong identity")
+                return
+            end
+            callback(taken, nil)
+        end
+    })
+end
+
+function BridgeSetPhysicalFaceDown(object, seat, faceDown)
+    local faceUp = seat.faceUpRotation
+    if faceUp == nil then return end
+    local rotation = {
+        x = faceUp.x,
+        y = faceUp.y,
+        z = faceUp.z + (faceDown and 180 or 0)
+    }
+    object.setRotation(rotation)
+    BridgeState.untappedRotationByGuid[object.getGUID()] = {
+        x = faceUp.x,
+        y = faceUp.y,
+        z = faceUp.z
+    }
 end
 
 function BridgeSetPhysicalTapped(object, tapped)
@@ -1182,8 +1452,8 @@ function BridgeSetPhysicalTapped(object, tapped)
         base = object.getRotation()
         BridgeState.untappedRotationByGuid[guid] = base
     end
-    local targetZ = base.z + (tapped and 90 or 0)
-    object.setRotationSmooth({base.x, base.y, targetZ}, false, true)
+    local targetY = base.y + (tapped and 90 or 0)
+    object.setRotationSmooth({base.x, targetY, base.z}, false, true)
 end
 
 function BridgeResolveMappedInstance(event)
@@ -1328,6 +1598,7 @@ function BridgeMoveToBattlefield(event, object, row)
 
     local moved, movementError = pcall(function()
         object.use_hands = false
+        BridgeSetPhysicalFaceDown(object, BRIDGE_SEATS[event.seatId], event.faceDown == true)
         object.setPosition(destination)
     end)
     if not moved then
@@ -1354,11 +1625,31 @@ function BridgeBattlefieldPosition(seatId, row)
 
     local rowKey = seatId .. ":" .. row
     local count = BridgeState.battlefieldCounts[rowKey] or 0
-    return {
-        x = anchor.x + (count % 5) * 2.2,
-        y = anchor.y,
-        z = anchor.z
-    }, nil
+    for offset = 0, 11 do
+        local slot = count + offset
+        local candidate = {
+            x = anchor.x + (slot % 6) * 2.2,
+            y = anchor.y,
+            z = anchor.z + math.floor(slot / 6) * seat.tableSideZ * 2.5
+        }
+        if not BridgeBattlefieldPositionOccupied(candidate) then
+            BridgeState.battlefieldCounts[rowKey] = slot
+            return candidate, nil
+        end
+    end
+    return nil, "no unoccupied battlefield slot for seat " .. tostring(seatId) .. " row " .. tostring(row)
+end
+
+function BridgeBattlefieldPositionOccupied(candidate)
+    for _, object in ipairs(getAllObjects()) do
+        if object.tag == "Card" or object.tag == "Deck" then
+            local position = object.getPosition()
+            local dx = position.x - candidate.x
+            local dz = position.z - candidate.z
+            if dx * dx + dz * dz < 1.5 then return true end
+        end
+    end
+    return false
 end
 
 function BridgeUnitTowardTableCenter(position)
