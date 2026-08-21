@@ -393,6 +393,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeResolveResolvedSpellObject", Script);
         Assert.Contains("BridgeState.physicalByInstanceId[event.cardInstanceId] = pendingCast.guid", Script);
         Assert.Contains("BridgeState.pendingCastBySeatId[event.seatId] = nil", Script);
+        Assert.Contains("local pendingObject = pendingCast ~= nil and getObjectFromGUID(pendingCast.guid) or nil", Script);
+        Assert.Contains("if pendingObject ~= nil and BridgeCardNameMatches(pendingObject.getName(), event.cardName) then", Script);
     }
 
     [Fact]
@@ -451,10 +453,29 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void StructuredCardMove_FallsBackToSourceZoneWhenInstanceMappingIsMissing()
+    public void StructuredCardMove_PrefersDestinationZoneWhenInstanceMappingIsMissing()
     {
+        Assert.Contains("table.insert(fallbackZones, event.destinationZone)", Script);
         Assert.Contains("table.insert(fallbackZones, event.sourceZone or \"hand\")", Script);
         Assert.Contains("BridgeResolvePhysicalCard(event, zoneName)", Script);
+
+        var destinationInsert = Script.IndexOf("table.insert(fallbackZones, event.destinationZone)", StringComparison.Ordinal);
+        var sourceInsert = Script.IndexOf("table.insert(fallbackZones, event.sourceZone or \"hand\")", StringComparison.Ordinal);
+        Assert.True(destinationInsert >= 0);
+        Assert.True(sourceInsert > destinationInsert);
+    }
+
+    [Fact]
+    public void SnapshotReconcile_RepairsPublicZoneDriftWhenStructuredMoveEventsAreSparse()
+    {
+        Assert.Contains("function BridgeScheduleSnapshotReconcile", Script);
+        Assert.Contains("BridgeShouldReconcileAfterEvent(event)", Script);
+        Assert.Contains("or event.kind == \"card_moved\"", Script);
+        Assert.Contains("BridgeZoneIsPublicForReconcile(zoneName)", Script);
+        Assert.Contains("mappedNeedsFix", Script);
+        Assert.Contains("BridgeApplyStructuredCardMove(evt)", Script);
+        Assert.Contains("existing.tag == \"Card\"", Script);
+        Assert.Contains("BridgeState.physicalByInstanceId[event.cardInstanceId] = nil", Script);
     }
 
     [Fact]
@@ -463,5 +484,15 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("action.cardInstanceId and BridgeState.physicalByInstanceId[action.cardInstanceId]", Script);
         Assert.Contains("if mappedSeatMatches and mappedZoneMatches then", Script);
         Assert.Contains("if mappedGuid == nil and #matches > 1 then", Script);
+    }
+
+    [Fact]
+    public void StructuredMappingMisses_DeferToSnapshotInsteadOfImmediateDesync()
+    {
+        Assert.Contains("function BridgeCanDeferStructuredMoveToSnapshot", Script);
+        Assert.Contains("structured move deferred to snapshot reconcile", Script);
+        Assert.Contains("tap update deferred to snapshot reconcile", Script);
+        Assert.Contains("counter update deferred to snapshot reconcile", Script);
+        Assert.Contains("keyword update deferred to snapshot reconcile", Script);
     }
 }

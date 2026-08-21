@@ -94,6 +94,8 @@ BridgeState = {
     untappedRotationByGuid = {},
     pendingCastBySeatId = {},
     snapshotForgeSequence = 0,
+    snapshotReconcileInFlight = false,
+    snapshotReconcilePending = false,
     bootstrapping = false,
     setupBusy = false,
 }
@@ -260,6 +262,92 @@ end
 
 function BridgeGetEmbodimentSnapshot(callback)
     BridgeHttp.requestJson("GET", "/api/v1/embodiment/snapshot", nil, callback)
+end
+
+function BridgeZoneIsPublicForReconcile(zoneName)
+    return zoneName == "battlefield"
+        or zoneName == "graveyard"
+        or zoneName == "stack"
+        or zoneName == "exile"
+end
+
+function BridgeShouldReconcileAfterEvent(event)
+    return event.kind == "spell_resolved"
+        or event.kind == "land_played"
+        or event.kind == "card_moved"
+        or event.kind == "mana_ability_used"
+        or event.kind == "tap_changed"
+        or event.kind == "counter_changed"
+end
+
+function BridgeCanDeferStructuredMoveToSnapshot(event)
+    local destinationZone = string.lower(tostring(event.destinationZone or ""))
+    return event.kind == "card_moved" and BridgeZoneIsPublicForReconcile(destinationZone)
+end
+
+function BridgeScheduleSnapshotReconcile(reason)
+    if BridgeState.eventSessionId == nil then return end
+    if BridgeState.snapshotReconcileInFlight then
+        BridgeState.snapshotReconcilePending = true
+        return
+    end
+    BridgeState.snapshotReconcileInFlight = true
+    BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
+        BridgeState.snapshotReconcileInFlight = false
+        if ok and snapshot ~= nil and snapshot.sessionId == BridgeState.eventSessionId then
+            local movedCount = 0
+            for _, seatSnapshot in ipairs(snapshot.seats or {}) do
+                for _, zone in ipairs(seatSnapshot.zones or {}) do
+                    local zoneName = string.lower(tostring(zone.name or ""))
+                    if BridgeZoneIsPublicForReconcile(zoneName) then
+                        for _, card in ipairs(zone.cards or {}) do
+                            local evt = {
+                                seatId = seatSnapshot.seatId,
+                                cardInstanceId = card.cardInstanceId,
+                                cardName = card.cardName,
+                                sourceZone = nil,
+                                destinationZone = zoneName,
+                                faceDown = card.faceDown
+                            }
+                            local mappedGuid = BridgeState.physicalByInstanceId[card.cardInstanceId]
+                            local mappedObject = mappedGuid and getObjectFromGUID(mappedGuid) or nil
+                            local mappedZone = mappedGuid and BridgeState.physicalZoneByGuid[mappedGuid] or nil
+                            local mappedNeedsFix = mappedObject == nil
+                                or mappedObject.tag ~= "Card"
+                                or mappedZone ~= zoneName
+                            if mappedNeedsFix then
+                                local moved, moveError = BridgeApplyStructuredCardMove(evt)
+                                if moved then
+                                    movedCount = movedCount + 1
+                                else
+                                    print("[Bridge] snapshot reconcile skipped a move: " .. tostring(moveError))
+                                end
+                            end
+
+                            local guid = BridgeState.physicalByInstanceId[card.cardInstanceId]
+                            local object = guid and getObjectFromGUID(guid) or nil
+                            if object ~= nil and object.tag == "Card" and zoneName == "battlefield" then
+                                BridgeSetPhysicalTapped(object, card.tapped == true)
+                            end
+                        end
+                    end
+                end
+            end
+            BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
+            if movedCount > 0 then
+                print(string.format("[Bridge] snapshot reconcile (%s): corrected %d public card location(s)", tostring(reason), movedCount))
+            end
+        elseif not ok then
+            print("[Bridge] snapshot reconcile failed: " .. tostring(err))
+        elseif snapshot ~= nil then
+            print("[Bridge] snapshot reconcile skipped due to session mismatch")
+        end
+
+        if BridgeState.snapshotReconcilePending then
+            BridgeState.snapshotReconcilePending = false
+            BridgeScheduleSnapshotReconcile("pending")
+        end
+    end)
 end
 
 function BridgeOnLoad()
@@ -1932,6 +2020,9 @@ function BridgeProcessEventQueue()
 
     table.remove(BridgeState.eventQueue, 1)
     BridgeState.lastAppliedEventSequence = event.sequence
+    if BridgeShouldReconcileAfterEvent(event) then
+        BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence))
+    end
     local generation = BridgeState.eventPollGeneration
     Wait.time(function()
         if generation ~= BridgeState.eventPollGeneration then
@@ -2022,6 +2113,10 @@ function BridgeApplyAuthoritativeEvent(event)
 
     if event.kind == "card_moved" then
         local applied, moveError = BridgeApplyStructuredCardMove(event)
+        if not applied and BridgeCanDeferStructuredMoveToSnapshot(event) then
+            print("[Bridge] structured move deferred to snapshot reconcile: " .. tostring(moveError))
+            return true, 0.1
+        end
         return applied, 1.0, moveError
     end
 
@@ -2040,14 +2135,20 @@ function BridgeApplyAuthoritativeEvent(event)
 
     if event.kind == "tap_changed" then
         local object, resolveError = BridgeResolveMappedInstance(event)
-        if object == nil then return false, 0, resolveError end
+        if object == nil then
+            print("[Bridge] tap update deferred to snapshot reconcile: " .. tostring(resolveError))
+            return true, 0.1
+        end
         BridgeSetPhysicalTapped(object, event.tapped == true)
         return true, 0.5
     end
 
     if event.kind == "counter_changed" then
         local object, resolveError = BridgeResolveMappedInstance(event)
-        if object == nil then return false, 0, resolveError end
+        if object == nil then
+            print("[Bridge] counter update deferred to snapshot reconcile: " .. tostring(resolveError))
+            return true, 0.1
+        end
         local applied, counterError = BridgeSetCardCounterState(object, event.counterType, event.counterValue)
         if not applied then
             print("[Bridge] optional physical counter decoration skipped: " .. tostring(counterError))
@@ -2057,7 +2158,10 @@ function BridgeApplyAuthoritativeEvent(event)
 
     if event.kind == "keyword_added" or event.kind == "keyword_removed" then
         local object, resolveError = BridgeResolveMappedInstance(event)
-        if object == nil then return false, 0, resolveError end
+        if object == nil then
+            print("[Bridge] keyword update deferred to snapshot reconcile: " .. tostring(resolveError))
+            return true, 0.1
+        end
         local applied, keywordError = BridgeSetCardKeywordState(object, event.keyword, event.kind == "keyword_added")
         if not applied then
             print("[Bridge] optional physical keyword decoration skipped: " .. tostring(keywordError))
@@ -2131,15 +2235,15 @@ end
 
 function BridgeResolveResolvedSpellObject(event)
     local pendingCast = BridgeState.pendingCastBySeatId[event.seatId]
-    if event.cardInstanceId ~= nil and pendingCast ~= nil then
-        local pendingObject = getObjectFromGUID(pendingCast.guid)
-        if pendingObject ~= nil and BridgeCardNameMatches(pendingObject.getName(), event.cardName) then
+    local pendingObject = pendingCast ~= nil and getObjectFromGUID(pendingCast.guid) or nil
+    if pendingObject ~= nil and BridgeCardNameMatches(pendingObject.getName(), event.cardName) then
+        if event.cardInstanceId ~= nil then
             BridgeState.physicalByInstanceId[event.cardInstanceId] = pendingCast.guid
-            BridgeState.physicalSeatByGuid[pendingCast.guid] = event.seatId
-            BridgeState.physicalZoneByGuid[pendingCast.guid] = "stack"
-            BridgeState.pendingCastBySeatId[event.seatId] = nil
-            return pendingObject, nil
         end
+        BridgeState.physicalSeatByGuid[pendingCast.guid] = event.seatId
+        BridgeState.physicalZoneByGuid[pendingCast.guid] = "stack"
+        BridgeState.pendingCastBySeatId[event.seatId] = nil
+        return pendingObject, nil
     end
 
     if event.cardInstanceId ~= nil then
@@ -2164,6 +2268,9 @@ function BridgeApplyStructuredCardMove(event)
     local object = guid ~= nil and getObjectFromGUID(guid) or nil
     if object == nil then
         local fallbackZones = {}
+        if event.destinationZone ~= nil and event.destinationZone ~= "" then
+            table.insert(fallbackZones, event.destinationZone)
+        end
         table.insert(fallbackZones, event.sourceZone or "hand")
         if event.destinationZone ~= nil and event.destinationZone ~= "" and event.destinationZone ~= event.sourceZone then
             table.insert(fallbackZones, event.destinationZone)
@@ -2418,7 +2525,15 @@ function BridgeResolvePhysicalCard(event, expectedZone)
             if existing == nil then
                 return nil, BridgePhysicalMappingError(event, expectedZone, 0, "mapped object disappeared")
             end
-            return existing, nil
+            if existing.tag == "Card" then
+                return existing, nil
+            end
+            if expectedZone == "library" and existing.tag == "Deck" then
+                return existing, nil
+            end
+            -- A stale mapping can temporarily point at a deck object while the
+            -- authoritative card instance has moved into a public zone.
+            BridgeState.physicalByInstanceId[event.cardInstanceId] = nil
         end
     end
 

@@ -36,6 +36,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private readonly Queue<string> _recentControllerDiagnostics = new();
     private readonly string? _opponentSeatId;
     private long _latestEventSequence;
+    private string _lastObservedTuiText = string.Empty;
     private int? _latestObservedTurnNumber;
     private string? _latestObservedPhaseName;
     private string? _latestObservedPrioritySeatId;
@@ -313,6 +314,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     var tuiText = output.TuiText;
                     if (tuiText.Length > 0)
                     {
+                        _lastObservedTuiText = tuiText.Length > 8192 ? tuiText[^8192..] : tuiText;
                         foreach (var diagnosticEvent in ObserveControllerDiagnostics(tuiText)) EnqueueEvent(diagnosticEvent);
                         _logger.LogTrace("Forge TUI stdout: {ForgeOutput}", tuiText);
                         _startupTracker.Observe(tuiText);
@@ -325,10 +327,31 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     }
                     result = _parser.Append(tuiText);
                 }
-                if (result.ParsedDecision is not null) _nextDecision?.TrySetResult(result.ParsedDecision);
-                if (result.UnsupportedPrompt is not null) SetUnsupportedPrompt(result.UnsupportedPrompt);
+                if (result.ParsedDecision is not null)
+                {
+                    var parsed = result.ParsedDecision;
+                    _logger.LogInformation(
+                        "Forge TUI parsed decision {DecisionId} kind={Kind} prompt={Prompt} actions={ActionCount}",
+                        parsed.Decision.DecisionId,
+                        parsed.Decision.Kind,
+                        parsed.Decision.Prompt ?? "(none)",
+                        parsed.Decision.Actions.Count);
+                    _nextDecision?.TrySetResult(parsed);
+                }
+                if (result.UnsupportedPrompt is not null)
+                {
+                    _logger.LogWarning(
+                        "Forge TUI unsupported prompt {Code}; context={Context}",
+                        result.UnsupportedPrompt.Code,
+                        result.UnsupportedPrompt.Context);
+                    SetUnsupportedPrompt(result.UnsupportedPrompt);
+                }
                 if (result.ErrorCode is not null)
                 {
+                    _logger.LogError(
+                        "Forge TUI parser error {Code}: {Message}",
+                        result.ErrorCode,
+                        result.ErrorMessage);
                     Fail(result.ErrorCode, result.ErrorMessage!);
                     _ = StopProcessAsync();
                 }
@@ -556,6 +579,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     {
         lock (_sync)
         {
+            if (!string.IsNullOrWhiteSpace(_lastObservedTuiText))
+            {
+                _logger.LogWarning("Forge TUI output tail before failure: {Tail}", _lastObservedTuiText);
+            }
             _logger.LogError("Forge TUI failure ({Code}): {Message}", code, message);
             _state = "failed";
             _diagnosticCode = code;

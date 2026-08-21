@@ -48,6 +48,12 @@ public sealed partial class ForgeTuiParser
                 match.Groups["label"].Value.Trim()))
             .ToArray();
 
+        if (actions.Length == 0 && definition?.Definition.Kind is "blocker_selection" or "attacker_selection"
+            && prompt.Value.Contains("done", StringComparison.OrdinalIgnoreCase))
+        {
+            actions = [new ForgeTuiMenuOption(0, "done")];
+        }
+
         _buffer.Remove(0, prompt.Index + prompt.Length);
 
         if (actions.Length == 0)
@@ -83,8 +89,18 @@ public sealed partial class ForgeTuiParser
                 IsOrdered: shape.IsOrdered),
             actions.ToDictionary(
                 option => $"{decisionId}-choice-{option.Number}",
-                option => option.Number.ToString(CultureInfo.InvariantCulture),
+                option => GetInputValue(option, kind),
                 StringComparer.Ordinal)));
+    }
+
+    private static string GetInputValue(ForgeTuiMenuOption option, string kind)
+    {
+        if ((kind is "blocker_selection" or "attacker_selection") && string.Equals(option.Label, "done", StringComparison.OrdinalIgnoreCase))
+        {
+            return "done";
+        }
+
+        return option.Number.ToString(CultureInfo.InvariantCulture);
     }
 
     private LegalActionDto BuildAction(ForgeTuiMenuOption option, string decisionId, string kind)
@@ -133,8 +149,10 @@ public sealed partial class ForgeTuiParser
 
     private static string GetActionType(string label, string kind) => (kind, label) switch
     {
+        ("blocker_selection", var value) when value.Equals("done", StringComparison.OrdinalIgnoreCase) => "finish_blocking",
         ("blocker_selection", var value) when value.StartsWith("No further blockers", StringComparison.OrdinalIgnoreCase) => "finish_blocking",
         ("blocker_selection", _) => "choose_blocker",
+        ("attacker_selection", var value) when value.Equals("done", StringComparison.OrdinalIgnoreCase) => "finish_attacking",
         ("attacker_selection", var value) when value.StartsWith("No further attackers", StringComparison.OrdinalIgnoreCase) => "finish_attacking",
         ("attacker_selection", _) => "choose_attacker",
         ("card_selection", _) => "discard_card",
@@ -185,7 +203,7 @@ public sealed partial class ForgeTuiParser
 
     private static string StripAnsi(string text) => AnsiEscapeRegex().Replace(text, string.Empty);
 
-    [GeneratedRegex(@"Enter choice \(\d+-\d+(?:, or \?)?\):\s*", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"Enter(?:\s+choice|\s+block\s+assignment|\s+attack\s+assignment|\s+blocker\s+assignment|\s+attacker\s+assignment)(?:\s+\([^)]+\))?:\s*", RegexOptions.CultureInvariant)]
     private static partial Regex InputPromptRegex();
 
     [GeneratedRegex(@"(?m)^\s*(?<number>\d+)\.\s+(?<label>.+?)\s*\r?$", RegexOptions.CultureInvariant)]
@@ -220,7 +238,8 @@ public sealed partial class ForgeTuiParser
         new("What would you like to do?", "main_priority"),
         new("Select a target:", "target_selection"),
         new("Who should block this attacker?", "blocker_selection"),
-        new("Declare attackers:", "attacker_selection"),
+        new("Declare blockers", "blocker_selection"),
+        new("Declare attackers", "attacker_selection"),
         new("Choose defender for ", "defender_selection"),
         new(" to discard:", "card_selection"),
     ];

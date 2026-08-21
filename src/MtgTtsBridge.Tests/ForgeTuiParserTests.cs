@@ -114,6 +114,24 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void BlockAssignmentPrompt_ParsesDoneActionWhenNoMenuOptionsExist()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("""
+            Declare blockers (or enter 'done' when finished):
+            Format: <blocker_num> blocks <attacker_num>
+            Example: 0 blocks 1
+            Enter block assignment (or 'done'):
+            """);
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
+        var action = Assert.Single(decision.Decision.Actions);
+        Assert.Equal("finish_blocking", action.Type);
+        Assert.Equal("done", decision.Inputs[action.ActionId]);
+        Assert.Equal("blocker_selection", decision.Decision.Kind);
+    }
+
+    [Fact]
     public void ManaAbility_IsTypedAndKeepsExactSourceIdentity()
     {
         var parser = new ForgeTuiParser();
