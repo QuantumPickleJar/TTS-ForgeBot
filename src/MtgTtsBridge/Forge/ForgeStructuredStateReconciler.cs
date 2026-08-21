@@ -5,14 +5,14 @@ namespace MtgTtsBridge.Forge;
 /// <summary>Diffs authoritative snapshots into bounded embodiment changes; it never derives game rules.</summary>
 public sealed class ForgeStructuredStateReconciler
 {
-    private bool _gameStarted;
+    private bool _hasBaseline;
 
     public GameSnapshotDto? Current { get; private set; }
 
     public void Reset()
     {
         Current = null;
-        _gameStarted = false;
+        _hasBaseline = false;
     }
 
     public IReadOnlyList<ForgeTuiRawEvent> Apply(string sessionId, ForgeStructuredSnapshot source)
@@ -24,12 +24,10 @@ public sealed class ForgeStructuredStateReconciler
         }
 
         var next = ConvertSnapshot(sessionId, source);
-        var startsGame = string.Equals(source.Reason, "GameEventGameStarted", StringComparison.Ordinal);
-        var syntheticOrCapturedFixture = !source.Reason.StartsWith("GameEvent", StringComparison.Ordinal);
-        if (Current is null || !_gameStarted)
+        if (!_hasBaseline || Current is null)
         {
             Current = next;
-            _gameStarted = startsGame || syntheticOrCapturedFixture;
+            _hasBaseline = true;
             return [];
         }
 

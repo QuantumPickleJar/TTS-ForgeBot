@@ -406,6 +406,7 @@ function BridgeSetStatus(headline, detail)
     BridgeRefreshStatusPanel()
 end
 
+<<<<<<< HEAD
 function BridgeTurnLabel()
     return "TURN " .. tostring(BridgeState.tableTurnCount or 0)
 end
@@ -415,6 +416,8 @@ function BridgeCurrentSeatLabel(seatId)
     return tostring((seat and seat.ttsColor) or seatId or "Unknown")
 end
 
+=======
+>>>>>>> f0b0d74df138632004a3ac31d6f61d7623ea1378
 function BridgeRefreshStatusPanel()
     local object = BridgeState.statusObjectGuid and getObjectFromGUID(BridgeState.statusObjectGuid) or nil
     if object ~= nil then
@@ -805,6 +808,7 @@ function printDecision(decision)
     local seat = BRIDGE_SEATS[decision.seatId]
     local actor = seat and seat.ttsColor or decision.seatId
     if decision.kind == "attacker_selection" then
+<<<<<<< HEAD
         BridgeSetStatus("DECLARE ATTACKERS", "Drag/select highlighted creatures into attack row\nDONE ATTACKING")
     elseif decision.kind == "blocker_selection" then
         BridgeSetStatus("DECLARE BLOCKERS", "Drag/select highlighted creatures into block row\nDONE BLOCKING")
@@ -812,6 +816,15 @@ function printDecision(decision)
         BridgeSetStatus("CHOOSE TARGET", BridgeTurnLabel() .. " - " .. tostring(actor) .. " priority")
     else
         BridgeSetStatus("YOUR PRIORITY", BridgeTurnLabel() .. " - " .. tostring(actor) .. " - " .. tostring(BridgeState.currentPhase or "Forge decision"))
+=======
+        BridgeSetStatus("SELECTION REQUIRED", tostring(actor) .. " — DECLARE ATTACKERS")
+    elseif decision.kind == "blocker_selection" then
+        BridgeSetStatus("SELECTION REQUIRED", tostring(actor) .. " — DECLARE BLOCKERS")
+    elseif decision.kind == "target_selection" then
+        BridgeSetStatus("SELECTION REQUIRED", tostring(actor) .. " — CHOOSE TARGET")
+    else
+        BridgeSetStatus("YOUR PRIORITY", tostring(actor) .. " — " .. tostring(BridgeState.currentPhase or "Forge decision"))
+>>>>>>> f0b0d74df138632004a3ac31d6f61d7623ea1378
     end
     BridgeRenderDecision(decision)
 
@@ -1407,6 +1420,23 @@ function onObjectDrop(playerColor, object)
             "[Bridge] combat drop accepted for %s (guid=%s movedSq=%.3f laneHit=%s action=%s decision=%s)",
             tostring(intent.action.type), tostring(intent.guid), dx * dx + dz * dz, tostring(droppedInLane),
             tostring(intent.action.actionId), tostring(intent.decisionId)))
+        object.use_hands = false
+        if intent.action.type == "choose_attacker" then
+            BridgeMoveToAttackLane(intent.seatId, object)
+        else
+            BridgeMoveToBlockerLane(intent.seatId, object)
+        end
+    end
+
+    if intent.action.type == "choose_attacker" or intent.action.type == "choose_blocker" then
+        local current = object.getPosition()
+        local dx = current.x - intent.position.x
+        local dz = current.z - intent.position.z
+        if dx * dx + dz * dz < 1.0 then
+            BridgeRollbackPendingIntent()
+            BridgeRenderDecision(decision)
+            return
+        end
         object.use_hands = false
         if intent.action.type == "choose_attacker" then
             BridgeMoveToAttackLane(intent.seatId, object)
@@ -2047,6 +2077,7 @@ function BridgeApplyAuthoritativeEvent(event)
 
     if event.kind == "turn_changed" then
         BridgeReturnAttackPresentation(nil)
+<<<<<<< HEAD
         if event.activeSeatId ~= nil then
             BridgeState.currentTurnSeatId = event.activeSeatId
         else
@@ -2056,6 +2087,13 @@ function BridgeApplyAuthoritativeEvent(event)
         local turnSeat = BRIDGE_SEATS[BridgeState.currentTurnSeatId]
         BridgeSetStatus("CURRENT TURN: " .. tostring(turnSeat and turnSeat.ttsColor or BridgeState.currentTurnSeatId), BridgeTurnLabel() .. " - AI THINKING")
         print("[Bridge] authoritative turn changed to seat " .. tostring(BridgeState.currentTurnSeatId) .. " turn=" .. tostring(event.turnNumber))
+=======
+        BridgeState.currentTurnSeatId = event.seatId
+        BridgeRecordAuthoritativeTurn(event.seatId)
+        local turnSeat = BRIDGE_SEATS[event.seatId]
+        BridgeSetStatus("CURRENT TURN: " .. tostring(turnSeat and turnSeat.ttsColor or event.seatId), "AI THINKING")
+        print("[Bridge] authoritative turn changed to seat " .. tostring(event.seatId))
+>>>>>>> f0b0d74df138632004a3ac31d6f61d7623ea1378
         if BridgeState.yieldSeatId ~= nil and BridgeState.yieldSeatId ~= event.seatId then
             BridgeState.yieldSeatId = nil
         end
@@ -2064,6 +2102,7 @@ function BridgeApplyAuthoritativeEvent(event)
 
     if event.kind == "phase_changed" then
         BridgeState.currentPhase = event.phase or "Unknown phase"
+<<<<<<< HEAD
         if event.turnNumber ~= nil and tonumber(event.turnNumber) ~= nil and tonumber(event.turnNumber) > 0 then
             BridgeState.tableTurnCount = tonumber(event.turnNumber)
             BridgeRefreshTurnCounterLabels()
@@ -2071,13 +2110,19 @@ function BridgeApplyAuthoritativeEvent(event)
         if event.activeSeatId ~= nil then
             BridgeState.currentTurnSeatId = event.activeSeatId
         end
+=======
+>>>>>>> f0b0d74df138632004a3ac31d6f61d7623ea1378
         BridgeClearHighlights()
         if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
             BridgeState.lastDecision = nil
         end
+<<<<<<< HEAD
         BridgeSetStatus(
             "CURRENT TURN: " .. tostring((BRIDGE_SEATS[BridgeState.currentTurnSeatId] or {}).ttsColor or BridgeState.currentTurnSeatId or "Unknown"),
             BridgeTurnLabel() .. " - PHASE: " .. tostring(BridgeState.currentPhase))
+=======
+        BridgeSetStatus("CURRENT TURN: " .. tostring((BRIDGE_SEATS[BridgeState.currentTurnSeatId] or {}).ttsColor or BridgeState.currentTurnSeatId or "Unknown"), "PHASE: " .. tostring(BridgeState.currentPhase))
+>>>>>>> f0b0d74df138632004a3ac31d6f61d7623ea1378
         local phase = string.lower(tostring(event.phase or ""))
         if string.find(phase, "main phase", 1, true) ~= nil
             or string.find(phase, "end", 1, true) ~= nil

@@ -56,6 +56,29 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void Reconciliation_DiffsLiveGameEventReasonsWithoutRequiringGameStartedReason()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+
+        var baseline = Parse(parser, Frame(
+            sequence: 1,
+            player: Player(battlefield: [Card(86, "Hired Claw", "battlefield", 0)]),
+            reason: "GameEventSpellResolved"));
+        Assert.Empty(reconciler.Apply("session-a", baseline));
+
+        var changed = Parse(parser, Frame(
+            sequence: 2,
+            player: Player(graveyard: [Card(86, "Hired Claw", "graveyard", 0)]),
+            reason: "GameEventCardTapped"));
+        var events = reconciler.Apply("session-a", changed);
+
+        var moved = Assert.Single(events, item => item.Kind == "card_moved" && item.ForgeObjectId == 86);
+        Assert.Equal("battlefield", moved.SourceZone);
+        Assert.Equal("graveyard", moved.DestinationZone);
+    }
+
+    [Fact]
     public void SnapshotReplacement_ReconcilesAuthoritativeAbsoluteRemovalState()
     {
         var parser = new ForgeStructuredOutputParser();
@@ -113,16 +136,17 @@ public sealed class ForgeStructuredOutputParserTests
     private static ForgeStructuredSnapshot Parse(ForgeStructuredOutputParser parser, string frame) =>
         Assert.Single(parser.Append(frame + "\n").Snapshots);
 
-    private static string Frame(long sequence, string player) =>
+    private static string Frame(long sequence, string player, string reason = "test") =>
         ForgeStructuredOutputParser.Sentinel
-        + $$"""{"version":1,"type":"snapshot","sequence":{{sequence}},"reason":"test","players":[{{player}}],"stack":[]}""";
+        + $$"""{"version":1,"type":"snapshot","sequence":{{sequence}},"reason":"{{reason}}","players":[{{player}}],"stack":[]}""";
 
     private static string Player(
         IReadOnlyList<string>? library = null,
         IReadOnlyList<string>? hand = null,
         IReadOnlyList<string>? battlefield = null,
+        IReadOnlyList<string>? graveyard = null,
         string manaPool = "{\"W\":0,\"U\":0,\"B\":0,\"R\":0,\"G\":0,\"C\":0}") =>
-        $$"""{"seatId":"forge-player-1","forgePlayerId":1,"displayName":"Player 1","life":20,"poison":0,"counters":{},"manaPool":{{manaPool}},"zones":[{"name":"library","cards":[{{string.Join(',', library ?? [])}}]},{"name":"hand","cards":[{{string.Join(',', hand ?? [])}}]},{"name":"battlefield","cards":[{{string.Join(',', battlefield ?? [])}}]},{"name":"graveyard","cards":[]},{"name":"exile","cards":[]}]}""";
+        $$"""{"seatId":"forge-player-1","forgePlayerId":1,"displayName":"Player 1","life":20,"poison":0,"counters":{},"manaPool":{{manaPool}},"zones":[{"name":"library","cards":[{{string.Join(',', library ?? [])}}]},{"name":"hand","cards":[{{string.Join(',', hand ?? [])}}]},{"name":"battlefield","cards":[{{string.Join(',', battlefield ?? [])}}]},{"name":"graveyard","cards":[{{string.Join(',', graveyard ?? [])}}]},{"name":"exile","cards":[]}]}""";
 
     private static string Card(
         int id,
