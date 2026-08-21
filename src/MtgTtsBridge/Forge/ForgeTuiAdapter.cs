@@ -31,6 +31,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private string? _diagnosticContext;
     private readonly List<AuthoritativeEventDto> _events = [];
     private readonly HashSet<string> _landCardInstanceIds = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _inheritedHumanDecisionKinds = new(StringComparer.Ordinal);
+    private readonly Queue<string> _recentControllerDiagnostics = new();
     private long _latestEventSequence;
 
     private const int EventHistoryLimit = 512;
@@ -161,6 +163,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _structuredState.Reset();
             _events.Clear();
             _landCardInstanceIds.Clear();
+            _inheritedHumanDecisionKinds.Clear();
+            _recentControllerDiagnostics.Clear();
             _latestEventSequence = 0;
             _resolvedDecisionIds.Clear();
             _sessionId = Guid.NewGuid().ToString("N");
@@ -295,6 +299,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     var tuiText = output.TuiText;
                     if (tuiText.Length > 0)
                     {
+                        ObserveControllerDiagnostics(tuiText);
                         _logger.LogTrace("Forge TUI stdout: {ForgeOutput}", tuiText);
                         _startupTracker.Observe(tuiText);
                         foreach (var rawEvent in _eventParser.Append(tuiText))
@@ -390,7 +395,9 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             CounterValue: rawEvent.CounterValue,
             Keyword: rawEvent.Keyword,
             Tapped: rawEvent.Tapped,
-            ContainsHiddenIdentity: rawEvent.ContainsHiddenIdentity);
+            ContainsHiddenIdentity: rawEvent.ContainsHiddenIdentity,
+            ManaPool: rawEvent.ManaPool,
+            Phase: rawEvent.Phase);
         if (authoritativeEvent.Kind == "land_played" && cardInstanceId is not null)
         {
             _landCardInstanceIds.Add(cardInstanceId);
@@ -415,6 +422,32 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 authoritativeEvent.CardName,
                 authoritativeEvent.CardInstanceId);
         }
+    }
+
+    private void ObserveControllerDiagnostics(string text)
+    {
+        foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (line.StartsWith("[TUI-INHERITED] kind=", StringComparison.Ordinal))
+            {
+                var remainder = line["[TUI-INHERITED] kind=".Length..];
+                var end = remainder.IndexOf(' ');
+                var kind = end < 0 ? remainder : remainder[..end];
+                _inheritedHumanDecisionKinds[kind] = _inheritedHumanDecisionKinds.GetValueOrDefault(kind) + 1;
+                AddRecentControllerDiagnostic(line);
+            }
+            else if (line.StartsWith("[TUI-DIAG priority]", StringComparison.Ordinal))
+            {
+                AddRecentControllerDiagnostic(line);
+            }
+        }
+    }
+
+    private void AddRecentControllerDiagnostic(string line)
+    {
+        const int limit = 24;
+        _recentControllerDiagnostics.Enqueue(line.Length <= 1024 ? line : line[..1024]);
+        while (_recentControllerDiagnostics.Count > limit) _recentControllerDiagnostics.Dequeue();
     }
 
     private void HandleProcessExit(Process process, int exitCode)
@@ -451,7 +484,9 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 _diagnosticCode,
                 _diagnosticMessage,
                 _diagnosticContext,
-                _startupTracker.Snapshot());
+                _startupTracker.Snapshot(),
+                new Dictionary<string, int>(_inheritedHumanDecisionKinds, StringComparer.Ordinal),
+                _recentControllerDiagnostics.ToArray());
             return new AdapterStateDto(_sessionId, _state, _currentDecision, null, diagnostic);
         }
     }

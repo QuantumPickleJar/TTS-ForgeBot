@@ -82,7 +82,9 @@ public sealed partial class ForgeTuiEventParser
         match = PhaseRegex().Match(line);
         if (match.Success)
         {
-            return [Create("phase_changed", match.Groups["player"].Value, null, null, null, null, line)];
+            return [new ForgeTuiRawEvent(
+                "phase_changed", ResolveSeat(match.Groups["player"].Value), null, null, null, null, line,
+                Phase: match.Groups["phase"].Value.Trim())];
         }
 
         match = LandRegex().Match(line);
@@ -185,7 +187,7 @@ public sealed partial class ForgeTuiEventParser
     [GeneratedRegex(@"^\+\+\+ Turn: Turn \d+ \((?<player>.+)\)$", RegexOptions.CultureInvariant)]
     private static partial Regex TurnRegex();
 
-    [GeneratedRegex(@"^\+\+\+ Phase: (?<player>.+?)'s .+$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^\+\+\+ Phase: (?<player>.+?)'s (?<phase>.+)$", RegexOptions.CultureInvariant)]
     private static partial Regex PhaseRegex();
 
     [GeneratedRegex(@"^\+\+\+ Land: (?<player>.+?) played (?<card>.+) \((?<id>\d+)\)$", RegexOptions.CultureInvariant)]
@@ -239,4 +241,6 @@ public sealed record ForgeTuiRawEvent(
     int? CounterValue = null,
     string? Keyword = null,
     bool? Tapped = null,
-    bool ContainsHiddenIdentity = false);
+    bool ContainsHiddenIdentity = false,
+    IReadOnlyDictionary<string, int>? ManaPool = null,
+    string? Phase = null);

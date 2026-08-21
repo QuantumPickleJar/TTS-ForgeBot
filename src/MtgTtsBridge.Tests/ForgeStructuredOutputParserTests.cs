@@ -72,6 +72,21 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void ManaPoolChanges_AreAbsoluteAndIncludeAllDisplayColors()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        reconciler.Apply("session-a", Parse(parser, Frame(1, Player(manaPool: "{\"W\":0,\"U\":0,\"B\":0,\"R\":0,\"G\":0,\"C\":0}"))));
+
+        var events = reconciler.Apply("session-a", Parse(parser, Frame(2, Player(manaPool: "{\"W\":0,\"U\":0,\"B\":0,\"R\":1,\"G\":0,\"C\":0}"))));
+
+        var mana = Assert.Single(events, item => item.Kind == "mana_pool_changed");
+        Assert.Equal(1, mana.ManaPool!["R"]);
+        Assert.Equal(0, mana.ManaPool["C"]);
+        Assert.Equal(1, reconciler.Current!.Seats[0].ManaPool!["R"]);
+    }
+
+    [Fact]
     public void MalformedFrame_FailsVisibly()
     {
         var parser = new ForgeStructuredOutputParser();
@@ -105,8 +120,9 @@ public sealed class ForgeStructuredOutputParserTests
     private static string Player(
         IReadOnlyList<string>? library = null,
         IReadOnlyList<string>? hand = null,
-        IReadOnlyList<string>? battlefield = null) =>
-        $$"""{"seatId":"forge-player-1","forgePlayerId":1,"displayName":"Player 1","life":20,"poison":0,"counters":{},"zones":[{"name":"library","cards":[{{string.Join(',', library ?? [])}}]},{"name":"hand","cards":[{{string.Join(',', hand ?? [])}}]},{"name":"battlefield","cards":[{{string.Join(',', battlefield ?? [])}}]},{"name":"graveyard","cards":[]},{"name":"exile","cards":[]}]}""";
+        IReadOnlyList<string>? battlefield = null,
+        string manaPool = "{\"W\":0,\"U\":0,\"B\":0,\"R\":0,\"G\":0,\"C\":0}") =>
+        $$"""{"seatId":"forge-player-1","forgePlayerId":1,"displayName":"Player 1","life":20,"poison":0,"counters":{},"manaPool":{{manaPool}},"zones":[{"name":"library","cards":[{{string.Join(',', library ?? [])}}]},{"name":"hand","cards":[{{string.Join(',', hand ?? [])}}]},{"name":"battlefield","cards":[{{string.Join(',', battlefield ?? [])}}]},{"name":"graveyard","cards":[]},{"name":"exile","cards":[]}]}""";
 
     private static string Card(
         int id,

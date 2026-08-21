@@ -34,7 +34,7 @@ public sealed class ForgeTuiParserTests
         var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
         Assert.Equal("main_priority", decision.Decision.Kind);
         Assert.Equal(new[] { "Pass priority (do nothing)", "Play land: Mountain", "Play land: Rockface Village" }, decision.Decision.Actions.Select(action => action.DisplayName));
-        Assert.Equal("pass_yield", decision.Decision.Actions[0].Type);
+        Assert.Equal("pass_priority", decision.Decision.Actions[0].Type);
         Assert.Equal("Rockface Village", decision.Decision.Actions[2].CardIdentity);
         Assert.Equal("2", decision.Inputs[decision.Decision.Actions[2].ActionId]);
     }
@@ -89,6 +89,35 @@ public sealed class ForgeTuiParserTests
         Assert.Equal("choose_blocker", decision.Decision.Actions[1].Type);
         Assert.Equal("Hired Claw", decision.Decision.Actions[1].CardIdentity);
         Assert.Equal("1", decision.Inputs[decision.Decision.Actions[1].ActionId]);
+        Assert.Equal(0, decision.Decision.MinSelections);
+        Assert.Equal(1, decision.Decision.MaxSelections);
+    }
+
+    [Fact]
+    public void ManaAbility_IsTypedAndKeepsExactSourceIdentity()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("What would you like to do?\n  0. Pass priority (do nothing)\n  1. Rockface Village [id=77]: {T}: Add {R}.\nEnter choice (0-1): ");
+
+        var action = Assert.Single(result.ParsedDecision!.Decision.Actions, item => item.Type == "activate_mana");
+        Assert.Equal("Rockface Village", action.CardIdentity);
+        Assert.Equal("forge-object:77", action.CardInstanceId);
+        Assert.Equal("1", result.ParsedDecision.Inputs[action.ActionId]);
+    }
+
+    [Fact]
+    public void AttackerMenu_UsesExplicitFinishAndExactCardInstance()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("Declare attackers:\n  0. No further attackers\n  1. Hired Claw [id=91] (1/2)\n  2. Emberheart Challenger [id=92] (2/2)\nEnter choice (0-2): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("attacker_selection", decision.Kind);
+        Assert.Equal("finish_attacking", decision.Actions[0].Type);
+        Assert.Equal("choose_attacker", decision.Actions[1].Type);
+        Assert.Equal("forge-object:91", decision.Actions[1].CardInstanceId);
+        Assert.Equal(0, decision.MinSelections);
+        Assert.True(decision.AllowsCancel);
     }
 
     [Fact]

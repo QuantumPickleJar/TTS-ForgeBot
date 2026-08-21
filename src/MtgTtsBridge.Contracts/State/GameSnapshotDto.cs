@@ -18,7 +18,8 @@ public sealed record GameSeatSnapshotDto(
     int Life,
     int Poison,
     IReadOnlyDictionary<string, int> Counters,
-    IReadOnlyList<GameZoneSnapshotDto> Zones);
+    IReadOnlyList<GameZoneSnapshotDto> Zones,
+    IReadOnlyDictionary<string, int>? ManaPool = null);
 
 public sealed record GameZoneSnapshotDto(
     string Name,

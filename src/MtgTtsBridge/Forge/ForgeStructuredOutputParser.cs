@@ -95,7 +95,8 @@ public sealed record ForgeStructuredPlayer(
     int Life,
     int Poison,
     IReadOnlyDictionary<string, int> Counters,
-    IReadOnlyList<ForgeStructuredZone> Zones);
+    IReadOnlyList<ForgeStructuredZone> Zones,
+    IReadOnlyDictionary<string, int>? ManaPool = null);
 
 public sealed record ForgeStructuredZone(string Name, IReadOnlyList<ForgeStructuredCard> Cards);
 

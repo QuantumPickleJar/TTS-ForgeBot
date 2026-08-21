@@ -237,7 +237,7 @@ public sealed class MockForgeAdapter : IForgeAdapter
             [
                 new LegalActionDto(
                     ActionId: "pass_priority",
-                    Type: "pass_yield",
+                    Type: "pass_priority",
                     DisplayName: "Pass",
                     RequiresFollowup: false,
                     CardIdentity: null,

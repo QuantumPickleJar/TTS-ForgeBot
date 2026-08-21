@@ -68,9 +68,19 @@ public sealed partial class ForgeTuiParser
         var kind = definition?.Definition.Kind ?? "generic_numeric_selection";
         var decisionId = $"forge-tui-{_decisionNumber}";
         var bridgeActions = actions.Select(option => BuildAction(option, decisionId, kind)).ToArray();
+        var shape = GetSelectionShape(kind, bridgeActions);
 
         return ForgeTuiParserResult.Decision(new ForgeTuiDecision(
-            new DecisionDto(decisionId, kind, bridgeActions),
+            new DecisionDto(
+                decisionId,
+                kind,
+                bridgeActions,
+                Prompt: definition?.Definition.Header,
+                MinSelections: shape.Min,
+                MaxSelections: shape.Max,
+                RequiresConfirmation: shape.RequiresConfirmation,
+                AllowsCancel: shape.AllowsCancel,
+                IsOrdered: shape.IsOrdered),
             actions.ToDictionary(
                 option => $"{decisionId}-choice-{option.Number}",
                 option => option.Number.ToString(CultureInfo.InvariantCulture),
@@ -125,10 +135,13 @@ public sealed partial class ForgeTuiParser
     {
         ("blocker_selection", var value) when value.StartsWith("No further blockers", StringComparison.OrdinalIgnoreCase) => "finish_blocking",
         ("blocker_selection", _) => "choose_blocker",
+        ("attacker_selection", var value) when value.StartsWith("No further attackers", StringComparison.OrdinalIgnoreCase) => "finish_attacking",
+        ("attacker_selection", _) => "choose_attacker",
         ("card_selection", _) => "discard_card",
-        (_, var value) when value.StartsWith("Pass priority", StringComparison.OrdinalIgnoreCase) => "pass_yield",
+        (_, var value) when value.StartsWith("Pass priority", StringComparison.OrdinalIgnoreCase) => "pass_priority",
         (_, var value) when value.StartsWith("Play land:", StringComparison.OrdinalIgnoreCase) => "play_land",
         (_, var value) when value.StartsWith("Cast ", StringComparison.OrdinalIgnoreCase) => "cast_spell",
+        (_, var value) when ManaAbilityRegex().IsMatch(value) => "activate_mana",
         _ => "choose_option",
     };
 
@@ -142,6 +155,9 @@ public sealed partial class ForgeTuiParser
         var spell = CastSpellRegex().Match(label);
         if (spell.Success) return spell.Groups["name"].Value.Trim();
 
+        var mana = ManaAbilityRegex().Match(label);
+        if (mana.Success) return mana.Groups["name"].Value.Trim();
+
         if (kind is not ("target_selection" or "blocker_selection" or "attacker_selection" or "card_selection")) return null;
         if (label.StartsWith("No ", StringComparison.OrdinalIgnoreCase) ||
             PlayerTargetRegex().IsMatch(label) ||
@@ -149,6 +165,20 @@ public sealed partial class ForgeTuiParser
 
         return CardOptionSuffixRegex().Replace(label, string.Empty).Trim();
     }
+
+    private static (int Min, int Max, bool RequiresConfirmation, bool AllowsCancel, bool IsOrdered)
+        GetSelectionShape(string kind, IReadOnlyList<LegalActionDto> actions) => kind switch
+        {
+            // The current numeric Forge TUI commits attackers one at a time and
+            // then emits another decision. Cardinality is therefore one per
+            // transport decision, even though the physical presenter retains a
+            // generic selection shape for future atomic Forge controllers.
+            "attacker_selection" => (0, 1, false, true, false),
+            "blocker_selection" => (0, 1, false, true, false),
+            "card_selection" => (1, 1, false, false, false),
+            "target_selection" => (1, 1, false, true, false),
+            _ => (1, 1, false, false, false),
+        };
 
     private static string BoundContext(string context) =>
         context.Length <= 4096 ? context : context[^4096..];
@@ -166,6 +196,9 @@ public sealed partial class ForgeTuiParser
 
     [GeneratedRegex(@"^Cast (?:creature|artifact|sorcery|instant|spell):\s*(?<name>.+?)(?:\s+\([^)]*\))?\s+-\s+.+$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex CastSpellRegex();
+
+    [GeneratedRegex(@"^(?<name>.+?):\s*.*\bAdd\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ManaAbilityRegex();
 
     [GeneratedRegex(@"(?:\s+\(\d+/\d+\))?(?:\s+\[[^\]]+\])+$|\s+\(\d+/\d+\)$", RegexOptions.CultureInvariant)]
     private static partial Regex CardOptionSuffixRegex();

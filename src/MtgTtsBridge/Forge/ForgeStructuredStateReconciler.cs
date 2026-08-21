@@ -64,7 +64,8 @@ public sealed class ForgeStructuredStateReconciler
             new Dictionary<string, int>(player.Counters, StringComparer.OrdinalIgnoreCase),
             player.Zones.Select(zone => new GameZoneSnapshotDto(
                 zone.Name,
-                zone.Cards.Select(ConvertCard).ToArray())).ToArray())).ToArray();
+                zone.Cards.Select(ConvertCard).ToArray())).ToArray(),
+            new Dictionary<string, int>(player.ManaPool ?? EmptyManaPool, StringComparer.OrdinalIgnoreCase))).ToArray();
 
         return new GameSnapshotDto(
             sessionId,
@@ -90,6 +91,15 @@ public sealed class ForgeStructuredStateReconciler
                     $"Authoritative player state changed for {seat.SeatId}.",
                     LifeTotal: seat.Life,
                     PoisonCounters: seat.Poison));
+            }
+
+            if (beforeSeats.TryGetValue(seat.SeatId, out var beforeSeat)
+                && !DictionaryEqual(beforeSeat.ManaPool ?? EmptyManaPool, seat.ManaPool ?? EmptyManaPool))
+            {
+                events.Add(new ForgeTuiRawEvent(
+                    "mana_pool_changed", seat.SeatId, null, null, null, null,
+                    $"Authoritative mana pool changed for {seat.SeatId}.",
+                    ManaPool: seat.ManaPool));
             }
         }
 
@@ -187,4 +197,7 @@ public sealed class ForgeStructuredStateReconciler
         IReadOnlyDictionary<string, int> first,
         IReadOnlyDictionary<string, int> second) =>
         first.Count == second.Count && first.All(pair => second.TryGetValue(pair.Key, out var value) && value == pair.Value);
+
+    private static readonly IReadOnlyDictionary<string, int> EmptyManaPool =
+        new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 }

@@ -74,9 +74,67 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("type = \"BlockSquare\"", Script);
         Assert.Contains("object.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0})", Script);
         Assert.Contains("BridgeState.yieldSeatId = decision.seatId", Script);
-        Assert.Contains("if action.type == \"pass_yield\"", Script);
+        Assert.Contains("if action.type == \"pass_priority\"", Script);
         Assert.Contains("BridgeState.currentTurnSeatId = event.seatId", Script);
         Assert.DoesNotContain("Turns.turn_color", Script);
+    }
+
+    [Fact]
+    public void PassAndYield_HaveDistinctPhysicalSemantics()
+    {
+        Assert.Contains("function BridgePressPass", Script);
+        Assert.Contains("Pass exactly this Forge priority decision", Script);
+        Assert.Contains("BridgeState.yieldSeatId = nil", Script);
+        Assert.Contains("function BridgePressEndTurn", Script);
+        Assert.Contains("BridgeState.yieldSeatId = decision.seatId", Script);
+        Assert.Contains("action.type == \"pass_priority\"", Script);
+    }
+
+    [Fact]
+    public void ConfirmedSelection_StagesExactActionsWithoutPreemptiveZoneMutation()
+    {
+        Assert.Contains("selectedActionIds", Script);
+        Assert.Contains("decision.minSelections or 1", Script);
+        Assert.Contains("decision.maxSelections or 1", Script);
+        Assert.Contains("DONE /\\nCONFIRM", Script);
+        Assert.Contains("CANCEL /\\nUNDO", Script);
+        Assert.Contains("this Forge TUI transport cannot atomically submit multiple selections yet", Script);
+        Assert.DoesNotContain("BridgeState.physicalZoneByGuid[intent.guid] = \"graveyard\"", Script);
+    }
+
+    [Fact]
+    public void AttackAndBlockLanesPreserveLateralSpacingAndMappings()
+    {
+        Assert.Contains("attackLaneZ", Script);
+        Assert.Contains("blockerLaneZ", Script);
+        Assert.Contains("x = position.x", Script);
+        Assert.Contains("BridgeState.attackOriginByGuid[guid]", Script);
+        Assert.Contains("function BridgeReturnAttackPresentation", Script);
+        Assert.DoesNotContain("towardCenter.x * 2", Script);
+    }
+
+    [Fact]
+    public void ManaBanksReuseTableCountersAndDisplayForgeAbsolutePool()
+    {
+        Assert.Contains("BRIDGE_MANA_COUNTER_SOURCES", Script);
+        Assert.Contains("source.clone", Script);
+        Assert.Contains("counter.setVar(\"val\", amount)", Script);
+        Assert.Contains("event.kind == \"mana_pool_changed\"", Script);
+        Assert.Contains("seatSnapshot.manaPool", Script);
+    }
+
+    [Fact]
+    public void LoadEntersPreparationAndStartResumeResetAreExplicit()
+    {
+        var onLoad = Script.IndexOf("function BridgeOnLoad", StringComparison.Ordinal);
+        var next = Script.IndexOf("function BridgeShowPreparationReadiness", onLoad, StringComparison.Ordinal);
+        var onLoadBody = Script[onLoad..next];
+        Assert.Contains("BridgeEnsureSetupControls", onLoadBody);
+        Assert.DoesNotContain("BridgeAttachToActiveSession", onLoadBody);
+        Assert.Contains("function BridgePressStartMatch", Script);
+        Assert.Contains("function BridgePressResume", Script);
+        Assert.Contains("function BridgePressNewMatch", Script);
+        Assert.Contains("Click it again within 10 seconds", Script);
     }
 
     [Fact]

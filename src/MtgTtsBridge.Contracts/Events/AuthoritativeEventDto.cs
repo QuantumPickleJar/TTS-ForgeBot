@@ -18,7 +18,9 @@ public sealed record AuthoritativeEventDto(
     int? CounterValue = null,
     string? Keyword = null,
     bool? Tapped = null,
-    bool ContainsHiddenIdentity = false);
+    bool ContainsHiddenIdentity = false,
+    IReadOnlyDictionary<string, int>? ManaPool = null,
+    string? Phase = null);
 
 public sealed record EventBatchDto(
     long RequestedAfterSequence,

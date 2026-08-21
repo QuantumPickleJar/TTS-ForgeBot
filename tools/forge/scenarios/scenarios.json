@@ -1,0 +1,9 @@
+{
+  "priority-after-land": {
+    "state": "priority-after-land.pzl",
+    "humanDeck": "forge-headless/test_decks/monored.dck",
+    "aiDeck": "forge-headless/test_decks/monored.dck",
+    "seed": 8675309,
+    "expectedMilestone": "Playing Mountain leaves Hired Claw as a legal human main-priority action"
+  }
+}
