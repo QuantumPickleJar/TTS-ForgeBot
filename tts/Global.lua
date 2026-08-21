@@ -54,6 +54,10 @@ BridgeState = {
     endTurnObjectGuidBySeatId = {},
     passObjectGuidBySeatId = {},
     setupObjectGuidByKind = {},
+    turnCounterObjectGuidByKind = {},
+    turnCountsBySeatId = {},
+    tableTurnCount = 0,
+    turnCounterSessionId = nil,
     resetConfirmationArmed = false,
     selectedActionIds = {},
     selectedGuidByActionId = {},
@@ -87,6 +91,7 @@ BridgeState = {
     untappedRotationByGuid = {},
     snapshotForgeSequence = 0,
     bootstrapping = false,
+    setupBusy = false,
 }
 
 BridgeHttp = {}
@@ -257,6 +262,7 @@ function BridgeOnLoad()
     print("[Bridge] ForgeBot integration loaded.")
     Wait.frames(function()
         BridgeEnsureSetupControls()
+        BridgeEnsureTurnCounters()
         BridgeShowPreparationReadiness()
     end, 30)
 end
@@ -320,31 +326,130 @@ function BridgeEnsureSetupControl(kind, label, x, color, clickFunction, tooltip)
     })
 end
 
+-- Forge startup can take a minute while its card database loads.  Keep the
+-- setup controls visibly busy and reject duplicate clicks until the request
+-- has produced a usable session (or failed).
+function BridgeSetSetupBusy(busy, message)
+    BridgeState.setupBusy = busy
+    local labels = busy and {Start = "LOADING...", Resume = "LOADING...", Reset = "WAIT..."}
+        or {Start = "START\nMATCH", Resume = "RESUME", Reset = "NEW MATCH\n(2 CLICKS)"}
+    for kind, label in pairs(labels) do
+        local guid = BridgeState.setupObjectGuidByKind[kind]
+        local object = guid and getObjectFromGUID(guid) or nil
+        if object ~= nil then
+            pcall(function() object.editButton({index = 0, label = label}) end)
+        end
+    end
+    if busy and message ~= nil then broadcastToAll("[Bridge] " .. message, {1.0, 0.8, 0.2}) end
+end
+
 function BridgeEnsureSetupControls()
     BridgeEnsureSetupControl("Start", "START\nMATCH", -7.0, {0.12, 0.48, 0.25}, "BridgePressStartMatch", "Start only when no Forge match exists")
     BridgeEnsureSetupControl("Resume", "RESUME", -1.0, {0.15, 0.35, 0.65}, "BridgePressResume", "Attach to the active Forge match without resetting it")
     BridgeEnsureSetupControl("Reset", "NEW MATCH\n(2 CLICKS)", 5.0, {0.65, 0.18, 0.12}, "BridgePressNewMatch", "Explicitly replace the active Forge match; click twice")
 end
 
-function BridgePressStartMatch(object, playerColor, altClick)
-    BridgeGetHealth(function(ok, body, err)
-        if not ok then BridgeShowError("cannot start: companion unavailable: " .. tostring(err)); return end
-        local active = body.sessionId ~= nil and body.sessionId ~= "session-not-started"
-            and body.adapterState ~= "not_started" and body.adapterState ~= "failed"
-        if active then BridgeShowError("a Forge match already exists; use RESUME or explicitly choose NEW MATCH"); return end
-        if BridgeFindLibraryDeckForSeat("forge-player-1") == nil or BridgeFindLibraryDeckForSeat("forge-player-2") == nil then
-            BridgeShowError("both physical library decks must be present before START")
+-- These are presentation-only counters. Forge's turn events remain the sole
+-- authority; TTS never infers a turn from a card movement or timer.
+function BridgeEnsureTurnCounter(kind, label, position, color)
+    local existingGuid = BridgeState.turnCounterObjectGuidByKind[kind]
+    if existingGuid ~= nil and getObjectFromGUID(existingGuid) ~= nil then return end
+    local objectName = "Forge Turn Counter " .. kind
+    for _, object in ipairs(getAllObjects()) do
+        if object.getName() == objectName then
+            BridgeState.turnCounterObjectGuidByKind[kind] = object.getGUID()
             return
         end
-        BridgeStartSessionIfNone()
+    end
+    spawnObject({
+        type = "BlockSquare",
+        position = position,
+        scale = {1.7, 0.28, 0.9},
+        callback_function = function(object)
+            object.setName(objectName)
+            object.setLock(true)
+            object.setColorTint(color)
+            object.setRotation({0, 180, 0})
+            object.createButton({
+                click_function = "BridgeIgnoreTurnCounterClick",
+                function_owner = Global,
+                label = label .. "\n0",
+                position = {0, 0.55, 0},
+                width = 760,
+                height = 340,
+                font_size = 110,
+                color = color,
+                font_color = {1, 1, 1, 1},
+                tooltip = "Forge-authoritative turn counter"
+            })
+            BridgeState.turnCounterObjectGuidByKind[kind] = object.getGUID()
+            BridgeRefreshTurnCounterLabels()
+        end
+    })
+end
+
+function BridgeIgnoreTurnCounterClick(object, playerColor, altClick)
+    -- Deliberately noninteractive: only an authoritative Forge turn event updates it.
+end
+
+function BridgeEnsureTurnCounters()
+    BridgeEnsureTurnCounter("Table", "TABLE TURN", {x = -7.0, y = 1.6, z = -18.0}, {0.35, 0.35, 0.35})
+    BridgeEnsureTurnCounter("White", "WHITE TURN", {x = -1.0, y = 1.6, z = -18.0}, {0.88, 0.88, 0.88})
+    BridgeEnsureTurnCounter("Blue", "BLUE TURN", {x = 5.0, y = 1.6, z = -18.0}, {0.12, 0.35, 0.7})
+end
+
+function BridgeRefreshTurnCounterLabels()
+    local labels = {
+        Table = "TABLE TURN\n" .. tostring(BridgeState.tableTurnCount or 0),
+        White = "WHITE TURN\n" .. tostring(BridgeState.turnCountsBySeatId["forge-player-1"] or 0),
+        Blue = "BLUE TURN\n" .. tostring(BridgeState.turnCountsBySeatId["forge-player-2"] or 0)
+    }
+    for kind, label in pairs(labels) do
+        local guid = BridgeState.turnCounterObjectGuidByKind[kind]
+        local object = guid and getObjectFromGUID(guid) or nil
+        if object ~= nil then pcall(function() object.editButton({index = 0, label = label}) end) end
+    end
+end
+
+function BridgeRecordAuthoritativeTurn(seatId)
+    BridgeState.tableTurnCount = (BridgeState.tableTurnCount or 0) + 1
+    BridgeState.turnCountsBySeatId[seatId] = (BridgeState.turnCountsBySeatId[seatId] or 0) + 1
+    BridgeRefreshTurnCounterLabels()
+end
+
+function BridgePressStartMatch(object, playerColor, altClick)
+    if BridgeState.setupBusy then
+        BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
+        return
+    end
+    BridgeSetSetupBusy(true, "Forge match is loading; START and RESUME are temporarily disabled.")
+    BridgeGetHealth(function(ok, body, err)
+        if not ok then BridgeSetSetupBusy(false); BridgeShowError("cannot start: companion unavailable: " .. tostring(err)); return end
+        local active = body.sessionId ~= nil and body.sessionId ~= "session-not-started"
+            and body.adapterState ~= "not_started" and body.adapterState ~= "failed"
+        if active then BridgeSetSetupBusy(false); BridgeShowError("a Forge match already exists; use RESUME or explicitly choose NEW MATCH"); return end
+        if BridgeFindLibraryDeckForSeat("forge-player-1") == nil or BridgeFindLibraryDeckForSeat("forge-player-2") == nil then
+            BridgeSetSetupBusy(false); BridgeShowError("both physical library decks must be present before START")
+            return
+        end
+        BridgeStartSessionIfNone(function() BridgeSetSetupBusy(false) end)
     end)
 end
 
 function BridgePressResume(object, playerColor, altClick)
-    BridgeAttachToActiveSession()
+    if BridgeState.setupBusy then
+        BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
+        return
+    end
+    BridgeSetSetupBusy(true, "Checking the active Forge match; RESUME is temporarily disabled.")
+    BridgeAttachToActiveSession(function() BridgeSetSetupBusy(false) end)
 end
 
 function BridgePressNewMatch(object, playerColor, altClick)
+    if BridgeState.setupBusy then
+        BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
+        return
+    end
     if not BridgeState.resetConfirmationArmed then
         BridgeState.resetConfirmationArmed = true
         broadcastToAll("[Bridge] NEW MATCH is destructive. Click it again within 10 seconds to confirm.", {1.0, 0.55, 0.1})
@@ -352,32 +457,71 @@ function BridgePressNewMatch(object, playerColor, altClick)
         return
     end
     BridgeState.resetConfirmationArmed = false
+    BridgeSetSetupBusy(true, "Replacing the Forge match; setup controls are temporarily disabled.")
     BridgeResetSession()
 end
 
-function BridgeAttachToActiveSession()
+function BridgeAttachToActiveSession(done)
     BridgeGetHealth(function(ok, body, err)
         if not ok then
             BridgeClearHighlights()
+            if done then done() end
             BridgeShowError("health failed: " .. tostring(err))
             return
         end
 
         print("[Bridge] health ok. adapter=" .. tostring(body.adapter) .. " state=" .. tostring(body.adapterState))
+        if body.adapterState == "starting" then
+            BridgeWaitForForgeInitialization(1, done)
+            return
+        end
         if body.sessionId ~= nil and body.sessionId ~= "session-not-started"
             and body.adapterState ~= "failed" and body.adapterState ~= "not_started" then
-            BridgeBootstrapCurrentSnapshot(body.sessionId, function(bootstrapOk, bootstrapError)
+            BridgeBootstrapWhenAvailable(body.sessionId, 1, function(bootstrapOk, bootstrapError)
                 if bootstrapOk then
                     BridgeStartEventPolling(body.sessionId, true)
                     BridgeFetchDecisionAfterAttach()
                 else
                     BridgeStopOnDesync(bootstrapError)
                 end
+                if done then done() end
             end)
             return
         end
 
         BridgeFetchDecisionAfterAttach()
+        if done then done() end
+    end)
+end
+
+-- A Forge launch intentionally exposes state=starting before the first
+-- structured snapshot is available.  This is normal (and can take 90s), not
+-- a physical desynchronization.  Keep the setup controls busy and poll.
+function BridgeWaitForForgeInitialization(attempt, done)
+    if attempt > 75 then
+        if done then done() end
+        BridgeShowError("Forge initialization exceeded 150 seconds; inspect bridge logs")
+        return
+    end
+    BridgeGetHealth(function(ok, body, err)
+        if not ok then
+            if done then done() end
+            BridgeShowError("health failed while waiting for Forge: " .. tostring(err))
+            return
+        end
+        if body.adapterState == "starting" then
+            if attempt == 1 or attempt % 10 == 0 then
+                print("[Bridge] Forge is initializing... (" .. tostring(attempt * 2) .. "s)")
+            end
+            Wait.time(function() BridgeWaitForForgeInitialization(attempt + 1, done) end, 2)
+            return
+        end
+        if body.adapterState == "failed" then
+            if done then done() end
+            BridgeShowError("Forge failed during initialization; inspect bridge logs")
+            return
+        end
+        BridgeAttachToActiveSession(done)
     end)
 end
 
@@ -403,12 +547,13 @@ function BridgeRefreshDecision()
     end)
 end
 
-function BridgeStartSessionIfNone()
+function BridgeStartSessionIfNone(done)
     BridgeClearHighlights()
     BridgeState.lastDecision = nil
 
     BridgeStartSession(function(ok, body, err)
         if not ok then
+            if done then done() end
             BridgeShowError("session start failed: " .. tostring(err))
             return
         end
@@ -416,11 +561,12 @@ function BridgeStartSessionIfNone()
         print("[Bridge] started or attached session: " .. tostring(body and body.sessionId))
         -- The start route may attach to a match that already exists. Do not replay
         -- its historical physical events; an explicit reset is the new-match path.
-        BridgeBootstrapCurrentSnapshot(body.sessionId, function(bootstrapOk, bootstrapError)
-            if not bootstrapOk then BridgeStopOnDesync(bootstrapError); return end
+        BridgeBootstrapWhenAvailable(body.sessionId, 1, function(bootstrapOk, bootstrapError)
+            if not bootstrapOk then if done then done() end; BridgeStopOnDesync(bootstrapError); return end
             BridgeStartEventPolling(body.sessionId, true)
             if body ~= nil and body.currentDecision ~= nil then printDecision(body.currentDecision)
             else BridgeRefreshDecision() end
+            if done then done() end
         end)
     end)
 end
@@ -432,18 +578,20 @@ function BridgeResetSession()
 
     BridgeResetSessionRequest(function(ok, body, err)
         if not ok then
+            BridgeSetSetupBusy(false)
             BridgeShowError("explicit session reset failed: " .. tostring(err))
             return
         end
 
         print("[Bridge] active match explicitly replaced: " .. tostring(body and body.sessionId))
-        BridgeBootstrapCurrentSnapshot(body.sessionId, function(bootstrapOk, bootstrapError)
-            if not bootstrapOk then BridgeStopOnDesync(bootstrapError); return end
+        BridgeBootstrapWhenAvailable(body.sessionId, 1, function(bootstrapOk, bootstrapError)
+            if not bootstrapOk then BridgeSetSetupBusy(false); BridgeStopOnDesync(bootstrapError); return end
             -- The snapshot is authoritative through this point, so opening
             -- mutation records are acknowledged instead of replayed.
             BridgeStartEventPolling(body.sessionId, true)
             if body ~= nil and body.currentDecision ~= nil then printDecision(body.currentDecision)
             else BridgeRefreshDecision() end
+            BridgeSetSetupBusy(false)
         end)
     end)
 end
@@ -1038,6 +1186,23 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
     end)
 end
 
+function BridgeBootstrapWhenAvailable(sessionId, attempt, callback)
+    BridgeBootstrapCurrentSnapshot(sessionId, function(ok, err)
+        if ok or string.find(tostring(err), "HTTP 404", 1, true) == nil then
+            callback(ok, err)
+            return
+        end
+        if attempt >= 30 then
+            callback(false, "authoritative snapshot was unavailable after 60 seconds")
+            return
+        end
+        if attempt == 1 or attempt % 5 == 0 then
+            print("[Bridge] waiting for Forge's authoritative snapshot...")
+        end
+        Wait.time(function() BridgeBootstrapWhenAvailable(sessionId, attempt + 1, callback) end, 2)
+    end)
+end
+
 function BridgeAnnotateSnapshotBattlefieldKinds(snapshot, callback)
     local needsHistory = false
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
@@ -1412,6 +1577,12 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.untappedRotationByGuid = {}
     BridgeState.snapshotForgeSequence = 0
     BridgeState.yieldSeatId = nil
+    if BridgeState.turnCounterSessionId ~= sessionId then
+        BridgeState.turnCounterSessionId = sessionId
+        BridgeState.tableTurnCount = 0
+        BridgeState.turnCountsBySeatId = {}
+        BridgeRefreshTurnCounterLabels()
+    end
 end
 
 function BridgeStopEventPolling()
@@ -1546,6 +1717,7 @@ function BridgeApplyAuthoritativeEvent(event)
     if event.kind == "turn_changed" then
         BridgeReturnAttackPresentation(nil)
         BridgeState.currentTurnSeatId = event.seatId
+        BridgeRecordAuthoritativeTurn(event.seatId)
         print("[Bridge] authoritative turn changed to seat " .. tostring(event.seatId))
         if BridgeState.yieldSeatId ~= nil and BridgeState.yieldSeatId ~= event.seatId then
             BridgeState.yieldSeatId = nil
@@ -1590,6 +1762,19 @@ function BridgeApplyAuthoritativeEvent(event)
     if event.kind == "card_moved" then
         local applied, moveError = BridgeApplyStructuredCardMove(event)
         return applied, 1.0, moveError
+    end
+
+    -- Some tested Forge TUI resolution lines do not have a second text event
+    -- for stack -> graveyard. The resolved card identity is still Forge's;
+    -- this only gives its already-authoritative result a physical location.
+    if event.kind == "spell_resolved" and event.destinationZone == "graveyard" then
+        local object, resolveError = BridgeResolveResolvedSpellObject(event)
+        if object == nil then
+            return false, 0, resolveError
+        end
+        local moved, moveError = BridgeMoveToGraveyard(event, object)
+        if not moved then return false, 0, moveError end
+        return true, 0.8
     end
 
     if event.kind == "tap_changed" then
@@ -1683,6 +1868,20 @@ function BridgeApplyAuthoritativeEvent(event)
     return true, 0.1
 end
 
+function BridgeResolveResolvedSpellObject(event)
+    if event.cardInstanceId ~= nil then
+        local mapped, mappedError = BridgeResolveMappedInstance(event)
+        if mapped ~= nil then return mapped, nil end
+        -- Fall through only when Forge's textual resolution supplied a stale
+        -- object id; the physical card still has an unambiguous Forge name.
+    end
+    for _, zone in ipairs({"stack", "battlefield", "hand"}) do
+        local object, resolveError = BridgeResolvePhysicalCard(event, zone)
+        if object ~= nil then return object, nil end
+    end
+    return nil, "resolved spell cannot be uniquely located for its authoritative graveyard move"
+end
+
 function BridgeApplyStructuredCardMove(event)
     if event.cardInstanceId == nil then return false, "structured zone change has no cardInstanceId" end
     local guid = BridgeState.physicalByInstanceId[event.cardInstanceId]
@@ -1728,9 +1927,8 @@ function BridgeApplyStructuredCardMove(event)
         BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
         object.setPosition(BRIDGE_STACK_POSITION)
     elseif event.destinationZone == "graveyard" then
-        local anchor = seat.battlefieldAnchors.creature
-        object.use_hands = false
-        object.setPositionSmooth({anchor.x + 8, anchor.y, anchor.z}, false, true)
+        local moved, moveError = BridgeMoveToGraveyard(event, object)
+        if not moved then return false, moveError end
     elseif event.destinationZone == "exile" then
         local anchor = seat.battlefieldAnchors.creature
         object.use_hands = false
@@ -1743,6 +1941,23 @@ function BridgeApplyStructuredCardMove(event)
 
     BridgeState.physicalSeatByGuid[guid] = event.seatId
     BridgeState.physicalZoneByGuid[guid] = event.destinationZone
+    return true, nil
+end
+
+function BridgeMoveToGraveyard(event, object)
+    local seat = BRIDGE_SEATS[event.seatId]
+    if seat == nil then return false, "graveyard move has no configured seat" end
+    local anchor = seat.battlefieldAnchors.creature
+    local moved, movementError = pcall(function()
+        object.use_hands = false
+        BridgeSetPhysicalFaceDown(object, seat, false)
+        object.setPositionSmooth({anchor.x + 8, anchor.y, anchor.z}, false, true)
+    end)
+    if not moved then return false, "could not move card to graveyard: " .. tostring(movementError) end
+    local guid = object.getGUID()
+    BridgeState.physicalSeatByGuid[guid] = event.seatId
+    BridgeState.physicalZoneByGuid[guid] = "graveyard"
+    if event.cardInstanceId ~= nil then BridgeState.physicalByInstanceId[event.cardInstanceId] = guid end
     return true, nil
 end
 

@@ -76,6 +76,11 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeState.yieldSeatId = decision.seatId", Script);
         Assert.Contains("if action.type == \"pass_priority\"", Script);
         Assert.Contains("BridgeState.currentTurnSeatId = event.seatId", Script);
+        Assert.Contains("BridgeRecordAuthoritativeTurn(event.seatId)", Script);
+        Assert.Contains("function BridgeRecordAuthoritativeTurn", Script);
+        Assert.Contains("TABLE TURN", Script);
+        Assert.Contains("WHITE TURN", Script);
+        Assert.Contains("BLUE TURN", Script);
         Assert.DoesNotContain("Turns.turn_color", Script);
     }
 
@@ -217,11 +222,13 @@ public sealed class TtsGlobalLuaContractTests
     public void ActiveSessionAttach_RendersDecisionOnlyAfterSnapshotMappingCompletes()
     {
         var attach = Script.IndexOf("function BridgeAttachToActiveSession", StringComparison.Ordinal);
-        var bootstrap = Script.IndexOf("BridgeBootstrapCurrentSnapshot", attach, StringComparison.Ordinal);
+        var initializationWait = Script.IndexOf("BridgeWaitForForgeInitialization(1, done)", attach, StringComparison.Ordinal);
+        var bootstrap = Script.IndexOf("BridgeBootstrapWhenAvailable(body.sessionId, 1", attach, StringComparison.Ordinal);
         var decision = Script.IndexOf("BridgeFetchDecisionAfterAttach()", bootstrap, StringComparison.Ordinal);
         var callbackEnd = Script.IndexOf("end)", bootstrap, StringComparison.Ordinal);
 
         Assert.True(attach >= 0);
+        Assert.True(initializationWait > attach);
         Assert.True(bootstrap > attach);
         Assert.True(decision > bootstrap);
         Assert.True(decision < callbackEnd);
