@@ -119,6 +119,19 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void CombatSelections_UsePhysicalDropPreviewAndExplicitForgeFinishActions()
+    {
+        Assert.Contains("function BridgeEnsureContextualCompletionControl", Script);
+        Assert.Contains("DONE ATTACKING", Script);
+        Assert.Contains("DONE BLOCKING", Script);
+        Assert.Contains("finish_attacking", Script);
+        Assert.Contains("finish_blocking", Script);
+        Assert.Contains("BridgeMoveToAttackLane(intent.seatId, object)", Script);
+        Assert.Contains("BridgeMoveToBlockerLane(intent.seatId, object)", Script);
+        Assert.DoesNotContain("BridgeSubmitChoice(decision.decisionId, action.actionId)\n        return\n    end\n\n    if object.tag == \"Card\" and decision.requiresConfirmation", Script);
+    }
+
+    [Fact]
     public void ManaBanksReuseTableCountersAndDisplayForgeAbsolutePool()
     {
         Assert.Contains("BRIDGE_MANA_COUNTER_SOURCES", Script);
@@ -126,6 +139,19 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("counter.setVar(\"val\", amount)", Script);
         Assert.Contains("event.kind == \"mana_pool_changed\"", Script);
         Assert.Contains("seatSnapshot.manaPool", Script);
+        Assert.Contains("lifeCounter.getPosition()", Script);
+        Assert.Contains("seat.manaBankOffset", Script);
+    }
+
+    [Fact]
+    public void StatusPanelAndPhaseEventsClearStalePhysicalChoices()
+    {
+        Assert.Contains("function BridgeEnsureStatusPanel", Script);
+        Assert.Contains("CURRENT TURN:", Script);
+        Assert.Contains("PHASE:", Script);
+        Assert.Contains("FORGE INITIALIZING", Script);
+        Assert.Contains("BridgeClearHighlights()", Script);
+        Assert.Contains("BridgeState.lastDecision = nil", Script);
     }
 
     [Fact]
@@ -281,6 +307,20 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("local dx = current.x - intent.position.x", Script);
         Assert.Contains("if dx * dx + dz * dz < 1.0 then", Script);
         Assert.DoesNotContain("function BridgeObjectIsInHand", Script);
+    }
+
+    [Fact]
+    public void CancelledPhysicalIntent_PreservesItsAuthoritativeInstanceMapping()
+    {
+        Assert.Contains("physicalSeatId = BridgeState.physicalSeatByGuid[object.getGUID()]", Script);
+        Assert.Contains("physicalZone = BridgeState.physicalZoneByGuid[object.getGUID()]", Script);
+        Assert.Contains("BridgeState.physicalSeatByGuid[intent.guid] = intent.physicalSeatId", Script);
+        Assert.Contains("BridgeState.physicalZoneByGuid[intent.guid] = intent.physicalZone", Script);
+        var rollbackStart = Script.IndexOf("function BridgeRollbackPendingIntent", StringComparison.Ordinal);
+        var rollbackEnd = Script.IndexOf("function BridgeBootstrapCurrentSnapshot", rollbackStart, StringComparison.Ordinal);
+        var rollback = Script[rollbackStart..rollbackEnd];
+        Assert.DoesNotContain("BridgeState.physicalSeatByGuid[intent.guid] = nil", rollback);
+        Assert.DoesNotContain("BridgeState.physicalZoneByGuid[intent.guid] = nil", rollback);
     }
 
     [Fact]

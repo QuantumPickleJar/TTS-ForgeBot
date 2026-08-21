@@ -19,7 +19,7 @@ BRIDGE_SEATS = {
         tableSideZ = -1,
         attackLaneZ = -0.9,
         blockerLaneZ = -2.2,
-        manaBankAnchor = {x = -10.0, y = 1.25, z = -2.0},
+        manaBankOffset = {x = -3.8, y = 0.45, z = -0.55},
         faceUpRotation = {x = 0, y = 180, z = 0},
         battlefieldAnchors = {
             land = {x = 6.5, y = 2.0, z = -11.5},
@@ -37,7 +37,7 @@ BRIDGE_SEATS = {
         tableSideZ = 1,
         attackLaneZ = 0.9,
         blockerLaneZ = 2.2,
-        manaBankAnchor = {x = -10.0, y = 1.25, z = 2.0},
+        manaBankOffset = {x = -3.8, y = 0.45, z = 0.55},
         faceUpRotation = {x = 0, y = 0, z = 0},
         battlefieldAnchors = {
             land = {x = 6.5, y = 2.0, z = 11.5},
@@ -54,6 +54,9 @@ BridgeState = {
     endTurnObjectGuidBySeatId = {},
     passObjectGuidBySeatId = {},
     setupObjectGuidByKind = {},
+    statusObjectGuid = nil,
+    statusHeadline = "CLIENT LOADED",
+    statusDetail = "Checking companion...",
     turnCounterObjectGuidByKind = {},
     turnCountsBySeatId = {},
     tableTurnCount = 0,
@@ -260,16 +263,73 @@ end
 
 function BridgeOnLoad()
     print("[Bridge] ForgeBot integration loaded.")
+    BridgeSetStatus("CLIENT LOADED", "Checking companion...")
     Wait.frames(function()
         BridgeEnsureSetupControls()
         BridgeEnsureTurnCounters()
+        BridgeEnsureStatusPanel()
         BridgeShowPreparationReadiness()
     end, 30)
+end
+
+function BridgeEnsureStatusPanel()
+    local existing = BridgeState.statusObjectGuid and getObjectFromGUID(BridgeState.statusObjectGuid) or nil
+    if existing ~= nil then BridgeRefreshStatusPanel(); return end
+    for _, object in ipairs(getAllObjects()) do
+        if object.getName() == "Forge Status" then
+            BridgeState.statusObjectGuid = object.getGUID()
+            BridgeRefreshStatusPanel()
+            return
+        end
+    end
+    spawnObject({
+        type = "BlockSquare",
+        position = {-1.0, 1.6, 0},
+        scale = {4.8, 0.3, 1.25},
+        callback_function = function(object)
+            object.setName("Forge Status")
+            object.setLock(true)
+            object.setColorTint({0.12, 0.12, 0.16})
+            object.createButton({
+                click_function = "BridgeIgnoreStatusClick",
+                function_owner = Global,
+                label = "",
+                position = {0, 0.55, 0},
+                width = 1750,
+                height = 420,
+                font_size = 115,
+                color = {0.12, 0.12, 0.16, 1},
+                font_color = {1, 1, 1, 1},
+                tooltip = "Forge-authoritative game status"
+            })
+            BridgeState.statusObjectGuid = object.getGUID()
+            BridgeRefreshStatusPanel()
+        end
+    })
+end
+
+function BridgeIgnoreStatusClick(object, playerColor, altClick)
+end
+
+function BridgeSetStatus(headline, detail)
+    BridgeState.statusHeadline = headline or BridgeState.statusHeadline
+    BridgeState.statusDetail = detail or ""
+    BridgeRefreshStatusPanel()
+end
+
+function BridgeRefreshStatusPanel()
+    local object = BridgeState.statusObjectGuid and getObjectFromGUID(BridgeState.statusObjectGuid) or nil
+    if object ~= nil then
+        pcall(function()
+            object.editButton({index = 0, label = tostring(BridgeState.statusHeadline) .. "\n" .. tostring(BridgeState.statusDetail)})
+        end)
+    end
 end
 
 function BridgeShowPreparationReadiness()
     BridgeGetHealth(function(ok, body, err)
         if not ok then
+            BridgeSetStatus("ERROR", "Companion unavailable")
             print("[Bridge] preparation: companion unavailable: " .. tostring(err))
             return
         end
@@ -279,6 +339,17 @@ function BridgeShowPreparationReadiness()
             "[Bridge] preparation: Companion=READY Human deck=%s AI deck=%s active=%s",
             humanDeck and "FOUND" or "MISSING", aiDeck and "FOUND" or "MISSING",
             tostring(body.sessionId ~= nil and body.sessionId ~= "session-not-started" and body.adapterState ~= "not_started" and body.adapterState ~= "failed")))
+        if body.adapterState == "starting" then
+            BridgeSetStatus("FORGE INITIALIZING", "Loading Forge card database")
+        elseif body.adapterState == "failed" then
+            BridgeSetStatus("ERROR", "Forge process failed")
+        elseif body.sessionId == nil or body.sessionId == "session-not-started" then
+            BridgeSetStatus("COMPANION READY", "READY TO START")
+        elseif body.adapterState == "awaiting_human_decision" then
+            BridgeSetStatus("MATCH ACTIVE", "YOUR PRIORITY")
+        else
+            BridgeSetStatus("MATCH ACTIVE", "AI THINKING")
+        end
     end)
 end
 
@@ -341,6 +412,7 @@ function BridgeSetSetupBusy(busy, message)
         end
     end
     if busy and message ~= nil then broadcastToAll("[Bridge] " .. message, {1.0, 0.8, 0.2}) end
+    if busy then BridgeSetStatus("FORGE INITIALIZING", message or "Please wait") end
 end
 
 function BridgeEnsureSetupControls()
@@ -510,6 +582,7 @@ function BridgeWaitForForgeInitialization(attempt, done)
             return
         end
         if body.adapterState == "starting" then
+            BridgeSetStatus("FORGE INITIALIZING", "Loading Forge card database (" .. tostring(attempt * 2) .. "s)")
             if attempt == 1 or attempt % 10 == 0 then
                 print("[Bridge] Forge is initializing... (" .. tostring(attempt * 2) .. "s)")
             end
@@ -517,6 +590,7 @@ function BridgeWaitForForgeInitialization(attempt, done)
             return
         end
         if body.adapterState == "failed" then
+            BridgeSetStatus("ERROR", "Forge initialization failed")
             if done then done() end
             BridgeShowError("Forge failed during initialization; inspect bridge logs")
             return
@@ -607,6 +681,17 @@ function printDecision(decision)
     end
 
     BridgeState.lastDecision = decision
+    local seat = BRIDGE_SEATS[decision.seatId]
+    local actor = seat and seat.ttsColor or decision.seatId
+    if decision.kind == "attacker_selection" then
+        BridgeSetStatus("SELECTION REQUIRED", tostring(actor) .. " — DECLARE ATTACKERS")
+    elseif decision.kind == "blocker_selection" then
+        BridgeSetStatus("SELECTION REQUIRED", tostring(actor) .. " — DECLARE BLOCKERS")
+    elseif decision.kind == "target_selection" then
+        BridgeSetStatus("SELECTION REQUIRED", tostring(actor) .. " — CHOOSE TARGET")
+    else
+        BridgeSetStatus("YOUR PRIORITY", tostring(actor) .. " — " .. tostring(BridgeState.currentPhase or "Forge decision"))
+    end
     BridgeRenderDecision(decision)
 
     print("[Bridge] decision " .. tostring(decision.decisionId) .. " kind=" .. tostring(decision.kind))
@@ -679,6 +764,66 @@ function BridgeClearHighlights()
     BridgeState.highlightedGuids = {}
     BridgeState.actionByGuid = {}
     BridgeState.targetButtonIndexByGuid = {}
+end
+
+function BridgeEnsureContextualCompletionControl(decision)
+    if decision == nil or (decision.kind ~= "attacker_selection" and decision.kind ~= "blocker_selection") then return end
+    if #(BridgeState.selectionControlGuids or {}) > 0 then return end
+    local completionAction = nil
+    for _, action in ipairs(decision.actions or {}) do
+        if action.type == "finish_attacking" or action.type == "finish_blocking" or action.type == "choose_none" then
+            completionAction = action
+            break
+        end
+    end
+    if completionAction == nil then return end
+    local seat = BRIDGE_SEATS[decision.seatId]
+    if seat == nil then return end
+    local isAttacking = completionAction.type == "finish_attacking"
+    local label = isAttacking and "DONE ATTACKING\n(NO MORE ATTACKERS)" or "DONE BLOCKING\n(NO MORE BLOCKERS)"
+    spawnObject({
+        type = "BlockSquare",
+        position = {-2.0, 1.6, seat.tableSideZ * 10.0},
+        scale = {4.0, 0.35, 1.45},
+        callback_function = function(object)
+            object.setName("Forge Combat Completion " .. tostring(decision.decisionId))
+            object.setLock(true)
+            local color = isAttacking and {0.76, 0.3, 0.08} or {0.14, 0.42, 0.72}
+            object.setColorTint(color)
+            object.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0})
+            object.createButton({
+                click_function = "BridgeCompleteCombatSelection",
+                function_owner = Global,
+                label = label,
+                position = {0, 0.6, 0},
+                width = 1450,
+                height = 480,
+                font_size = 130,
+                color = color,
+                font_color = {1, 1, 1, 1},
+                tooltip = "Submit Forge's explicit no-further-selection action"
+            })
+            object.setVar("bridgeDecisionId", decision.decisionId)
+            object.setVar("bridgeActionId", completionAction.actionId)
+            table.insert(BridgeState.selectionControlGuids, object.getGUID())
+        end
+    })
+end
+
+function BridgeCompleteCombatSelection(object, playerColor, altClick)
+    if object == nil or BridgeState.submitting then return end
+    local decision = BridgeState.lastDecision
+    local decisionId = object.getVar("bridgeDecisionId")
+    local actionId = object.getVar("bridgeActionId")
+    if decision == nil or decision.decisionId ~= decisionId then
+        BridgeShowError("combat completion control is stale")
+        BridgeResetSelectionState()
+        return
+    end
+    BridgeClaimHumanTtsColor(decision.seatId, playerColor)
+    BridgeClearHighlights()
+    BridgeResetSelectionState()
+    BridgeSubmitChoice(decisionId, actionId)
 end
 
 function BridgeInstallTargetButton(object, targetSeatId)
@@ -936,6 +1081,7 @@ function BridgeRenderDecision(decision)
         BridgeState.selectionDecisionId = decision.decisionId
     end
     BridgeEnsureSelectionControls(decision)
+    BridgeEnsureContextualCompletionControl(decision)
 
     if decision.kind == "main_priority" then
         BridgeEnsureEndTurnButton(decision.seatId)
@@ -1055,6 +1201,8 @@ function onObjectPickUp(playerColor, object)
         position = object.getPosition(),
         rotation = object.getRotation(),
         useHands = object.use_hands,
+        physicalSeatId = BridgeState.physicalSeatByGuid[object.getGUID()],
+        physicalZone = BridgeState.physicalZoneByGuid[object.getGUID()],
         decisionId = decision.decisionId,
         action = action,
         seatId = decision.seatId
@@ -1107,6 +1255,23 @@ function onObjectDrop(playerColor, object)
         BridgeState.physicalZoneByGuid[intent.guid] = "battlefield"
     end
 
+    if intent.action.type == "choose_attacker" or intent.action.type == "choose_blocker" then
+        local current = object.getPosition()
+        local dx = current.x - intent.position.x
+        local dz = current.z - intent.position.z
+        if dx * dx + dz * dz < 1.0 then
+            BridgeRollbackPendingIntent()
+            BridgeRenderDecision(decision)
+            return
+        end
+        object.use_hands = false
+        if intent.action.type == "choose_attacker" then
+            BridgeMoveToAttackLane(intent.seatId, object)
+        else
+            BridgeMoveToBlockerLane(intent.seatId, object)
+        end
+    end
+
     BridgeSubmitChoice(intent.decisionId, intent.action.actionId)
 end
 
@@ -1115,7 +1280,12 @@ function BridgeCommitPendingIntent()
     BridgeState.pendingIntent = nil
     if intent == nil then return end
 
-    if intent.action.type ~= "play_land" and intent.action.type ~= "cast_spell" then
+    if intent.action.type == "choose_attacker" or intent.action.type == "choose_blocker" then
+        -- Keep the physical preview in its combat lane. Forge's subsequent
+        -- authoritative attack/block event will confirm or correct it.
+        local object = getObjectFromGUID(intent.guid)
+        if object ~= nil then object.use_hands = false end
+    elseif intent.action.type ~= "play_land" and intent.action.type ~= "cast_spell" then
         local object = getObjectFromGUID(intent.guid)
         if object ~= nil then
             object.use_hands = intent.useHands
@@ -1142,8 +1312,11 @@ function BridgeRollbackPendingIntent()
         object.setRotationSmooth(intent.rotation, false, true)
         object.highlightOn({1.0, 0.1, 0.1}, 2)
     end
-    BridgeState.physicalSeatByGuid[intent.guid] = nil
-    BridgeState.physicalZoneByGuid[intent.guid] = nil
+    -- Preview/cancel must never discard an established Forge-instance mapping.
+    -- Losing it caused a later authoritative hand->battlefield event to be
+    -- unembodiable even though the player had only cancelled a physical move.
+    BridgeState.physicalSeatByGuid[intent.guid] = intent.physicalSeatId
+    BridgeState.physicalZoneByGuid[intent.guid] = intent.physicalZone
 end
 
 function BridgeBootstrapCurrentSnapshot(sessionId, callback)
@@ -1488,7 +1661,13 @@ end
 
 function BridgeEnsureManaBank(seatId)
     local seat = BRIDGE_SEATS[seatId]
-    if seat == nil or seat.manaBankAnchor == nil then return false end
+    if seat == nil or seat.manaBankOffset == nil then return false end
+    local lifeCounter = getObjectFromGUID(seat.lifeCounterGuid)
+    if lifeCounter == nil then
+        BridgeShowError("missing life counter for mana bank in seat " .. tostring(seatId))
+        return false
+    end
+    local lifePosition = lifeCounter.getPosition()
     BridgeState.manaCounterGuidBySeatId[seatId] = BridgeState.manaCounterGuidBySeatId[seatId] or {}
     for index, color in ipairs(BRIDGE_MANA_COLORS) do
         local expectedName = "Forge Mana " .. color .. " " .. seatId
@@ -1507,15 +1686,20 @@ function BridgeEnsureManaBank(seatId)
             end
             counter = source.clone({
                 position = {
-                    seat.manaBankAnchor.x + (index - 1) * 1.25,
-                    seat.manaBankAnchor.y,
-                    seat.manaBankAnchor.z
+                    lifePosition.x + seat.manaBankOffset.x + (index - 1) * 1.25,
+                    lifePosition.y + seat.manaBankOffset.y,
+                    lifePosition.z + seat.manaBankOffset.z
                 }
             })
             counter.setName(expectedName)
             counter.setScale({0.55, 0.55, 0.55})
             counter.setLock(true)
         end
+        counter.setPosition({
+            lifePosition.x + seat.manaBankOffset.x + (index - 1) * 1.25,
+            lifePosition.y + seat.manaBankOffset.y,
+            lifePosition.z + seat.manaBankOffset.z
+        })
         BridgeState.manaCounterGuidBySeatId[seatId][color] = counter.getGUID()
     end
     return true
@@ -1718,6 +1902,8 @@ function BridgeApplyAuthoritativeEvent(event)
         BridgeReturnAttackPresentation(nil)
         BridgeState.currentTurnSeatId = event.seatId
         BridgeRecordAuthoritativeTurn(event.seatId)
+        local turnSeat = BRIDGE_SEATS[event.seatId]
+        BridgeSetStatus("CURRENT TURN: " .. tostring(turnSeat and turnSeat.ttsColor or event.seatId), "AI THINKING")
         print("[Bridge] authoritative turn changed to seat " .. tostring(event.seatId))
         if BridgeState.yieldSeatId ~= nil and BridgeState.yieldSeatId ~= event.seatId then
             BridgeState.yieldSeatId = nil
@@ -1726,6 +1912,12 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "phase_changed" then
+        BridgeState.currentPhase = event.phase or "Unknown phase"
+        BridgeClearHighlights()
+        if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
+            BridgeState.lastDecision = nil
+        end
+        BridgeSetStatus("CURRENT TURN: " .. tostring((BRIDGE_SEATS[BridgeState.currentTurnSeatId] or {}).ttsColor or BridgeState.currentTurnSeatId or "Unknown"), "PHASE: " .. tostring(BridgeState.currentPhase))
         local phase = string.lower(tostring(event.phase or ""))
         if string.find(phase, "main phase", 1, true) ~= nil
             or string.find(phase, "end", 1, true) ~= nil

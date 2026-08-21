@@ -5,5 +5,19 @@
     "aiDeck": "forge-headless/test_decks/monored.dck",
     "seed": 8675309,
     "expectedMilestone": "Playing Mountain leaves Hired Claw as a legal human main-priority action"
+  },
+  "one-mountain-witchstalker": {
+    "state": "one-mountain-witchstalker.pzl",
+    "humanDeck": "forge-headless/test_decks/monored.dck",
+    "aiDeck": "forge-headless/test_decks/monored.dck",
+    "seed": 8675309,
+    "expectedMilestone": "Witchstalker Frenzy is not offered with one Mountain and no cost reduction"
+  },
+  "four-mountain-witchstalker": {
+    "state": "four-mountain-witchstalker.pzl",
+    "humanDeck": "forge-headless/test_decks/monored.dck",
+    "aiDeck": "forge-headless/test_decks/monored.dck",
+    "seed": 8675309,
+    "expectedMilestone": "Witchstalker Frenzy is offered only when Forge's mana-payment path can pay it"
   }
 }
