@@ -156,7 +156,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            CreateNoWindow = true,
+            CreateNoWindow = !_options.ShowConsoleWindow,
         };
 
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
@@ -621,8 +621,42 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     {
         if (string.IsNullOrWhiteSpace(_options.Executable) || string.IsNullOrWhiteSpace(_options.WorkingDirectory))
             throw new InvalidOperationException("Forge:Executable and Forge:WorkingDirectory must be configured when Bridge:Adapter is ForgeTui.");
-        if (!File.Exists(_options.Executable)) throw new FileNotFoundException("Configured Forge executable was not found.", _options.Executable);
-        if (!Directory.Exists(_options.WorkingDirectory)) throw new DirectoryNotFoundException($"Configured Forge working directory was not found: {_options.WorkingDirectory}");
+        if (!CanResolveExecutable(_options.Executable))
+            throw new FileNotFoundException("Configured Forge executable was not found.", _options.Executable);
+        if (!Directory.Exists(_options.WorkingDirectory))
+            throw new DirectoryNotFoundException($"Configured Forge working directory was not found: {_options.WorkingDirectory}");
+    }
+
+    private static bool CanResolveExecutable(string executable)
+    {
+        if (string.IsNullOrWhiteSpace(executable)) return false;
+        if (File.Exists(executable)) return true;
+
+        if (Path.IsPathRooted(executable) || executable.Contains('/') || executable.Contains('\\'))
+            return false;
+
+        var pathEntries = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var pathEntry in pathEntries)
+        {
+            if (string.IsNullOrWhiteSpace(pathEntry)) continue;
+
+            var candidates = new[]
+            {
+                Path.Combine(pathEntry, executable),
+                Path.Combine(pathEntry, executable + ".exe"),
+                Path.Combine(pathEntry, executable + ".cmd"),
+                Path.Combine(pathEntry, executable + ".bat"),
+                Path.Combine(pathEntry, executable + ".com"),
+            };
+
+            foreach (var candidate in candidates)
+            {
+                if (File.Exists(candidate)) return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task StopProcessAsync()

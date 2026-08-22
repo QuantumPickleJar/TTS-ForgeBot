@@ -12,6 +12,8 @@ public sealed class ForgeTuiOptions
 
     public int DecisionTimeoutSeconds { get; init; } = 300;
 
+    public bool ShowConsoleWindow { get; init; } = true;
+
     public string HumanSeatId { get; init; } = "forge-player-1";
 
     public Dictionary<string, string> PlayerSeats { get; init; } = new(StringComparer.OrdinalIgnoreCase)

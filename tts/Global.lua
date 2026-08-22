@@ -66,11 +66,14 @@ BridgeState = {
     selectedGuidByActionId = {},
     selectionDecisionId = nil,
     selectionControlGuids = {},
+    optionControlGuids = {},
+    optionControlDecisionId = nil,
     attackOriginByGuid = {},
     attackLaneGuidBySeatId = {},
     manaCounterGuidBySeatId = {},
     submitting = false,
     pendingIntent = nil,
+    pendingDecision = nil,
     eventSessionId = nil,
     lastReceivedEventSequence = 0,
     lastAppliedEventSequence = 0,
@@ -78,6 +81,9 @@ BridgeState = {
     eventPollGeneration = 0,
     eventRequestInFlight = false,
     eventPollScheduled = false,
+    decisionPollGeneration = 0,
+    decisionPollInFlight = false,
+    decisionPollScheduled = false,
     eventRetryCount = 0,
     skipExistingEventsOnAttach = false,
     eventQueue = {},
@@ -96,11 +102,25 @@ BridgeState = {
     snapshotForgeSequence = 0,
     snapshotReconcileInFlight = false,
     snapshotReconcilePending = false,
+    zoneAnchorGuidBySeatAndZone = {},
     bootstrapping = false,
     setupBusy = false,
 }
 
 BridgeHttp = {}
+
+function BridgeHideMainPriorityControls()
+    for seatId, guid in pairs(BridgeState.endTurnObjectGuidBySeatId or {}) do
+        local object = getObjectFromGUID(guid)
+        if object ~= nil then object.destruct() end
+        BridgeState.endTurnObjectGuidBySeatId[seatId] = nil
+    end
+    for seatId, guid in pairs(BridgeState.passObjectGuidBySeatId or {}) do
+        local object = getObjectFromGUID(guid)
+        if object ~= nil then object.destruct() end
+        BridgeState.passObjectGuidBySeatId[seatId] = nil
+    end
+end
 
 function BridgeHttp.requestJson(method, path, payload, callback)
     local url = BRIDGE_BASE_URL .. path
@@ -121,6 +141,181 @@ function BridgeHttp.requestJson(method, path, payload, callback)
     WebRequest.custom(url, method, true, body, headers, function(request)
         BridgeHttp.handleResponse(request, callback)
     end)
+end
+
+function BridgeSeatIdForObjectSide(object)
+    for seatId, seat in pairs(BRIDGE_SEATS) do
+        if BridgeObjectIsOnSeatSide(object, seat) then
+            return seatId
+        end
+    end
+    return nil
+end
+
+function BridgeNearestSeatIdForPosition(position, seatIds)
+    local nearestSeatId = nil
+    local nearestDistance = nil
+    for _, seatId in ipairs(seatIds or {}) do
+        local seat = BRIDGE_SEATS[seatId]
+        local library = seat and getObjectFromGUID(seat.libraryZoneGuid) or nil
+        if library ~= nil then
+            local anchor = library.getPosition()
+            local dx = position.x - anchor.x
+            local dz = position.z - anchor.z
+            local distance = dx * dx + dz * dz
+            if nearestDistance == nil or distance < nearestDistance then
+                nearestDistance = distance
+                nearestSeatId = seatId
+            end
+        end
+    end
+    return nearestSeatId
+end
+
+function BridgeLibraryStagingPosition(seat, stagedBySeat, seatId)
+    local library = seat and getObjectFromGUID(seat.libraryZoneGuid) or nil
+    if library == nil then return nil end
+    local offset = stagedBySeat[seatId] or 0
+    stagedBySeat[seatId] = offset + 1
+    local position = library.getPosition()
+    return {
+        x = position.x + ((offset % 8) - 3.5) * 0.2,
+        y = position.y + 1.5 + math.floor(offset / 8) * 0.03,
+        z = position.z
+    }
+end
+
+function BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat)
+    local seat = seatId and BRIDGE_SEATS[seatId] or nil
+    if seat == nil then return false end
+    local staging = BridgeLibraryStagingPosition(seat, stagedBySeat, seatId)
+    if staging == nil then return false end
+    object.use_hands = false
+    BridgeSetPhysicalFaceDown(object, seat, true)
+    object.setPosition(staging)
+    return true
+end
+
+function BridgeZoneAnchorCacheKey(seatId, zoneName)
+    return tostring(seatId) .. ":" .. tostring(zoneName)
+end
+
+function BridgeFindNamedZoneObjectForSeat(seatId, zoneName)
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil then return nil end
+
+    local keyword = nil
+    if zoneName == "graveyard" then keyword = "graveyard" end
+    if zoneName == "exile" then keyword = "exile" end
+    if keyword == nil then return nil end
+
+    local library = getObjectFromGUID(seat.libraryZoneGuid)
+    local nearest = nil
+    local nearestDistance = nil
+    for _, object in ipairs(getAllObjects()) do
+        local name = string.lower(tostring(object.getName() or ""))
+        if string.find(name, keyword, 1, true) ~= nil and BridgeObjectIsOnSeatSide(object, seat) then
+            if library == nil then
+                return object
+            end
+            local objectPos = object.getPosition()
+            local libraryPos = library.getPosition()
+            local dx = objectPos.x - libraryPos.x
+            local dz = objectPos.z - libraryPos.z
+            local distance = dx * dx + dz * dz
+            if nearestDistance == nil or distance < nearestDistance then
+                nearestDistance = distance
+                nearest = object
+            end
+        end
+    end
+    return nearest
+end
+
+function BridgeResolveSeatZoneAnchor(seatId, zoneName)
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil then return nil end
+
+    local cacheKey = BridgeZoneAnchorCacheKey(seatId, zoneName)
+    local cachedGuid = BridgeState.zoneAnchorGuidBySeatAndZone[cacheKey]
+    if cachedGuid ~= nil then
+        local cached = getObjectFromGUID(cachedGuid)
+        if cached ~= nil then return cached.getPosition() end
+        BridgeState.zoneAnchorGuidBySeatAndZone[cacheKey] = nil
+    end
+
+    local configuredGuid = seat[zoneName .. "ZoneGuid"]
+    if configuredGuid ~= nil then
+        local configured = getObjectFromGUID(configuredGuid)
+        if configured ~= nil then
+            BridgeState.zoneAnchorGuidBySeatAndZone[cacheKey] = configuredGuid
+            return configured.getPosition()
+        end
+    end
+
+    local named = BridgeFindNamedZoneObjectForSeat(seatId, zoneName)
+    if named ~= nil then
+        BridgeState.zoneAnchorGuidBySeatAndZone[cacheKey] = named.getGUID()
+        return named.getPosition()
+    end
+
+    local library = getObjectFromGUID(seat.libraryZoneGuid)
+    if library ~= nil then
+        local libraryPos = library.getPosition()
+        local towardCenter = BridgeUnitTowardTableCenter(libraryPos)
+        if zoneName == "graveyard" then
+            return {
+                x = libraryPos.x + towardCenter.x * 2.8,
+                y = seat.battlefieldAnchors.creature.y,
+                z = libraryPos.z + towardCenter.z * 2.8
+            }
+        end
+        if zoneName == "exile" then
+            return {
+                x = libraryPos.x - towardCenter.x * 2.2,
+                y = seat.battlefieldAnchors.creature.y,
+                z = libraryPos.z - towardCenter.z * 2.2
+            }
+        end
+    end
+
+    return nil
+end
+
+function BridgeStageSeatCardsForBootstrap(snapshot)
+    local knownSeatIds = {}
+    local knownSeatIdSet = {}
+    for _, seatSnapshot in ipairs(snapshot.seats or {}) do
+        table.insert(knownSeatIds, seatSnapshot.seatId)
+        knownSeatIdSet[seatSnapshot.seatId] = true
+    end
+
+    local stagedBySeat = {}
+    local stagedCount = 0
+    for seatId, seat in pairs(BRIDGE_SEATS) do
+        local handObjects = Player[seat.ttsColor].getHandObjects() or {}
+        for _, object in ipairs(handObjects) do
+            if BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat) then
+                stagedCount = stagedCount + 1
+            end
+        end
+    end
+
+    for _, object in ipairs(getAllObjects()) do
+        if object.tag == "Card" then
+            local seatId = BridgeSeatIdForObjectSide(object)
+            if seatId == nil or not knownSeatIdSet[seatId] then
+                seatId = BridgeNearestSeatIdForPosition(object.getPosition(), knownSeatIds)
+            end
+            if BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat) then
+                stagedCount = stagedCount + 1
+            end
+        end
+    end
+
+    if stagedCount > 0 then
+        print("[Bridge] staged " .. tostring(stagedCount) .. " loose card(s) near library before authoritative bootstrap")
+    end
 end
 
 function BridgeHttp.handleResponse(request, callback)
@@ -179,12 +374,72 @@ function BridgeGetDecision(callback)
             BridgeState.lastDecision = body
         else
             BridgeState.lastDecision = nil
+            BridgeState.pendingDecision = nil
             BridgeClearHighlights()
             BridgeResetSelectionState()
         end
 
         callback(ok, body, err, request)
     end)
+end
+
+function BridgeStopDecisionPolling()
+    BridgeState.decisionPollGeneration = BridgeState.decisionPollGeneration + 1
+    BridgeState.decisionPollInFlight = false
+    BridgeState.decisionPollScheduled = false
+end
+
+function BridgeScheduleDecisionPoll(delay, generation, attempt)
+    if generation ~= BridgeState.decisionPollGeneration then return end
+    if BridgeState.lastDecision ~= nil or BridgeState.submitting then return end
+    if BridgeState.decisionPollInFlight or BridgeState.decisionPollScheduled then return end
+
+    BridgeState.decisionPollScheduled = true
+    Wait.time(function()
+        if generation ~= BridgeState.decisionPollGeneration then return end
+        BridgeState.decisionPollScheduled = false
+        BridgePollForNextDecision(generation, attempt)
+    end, delay)
+end
+
+function BridgePollForNextDecision(generation, attempt)
+    if generation ~= BridgeState.decisionPollGeneration then return end
+    if BridgeState.lastDecision ~= nil or BridgeState.submitting then return end
+    if BridgeState.decisionPollInFlight then return end
+
+    BridgeState.decisionPollInFlight = true
+    BridgeHttp.requestJson("GET", "/api/v1/decision", nil, function(ok, body, err, request)
+        if generation ~= BridgeState.decisionPollGeneration then return end
+
+        BridgeState.decisionPollInFlight = false
+        if ok and body ~= nil then
+            BridgeState.lastDecision = body
+            printDecision(body)
+            return
+        end
+
+        local responseCode = request and tonumber(request.response_code) or nil
+        local noPendingDecision = (body ~= nil and body.errorCode == "no_pending_decision") or responseCode == 404
+        if noPendingDecision then
+            if attempt == 1 or attempt % 10 == 0 then
+                print("[Bridge] waiting for Forge's next decision...")
+            end
+            if attempt >= 180 then
+                BridgeShowError("Forge did not expose a follow-up decision within 90 seconds")
+                return
+            end
+            BridgeScheduleDecisionPoll(0.5, generation, attempt + 1)
+            return
+        end
+
+        BridgeShowError("decision poll failed: " .. tostring(err))
+        BridgeScheduleDecisionPoll(1.0, generation, attempt + 1)
+    end)
+end
+
+function BridgeStartDecisionPolling()
+    BridgeStopDecisionPolling()
+    BridgeScheduleDecisionPoll(0.25, BridgeState.decisionPollGeneration, 1)
 end
 
 function BridgeSubmitChoice(decisionId, actionId)
@@ -212,6 +467,7 @@ function BridgeSubmitChoice(decisionId, actionId)
         actionId = actionId
     }
 
+    BridgeState.pendingDecision = nil
     BridgeState.submitting = true
     BridgeHttp.requestJson("POST", "/api/v1/choice", payload, function(ok, body, err)
         BridgeState.submitting = false
@@ -236,12 +492,14 @@ function BridgeSubmitChoice(decisionId, actionId)
         end
 
         if body ~= nil and body.currentDecision ~= nil then
+            BridgeStopDecisionPolling()
             BridgeState.lastDecision = body.currentDecision
             printDecision(body.currentDecision)
         else
             BridgeState.lastDecision = nil
             BridgeClearHighlights()
             print("[Bridge] no pending decision.")
+            BridgeStartDecisionPolling()
         end
 
         BridgeCommitPendingIntent()
@@ -262,6 +520,68 @@ end
 
 function BridgeGetEmbodimentSnapshot(callback)
     BridgeHttp.requestJson("GET", "/api/v1/embodiment/snapshot", nil, callback)
+end
+
+function BridgeDecisionOffersActionType(decision, actionType)
+    for _, action in ipairs(decision.actions or {}) do
+        if action.type == actionType then return true end
+    end
+    return false
+end
+
+function BridgeShouldIgnoreStaleDecision(decision)
+    local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
+    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    if eventCursor <= 0 or eventCursor >= applied then
+        return false, eventCursor, applied
+    end
+
+    if decision.kind ~= "main_priority" then
+        -- Combat/target decisions can arrive after additional phase events; they
+        -- remain valid and suppressing them causes interaction softlocks.
+        return false, eventCursor, applied
+    end
+
+    local decisionTurn = tonumber(decision.turnNumber or 0) or 0
+    local tableTurn = tonumber(BridgeState.tableTurnCount or 0) or 0
+    if decisionTurn > 0 and tableTurn > 0 and decisionTurn < tableTurn then
+        return true, eventCursor, applied
+    end
+
+    local stalePrioritySeat = decision.prioritySeatId ~= nil
+        and decision.seatId ~= nil
+        and decision.prioritySeatId ~= decision.seatId
+    local activeMismatch = decision.activeSeatId ~= nil
+        and BridgeState.currentTurnSeatId ~= nil
+        and decision.activeSeatId ~= BridgeState.currentTurnSeatId
+    local staleLandWindow = BridgeDecisionOffersActionType(decision, "play_land")
+        and ((BridgeState.currentTurnSeatId ~= nil and decision.seatId ~= BridgeState.currentTurnSeatId)
+            or (decision.activeSeatId ~= nil and decision.activeSeatId ~= decision.seatId))
+    if stalePrioritySeat or activeMismatch or staleLandWindow then
+        return true, eventCursor, applied
+    end
+
+    return false, eventCursor, applied
+end
+
+function BridgeShouldDeferDecision(decision)
+    local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
+    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    if eventCursor <= 0 then return false, eventCursor, applied end
+    return eventCursor > applied, eventCursor, applied
+end
+
+function BridgeTryPresentPendingDecision(reason)
+    if BridgeState.pendingDecision == nil or BridgeState.submitting then return end
+    local defer, eventCursor, applied = BridgeShouldDeferDecision(BridgeState.pendingDecision)
+    if defer then return end
+    local decision = BridgeState.pendingDecision
+    BridgeState.pendingDecision = nil
+    print(string.format(
+        "[Bridge] releasing gated decision %s (%s) cursor=%s applied=%s",
+        tostring(decision.decisionId), tostring(reason or "event"),
+        tostring(eventCursor), tostring(applied)))
+    printDecision(decision)
 end
 
 function BridgeZoneIsPublicForReconcile(zoneName)
@@ -406,7 +726,6 @@ function BridgeSetStatus(headline, detail)
     BridgeRefreshStatusPanel()
 end
 
-<<<<<<< HEAD
 function BridgeTurnLabel()
     return "TURN " .. tostring(BridgeState.tableTurnCount or 0)
 end
@@ -415,9 +734,6 @@ function BridgeCurrentSeatLabel(seatId)
     local seat = BRIDGE_SEATS[seatId]
     return tostring((seat and seat.ttsColor) or seatId or "Unknown")
 end
-
-=======
->>>>>>> f0b0d74df138632004a3ac31d6f61d7623ea1378
 function BridgeRefreshStatusPanel()
     local object = BridgeState.statusObjectGuid and getObjectFromGUID(BridgeState.statusObjectGuid) or nil
     if object ~= nil then
@@ -785,13 +1101,27 @@ function printDecision(decision)
         return
     end
 
-    local eventCursor = tonumber(decision.eventCursor or 0) or 0
-    if eventCursor > 0 and eventCursor < (BridgeState.lastAppliedEventSequence or 0) then
+    local ignoreStale, eventCursor, applied = BridgeShouldIgnoreStaleDecision(decision)
+    if ignoreStale then
         print(string.format(
-            "[Bridge] ignoring stale decision %s (cursor=%s, applied=%s)",
-            tostring(decision.decisionId), tostring(eventCursor), tostring(BridgeState.lastAppliedEventSequence)))
+            "[Bridge] ignoring stale main-priority decision %s (cursor=%s, applied=%s)",
+            tostring(decision.decisionId), tostring(eventCursor), tostring(applied)))
         return
     end
+
+    local deferDecision, deferCursor, deferApplied = BridgeShouldDeferDecision(decision)
+    if deferDecision then
+        BridgeState.pendingDecision = decision
+        BridgeState.lastDecision = decision
+        BridgeClearHighlights()
+        BridgeResetSelectionState()
+        print(string.format(
+            "[Bridge] gating decision %s until events catch up (cursor=%s, applied=%s)",
+            tostring(decision.decisionId), tostring(deferCursor), tostring(deferApplied)))
+        return
+    end
+
+    BridgeState.pendingDecision = nil
 
     if decision.turnNumber ~= nil and tonumber(decision.turnNumber) ~= nil and tonumber(decision.turnNumber) > 0 then
         BridgeState.tableTurnCount = tonumber(decision.turnNumber)
@@ -808,23 +1138,15 @@ function printDecision(decision)
     local seat = BRIDGE_SEATS[decision.seatId]
     local actor = seat and seat.ttsColor or decision.seatId
     if decision.kind == "attacker_selection" then
-<<<<<<< HEAD
         BridgeSetStatus("DECLARE ATTACKERS", "Drag/select highlighted creatures into attack row\nDONE ATTACKING")
     elseif decision.kind == "blocker_selection" then
         BridgeSetStatus("DECLARE BLOCKERS", "Drag/select highlighted creatures into block row\nDONE BLOCKING")
-    elseif decision.kind == "target_selection" then
+    elseif decision.kind == "target_selection" or decision.kind == "defender_selection" then
         BridgeSetStatus("CHOOSE TARGET", BridgeTurnLabel() .. " - " .. tostring(actor) .. " priority")
+    elseif decision.kind == "generic_numeric_selection" then
+        BridgeSetStatus("CHOOSE OPTION", BridgeTurnLabel() .. " - " .. tostring(actor) .. " priority")
     else
         BridgeSetStatus("YOUR PRIORITY", BridgeTurnLabel() .. " - " .. tostring(actor) .. " - " .. tostring(BridgeState.currentPhase or "Forge decision"))
-=======
-        BridgeSetStatus("SELECTION REQUIRED", tostring(actor) .. " — DECLARE ATTACKERS")
-    elseif decision.kind == "blocker_selection" then
-        BridgeSetStatus("SELECTION REQUIRED", tostring(actor) .. " — DECLARE BLOCKERS")
-    elseif decision.kind == "target_selection" then
-        BridgeSetStatus("SELECTION REQUIRED", tostring(actor) .. " — CHOOSE TARGET")
-    else
-        BridgeSetStatus("YOUR PRIORITY", tostring(actor) .. " — " .. tostring(BridgeState.currentPhase or "Forge decision"))
->>>>>>> f0b0d74df138632004a3ac31d6f61d7623ea1378
     end
     BridgeRenderDecision(decision)
 
@@ -898,6 +1220,101 @@ function BridgeClearHighlights()
     BridgeState.highlightedGuids = {}
     BridgeState.actionByGuid = {}
     BridgeState.targetButtonIndexByGuid = {}
+end
+
+function BridgeClearOptionControls()
+    for _, guid in ipairs(BridgeState.optionControlGuids or {}) do
+        local object = getObjectFromGUID(guid)
+        if object ~= nil then object.destruct() end
+    end
+    BridgeState.optionControlGuids = {}
+    BridgeState.optionControlDecisionId = nil
+end
+
+function BridgeDecisionOptionLabel(action, index)
+    local text = tostring(action.displayName or action.type or ("Option " .. tostring(index)))
+    if string.len(text) > 34 then text = string.sub(text, 1, 31) .. "..." end
+    return "CHOOSE\n" .. text
+end
+
+function BridgeEnsureDecisionOptionControls(decision, representedActionIds)
+    if decision == nil or decision.actions == nil then
+        BridgeClearOptionControls()
+        return
+    end
+
+    local unbound = {}
+    for _, action in ipairs(decision.actions or {}) do
+        local skip = false
+        if representedActionIds[action.actionId] == true then skip = true end
+        if not skip and decision.kind == "main_priority" and action.type == "pass_priority" then skip = true end
+        if not skip and (action.type == "finish_attacking" or action.type == "finish_blocking") then skip = true end
+        if not skip then table.insert(unbound, action) end
+    end
+
+    if #unbound == 0 then
+        BridgeClearOptionControls()
+        return
+    end
+
+    if BridgeState.optionControlDecisionId == decision.decisionId
+        and #BridgeState.optionControlGuids == #unbound then
+        return
+    end
+
+    BridgeClearOptionControls()
+    BridgeState.optionControlDecisionId = decision.decisionId
+
+    local seat = BRIDGE_SEATS[decision.seatId]
+    local sideZ = seat and seat.tableSideZ or -1
+    for index, action in ipairs(unbound) do
+        local column = (index - 1) % 2
+        local row = math.floor((index - 1) / 2)
+        local x = 9.5 + (column * 4.1)
+        local z = sideZ * (7.5 + row * 2.0)
+        spawnObject({
+            type = "BlockSquare",
+            position = {x, 1.6, z},
+            scale = {3.8, 0.35, 1.25},
+            callback_function = function(object)
+                object.setName("Forge Decision Option " .. tostring(index))
+                object.setLock(true)
+                object.setColorTint({0.38, 0.24, 0.62})
+                object.setRotation({0, sideZ < 0 and 180 or 0, 0})
+                object.createButton({
+                    click_function = "BridgeChooseDecisionOption",
+                    function_owner = Global,
+                    label = BridgeDecisionOptionLabel(action, index),
+                    position = {0, 0.6, 0},
+                    width = 1320,
+                    height = 460,
+                    font_size = 100,
+                    color = {0.38, 0.24, 0.62, 1},
+                    font_color = {1, 1, 1, 1},
+                    tooltip = "Submit Forge option: " .. tostring(action.displayName or action.type)
+                })
+                object.setVar("bridgeDecisionId", decision.decisionId)
+                object.setVar("bridgeActionId", action.actionId)
+                table.insert(BridgeState.optionControlGuids, object.getGUID())
+            end
+        })
+    end
+end
+
+function BridgeChooseDecisionOption(object, playerColor, altClick)
+    if object == nil or BridgeState.submitting then return end
+    local decision = BridgeState.lastDecision
+    local decisionId = object.getVar("bridgeDecisionId")
+    local actionId = object.getVar("bridgeActionId")
+    if decision == nil or decision.decisionId ~= decisionId then
+        BridgeShowError("decision option control is stale")
+        BridgeClearOptionControls()
+        return
+    end
+    BridgeClaimHumanTtsColor(decision.seatId, playerColor)
+    BridgeClearHighlights()
+    BridgeResetSelectionState()
+    BridgeSubmitChoice(decisionId, actionId)
 end
 
 function BridgeEnsureContextualCompletionControl(decision)
@@ -1115,6 +1532,7 @@ function BridgeResetSelectionState()
         if object ~= nil then object.destruct() end
     end
     BridgeState.selectionControlGuids = {}
+    BridgeClearOptionControls()
 end
 
 function BridgeSelectionCount()
@@ -1220,6 +1638,8 @@ function BridgeRenderDecision(decision)
     if decision.kind == "main_priority" then
         BridgeEnsureEndTurnButton(decision.seatId)
         BridgeEnsurePassButton(decision.seatId)
+    else
+        BridgeHideMainPriorityControls()
     end
 
     if BridgeState.yieldSeatId ~= nil then
@@ -1236,10 +1656,11 @@ function BridgeRenderDecision(decision)
     end
 
     local highlightColor = {0.53, 0.81, 0.98}
-    if decision.kind == "target_selection" or decision.kind == "blocker_selection" then
+    if decision.kind == "target_selection" or decision.kind == "defender_selection" or decision.kind == "blocker_selection" then
         highlightColor = {1.0, 0.55, 0.0}
     end
 
+    local representedActionIds = {}
     local decisionSeat = BRIDGE_SEATS[decision.seatId]
     local cards = {}
     local candidateGuid = {}
@@ -1266,6 +1687,7 @@ function BridgeRenderDecision(decision)
                 local guid = targetObject.getGUID()
                 targetObject.highlightOn({1.0, 0.55, 0.0})
                 BridgeState.actionByGuid[guid] = action
+                representedActionIds[action.actionId] = true
                 table.insert(BridgeState.highlightedGuids, guid)
                 BridgeInstallTargetButton(targetObject, action.targetSeatId)
             else
@@ -1299,10 +1721,13 @@ function BridgeRenderDecision(decision)
                 local selected = BridgeState.selectedActionIds[action.actionId] == true
                 object.highlightOn(selected and {0.2, 1.0, 0.35} or highlightColor)
                 BridgeState.actionByGuid[guid] = action
+                representedActionIds[action.actionId] = true
                 table.insert(BridgeState.highlightedGuids, guid)
             end
         end
     end
+
+    BridgeEnsureDecisionOptionControls(decision, representedActionIds)
 end
 
 function BridgeShowError(message)
@@ -1512,6 +1937,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
             callback(false, "snapshot session mismatch")
             return
         end
+        BridgeStageSeatCardsForBootstrap(snapshot)
 
         BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
             if not annotated then
@@ -1798,11 +2224,19 @@ function BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
         local rowKey = seatSnapshot.seatId .. ":" .. row
         BridgeState.battlefieldCounts[rowKey] = (BridgeState.battlefieldCounts[rowKey] or 0) + 1
     elseif zone.name == "graveyard" then
-        local anchor = seat.battlefieldAnchors.creature
-        object.setPosition({anchor.x + 8, anchor.y, anchor.z})
+        local position = BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, "graveyard")
+        if position == nil then
+            local anchor = seat.battlefieldAnchors.creature
+            position = {anchor.x + 8, anchor.y, anchor.z}
+        end
+        object.setPosition(position)
     elseif zone.name == "exile" then
-        local anchor = seat.battlefieldAnchors.creature
-        object.setPosition({anchor.x + 10, anchor.y, anchor.z})
+        local position = BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, "exile")
+        if position == nil then
+            local anchor = seat.battlefieldAnchors.creature
+            position = {anchor.x + 10, anchor.y, anchor.z}
+        end
+        object.setPosition(position)
     end
 end
 
@@ -1919,6 +2353,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     end
 
     BridgeStopEventPolling()
+    BridgeStopDecisionPolling()
     BridgeState.eventSessionId = sessionId
     BridgeState.lastReceivedEventSequence = 0
     BridgeState.lastAppliedEventSequence = 0
@@ -1934,7 +2369,10 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.untappedRotationByGuid = {}
     BridgeState.pendingCastBySeatId = {}
     BridgeState.snapshotForgeSequence = 0
+    BridgeState.zoneAnchorGuidBySeatAndZone = {}
     BridgeState.yieldSeatId = nil
+    BridgeState.pendingDecision = nil
+    BridgeResetSelectionState()
     if BridgeState.turnCounterSessionId ~= sessionId then
         BridgeState.turnCounterSessionId = sessionId
         BridgeState.tableTurnCount = 0
@@ -2010,6 +2448,7 @@ function BridgePollEvents(generation)
             BridgeState.lastAppliedEventSequence = BridgeState.lastReceivedEventSequence
             BridgeState.skipExistingEventsOnAttach = false
             print("[Bridge] attached at authoritative event sequence " .. tostring(BridgeState.lastAppliedEventSequence))
+            BridgeTryPresentPendingDecision("attach-catchup")
         else
             for _, event in ipairs(body.events or {}) do
                 local expected = BridgeState.lastReceivedEventSequence + 1
@@ -2022,9 +2461,10 @@ function BridgePollEvents(generation)
                 table.insert(BridgeState.eventQueue, event)
             end
             BridgeProcessEventQueue()
-        end
+            BridgeTryPresentPendingDecision("poll-noqueue")
+            end
 
-        BridgeScheduleEventPoll(1, generation)
+            BridgeScheduleEventPoll(1, generation)
     end)
 end
 
@@ -2050,6 +2490,7 @@ function BridgeProcessEventQueue()
 
     table.remove(BridgeState.eventQueue, 1)
     BridgeState.lastAppliedEventSequence = event.sequence
+    BridgeTryPresentPendingDecision("event-applied")
     if BridgeShouldReconcileAfterEvent(event) then
         BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence))
     end
@@ -2077,7 +2518,6 @@ function BridgeApplyAuthoritativeEvent(event)
 
     if event.kind == "turn_changed" then
         BridgeReturnAttackPresentation(nil)
-<<<<<<< HEAD
         if event.activeSeatId ~= nil then
             BridgeState.currentTurnSeatId = event.activeSeatId
         else
@@ -2087,13 +2527,6 @@ function BridgeApplyAuthoritativeEvent(event)
         local turnSeat = BRIDGE_SEATS[BridgeState.currentTurnSeatId]
         BridgeSetStatus("CURRENT TURN: " .. tostring(turnSeat and turnSeat.ttsColor or BridgeState.currentTurnSeatId), BridgeTurnLabel() .. " - AI THINKING")
         print("[Bridge] authoritative turn changed to seat " .. tostring(BridgeState.currentTurnSeatId) .. " turn=" .. tostring(event.turnNumber))
-=======
-        BridgeState.currentTurnSeatId = event.seatId
-        BridgeRecordAuthoritativeTurn(event.seatId)
-        local turnSeat = BRIDGE_SEATS[event.seatId]
-        BridgeSetStatus("CURRENT TURN: " .. tostring(turnSeat and turnSeat.ttsColor or event.seatId), "AI THINKING")
-        print("[Bridge] authoritative turn changed to seat " .. tostring(event.seatId))
->>>>>>> f0b0d74df138632004a3ac31d6f61d7623ea1378
         if BridgeState.yieldSeatId ~= nil and BridgeState.yieldSeatId ~= event.seatId then
             BridgeState.yieldSeatId = nil
         end
@@ -2102,7 +2535,6 @@ function BridgeApplyAuthoritativeEvent(event)
 
     if event.kind == "phase_changed" then
         BridgeState.currentPhase = event.phase or "Unknown phase"
-<<<<<<< HEAD
         if event.turnNumber ~= nil and tonumber(event.turnNumber) ~= nil and tonumber(event.turnNumber) > 0 then
             BridgeState.tableTurnCount = tonumber(event.turnNumber)
             BridgeRefreshTurnCounterLabels()
@@ -2110,19 +2542,15 @@ function BridgeApplyAuthoritativeEvent(event)
         if event.activeSeatId ~= nil then
             BridgeState.currentTurnSeatId = event.activeSeatId
         end
-=======
->>>>>>> f0b0d74df138632004a3ac31d6f61d7623ea1378
         BridgeClearHighlights()
         if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
             BridgeState.lastDecision = nil
         end
-<<<<<<< HEAD
+        BridgeState.pendingDecision = nil
+        BridgeResetSelectionState()
         BridgeSetStatus(
             "CURRENT TURN: " .. tostring((BRIDGE_SEATS[BridgeState.currentTurnSeatId] or {}).ttsColor or BridgeState.currentTurnSeatId or "Unknown"),
             BridgeTurnLabel() .. " - PHASE: " .. tostring(BridgeState.currentPhase))
-=======
-        BridgeSetStatus("CURRENT TURN: " .. tostring((BRIDGE_SEATS[BridgeState.currentTurnSeatId] or {}).ttsColor or BridgeState.currentTurnSeatId or "Unknown"), "PHASE: " .. tostring(BridgeState.currentPhase))
->>>>>>> f0b0d74df138632004a3ac31d6f61d7623ea1378
         local phase = string.lower(tostring(event.phase or ""))
         if string.find(phase, "main phase", 1, true) ~= nil
             or string.find(phase, "end", 1, true) ~= nil
@@ -2383,9 +2811,13 @@ function BridgeApplyStructuredCardMove(event)
         local moved, moveError = BridgeMoveToGraveyard(event, object)
         if not moved then return false, moveError end
     elseif event.destinationZone == "exile" then
-        local anchor = seat.battlefieldAnchors.creature
         object.use_hands = false
-        object.setPositionSmooth({anchor.x + 10, anchor.y, anchor.z}, false, true)
+        local exilePosition = BridgeResolveSeatZoneAnchor(event.seatId, "exile")
+        if exilePosition == nil then
+            local anchor = seat.battlefieldAnchors.creature
+            exilePosition = {anchor.x + 10, anchor.y, anchor.z}
+        end
+        object.setPositionSmooth(exilePosition, false, true)
     elseif event.destinationZone == "library" then
         local libraryZone = getObjectFromGUID(seat.libraryZoneGuid)
         object.use_hands = false
@@ -2400,11 +2832,15 @@ end
 function BridgeMoveToGraveyard(event, object)
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then return false, "graveyard move has no configured seat" end
-    local anchor = seat.battlefieldAnchors.creature
+    local graveyardPosition = BridgeResolveSeatZoneAnchor(event.seatId, "graveyard")
+    if graveyardPosition == nil then
+        local anchor = seat.battlefieldAnchors.creature
+        graveyardPosition = {anchor.x + 8, anchor.y, anchor.z}
+    end
     local moved, movementError = pcall(function()
         object.use_hands = false
         BridgeSetPhysicalFaceDown(object, seat, false)
-        object.setPositionSmooth({anchor.x + 8, anchor.y, anchor.z}, false, true)
+        object.setPositionSmooth(graveyardPosition, false, true)
     end)
     if not moved then return false, "could not move card to graveyard: " .. tostring(movementError) end
     local guid = object.getGUID()
@@ -2738,8 +3174,11 @@ end
 
 function BridgeStopOnDesync(message)
     BridgeStopEventPolling()
+    BridgeStopDecisionPolling()
     BridgeState.animationRunning = false
+    BridgeState.pendingDecision = nil
     BridgeClearHighlights()
+    BridgeResetSelectionState()
     BridgeShowError("synchronization stopped: " .. tostring(message))
 end
 

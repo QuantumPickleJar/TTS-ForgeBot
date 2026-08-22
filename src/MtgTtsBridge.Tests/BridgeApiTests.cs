@@ -1,6 +1,5 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
-using Microsoft.AspNetCore.Mvc.Testing;
 using MtgTtsBridge.Contracts.Actions;
 using MtgTtsBridge.Contracts.Events;
 using MtgTtsBridge.Contracts.State;
@@ -12,7 +11,7 @@ public sealed class BridgeApiTests
     [Fact]
     public async Task HealthEndpoint_ReturnsAdapterState()
     {
-        using var factory = new WebApplicationFactory<Program>();
+        using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
         var response = await client.GetAsync("/health");
@@ -28,7 +27,7 @@ public sealed class BridgeApiTests
     [Fact]
     public async Task InitialDecision_IsDeterministic()
     {
-        using var factory = new WebApplicationFactory<Program>();
+        using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
         await StartSessionAsync(client);
@@ -45,7 +44,7 @@ public sealed class BridgeApiTests
     [Fact]
     public async Task ValidChoice_AdvancesDecision()
     {
-        using var factory = new WebApplicationFactory<Program>();
+        using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
         await StartSessionAsync(client);
@@ -68,7 +67,7 @@ public sealed class BridgeApiTests
     [Fact]
     public async Task StaleDecisionId_IsRejected()
     {
-        using var factory = new WebApplicationFactory<Program>();
+        using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
         await StartSessionAsync(client);
@@ -93,7 +92,7 @@ public sealed class BridgeApiTests
     [Fact]
     public async Task UnknownActionId_IsRejected()
     {
-        using var factory = new WebApplicationFactory<Program>();
+        using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
         await StartSessionAsync(client);
@@ -112,7 +111,7 @@ public sealed class BridgeApiTests
     [Fact]
     public async Task TargetFollowupDecision_Works()
     {
-        using var factory = new WebApplicationFactory<Program>();
+        using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
         await StartSessionAsync(client);
@@ -144,7 +143,7 @@ public sealed class BridgeApiTests
     [Fact]
     public async Task Reset_ReturnsKnownState()
     {
-        using var factory = new WebApplicationFactory<Program>();
+        using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
         await StartSessionAsync(client);
@@ -171,7 +170,7 @@ public sealed class BridgeApiTests
     [Fact]
     public async Task Start_AttachesButResetExplicitlyReplacesActiveSession()
     {
-        using var factory = new WebApplicationFactory<Program>();
+        using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
         var firstResponse = await client.PostAsync("/api/v1/session/start", content: null);
@@ -198,7 +197,7 @@ public sealed class BridgeApiTests
     [Fact]
     public async Task EventsEndpoint_UsesIncrementalSequenceContract()
     {
-        using var factory = new WebApplicationFactory<Program>();
+        using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
         var response = await client.GetAsync("/api/v1/events?after=0");
@@ -214,7 +213,7 @@ public sealed class BridgeApiTests
     [Fact]
     public async Task SnapshotEndpoint_IsSeparateAndUnavailableForMockAdapter()
     {
-        using var factory = new WebApplicationFactory<Program>();
+        using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
         var response = await client.GetAsync("/api/v1/embodiment/snapshot");
@@ -241,3 +240,4 @@ public sealed class BridgeApiTests
         return decision;
     }
 }
+

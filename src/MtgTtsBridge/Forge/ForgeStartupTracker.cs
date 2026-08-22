@@ -65,6 +65,8 @@ internal sealed class ForgeStartupTracker
             ? 0
             : (long)Stopwatch.GetElapsedTime(_startedTimestamp).TotalMilliseconds;
         _milestones.Add(new StartupMilestoneDto(name, elapsed));
+        var message = $"[Forge startup] {name} at +{elapsed} ms";
+        Console.WriteLine(message);
         _logger.LogInformation("Forge startup milestone {Milestone} at +{ElapsedMilliseconds} ms", name, elapsed);
     }
 }

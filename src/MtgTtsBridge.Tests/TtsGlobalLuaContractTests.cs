@@ -115,7 +115,10 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("x = position.x", Script);
         Assert.Contains("BridgeState.attackOriginByGuid[guid]", Script);
         Assert.Contains("function BridgeReturnAttackPresentation", Script);
-        Assert.DoesNotContain("towardCenter.x * 2", Script);
+        var attackLane = Script.IndexOf("function BridgeMoveToAttackLane", StringComparison.Ordinal);
+        var blockerLane = Script.IndexOf("function BridgeMoveToBlockerLane", attackLane, StringComparison.Ordinal);
+        var attackLaneBody = Script[attackLane..blockerLane];
+        Assert.DoesNotContain("towardCenter.x * 2", attackLaneBody);
     }
 
     [Fact]
@@ -143,9 +146,41 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void StaleDecision_IsIgnoredWhenAuthoritativeEventsAlreadyAdvanced()
     {
-        Assert.Contains("ignoring stale decision", Script);
+        Assert.Contains("function BridgeShouldIgnoreStaleDecision", Script);
+        Assert.Contains("if decision.kind ~= \"main_priority\" then", Script);
+        Assert.Contains("ignoring stale main-priority decision", Script);
         Assert.Contains("decision.eventCursor", Script);
         Assert.Contains("BridgeState.lastAppliedEventSequence", Script);
+        Assert.Contains("decision.prioritySeatId", Script);
+        Assert.Contains("BridgeDecisionOffersActionType(decision, \"play_land\")", Script);
+    }
+
+    [Fact]
+    public void NonMainPriorityDecisions_HidePassAndYieldControls()
+    {
+        Assert.Contains("function BridgeHideMainPriorityControls", Script);
+        Assert.Contains("BridgeState.endTurnObjectGuidBySeatId", Script);
+        Assert.Contains("BridgeState.passObjectGuidBySeatId", Script);
+        Assert.Contains("BridgeHideMainPriorityControls()", Script);
+    }
+
+    [Fact]
+    public void DeferredDecisions_WaitForEventCursorBeforeRenderingHighlights()
+    {
+        Assert.Contains("function BridgeShouldDeferDecision", Script);
+        Assert.Contains("function BridgeTryPresentPendingDecision", Script);
+        Assert.Contains("BridgeState.pendingDecision", Script);
+        Assert.Contains("gating decision", Script);
+        Assert.Contains("BridgeTryPresentPendingDecision(\"event-applied\")", Script);
+    }
+
+    [Fact]
+    public void GenericNumericDecisions_ExposePhysicalOptionButtons()
+    {
+        Assert.Contains("function BridgeEnsureDecisionOptionControls", Script);
+        Assert.Contains("function BridgeChooseDecisionOption", Script);
+        Assert.Contains("CHOOSE OPTION", Script);
+        Assert.Contains("BridgeState.optionControlGuids", Script);
     }
 
     [Fact]
@@ -432,6 +467,27 @@ public sealed class TtsGlobalLuaContractTests
         var publishMapping = Script.IndexOf("BridgeState.physicalByInstanceId[mapping.card.cardInstanceId]", reconcile, StringComparison.Ordinal);
         Assert.True(collectMapping > reconcile);
         Assert.True(publishMapping > collectMapping);
+    }
+
+    [Fact]
+    public void SnapshotBootstrap_StagesLooseCardsNearLibrariesBeforeRemapping()
+    {
+        Assert.Contains("BridgeStageSeatCardsForBootstrap(snapshot)", Script);
+        Assert.Contains("function BridgeStageSeatCardsForBootstrap(snapshot)", Script);
+        Assert.Contains("Player[seat.ttsColor].getHandObjects()", Script);
+        Assert.Contains("BridgeNearestSeatIdForPosition", Script);
+        Assert.Contains("function BridgeLibraryStagingPosition", Script);
+        Assert.Contains("object.setPosition(staging)", Script);
+    }
+
+    [Fact]
+    public void GraveyardAndExileMoves_PreferSeatZoneAnchorsOverBattlefieldFallback()
+    {
+        Assert.Contains("BridgeResolveSeatZoneAnchor(event.seatId, \"graveyard\")", Script);
+        Assert.Contains("BridgeResolveSeatZoneAnchor(event.seatId, \"exile\")", Script);
+        Assert.Contains("BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, \"graveyard\")", Script);
+        Assert.Contains("BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, \"exile\")", Script);
+        Assert.Contains("BridgeFindNamedZoneObjectForSeat", Script);
     }
 
     [Fact]

@@ -96,6 +96,57 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void AlternateTargetHeader_ParsesCardAndPlayerTargets()
+    {
+        var seats = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Player 1"] = "forge-player-1",
+            ["AI-monored"] = "forge-player-2",
+        };
+        var parser = new ForgeTuiParser(seats);
+        var result = parser.Append("Choose a target for Burst Lightning:\n  0) Player 1 (Life: 20)\n  1) AI-monored (Life: 20)\n  2) Hired Claw (1/2) [AI-monored]\nEnter choice (0-2): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
+        Assert.Equal("target_selection", decision.Decision.Kind);
+        Assert.Equal("forge-player-1", decision.Decision.Actions[0].TargetSeatId);
+        Assert.Equal("forge-player-2", decision.Decision.Actions[1].TargetSeatId);
+        Assert.Equal("card", decision.Decision.Actions[2].TargetKind);
+        Assert.Equal("Hired Claw", decision.Decision.Actions[2].CardIdentity);
+    }
+
+    [Fact]
+    public void TargetHeaderWithoutNumericPrompt_DoesNotFailParser()
+    {
+        var parser = new ForgeTuiParser();
+        var partial = parser.Append("=== Choose Target for Burst Lightning ===\nSelect a target:\n");
+        Assert.Null(partial.ParsedDecision);
+        Assert.Null(partial.ErrorCode);
+        Assert.Null(partial.UnsupportedPrompt);
+
+        var completed = parser.Append("  0. Player 1 (Life: 20)\n  1. AI-monored (Life: 20)\nEnter choice (0-1): ");
+        var decision = Assert.IsType<ForgeTuiDecision>(completed.ParsedDecision);
+        Assert.Equal("target_selection", decision.Decision.Kind);
+        Assert.Equal(2, decision.Decision.Actions.Count);
+    }
+
+    [Fact]
+    public void GenericChooseOneHeaderStreamedBeforeOptions_WaitsForFollowupChunk()
+    {
+        var parser = new ForgeTuiParser();
+        var first = parser.Append("Choose one:\n");
+        Assert.Null(first.ParsedDecision);
+        Assert.Null(first.ErrorCode);
+        Assert.Null(first.UnsupportedPrompt);
+
+        var second = parser.Append("  0) Emberheart Challenger — Prowess trigger\n  1) Hired Claw — Prowess trigger\nSelect an option: ");
+        var decision = Assert.IsType<ForgeTuiDecision>(second.ParsedDecision);
+        Assert.Equal("generic_numeric_selection", decision.Decision.Kind);
+        Assert.Equal(2, decision.Decision.Actions.Count);
+        Assert.Equal("0", decision.Inputs[decision.Decision.Actions[0].ActionId]);
+        Assert.Equal("1", decision.Inputs[decision.Decision.Actions[1].ActionId]);
+    }
+
+    [Fact]
     public void RealBlockerMenu_BecomesTypedDecisionWithCardIdentity()
     {
         var transcript = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "forge-tui-blocker-menu.txt"));
@@ -106,6 +157,7 @@ public sealed class ForgeTuiParserTests
         var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
         Assert.Equal("blocker_selection", decision.Decision.Kind);
         Assert.Equal("finish_blocking", decision.Decision.Actions[0].Type);
+        Assert.Equal("done", decision.Inputs[decision.Decision.Actions[0].ActionId]);
         Assert.Equal("choose_blocker", decision.Decision.Actions[1].Type);
         Assert.Equal("Hired Claw", decision.Decision.Actions[1].CardIdentity);
         Assert.Equal("1", decision.Inputs[decision.Decision.Actions[1].ActionId]);
@@ -156,6 +208,103 @@ public sealed class ForgeTuiParserTests
         Assert.Equal("forge-object:91", decision.Actions[1].CardInstanceId);
         Assert.Equal(0, decision.MinSelections);
         Assert.True(decision.AllowsCancel);
+    }
+
+    [Fact]
+    public void UppercaseAttackerHeader_IsClassifiedAsAttackerSelection()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("=== DECLARE ATTACKERS ===\n  0. No further attackers\n  1. Hired Claw [id=91] (1/2)\n  2. Emberheart Challenger [id=92] (2/2)\nEnter choice (0-2): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("attacker_selection", decision.Kind);
+        Assert.Contains(decision.Actions, action => action.Type == "finish_attacking");
+        Assert.Contains(decision.Actions, action => action.Type == "choose_attacker" && action.CardIdentity == "Hired Claw");
+        Assert.Contains(decision.Actions, action => action.Type == "choose_attacker" && action.CardIdentity == "Emberheart Challenger");
+    }
+
+    [Fact]
+    public void GenericChooseOnePrompt_StillParsesNumericMenu()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("Choose one:\n  0. Pass\n  1. Razorkin Needlehead [id=17] (1/1)\n  2. Hired Claw [id=18] (1/2)\nSelect an option: ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("generic_numeric_selection", decision.Kind);
+        Assert.Equal("Razorkin Needlehead", decision.Actions[1].CardIdentity);
+        Assert.Equal("1", result.ParsedDecision.Inputs[decision.Actions[1].ActionId]);
+    }
+
+    [Fact]
+    public void UppercaseDefenderHeader_IsClassifiedAsTargetableDefenderSelection()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("=== CHOOSE DEFENDER FOR EMBERHEART CHALLENGER ===\n  0. Player 1 (Life: 20)\nEnter choice (0-0): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("defender_selection", decision.Kind);
+        var action = Assert.Single(decision.Actions);
+        Assert.Equal("choose_target", action.Type);
+        Assert.Equal("Player 1 (Life: 20)", action.DisplayName);
+        Assert.Equal(1, decision.MinSelections);
+    }
+
+    [Fact]
+    public void DefenderSelection_MapsPlayerTargetsWhenSeatLookupIsProvided()
+    {
+        var parser = new ForgeTuiParser(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Player 1"] = "forge-player-1"
+        });
+        var result = parser.Append("Choose defender for Emberheart Challenger:\n  0. Player 1 (Life: 20)\nEnter choice (0-0): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        var action = Assert.Single(decision.Actions);
+        Assert.Equal("choose_target", action.Type);
+        Assert.Equal("player", action.TargetKind);
+        Assert.Equal("forge-player-1", action.TargetSeatId);
+    }
+
+    [Fact]
+    public void AlternateAttackerHeader_IsClassifiedAsAttackerSelection()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("=== SELECT ATTACKERS ===\n  0. No further attackers\n  1. Hired Claw [id=91] (1/2)\nEnter choice (0-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("attacker_selection", decision.Kind);
+        Assert.Contains(decision.Actions, action => action.Type == "finish_attacking");
+        Assert.Contains(decision.Actions, action => action.Type == "choose_attacker" && action.CardIdentity == "Hired Claw");
+    }
+
+    [Fact]
+    public void OneAtATimeAttackerPrompt_ParsesDoneWithoutMenuOptions()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("Choose attackers one at a time (or enter 'done' when finished):\nEnter attacker number (or 'done'): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("attacker_selection", decision.Kind);
+        var action = Assert.Single(decision.Actions);
+        Assert.Equal("finish_attacking", action.Type);
+        Assert.Equal("done", result.ParsedDecision!.Inputs[action.ActionId]);
+        Assert.Equal(0, decision.MinSelections);
+        Assert.Equal(1, decision.MaxSelections);
+    }
+
+    [Fact]
+    public void OneAtATimeBlockerPrompt_ParsesDoneWithoutMenuOptions()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("Choose blockers one at a time (or enter 'done' when finished):\nEnter blocker number (or 'done'): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("blocker_selection", decision.Kind);
+        var action = Assert.Single(decision.Actions);
+        Assert.Equal("finish_blocking", action.Type);
+        Assert.Equal("done", result.ParsedDecision!.Inputs[action.ActionId]);
+        Assert.Equal(0, decision.MinSelections);
+        Assert.Equal(1, decision.MaxSelections);
     }
 
     [Fact]
