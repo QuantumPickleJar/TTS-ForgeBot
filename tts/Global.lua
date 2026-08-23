@@ -19,7 +19,7 @@ BRIDGE_SEATS = {
         tableSideZ = -1,
         attackLaneZ = -0.9,
         blockerLaneZ = -2.2,
-        manaBankOffset = {x = -3.8, y = 0.45, z = -0.55},
+        manaBankOffset = {x = 2.5, y = 0.45, z = -0.95},  -- Positioned to right of life counter, moved towards edge
         faceUpRotation = {x = 0, y = 180, z = 0},
         battlefieldAnchors = {
             land = {x = 6.5, y = 2.0, z = -11.5},
@@ -37,7 +37,7 @@ BRIDGE_SEATS = {
         tableSideZ = 1,
         attackLaneZ = 0.9,
         blockerLaneZ = 2.2,
-        manaBankOffset = {x = -3.8, y = 0.45, z = 0.55},
+        manaBankOffset = {x = 2.5, y = 0.45, z = 0.95},  -- Positioned to right of life counter, moved towards edge
         faceUpRotation = {x = 0, y = 0, z = 0},
         battlefieldAnchors = {
             land = {x = 6.5, y = 2.0, z = 11.5},
@@ -45,6 +45,12 @@ BRIDGE_SEATS = {
         }
     }
 }
+
+local _obj = getObjectFromGUID
+local _all = getAllObjects
+local _spawn = spawnObject
+local _ip = ipairs
+local _pairs = pairs
 
 BridgeState = {
     lastDecision = nil,
@@ -694,6 +700,7 @@ function BridgeEnsureStatusPanel()
     spawnObject({
         type = "BlockSquare",
         position = {-1.0, 1.6, 0},
+        rotation = {0, 180, 0},  -- Rotated to face blue seat (forge-player-1)
         scale = {4.8, 0.3, 1.25},
         callback_function = function(object)
             object.setName("Forge Status")
@@ -1141,6 +1148,8 @@ function printDecision(decision)
         BridgeSetStatus("DECLARE ATTACKERS", "Drag/select highlighted creatures into attack row\nDONE ATTACKING")
     elseif decision.kind == "blocker_selection" then
         BridgeSetStatus("DECLARE BLOCKERS", "Drag/select highlighted creatures into block row\nDONE BLOCKING")
+    elseif decision.kind == "blocker_assignment" then
+        BridgeSetStatus("ASSIGN BLOCKERS", "Choose which attacker each blocker will block\nDONE ASSIGNING")
     elseif decision.kind == "target_selection" or decision.kind == "defender_selection" then
         BridgeSetStatus("CHOOSE TARGET", BridgeTurnLabel() .. " - " .. tostring(actor) .. " priority")
     elseif decision.kind == "generic_numeric_selection" then
@@ -1205,15 +1214,15 @@ function BridgeCardNameMatches(ttsName, forgeName)
 end
 
 function BridgeClearHighlights()
-    for _, guid in ipairs(BridgeState.highlightedGuids) do
-        local object = getObjectFromGUID(guid)
-        if object ~= nil then
-            object.highlightOff()
-        end
+    local highlighted = BridgeState.highlightedGuids or {}
+    for _, guid in _ip(highlighted) do
+        local object = _obj(guid)
+        if object ~= nil then object.highlightOff() end
     end
 
-    for guid, buttonIndex in pairs(BridgeState.targetButtonIndexByGuid) do
-        local object = getObjectFromGUID(guid)
+    local targetButtons = BridgeState.targetButtonIndexByGuid or {}
+    for guid, buttonIndex in _pairs(targetButtons) do
+        local object = _obj(guid)
         if object ~= nil then object.removeButton(buttonIndex) end
     end
 
@@ -1223,8 +1232,9 @@ function BridgeClearHighlights()
 end
 
 function BridgeClearOptionControls()
-    for _, guid in ipairs(BridgeState.optionControlGuids or {}) do
-        local object = getObjectFromGUID(guid)
+    local controls = BridgeState.optionControlGuids or {}
+    for i = 1, #controls do
+        local object = _obj(controls[i])
         if object ~= nil then object.destruct() end
     end
     BridgeState.optionControlGuids = {}
@@ -1233,7 +1243,7 @@ end
 
 function BridgeDecisionOptionLabel(action, index)
     local text = tostring(action.displayName or action.type or ("Option " .. tostring(index)))
-    if string.len(text) > 34 then text = string.sub(text, 1, 31) .. "..." end
+    if #text > 34 then text = text:sub(1, 31) .. "..." end
     return "CHOOSE\n" .. text
 end
 
@@ -1244,11 +1254,15 @@ function BridgeEnsureDecisionOptionControls(decision, representedActionIds)
     end
 
     local unbound = {}
-    for _, action in ipairs(decision.actions or {}) do
-        local skip = false
-        if representedActionIds[action.actionId] == true then skip = true end
-        if not skip and decision.kind == "main_priority" and action.type == "pass_priority" then skip = true end
-        if not skip and (action.type == "finish_attacking" or action.type == "finish_blocking") then skip = true end
+    local filters = representedActionIds or {}
+    for _, action in _ip(decision.actions or {}) do
+        local skip = filters[action.actionId] == true
+        if not skip and decision.kind == "main_priority" and action.type == "pass_priority" then
+            skip = true
+        end
+        if not skip and (action.type == "finish_attacking" or action.type == "finish_blocking") then
+            skip = true
+        end
         if not skip then table.insert(unbound, action) end
     end
 
@@ -1257,8 +1271,7 @@ function BridgeEnsureDecisionOptionControls(decision, representedActionIds)
         return
     end
 
-    if BridgeState.optionControlDecisionId == decision.decisionId
-        and #BridgeState.optionControlGuids == #unbound then
+    if BridgeState.optionControlDecisionId == decision.decisionId and #BridgeState.optionControlGuids == #unbound then
         return
     end
 
@@ -1267,12 +1280,12 @@ function BridgeEnsureDecisionOptionControls(decision, representedActionIds)
 
     local seat = BRIDGE_SEATS[decision.seatId]
     local sideZ = seat and seat.tableSideZ or -1
-    for index, action in ipairs(unbound) do
+    for index, action in _ip(unbound) do
         local column = (index - 1) % 2
         local row = math.floor((index - 1) / 2)
         local x = 9.5 + (column * 4.1)
         local z = sideZ * (7.5 + row * 2.0)
-        spawnObject({
+        _spawn({
             type = "BlockSquare",
             position = {x, 1.6, z},
             scale = {3.8, 0.35, 1.25},
@@ -1318,7 +1331,7 @@ function BridgeChooseDecisionOption(object, playerColor, altClick)
 end
 
 function BridgeEnsureContextualCompletionControl(decision)
-    if decision == nil or (decision.kind ~= "attacker_selection" and decision.kind ~= "blocker_selection") then return end
+    if decision == nil or (decision.kind ~= "attacker_selection" and decision.kind ~= "blocker_selection" and decision.kind ~= "blocker_assignment") then return end
     if #(BridgeState.selectionControlGuids or {}) > 0 then return end
     local completionAction = nil
     for _, action in ipairs(decision.actions or {}) do
@@ -1656,7 +1669,7 @@ function BridgeRenderDecision(decision)
     end
 
     local highlightColor = {0.53, 0.81, 0.98}
-    if decision.kind == "target_selection" or decision.kind == "defender_selection" or decision.kind == "blocker_selection" then
+    if decision.kind == "target_selection" or decision.kind == "defender_selection" or decision.kind == "blocker_selection" or decision.kind == "blocker_assignment" then
         highlightColor = {1.0, 0.55, 0.0}
     end
 
@@ -2650,15 +2663,56 @@ function BridgeApplyAuthoritativeEvent(event)
             if not moved then return false, 0, moveError end
         end
         if event.kind == "card_moved" and event.destinationZone == "graveyard" and event.cardInstanceId ~= nil then
-            local object, resolveError = BridgeResolvePhysicalCard(event, "graveyard")
+            local sourceZone = event.sourceZone or "battlefield"
+            -- Exile is a valid source zone but might not have been tracked
+            if sourceZone == "exile" then
+                -- Try multiple zones since exile tracking might have failed
+                for _, fallbackZone in ipairs({"battlefield", "hand", "stack", "exile"}) do
+                    local object, resolveError = BridgeResolvePhysicalCard(event, fallbackZone)
+                    if object ~= nil then
+                        local moved, moveError = BridgeMoveToGraveyard(event, object)
+                        if not moved then return false, 0, moveError end
+                        return true, 0.1
+                    end
+                end
+                return false, 0, "card_moved from exile: could not locate physical card in any zone"
+            end
+            
+            local object, resolveError = BridgeResolvePhysicalCard(event, sourceZone)
             if object == nil then return false, 0, resolveError end
+            local moved, moveError = BridgeMoveToGraveyard(event, object)
+            if not moved then return false, 0, moveError end
         end
         return true, 0.1
     end
 
     if event.kind == "land_played" then
-        local object, resolveError = BridgeResolvePhysicalCard(event, "hand")
+        -- Land can be played from hand or library (e.g., via abilities)
+        local sourceZone = event.sourceZone or "hand"
+        local object, resolveError = BridgeResolvePhysicalCard(event, sourceZone)
         if object == nil then return false, 0, resolveError end
+        
+        -- If it's a deck object (from library), draw the top card
+        if object.tag == "Deck" then
+            local drawn = object.takeObject({
+                position = {object.getPosition()[1], object.getPosition()[2] + 3, object.getPosition()[3]},
+                smooth = false
+            })
+            if drawn == nil then return false, 0, "could not draw land from library deck" end
+            object = drawn
+            Wait.frames(function()
+                if event.cardInstanceId ~= nil then
+                    BridgeState.physicalByInstanceId[event.cardInstanceId] = object.getGUID()
+                end
+                BridgeState.physicalSeatByGuid[object.getGUID()] = event.seatId
+                local moved, moveError = BridgeMoveToBattlefield(event, object, "land")
+                if not moved then
+                    BridgeShowError("land from library could not be moved: " .. tostring(moveError))
+                end
+            end, 2)
+            return true, 1.25
+        end
+        
         local moved, moveError = BridgeMoveToBattlefield(event, object, "land")
         if not moved then return false, 0, moveError end
         return true, 1.25
@@ -2741,6 +2795,9 @@ function BridgeApplyStructuredCardMove(event)
     local object = guid ~= nil and getObjectFromGUID(guid) or nil
     if object == nil then
         local fallbackZones = {}
+        if event.sourceZone ~= nil and event.sourceZone ~= "" then
+            table.insert(fallbackZones, event.sourceZone)
+        end
         if event.destinationZone ~= nil and event.destinationZone ~= "" then
             table.insert(fallbackZones, event.destinationZone)
         end
@@ -2834,8 +2891,9 @@ function BridgeMoveToGraveyard(event, object)
     if seat == nil then return false, "graveyard move has no configured seat" end
     local graveyardPosition = BridgeResolveSeatZoneAnchor(event.seatId, "graveyard")
     if graveyardPosition == nil then
-        local anchor = seat.battlefieldAnchors.creature
-        graveyardPosition = {anchor.x + 8, anchor.y, anchor.z}
+        -- Graveyard is below library on the left side, not to the right of creatures
+        local anchor = seat.battlefieldAnchors.land  -- Use land anchor as reference (left side)
+        graveyardPosition = {anchor.x - 2, anchor.y, anchor.z}  -- Slightly left of land area
     end
     local moved, movementError = pcall(function()
         object.use_hands = false
@@ -3026,6 +3084,23 @@ function BridgeResolvePhysicalCard(event, expectedZone)
     local source = {}
     if expectedZone == "hand" then
         source = Player[seat.ttsColor].getHandObjects()
+    elseif expectedZone == "library" then
+        -- Library cards are in the deck object, not individual cards
+        local libraryZone = getObjectFromGUID(seat.libraryZoneGuid)
+        if libraryZone ~= nil and libraryZone.tag == "Deck" then
+            -- For deck objects, check the contained cards
+            local deckData = libraryZone.getData()
+            if deckData.ContainedObjects then
+                for _, cardData in ipairs(deckData.ContainedObjects) do
+                    if BridgeCardNameMatches(cardData.Nickname or "", event.cardName) then
+                        -- Found matching card in deck - return the deck object itself
+                        -- The caller will need to handle drawing from it
+                        return libraryZone, nil
+                    end
+                end
+            end
+        end
+        return nil, BridgePhysicalMappingError(event, expectedZone, 0, "library deck not found or empty")
     else
         for _, object in ipairs(getAllObjects()) do
             if object.tag == "Card" and BridgeState.physicalSeatByGuid[object.getGUID()] == event.seatId and BridgeState.physicalZoneByGuid[object.getGUID()] == expectedZone then

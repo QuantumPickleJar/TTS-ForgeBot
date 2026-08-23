@@ -166,10 +166,17 @@ public sealed partial class ForgeTuiParser
     private static string? InferKindFromPrompt(string promptContext, string promptValue)
     {
         var normalizedPrompt = promptValue.ToLowerInvariant();
+        var normalizedContext = promptContext.ToLowerInvariant();
+        
+        // Blocker assignment is a followup after blocker selection
+        if (normalizedContext.Contains("<blocker_num> blocks <attacker_num>") ||
+            normalizedContext.Contains("enter block assignment") ||
+            normalizedContext.Contains("block assignment"))
+            return "blocker_assignment";
+        
         if (normalizedPrompt.Contains("attacker number")) return "attacker_selection";
         if (normalizedPrompt.Contains("blocker number")) return "blocker_selection";
 
-        var normalizedContext = promptContext.ToLowerInvariant();
         if (normalizedContext.Contains("choose attackers one at a time")) return "attacker_selection";
         if (normalizedContext.Contains("choose blockers one at a time")) return "blocker_selection";
 
@@ -178,6 +185,7 @@ public sealed partial class ForgeTuiParser
 
     private static string GetActionType(string label, string kind) => (kind, label) switch
     {
+        ("blocker_assignment", var value) when value.Equals("done", StringComparison.OrdinalIgnoreCase) => "finish_blocking",
         ("blocker_selection", var value) when value.Equals("done", StringComparison.OrdinalIgnoreCase) => "finish_blocking",
         ("blocker_selection", var value) when value.StartsWith("No further blockers", StringComparison.OrdinalIgnoreCase) => "finish_blocking",
         ("blocker_selection", _) => "choose_blocker",
@@ -228,6 +236,7 @@ public sealed partial class ForgeTuiParser
             // generic selection shape for future atomic Forge controllers.
             "attacker_selection" => (0, 1, false, true, false),
             "blocker_selection" => (0, 1, false, true, false),
+            "blocker_assignment" => (0, 1, false, true, false),
             "card_selection" => (1, 1, false, false, false),
             "target_selection" => (1, 1, false, true, false),
             "defender_selection" => (1, 1, false, true, false),
