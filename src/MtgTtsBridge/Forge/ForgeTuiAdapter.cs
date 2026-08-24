@@ -113,6 +113,12 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         {
             lock (_sync)
             {
+                if (_state == "starting" && _process is not null)
+                {
+                    _logger.LogInformation("Forge startup is already in progress for session {SessionId}; returning the current state without restarting.", _sessionId);
+                    return CreateState();
+                }
+
                 if (HasHealthyProcess())
                 {
                     _logger.LogInformation("Attaching session start request to active Forge session {SessionId}", _sessionId);

@@ -29,6 +29,7 @@
   <ItemGroup>
     <None Update="Fixtures\forge-tui-*.txt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tts\Global.lua" Link="Fixtures\Global.lua" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

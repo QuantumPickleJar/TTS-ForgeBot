@@ -257,6 +257,74 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void StartPath_EmitsOrderedMarkersAndUsesSeatPlayerGuards()
+    {
+        Assert.Contains("START-01 click", Script);
+        Assert.Contains("START-02 deferred-handler", Script);
+        Assert.Contains("START-03 health-request", Script);
+        Assert.Contains("START-04 health-response", Script);
+        Assert.Contains("START-05 deck-check-begin", Script);
+        Assert.Contains("START-06 deck-check-complete", Script);
+        Assert.Contains("START-07 session-start-request", Script);
+        Assert.Contains("START-08 session-start-response", Script);
+        Assert.Contains("START-09 event-session-prepare", Script);
+        Assert.Contains("START-10 snapshot-request", Script);
+        Assert.Contains("START-11 snapshot-response", Script);
+        Assert.Contains("START-12 physical-bootstrap-begin", Script);
+        Assert.Contains("START-13 loose-card-staging", Script);
+        Assert.Contains("START-14 library-indexing", Script);
+        Assert.Contains("START-15 hand-reconstruction", Script);
+        Assert.Contains("START-16 battlefield-reconstruction", Script);
+        Assert.Contains("START-17 mapping-complete", Script);
+        Assert.Contains("START-18 event-poll-start", Script);
+        Assert.Contains("START-19 decision-poll-start", Script);
+        Assert.Contains("START-20 ready", Script);
+        Assert.Contains("body.adapterState == \"starting\"", Script);
+        Assert.Contains("function BridgeTryGetSeatHandObjects", Script);
+        Assert.Contains("function BridgeTryGetSeatHandTransform", Script);
+
+        var stageStart = Script.IndexOf("function BridgeStageSeatCardsForBootstrap", StringComparison.Ordinal);
+        var stageEnd = Script.IndexOf("function BridgeHttp.handleResponse", stageStart, StringComparison.Ordinal);
+        var stageBody = Script[stageStart..stageEnd];
+        Assert.DoesNotContain("Player[seat.ttsColor].getHandObjects()", stageBody);
+    }
+
+    [Fact]
+    public void StartupBootstrap_UsesLiveLibraryObjectsForStagingAndDeckTakeSafety()
+    {
+        var materializeStart = Script.IndexOf("function BridgeMaterializeSeatSnapshot", StringComparison.Ordinal);
+        var materializeEnd = Script.IndexOf("function BridgePlaceSnapshotCard", materializeStart, StringComparison.Ordinal);
+        var materializeBody = Script[materializeStart..materializeEnd];
+        Assert.Contains("BridgeGetLiveObjectByGuid(guid)", materializeBody);
+        Assert.Contains("BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)", materializeBody);
+        Assert.DoesNotContain("local libraryZone = getObjectFromGUID(seat.libraryZoneGuid)", materializeBody);
+
+        var takeStart = Script.IndexOf("function BridgeTakeNamedCardFromDeck", StringComparison.Ordinal);
+        var takeEnd = Script.IndexOf("function BridgeSetPhysicalFaceDown", takeStart, StringComparison.Ordinal);
+        var takeBody = Script[takeStart..takeEnd];
+        Assert.Contains("BridgeObjectIsUsable(deck)", takeBody);
+        Assert.Contains("local deckGuid = BridgeSafeObjectGuid(deck)", takeBody);
+        Assert.Contains("BridgeGetLiveObjectByGuid(deckGuid)", takeBody);
+    }
+
+    [Fact]
+    public void SnapshotVisualState_UsesLiveGuidReacquisitionForCountersAndLife()
+    {
+        var visualStart = Script.IndexOf("function BridgeApplySeatSnapshotVisualState", StringComparison.Ordinal);
+        var visualEnd = Script.IndexOf("function BridgeEnsureManaBank", visualStart, StringComparison.Ordinal);
+        var visualBody = Script[visualStart..visualEnd];
+        Assert.Contains("BridgeGetLiveObjectByGuid(seat.lifeCounterGuid)", visualBody);
+        Assert.Contains("guid and BridgeGetLiveObjectByGuid(guid) or nil", visualBody);
+
+        var manaStart = Script.IndexOf("function BridgeEnsureManaBank", StringComparison.Ordinal);
+        var manaEnd = Script.IndexOf("function BridgeSetManaBank", manaStart, StringComparison.Ordinal);
+        var manaBody = Script[manaStart..manaEnd];
+        Assert.Contains("BridgeGetLiveObjectByGuid(seat.lifeCounterGuid)", manaBody);
+        Assert.Contains("BridgeGetLiveObjectByGuid(BRIDGE_MANA_COUNTER_SOURCES[color])", manaBody);
+        Assert.Contains("BridgeObjectIsUsable(object) and BridgeSafeObjectName(object) == expectedName", manaBody);
+    }
+
+    [Fact]
     public void PlayerTargets_AreMachineTypedAndUseConfiguredSeatSurface()
     {
         Assert.Contains("action.targetKind == \"player\"", Script);
@@ -375,18 +443,19 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("faceUpRotation = {x = 0, y = 180, z = 0}", Script);
         Assert.Contains("faceUpRotation = {x = 0, y = 0, z = 0}", Script);
-        Assert.Contains("object.setRotation(rotation)", Script);
+        Assert.Contains("o.setRotation(rotation)", Script);
         Assert.DoesNotContain("object.flip()", Script);
     }
 
     [Fact]
     public void MainPriority_MappedCardMustBelongToDecisionSeatHand()
     {
+        Assert.Contains("function BridgeBuildSeatHandGuidSet", Script);
+        Assert.Contains("local observedInDecisionHand", Script);
         Assert.Contains("BridgeState.physicalSeatByGuid[mappedGuid] == decision.seatId", Script);
         Assert.Contains("candidateGuid[mappedGuid] == true", Script);
         Assert.Contains("BridgeState.physicalZoneByGuid[guid] == \"hand\"", Script);
         Assert.Contains("BridgeObjectIsOnSeatSide(object, decisionSeat)", Script);
-        Assert.DoesNotContain("candidateObjects = Player[decisionSeat.ttsColor].getHandObjects()", Script);
     }
 
     [Fact]
@@ -476,7 +545,8 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void SnapshotBootstrap_IndexesLibrariesWithoutUnpackingThem()
     {
-        Assert.Contains("for _, contained in ipairs(object.getObjects() or {})", Script);
+        Assert.Contains("local containedOk = pcall(function() containedCards = object.getObjects() or {} end)", Script);
+        Assert.Contains("for _, contained in ipairs(containedCards)", Script);
         Assert.Contains("if zone.name == \"library\" or cardIndex > #cards then", Script);
         Assert.DoesNotContain("BridgeExtractOneDeck", Script);
         Assert.DoesNotContain("physical deck remainder disappeared", Script);
@@ -501,10 +571,10 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("BridgeStageSeatCardsForBootstrap(snapshot)", Script);
         Assert.Contains("function BridgeStageSeatCardsForBootstrap(snapshot)", Script);
-        Assert.Contains("Player[seat.ttsColor].getHandObjects()", Script);
+        Assert.Contains("BridgeTryGetSeatHandObjects(seatId)", Script);
         Assert.Contains("BridgeNearestSeatIdForPosition", Script);
         Assert.Contains("function BridgeLibraryStagingPosition", Script);
-        Assert.Contains("object.setPosition(staging)", Script);
+        Assert.Contains("o.setPosition(staging)", Script);
     }
 
     [Fact]
@@ -532,7 +602,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("if event.kind == \"tap_changed\"", Script);
         Assert.Contains("BridgeSetPhysicalTapped(object, event.tapped == true)", Script);
         Assert.Contains("local targetY = base.y + (tapped and 90 or 0)", Script);
-        Assert.Contains("object.setRotationSmooth({base.x, targetY, base.z}", Script);
+        Assert.Contains("o.setRotationSmooth({base.x, targetY, base.z}", Script);
     }
 
     [Fact]
@@ -567,6 +637,14 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("action.cardInstanceId and BridgeState.physicalByInstanceId[action.cardInstanceId]", Script);
         Assert.Contains("if mappedSeatMatches and mappedZoneMatches then", Script);
         Assert.Contains("if mappedGuid == nil and #matches > 1 then", Script);
+        Assert.Contains("repaired instance mapping", Script);
+        Assert.Contains("instance mapping ambiguous", Script);
+    }
+
+    [Fact]
+    public void ProwessKeywordDecoration_IsRecognizedByTableIntegration()
+    {
+        Assert.Contains("prowess = \"mtg_prowesscounter\"", Script);
     }
 
     [Fact]

@@ -147,12 +147,87 @@ function BridgeSafeObjectCall(object, action)
     return ok
 end
 
+function BridgeTraceStart(marker, detail)
+    local message = nil
+    if detail ~= nil and tostring(detail) ~= "" then
+        message = "[Bridge] " .. tostring(marker) .. " " .. tostring(detail)
+    else
+        message = "[Bridge] " .. tostring(marker)
+    end
+    print(message)
+    pcall(function() log(message) end)
+end
+
+function BridgeRunTraced(marker, action)
+    if action == nil then return false end
+    local handler = function(err) return tostring(err) end
+    if debug ~= nil and debug.traceback ~= nil then
+        handler = debug.traceback
+    end
+    local ok, err = xpcall(action, handler)
+    if ok then return true end
+    BridgeTraceStart(tostring(marker) .. " ERROR", tostring(err))
+    BridgeShowError(tostring(marker) .. " failed; inspect Lua log")
+    return false
+end
+
 function BridgeGetLiveObjectByGuid(guid)
     if guid == nil then return nil end
     local ok, object = pcall(function() return getObjectFromGUID(guid) end)
     if not ok or object == nil then return nil end
     if not BridgeObjectIsUsable(object) then return nil end
     return object
+end
+
+function BridgeTryGetSeatPlayer(seatId)
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil then
+        return nil, "unknown configured seat " .. tostring(seatId)
+    end
+    local color = seat.ttsColor
+    if color == nil or color == "" then
+        return nil, "seat " .. tostring(seatId) .. " has no configured TTS color"
+    end
+    local player = Player[color]
+    if player == nil then
+        return nil, "TTS player color " .. tostring(color) .. " is unavailable for seat " .. tostring(seatId)
+    end
+    return player, nil
+end
+
+function BridgeTryGetSeatHandObjects(seatId)
+    local player, playerError = BridgeTryGetSeatPlayer(seatId)
+    if player == nil then return nil, playerError end
+    local ok, handObjects = pcall(function() return player.getHandObjects() end)
+    if not ok then
+        return nil, "cannot access hand objects for seat " .. tostring(seatId)
+    end
+    return handObjects or {}, nil
+end
+
+function BridgeBuildSeatHandGuidSet(seatId)
+    local handObjects, handError = BridgeTryGetSeatHandObjects(seatId)
+    if handObjects == nil then
+        return {}, handError
+    end
+    local handGuids = {}
+    for _, handObject in ipairs(handObjects) do
+        local guid = BridgeSafeObjectGuid(handObject)
+        if guid ~= nil then
+            handGuids[guid] = true
+        end
+    end
+    return handGuids, nil
+end
+
+function BridgeTryGetSeatHandTransform(seatId)
+    local player, playerError = BridgeTryGetSeatPlayer(seatId)
+    if player == nil then return nil, playerError end
+    local ok, hand = pcall(function() return player.getHandTransform(1) end)
+    if not ok or hand == nil or hand.position == nil then
+        return nil, "cannot access hand transform for seat " .. tostring(seatId)
+    end
+    return hand, nil
 end
 
 function BridgeTryStartupStep(stepName, action)
@@ -259,15 +334,17 @@ function BridgeNearestSeatIdForPosition(position, seatIds)
     local nearestDistance = nil
     for _, seatId in ipairs(seatIds or {}) do
         local seat = BRIDGE_SEATS[seatId]
-        local library = seat and getObjectFromGUID(seat.libraryZoneGuid) or nil
+        local library = seat and BridgeGetLiveObjectByGuid(seat.libraryZoneGuid) or nil
         if library ~= nil then
-            local anchor = library.getPosition()
-            local dx = position.x - anchor.x
-            local dz = position.z - anchor.z
-            local distance = dx * dx + dz * dz
-            if nearestDistance == nil or distance < nearestDistance then
-                nearestDistance = distance
-                nearestSeatId = seatId
+            local ok, anchor = pcall(function() return library.getPosition() end)
+            if ok and anchor ~= nil then
+                local dx = position.x - anchor.x
+                local dz = position.z - anchor.z
+                local distance = dx * dx + dz * dz
+                if nearestDistance == nil or distance < nearestDistance then
+                    nearestDistance = distance
+                    nearestSeatId = seatId
+                end
             end
         end
     end
@@ -275,11 +352,12 @@ function BridgeNearestSeatIdForPosition(position, seatIds)
 end
 
 function BridgeLibraryStagingPosition(seat, stagedBySeat, seatId)
-    local library = seat and getObjectFromGUID(seat.libraryZoneGuid) or nil
+    local library = seat and BridgeGetLiveObjectByGuid(seat.libraryZoneGuid) or nil
     if library == nil then return nil end
     local offset = stagedBySeat[seatId] or 0
     stagedBySeat[seatId] = offset + 1
-    local position = library.getPosition()
+    local ok, position = pcall(function() return library.getPosition() end)
+    if not ok or position == nil then return nil end
     return {
         x = position.x + ((offset % 8) - 3.5) * 0.2,
         y = position.y + 1.5 + math.floor(offset / 8) * 0.03,
@@ -288,14 +366,17 @@ function BridgeLibraryStagingPosition(seat, stagedBySeat, seatId)
 end
 
 function BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat)
+    if not BridgeObjectIsUsable(object) then return false end
     local seat = seatId and BRIDGE_SEATS[seatId] or nil
     if seat == nil then return false end
     local staging = BridgeLibraryStagingPosition(seat, stagedBySeat, seatId)
     if staging == nil then return false end
-    object.use_hands = false
-    BridgeSetPhysicalFaceDown(object, seat, true)
-    object.setPosition(staging)
-    return true
+    local staged = BridgeSafeObjectCall(object, function(o)
+        o.use_hands = false
+        BridgeSetPhysicalFaceDown(o, seat, true)
+        o.setPosition(staging)
+    end)
+    return staged
 end
 
 function BridgeZoneAnchorCacheKey(seatId, zoneName)
@@ -311,23 +392,27 @@ function BridgeFindNamedZoneObjectForSeat(seatId, zoneName)
     if zoneName == "exile" then keyword = "exile" end
     if keyword == nil then return nil end
 
-    local library = getObjectFromGUID(seat.libraryZoneGuid)
+    local library = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
     local nearest = nil
     local nearestDistance = nil
     for _, object in ipairs(getAllObjects()) do
-        local name = string.lower(tostring(object.getName() or ""))
-        if string.find(name, keyword, 1, true) ~= nil and BridgeObjectIsOnSeatSide(object, seat) then
+        if BridgeObjectIsUsable(object) then
+            local name = string.lower(tostring(BridgeSafeObjectName(object) or ""))
+            if string.find(name, keyword, 1, true) ~= nil and BridgeObjectIsOnSeatSide(object, seat) then
             if library == nil then
                 return object
             end
-            local objectPos = object.getPosition()
-            local libraryPos = library.getPosition()
-            local dx = objectPos.x - libraryPos.x
-            local dz = objectPos.z - libraryPos.z
-            local distance = dx * dx + dz * dz
-            if nearestDistance == nil or distance < nearestDistance then
-                nearestDistance = distance
-                nearest = object
+                local okObjPos, objectPos = pcall(function() return object.getPosition() end)
+                local okLibraryPos, libraryPos = pcall(function() return library.getPosition() end)
+                if okObjPos and objectPos ~= nil and okLibraryPos and libraryPos ~= nil then
+                    local dx = objectPos.x - libraryPos.x
+                    local dz = objectPos.z - libraryPos.z
+                    local distance = dx * dx + dz * dz
+                    if nearestDistance == nil or distance < nearestDistance then
+                        nearestDistance = distance
+                        nearest = object
+                    end
+                end
             end
         end
     end
@@ -341,43 +426,53 @@ function BridgeResolveSeatZoneAnchor(seatId, zoneName)
     local cacheKey = BridgeZoneAnchorCacheKey(seatId, zoneName)
     local cachedGuid = BridgeState.zoneAnchorGuidBySeatAndZone[cacheKey]
     if cachedGuid ~= nil then
-        local cached = getObjectFromGUID(cachedGuid)
-        if cached ~= nil then return cached.getPosition() end
+        local cached = BridgeGetLiveObjectByGuid(cachedGuid)
+        if cached ~= nil then
+            local ok, cachedPos = pcall(function() return cached.getPosition() end)
+            if ok and cachedPos ~= nil then return cachedPos end
+        end
         BridgeState.zoneAnchorGuidBySeatAndZone[cacheKey] = nil
     end
 
     local configuredGuid = seat[zoneName .. "ZoneGuid"]
     if configuredGuid ~= nil then
-        local configured = getObjectFromGUID(configuredGuid)
+        local configured = BridgeGetLiveObjectByGuid(configuredGuid)
         if configured ~= nil then
             BridgeState.zoneAnchorGuidBySeatAndZone[cacheKey] = configuredGuid
-            return configured.getPosition()
+            local ok, configuredPos = pcall(function() return configured.getPosition() end)
+            if ok and configuredPos ~= nil then return configuredPos end
         end
     end
 
     local named = BridgeFindNamedZoneObjectForSeat(seatId, zoneName)
     if named ~= nil then
-        BridgeState.zoneAnchorGuidBySeatAndZone[cacheKey] = named.getGUID()
-        return named.getPosition()
+        local namedGuid = BridgeSafeObjectGuid(named)
+        if namedGuid ~= nil then
+            BridgeState.zoneAnchorGuidBySeatAndZone[cacheKey] = namedGuid
+        end
+        local ok, namedPos = pcall(function() return named.getPosition() end)
+        if ok and namedPos ~= nil then return namedPos end
     end
 
-    local library = getObjectFromGUID(seat.libraryZoneGuid)
+    local library = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
     if library ~= nil then
-        local libraryPos = library.getPosition()
-        local towardCenter = BridgeUnitTowardTableCenter(libraryPos)
-        if zoneName == "graveyard" then
-            return {
-                x = libraryPos.x + towardCenter.x * 2.8,
-                y = seat.battlefieldAnchors.creature.y,
-                z = libraryPos.z + towardCenter.z * 2.8
-            }
-        end
-        if zoneName == "exile" then
-            return {
-                x = libraryPos.x - towardCenter.x * 2.2,
-                y = seat.battlefieldAnchors.creature.y,
-                z = libraryPos.z - towardCenter.z * 2.2
-            }
+        local okLibraryPos, libraryPos = pcall(function() return library.getPosition() end)
+        if okLibraryPos and libraryPos ~= nil then
+            local towardCenter = BridgeUnitTowardTableCenter(libraryPos)
+            if zoneName == "graveyard" then
+                return {
+                    x = libraryPos.x + towardCenter.x * 2.8,
+                    y = seat.battlefieldAnchors.creature.y,
+                    z = libraryPos.z + towardCenter.z * 2.8
+                }
+            end
+            if zoneName == "exile" then
+                return {
+                    x = libraryPos.x - towardCenter.x * 2.2,
+                    y = seat.battlefieldAnchors.creature.y,
+                    z = libraryPos.z - towardCenter.z * 2.2
+                }
+            end
         end
     end
 
@@ -385,6 +480,7 @@ function BridgeResolveSeatZoneAnchor(seatId, zoneName)
 end
 
 function BridgeStageSeatCardsForBootstrap(snapshot)
+    BridgeTraceStart("START-13 loose-card-staging")
     local knownSeatIds = {}
     local knownSeatIdSet = {}
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
@@ -395,7 +491,10 @@ function BridgeStageSeatCardsForBootstrap(snapshot)
     local stagedBySeat = {}
     local stagedCount = 0
     for seatId, seat in pairs(BRIDGE_SEATS) do
-        local handObjects = Player[seat.ttsColor].getHandObjects() or {}
+        local handObjects, handError = BridgeTryGetSeatHandObjects(seatId)
+        if handObjects == nil then
+            return false, handError
+        end
         for _, object in ipairs(handObjects) do
             if BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat) then
                 stagedCount = stagedCount + 1
@@ -404,10 +503,13 @@ function BridgeStageSeatCardsForBootstrap(snapshot)
     end
 
     for _, object in ipairs(getAllObjects()) do
-        if object.tag == "Card" then
+        if BridgeObjectIsUsable(object) and object.tag == "Card" then
             local seatId = BridgeSeatIdForObjectSide(object)
             if seatId == nil or not knownSeatIdSet[seatId] then
-                seatId = BridgeNearestSeatIdForPosition(object.getPosition(), knownSeatIds)
+                local ok, position = pcall(function() return object.getPosition() end)
+                if ok and position ~= nil then
+                    seatId = BridgeNearestSeatIdForPosition(position, knownSeatIds)
+                end
             end
             if BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat) then
                 stagedCount = stagedCount + 1
@@ -418,6 +520,7 @@ function BridgeStageSeatCardsForBootstrap(snapshot)
     if stagedCount > 0 then
         print("[Bridge] staged " .. tostring(stagedCount) .. " loose card(s) near library before authoritative bootstrap")
     end
+    return true, nil
 end
 
 function BridgeHttp.handleResponse(request, callback)
@@ -830,21 +933,8 @@ function BridgeEnsureObjectButton(object, config)
     if object == nil or config == nil or not BridgeObjectIsUsable(object) then return end
     local buttons = object.getButtons and object.getButtons() or {}
     if #buttons > 0 then
-        pcall(function()
-            object.editButton({
-                index = 0,
-                click_function = config.click_function,
-                function_owner = config.function_owner,
-                label = config.label,
-                position = config.position,
-                width = config.width,
-                height = config.height,
-                font_size = config.font_size,
-                color = config.color,
-                font_color = config.font_color,
-                tooltip = config.tooltip
-            })
-        end)
+        -- Avoid editButton here; stale embedded objects can throw Unity-side
+        -- object-reference errors during startup hydration.
         return
     end
     pcall(function()
@@ -928,8 +1018,22 @@ end
 function BridgeRefreshStatusPanel()
     local object = BridgeGetLiveObjectByGuid(BridgeState.statusObjectGuid)
     if object ~= nil then
-        pcall(function()
-            object.editButton({index = 0, label = tostring(BridgeState.statusHeadline) .. "\n" .. tostring(BridgeState.statusDetail)})
+        BridgeSafeObjectCall(object, function(o)
+            if o.clearButtons ~= nil then o.clearButtons() end
+            if o.createButton ~= nil then
+                o.createButton({
+                    click_function = "BridgeIgnoreStatusClick",
+                    function_owner = Global,
+                    label = tostring(BridgeState.statusHeadline) .. "\n" .. tostring(BridgeState.statusDetail),
+                    position = {0, 0.55, 0},
+                    width = 1750,
+                    height = 420,
+                    font_size = 115,
+                    color = {0.12, 0.12, 0.16, 1},
+                    font_color = {1, 1, 1, 1},
+                    tooltip = "Forge-authoritative game status"
+                })
+            end
         end)
     end
 end
@@ -1147,10 +1251,33 @@ function BridgeRefreshTurnCounterLabels()
         White = "WHITE TURN\n" .. tostring(BridgeState.turnCountsBySeatId["forge-player-1"] or 0),
         Blue = "BLUE TURN\n" .. tostring(BridgeState.turnCountsBySeatId["forge-player-2"] or 0)
     }
+    local colors = {
+        Table = {0.35, 0.35, 0.35, 1},
+        White = {0.88, 0.88, 0.88, 1},
+        Blue = {0.12, 0.35, 0.7, 1}
+    }
     for kind, label in pairs(labels) do
         local guid = BridgeState.turnCounterObjectGuidByKind[kind]
         local object = BridgeGetLiveObjectByGuid(guid)
-        if object ~= nil then pcall(function() object.editButton({index = 0, label = label}) end) end
+        if object ~= nil then
+            BridgeSafeObjectCall(object, function(o)
+                if o.clearButtons ~= nil then o.clearButtons() end
+                if o.createButton ~= nil then
+                    o.createButton({
+                        click_function = "BridgeIgnoreTurnCounterClick",
+                        function_owner = Global,
+                        label = label,
+                        position = {0, 0.55, 0},
+                        width = 760,
+                        height = 340,
+                        font_size = 110,
+                        color = colors[kind] or {0.35, 0.35, 0.35, 1},
+                        font_color = {1, 1, 1, 1},
+                        tooltip = "Forge-authoritative turn counter"
+                    })
+                end
+            end)
+        end
     end
 end
 
@@ -1166,27 +1293,42 @@ end
 function BridgePressStartMatch(object, playerColor, altClick)
     local color = playerColor
     local alt = altClick == true
+    BridgeTraceStart("START-01 click", tostring(color or "unknown"))
     Wait.frames(function()
-        BridgeDoPressStartMatch(color, alt)
+        BridgeRunTraced("START-02 deferred-handler", function()
+            BridgeDoPressStartMatch(color, alt)
+        end)
     end, 1)
 end
 
 function BridgeDoPressStartMatch(playerColor, altClick)
+    BridgeTraceStart("START-02 deferred-handler")
     if BridgeState.setupBusy then
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
         return
     end
     BridgeSetSetupBusy(true, "Forge match is loading; START and RESUME are temporarily disabled.")
+    BridgeTraceStart("START-03 health-request")
     BridgeGetHealth(function(ok, body, err)
-        if not ok then BridgeSetSetupBusy(false); BridgeShowError("cannot start: companion unavailable: " .. tostring(err)); return end
-        local active = body.sessionId ~= nil and body.sessionId ~= "session-not-started"
-            and body.adapterState ~= "not_started" and body.adapterState ~= "failed"
-        if active then BridgeSetSetupBusy(false); BridgeShowError("a Forge match already exists; use RESUME or explicitly choose NEW MATCH"); return end
-        if BridgeFindLibraryDeckForSeat("forge-player-1") == nil or BridgeFindLibraryDeckForSeat("forge-player-2") == nil then
-            BridgeSetSetupBusy(false); BridgeShowError("both physical library decks must be present before START")
-            return
-        end
-        BridgeStartSessionIfNone(function() BridgeSetSetupBusy(false) end)
+        BridgeRunTraced("START-04 health-response", function()
+            BridgeTraceStart("START-04 health-response", ok and "ok" or tostring(err))
+            if not ok then BridgeSetSetupBusy(false); BridgeShowError("cannot start: companion unavailable: " .. tostring(err)); return end
+            if body.adapterState == "starting" then
+                BridgeSetSetupBusy(true, "Forge is still initializing; wait for startup to finish before starting a new match.")
+                BridgeSetStatus("FORGE INITIALIZING", "Loading Forge card database")
+                return
+            end
+            local active = body.sessionId ~= nil and body.sessionId ~= "session-not-started"
+                and body.adapterState ~= "not_started" and body.adapterState ~= "failed"
+            if active then BridgeSetSetupBusy(false); BridgeShowError("a Forge match already exists; use RESUME or explicitly choose NEW MATCH"); return end
+            BridgeTraceStart("START-05 deck-check-begin")
+            if BridgeFindLibraryDeckForSeat("forge-player-1") == nil or BridgeFindLibraryDeckForSeat("forge-player-2") == nil then
+                BridgeSetSetupBusy(false); BridgeShowError("both physical library decks must be present before START")
+                return
+            end
+            BridgeTraceStart("START-06 deck-check-complete")
+            BridgeStartSessionIfNone(function() BridgeSetSetupBusy(false) end)
+        end)
     end)
 end
 
@@ -1405,22 +1547,31 @@ function BridgeStartSessionIfNone(done)
     BridgeClearHighlights()
     BridgeState.lastDecision = nil
 
+    BridgeTraceStart("START-07 session-start-request")
     BridgeStartSession(function(ok, body, err)
-        if not ok then
-            if done then done() end
-            BridgeShowError("session start failed: " .. tostring(err))
-            return
-        end
+        BridgeRunTraced("START-08 session-start-response", function()
+            BridgeTraceStart("START-08 session-start-response", ok and tostring(body and body.sessionId or "ok") or tostring(err))
+            if not ok then
+                if done then done() end
+                BridgeShowError("session start failed: " .. tostring(err))
+                return
+            end
 
-        print("[Bridge] started or attached session: " .. tostring(body and body.sessionId))
-        -- The start route may attach to a match that already exists. Do not replay
-        -- its historical physical events; an explicit reset is the new-match path.
-        BridgeBootstrapWhenAvailable(body.sessionId, 1, function(bootstrapOk, bootstrapError)
-            if not bootstrapOk then if done then done() end; BridgeStopOnDesync(bootstrapError); return end
-            BridgeStartEventPolling(body.sessionId, true)
-            if body ~= nil and body.currentDecision ~= nil then printDecision(body.currentDecision)
-            else BridgeRefreshDecision() end
-            if done then done() end
+            print("[Bridge] started or attached session: " .. tostring(body and body.sessionId))
+            -- The start route may attach to a match that already exists. Do not replay
+            -- its historical physical events; an explicit reset is the new-match path.
+            BridgeBootstrapWhenAvailable(body.sessionId, 1, function(bootstrapOk, bootstrapError)
+                BridgeRunTraced("START bootstrap-callback", function()
+                    if not bootstrapOk then if done then done() end; BridgeStopOnDesync(bootstrapError); return end
+                    BridgeTraceStart("START-18 event-poll-start")
+                    BridgeStartEventPolling(body.sessionId, true)
+                    BridgeTraceStart("START-19 decision-poll-start")
+                    if body ~= nil and body.currentDecision ~= nil then printDecision(body.currentDecision)
+                    else BridgeRefreshDecision() end
+                    BridgeTraceStart("START-20 ready")
+                    if done then done() end
+                end)
+            end)
         end)
     end)
 end
@@ -2108,17 +2259,34 @@ function BridgeRenderDecision(decision)
     local decisionSeat = BRIDGE_SEATS[decision.seatId]
     local cards = {}
     local candidateGuid = {}
+    local seatHandGuids = {}
+    if decision.kind == "main_priority" and decisionSeat ~= nil then
+        seatHandGuids = BridgeBuildSeatHandGuidSet(decision.seatId)
+    end
     for _, object in ipairs(getAllObjects()) do
         if object.tag == "Card" then
-            local guid = object.getGUID()
+            local guid = BridgeSafeObjectGuid(object)
+            local mappedInDecisionHand = guid ~= nil
+                and BridgeState.physicalSeatByGuid[guid] == decision.seatId
+                and BridgeState.physicalZoneByGuid[guid] == "hand"
+                and decisionSeat ~= nil
+                and BridgeObjectIsOnSeatSide(object, decisionSeat)
+            local observedInDecisionHand = guid ~= nil and seatHandGuids[guid] == true
+            if observedInDecisionHand then
+                -- Keep the authoritative mapping sticky to the live hand object so
+                -- legal hand actions remain interactable even if zone bookkeeping
+                -- lags a frame behind physical hand ownership.
+                BridgeState.physicalSeatByGuid[guid] = decision.seatId
+                BridgeState.physicalZoneByGuid[guid] = "hand"
+            end
             local isCandidate = decision.kind ~= "main_priority"
-                or (BridgeState.physicalSeatByGuid[guid] == decision.seatId
-                    and BridgeState.physicalZoneByGuid[guid] == "hand"
-                    and decisionSeat ~= nil
-                    and BridgeObjectIsOnSeatSide(object, decisionSeat))
+                or mappedInDecisionHand
+                or observedInDecisionHand
             if isCandidate then
                 table.insert(cards, object)
-                candidateGuid[guid] = true
+                if guid ~= nil then
+                    candidateGuid[guid] = true
+                end
             end
         end
     end
@@ -2141,17 +2309,41 @@ function BridgeRenderDecision(decision)
 
         local matches = {}
         local mappedGuid = action.cardInstanceId and BridgeState.physicalByInstanceId[action.cardInstanceId] or nil
-        local mappedObject = mappedGuid and getObjectFromGUID(mappedGuid) or nil
+        local mappedObject = BridgeGetLiveObjectByGuid(mappedGuid)
         local mappedSeatMatches = mappedObject ~= nil and (decision.kind ~= "main_priority"
             or BridgeState.physicalSeatByGuid[mappedGuid] == decision.seatId)
         local mappedZoneMatches = decision.kind ~= "main_priority" or candidateGuid[mappedGuid] == true
         if mappedSeatMatches and mappedZoneMatches then
             table.insert(matches, mappedObject)
-        elseif action.cardInstanceId == nil then
+        else
+            local fallbackMatches = {}
             for _, object in ipairs(cards) do
                 if BridgeCardNameMatches(object.getName(), action.cardIdentity) then
-                    table.insert(matches, object)
+                    table.insert(fallbackMatches, object)
                 end
+            end
+            if action.cardInstanceId == nil then
+                matches = fallbackMatches
+            elseif #fallbackMatches == 1 then
+                local recoveredGuid = BridgeSafeObjectGuid(fallbackMatches[1])
+                if recoveredGuid ~= nil then
+                    BridgeState.physicalByInstanceId[action.cardInstanceId] = recoveredGuid
+                    if action.cardIdentity ~= nil then
+                        BridgeState.cardNameByInstanceId[action.cardInstanceId] = action.cardIdentity
+                    end
+                    BridgeState.physicalSeatByGuid[recoveredGuid] = decision.seatId
+                    if decision.kind == "main_priority" then
+                        BridgeState.physicalZoneByGuid[recoveredGuid] = "hand"
+                    end
+                    matches = fallbackMatches
+                    print(string.format(
+                        "[Bridge] repaired instance mapping for %s -> %s (%s)",
+                        tostring(action.cardInstanceId), tostring(recoveredGuid), tostring(action.cardIdentity or action.type)))
+                end
+            elseif #fallbackMatches > 1 then
+                print(string.format(
+                    "[Bridge] instance mapping ambiguous for %s (%s): %d candidates",
+                    tostring(action.cardInstanceId), tostring(action.cardIdentity or action.type), #fallbackMatches))
             end
         end
 
@@ -2351,35 +2543,50 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
     end
     -- Establish the event session before populating instance mappings. Event
     -- polling must not clear the authoritative snapshot we just reconciled.
+    BridgeTraceStart("START-09 event-session-prepare")
     BridgePrepareEventSession(sessionId, true)
     BridgeState.bootstrapping = true
+    BridgeTraceStart("START-10 snapshot-request")
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
-        if not ok or snapshot == nil then
-            BridgeState.bootstrapping = false
-            callback(false, "authoritative snapshot unavailable: " .. tostring(err))
-            return
-        end
-        if snapshot.sessionId ~= sessionId then
-            BridgeState.bootstrapping = false
-            callback(false, "snapshot session mismatch")
-            return
-        end
-        BridgeStageSeatCardsForBootstrap(snapshot)
-
-        BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
-            if not annotated then
+        BridgeRunTraced("START-11 snapshot-response", function()
+            BridgeTraceStart("START-11 snapshot-response", ok and tostring(snapshot and snapshot.sessionId or "ok") or tostring(err))
+            if not ok or snapshot == nil then
                 BridgeState.bootstrapping = false
-                callback(false, annotationError)
+                callback(false, "authoritative snapshot unavailable: " .. tostring(err))
                 return
             end
-            BridgeBootstrapSeats(snapshot, 1, function(seatsOk, seatsError)
+            if snapshot.sessionId ~= sessionId then
                 BridgeState.bootstrapping = false
-                if not seatsOk then callback(false, seatsError); return end
-                BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
-                print(string.format(
-                    "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
-                    #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
-                callback(true, nil)
+                callback(false, "snapshot session mismatch")
+                return
+            end
+            BridgeTraceStart("START-12 physical-bootstrap-begin")
+            local stagedOk, stagedError = BridgeStageSeatCardsForBootstrap(snapshot)
+            if not stagedOk then
+                BridgeState.bootstrapping = false
+                callback(false, stagedError)
+                return
+            end
+
+            BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
+                BridgeRunTraced("START annotate-callback", function()
+                    if not annotated then
+                        BridgeState.bootstrapping = false
+                        callback(false, annotationError)
+                        return
+                    end
+                    BridgeBootstrapSeats(snapshot, 1, function(seatsOk, seatsError)
+                        BridgeRunTraced("START seat-bootstrap-callback", function()
+                            BridgeState.bootstrapping = false
+                            if not seatsOk then callback(false, seatsError); return end
+                            BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
+                            print(string.format(
+                                "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
+                                #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
+                            callback(true, nil)
+                        end)
+                    end)
+                end)
             end)
         end)
     end)
@@ -2490,21 +2697,29 @@ end
 function BridgeCollectSeatAssets(seatId, callback)
     local seat = BRIDGE_SEATS[seatId]
     local assets = {}
+    BridgeTraceStart("START-14 library-indexing", tostring(seatId))
     for _, object in ipairs(getAllObjects()) do
-        if (object.tag == "Card" or object.tag == "Deck") and BridgeObjectIsOnSeatSide(object, seat) then
+        if BridgeObjectIsUsable(object) and (object.tag == "Card" or object.tag == "Deck") and BridgeObjectIsOnSeatSide(object, seat) then
             if object.tag == "Card" then
+                local guid = BridgeSafeObjectGuid(object)
+                local cardName = BridgeSafeObjectName(object)
+                if guid ~= nil then
                 table.insert(assets, {
-                    guid = object.getGUID(),
-                    cardName = object.getName(),
+                    guid = guid,
+                    cardName = cardName,
                     object = object
                 })
+                end
             else
-                for _, contained in ipairs(object.getObjects() or {}) do
-                    table.insert(assets, {
-                        guid = contained.guid,
-                        cardName = contained.nickname or contained.name,
-                        object = nil
-                    })
+                local ok, containedCards = pcall(function() return object.getObjects() or {} end)
+                if ok then
+                    for _, contained in ipairs(containedCards) do
+                        table.insert(assets, {
+                            guid = contained.guid,
+                            cardName = contained.nickname or contained.name,
+                            object = nil
+                        })
+                    end
                 end
             end
         end
@@ -2513,14 +2728,17 @@ function BridgeCollectSeatAssets(seatId, callback)
 end
 
 function BridgeObjectIsOnSeatSide(object, seat)
-    local position = object.getPosition()
+    if seat == nil or not BridgeObjectIsUsable(object) then return false end
+    local okPosition, position = pcall(function() return object.getPosition() end)
+    if not okPosition or position == nil then return false end
     if seat.assetMaxAbsX ~= nil and math.abs(position.x) > seat.assetMaxAbsX then
         return false
     end
     if object.tag == "Deck" then
-        local libraryZone = getObjectFromGUID(seat.libraryZoneGuid)
+        local libraryZone = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
         if libraryZone == nil then return false end
-        local libraryPosition = libraryZone.getPosition()
+        local okLibraryPos, libraryPosition = pcall(function() return libraryZone.getPosition() end)
+        if not okLibraryPos or libraryPosition == nil then return false end
         local dx = position.x - libraryPosition.x
         local dz = position.z - libraryPosition.z
         local radius = seat.libraryAssetRadius or 4
@@ -2547,9 +2765,14 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets)
             local candidates = byName[normalized] or {}
             if #candidates == 0 then
                 local fallbackDeck = BridgeFindSeatLibraryDeckWithCard(seat, card.cardName)
-                if fallbackDeck ~= nil then
+                if fallbackDeck ~= nil and BridgeObjectIsUsable(fallbackDeck) then
                     local fallbackGuid = nil
-                    for _, contained in ipairs(fallbackDeck.getObjects() or {}) do
+                    local containedCards = {}
+                    local containedOk = pcall(function() containedCards = fallbackDeck.getObjects() or {} end)
+                    if not containedOk then
+                        containedCards = {}
+                    end
+                    for _, contained in ipairs(containedCards) do
                         local containedName = contained.nickname or contained.name
                         if BridgeCardNameMatches(containedName, card.cardName)
                             and contained.guid ~= nil
@@ -2592,6 +2815,7 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets)
             BridgeState.untappedRotationByGuid[guid] = mapping.asset.object.getRotation()
         end
     end
+    BridgeTraceStart("START-17 mapping-complete", tostring(seatSnapshot.seatId))
     return true, nil
 end
 
@@ -2620,13 +2844,17 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
         BridgeState.cardNameByInstanceId[card.cardInstanceId] = card.cardName
         BridgeState.physicalSeatByGuid[actualGuid] = seatSnapshot.seatId
         BridgeState.physicalZoneByGuid[actualGuid] = zone.name
-        BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
+        local placed, placeError = BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
+        if not placed then
+            callback(false, placeError)
+            return
+        end
         Wait.frames(function()
             BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex + 1, callback)
         end, 2)
     end
 
-    local object = getObjectFromGUID(guid)
+    local object = BridgeGetLiveObjectByGuid(guid)
     if object ~= nil then continueWith(object); return end
 
     local seat = BRIDGE_SEATS[seatSnapshot.seatId]
@@ -2636,7 +2864,11 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
         return
     end
 
-    local libraryZone = getObjectFromGUID(seat.libraryZoneGuid)
+    local libraryZone = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
+    if libraryZone == nil then
+        callback(false, "snapshot card staging failed: missing library zone for seat " .. tostring(seatSnapshot.seatId))
+        return
+    end
     local staging = libraryZone.getPosition()
     BridgeTakeNamedCardFromDeck(
         deck,
@@ -2650,29 +2882,48 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
 end
 
 function BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
+    if not BridgeObjectIsUsable(object) then
+        return false, "snapshot placement target object is unavailable"
+    end
     local seat = BRIDGE_SEATS[seatSnapshot.seatId]
     if zone.name == "library" then
-        local libraryZone = getObjectFromGUID(seat.libraryZoneGuid)
+        local libraryZone = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
+        if libraryZone == nil then
+            return false, "missing library zone for seat " .. tostring(seatSnapshot.seatId)
+        end
         local position = libraryZone.getPosition()
         local count = #(zone.cards or {})
-        object.use_hands = false
-        object.setPosition({position.x, position.y + 1.5 + (count - card.zonePosition) * 0.025, position.z})
-        return
+        local moved = BridgeSafeObjectCall(object, function(o)
+            o.use_hands = false
+            o.setPosition({position.x, position.y + 1.5 + (count - card.zonePosition) * 0.025, position.z})
+        end)
+        if not moved then return false, "failed to place library card for seat " .. tostring(seatSnapshot.seatId) end
+        return true, nil
     end
     BridgeSetPhysicalFaceDown(object, seat, card.faceDown == true)
     if zone.name == "hand" then
-        local hand = Player[seat.ttsColor].getHandTransform(1)
-        object.use_hands = true
-        object.setPosition({hand.position.x + (card.zonePosition - (#zone.cards - 1) / 2) * 1.2, hand.position.y, hand.position.z})
-        return
+        BridgeTraceStart("START-15 hand-reconstruction", tostring(seatSnapshot.seatId))
+        local hand, handError = BridgeTryGetSeatHandTransform(seatSnapshot.seatId)
+        if hand == nil then
+            return false, handError
+        end
+        local moved = BridgeSafeObjectCall(object, function(o)
+            o.use_hands = true
+            o.setPosition({hand.position.x + (card.zonePosition - (#zone.cards - 1) / 2) * 1.2, hand.position.y, hand.position.z})
+        end)
+        if not moved then return false, "failed to place hand card for seat " .. tostring(seatSnapshot.seatId) end
+        return true, nil
     end
-    object.use_hands = false
+    if not BridgeSafeObjectCall(object, function(o) o.use_hands = false end) then
+        return false, "failed to clear hand interaction while placing card"
+    end
     if zone.name == "battlefield" then
+        BridgeTraceStart("START-16 battlefield-reconstruction", tostring(seatSnapshot.seatId))
         local row = card.battlefieldKind == "land" and "land" or "creature"
         local position, positionError = BridgeBattlefieldPosition(seatSnapshot.seatId, row)
         if position == nil then
             BridgeStopOnDesync(positionError)
-            return
+            return false, positionError
         end
         object.setPosition(position)
         local rowKey = seatSnapshot.seatId .. ":" .. row
@@ -2683,27 +2934,32 @@ function BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
             local anchor = seat.battlefieldAnchors.creature
             position = {anchor.x + 8, anchor.y, anchor.z}
         end
-        object.setPosition(position)
+        if not BridgeSafeObjectCall(object, function(o) o.setPosition(position) end) then
+            return false, "failed to place graveyard card for seat " .. tostring(seatSnapshot.seatId)
+        end
     elseif zone.name == "exile" then
         local position = BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, "exile")
         if position == nil then
             local anchor = seat.battlefieldAnchors.creature
             position = {anchor.x + 10, anchor.y, anchor.z}
         end
-        object.setPosition(position)
+        if not BridgeSafeObjectCall(object, function(o) o.setPosition(position) end) then
+            return false, "failed to place exile card for seat " .. tostring(seatSnapshot.seatId)
+        end
     end
+    return true, nil
 end
 
 function BridgeApplySeatSnapshotVisualState(seatSnapshot)
     local seat = BRIDGE_SEATS[seatSnapshot.seatId]
-    local lifeCounter = getObjectFromGUID(seat.lifeCounterGuid)
+    local lifeCounter = BridgeGetLiveObjectByGuid(seat.lifeCounterGuid)
     if lifeCounter ~= nil then lifeCounter.setValue(seatSnapshot.life) end
     BridgeSetManaBank(seatSnapshot.seatId, seatSnapshot.manaPool or {})
     for _, zone in ipairs(seatSnapshot.zones or {}) do
         if zone.name == "battlefield" then
             for _, card in ipairs(zone.cards or {}) do
                 local guid = BridgeState.physicalByInstanceId[card.cardInstanceId]
-                local object = guid and getObjectFromGUID(guid) or nil
+                local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
                 if object ~= nil then
                     BridgeSetPhysicalTapped(object, card.tapped == true)
                     for counterType, counterValue in pairs(card.counters or {}) do
@@ -2723,7 +2979,7 @@ end
 function BridgeEnsureManaBank(seatId)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil or seat.manaBankOffset == nil then return false end
-    local lifeCounter = getObjectFromGUID(seat.lifeCounterGuid)
+    local lifeCounter = BridgeGetLiveObjectByGuid(seat.lifeCounterGuid)
     if lifeCounter == nil then
         BridgeShowError("missing life counter for mana bank in seat " .. tostring(seatId))
         return false
@@ -2733,14 +2989,14 @@ function BridgeEnsureManaBank(seatId)
     for index, color in ipairs(BRIDGE_MANA_COLORS) do
         local expectedName = "Forge Mana " .. color .. " " .. seatId
         local currentGuid = BridgeState.manaCounterGuidBySeatId[seatId][color]
-        local counter = currentGuid and getObjectFromGUID(currentGuid) or nil
+        local counter = currentGuid and BridgeGetLiveObjectByGuid(currentGuid) or nil
         if counter == nil then
             for _, object in ipairs(getAllObjects()) do
-                if object.getName() == expectedName then counter = object; break end
+                if BridgeObjectIsUsable(object) and BridgeSafeObjectName(object) == expectedName then counter = object; break end
             end
         end
         if counter == nil then
-            local source = getObjectFromGUID(BRIDGE_MANA_COUNTER_SOURCES[color])
+            local source = BridgeGetLiveObjectByGuid(BRIDGE_MANA_COUNTER_SOURCES[color])
             if source == nil then
                 BridgeShowError("missing reusable table mana counter source for " .. color)
                 return false
@@ -2771,7 +3027,7 @@ function BridgeSetManaBank(seatId, manaPool)
     Wait.frames(function()
         for _, color in ipairs(BRIDGE_MANA_COLORS) do
             local guid = BridgeState.manaCounterGuidBySeatId[seatId][color]
-            local counter = guid and getObjectFromGUID(guid) or nil
+            local counter = guid and BridgeGetLiveObjectByGuid(guid) or nil
             if counter ~= nil then
                 local amount = tonumber(manaPool[color] or 0) or 0
                 counter.setVar("val", amount)
@@ -3368,13 +3624,16 @@ function BridgeMoveToGraveyard(event, object)
 end
 
 function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
-    local libraryZone = seat and getObjectFromGUID(seat.libraryZoneGuid) or nil
+    local libraryZone = seat and BridgeGetLiveObjectByGuid(seat.libraryZoneGuid) or nil
     local fallbackDeck = nil
     local fallbackDistance = nil
     for _, object in ipairs(getAllObjects()) do
-        if object.tag == "Deck" then
+        if BridgeObjectIsUsable(object) and object.tag == "Deck" then
             local containsMatch = false
-            for _, contained in ipairs(object.getObjects() or {}) do
+            local containedCards = {}
+            local containedOk = pcall(function() containedCards = object.getObjects() or {} end)
+            if not containedOk then containedCards = {} end
+            for _, contained in ipairs(containedCards) do
                 if BridgeCardNameMatches(contained.nickname or contained.name, expectedName) then
                     containsMatch = true
                     break
@@ -3404,8 +3663,15 @@ function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
 end
 
 function BridgeTakeNamedCardFromDeck(deck, expectedName, position, smooth, callback)
+    if not BridgeObjectIsUsable(deck) then
+        callback(nil, "physical library deck is no longer available")
+        return
+    end
     local matched = nil
-    for _, contained in ipairs(deck.getObjects() or {}) do
+    local containedCards = {}
+    local containedOk = pcall(function() containedCards = deck.getObjects() or {} end)
+    if not containedOk then containedCards = {} end
+    for _, contained in ipairs(containedCards) do
         if BridgeCardNameMatches(contained.nickname or contained.name, expectedName) then
             matched = contained
             break
@@ -3416,13 +3682,21 @@ function BridgeTakeNamedCardFromDeck(deck, expectedName, position, smooth, callb
         return
     end
 
+    local deckGuid = BridgeSafeObjectGuid(deck)
     deck.takeObject({
         index = matched.index,
         position = position,
         smooth = smooth,
         callback_function = function(taken)
+            if not BridgeObjectIsUsable(taken) then
+                callback(nil, "physical library returned an unusable card object")
+                return
+            end
             if not BridgeCardNameMatches(taken.getName(), expectedName) then
-                deck.putObject(taken)
+                local liveDeck = BridgeGetLiveObjectByGuid(deckGuid)
+                if liveDeck ~= nil then
+                    BridgeSafeObjectCall(liveDeck, function(d) d.putObject(taken) end)
+                end
                 callback(nil, "physical library returned a card with the wrong identity")
                 return
             end
@@ -3432,6 +3706,7 @@ function BridgeTakeNamedCardFromDeck(deck, expectedName, position, smooth, callb
 end
 
 function BridgeSetPhysicalFaceDown(object, seat, faceDown)
+    if not BridgeObjectIsUsable(object) then return end
     local faceUp = seat.faceUpRotation
     if faceUp == nil then return end
     local rotation = {
@@ -3439,8 +3714,10 @@ function BridgeSetPhysicalFaceDown(object, seat, faceDown)
         y = faceUp.y,
         z = faceUp.z + (faceDown and 180 or 0)
     }
-    object.setRotation(rotation)
-    BridgeState.untappedRotationByGuid[object.getGUID()] = {
+    if not BridgeSafeObjectCall(object, function(o) o.setRotation(rotation) end) then return end
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then return end
+    BridgeState.untappedRotationByGuid[guid] = {
         x = faceUp.x,
         y = faceUp.y,
         z = faceUp.z
@@ -3448,14 +3725,17 @@ function BridgeSetPhysicalFaceDown(object, seat, faceDown)
 end
 
 function BridgeSetPhysicalTapped(object, tapped)
-    local guid = object.getGUID()
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then return end
     local base = BridgeState.untappedRotationByGuid[guid]
     if base == nil then
-        base = object.getRotation()
+        local ok, rotation = pcall(function() return object.getRotation() end)
+        if not ok or rotation == nil then return end
+        base = rotation
         BridgeState.untappedRotationByGuid[guid] = base
     end
     local targetY = base.y + (tapped and 90 or 0)
-    object.setRotationSmooth({base.x, targetY, base.z}, false, true)
+    BridgeSafeObjectCall(object, function(o) o.setRotationSmooth({base.x, targetY, base.z}, false, true) end)
 end
 
 function BridgeResolveMappedInstance(event)
@@ -3508,6 +3788,7 @@ local BRIDGE_KEYWORD_PROPERTIES = {
     ["double strike"] = "mtg_doublestrikecounter", ["first strike"] = "mtg_firststrikecounter",
     hexproof = "mtg_hexproofcounter", indestructible = "mtg_indestructiblecounter",
     lifelink = "mtg_lifelinkcounter", menace = "mtg_menacecounter",
+    prowess = "mtg_prowesscounter",
     reach = "mtg_reachcounter", trample = "mtg_tramplecounter",
     vigilance = "mtg_vigilancecounter", stun = "mtg_stuncounter"
 }
