@@ -68,6 +68,7 @@ BridgeState = {
     tableTurnCount = 0,
     turnCounterSessionId = nil,
     resetConfirmationArmed = false,
+    resetConfirmationGuid = nil,
     selectedActionIds = {},
     selectedGuidByActionId = {},
     selectionDecisionId = nil,
@@ -211,6 +212,7 @@ function BridgeDestroyTransientControls()
     BridgeState.optionControlDecisionId = nil
     BridgeState.setupObjectGuidByKind = {}
     BridgeState.resetConfirmationArmed = false
+    BridgeState.resetConfirmationGuid = nil
 end
 
 function BridgeFindNamedObject(name)
@@ -1161,13 +1163,15 @@ function BridgeRecordAuthoritativeTurn(seatId, turnNumber)
     BridgeState.turnCountsBySeatId[seatId] = (BridgeState.turnCountsBySeatId[seatId] or 0) + 1
     BridgeRefreshTurnCounterLabels()
 end
-
 function BridgePressStartMatch(object, playerColor, altClick)
-    -- Guard against dead object parameter from stale embedded button callbacks
-    if object ~= nil then
-        local ok = pcall(function() return object.getGUID() end)
-        if not ok then return end
-    end
+    local color = playerColor
+    local alt = altClick == true
+    Wait.frames(function()
+        BridgeDoPressStartMatch(color, alt)
+    end, 1)
+end
+
+function BridgeDoPressStartMatch(playerColor, altClick)
     if BridgeState.setupBusy then
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
         return
@@ -1187,11 +1191,14 @@ function BridgePressStartMatch(object, playerColor, altClick)
 end
 
 function BridgePressResume(object, playerColor, altClick)
-    -- Guard against dead object parameter from stale embedded button callbacks
-    if object ~= nil then
-        local ok = pcall(function() return object.getGUID() end)
-        if not ok then return end
-    end
+    local color = playerColor
+    local alt = altClick == true
+    Wait.frames(function()
+        BridgeDoPressResume(color, alt)
+    end, 1)
+end
+
+function BridgeDoPressResume(playerColor, altClick)
     if BridgeState.setupBusy then
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
         return
@@ -1201,35 +1208,108 @@ function BridgePressResume(object, playerColor, altClick)
 end
 
 function BridgePressNewMatch(object, playerColor, altClick)
-    -- Guard against dead object parameter from stale embedded button callbacks
+    local color = playerColor
+    local alt = altClick == true
+    print("setup-click:new-match")
+    Wait.frames(function()
+        BridgeDoPressNewMatch(color, alt)
+    end, 1)
+end
+
+function BridgeDoPressNewMatch(playerColor, altClick)
+    print("setup-deferred:new-match")
+    if BridgeState.setupBusy then
+        BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
+        return
+    end
+    BridgeState.resetConfirmationArmed = true
+    BridgeClearResetConfirmationControl()
+    BridgeSpawnResetConfirmationControl()
+    broadcastToAll("[Bridge] NEW MATCH is destructive. Click it again within 10 seconds to confirm.", {1.0, 0.55, 0.1})
+    Wait.time(function()
+        if BridgeState.resetConfirmationArmed then
+            BridgeState.resetConfirmationArmed = false
+            BridgeClearResetConfirmationControl()
+        end
+    end, 10)
+end
+
+function BridgeClearResetConfirmationControl()
+    local guid = BridgeState.resetConfirmationGuid
+    local object = BridgeGetLiveObjectByGuid(guid)
     if object ~= nil then
-        local ok = pcall(function() return object.getGUID() end)
-        if not ok then
-            print("[Bridge] NEW MATCH button: dead object parameter detected, ignoring click")
-            return
+        BridgeSafeObjectCall(object, function(o) o.destruct() end)
+    end
+    BridgeState.resetConfirmationGuid = nil
+    for _, candidate in _ip(_all()) do
+        if BridgeObjectIsUsable(candidate) and BridgeSafeObjectName(candidate) == "Forge Confirm New Match" then
+            BridgeSafeObjectCall(candidate, function(o) o.destruct() end)
         end
     end
+end
 
-    local success, err = pcall(function()
-        if BridgeState.setupBusy then
-            BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
-            return
+function BridgeSpawnResetConfirmationControl()
+    BridgeClearResetConfirmationControl()
+    spawnObject({
+        type = "BlockSquare",
+        position = {10.8, 1.6, -15.0},
+        scale = {2.7, 0.35, 1.25},
+        callback_function = function(control)
+            if not BridgeObjectIsUsable(control) then return end
+            local guid = BridgeSafeObjectGuid(control)
+            if guid == nil then return end
+            BridgeState.resetConfirmationGuid = guid
+            Wait.frames(function()
+                local live = BridgeGetLiveObjectByGuid(guid)
+                if live == nil then return end
+                BridgeSafeObjectCall(live, function(o)
+                    o.setName("Forge Confirm New Match")
+                    o.setLock(true)
+                    o.setColorTint({0.72, 0.12, 0.12})
+                    o.setRotation({0, 180, 0})
+                    o.createButton({
+                        click_function = "BridgePressConfirmNewMatch",
+                        function_owner = Global,
+                        label = "CONFIRM\nNEW MATCH",
+                        position = {0, 0.6, 0},
+                        width = 950,
+                        height = 420,
+                        font_size = 120,
+                        color = {0.72, 0.12, 0.12, 1.0},
+                        font_color = {1, 1, 1, 1},
+                        tooltip = "Confirm replacing the active Forge match"
+                    })
+                end)
+                print("setup-confirm-spawned")
+            end, 1)
         end
-        if not BridgeState.resetConfirmationArmed then
-            BridgeState.resetConfirmationArmed = true
-            broadcastToAll("[Bridge] NEW MATCH is destructive. Click it again within 10 seconds to confirm.", {1.0, 0.55, 0.1})
-            Wait.time(function() BridgeState.resetConfirmationArmed = false end, 10)
-            return
-        end
-        BridgeState.resetConfirmationArmed = false
-        BridgeSetSetupBusy(true, "Replacing the Forge match; setup controls are temporarily disabled.")
-        BridgeResetSession()
-    end)
+    })
+end
 
-    if not success then
-        print("[Bridge] ERROR in BridgePressNewMatch: " .. tostring(err))
-        BridgeShowError("NEW MATCH failed with an internal error - see console for details")
+function BridgePressConfirmNewMatch(object, playerColor, altClick)
+    local color = playerColor
+    local alt = altClick == true
+    print("setup-click:confirm")
+    Wait.frames(function()
+        BridgeDoPressConfirmNewMatch(color, alt)
+    end, 1)
+end
+
+function BridgeDoPressConfirmNewMatch(playerColor, altClick)
+    print("setup-deferred:confirm")
+    if BridgeState.setupBusy then
+        BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
+        return
     end
+    if not BridgeState.resetConfirmationArmed then
+        BridgeShowError("NEW MATCH confirmation expired; click NEW MATCH again")
+        BridgeClearResetConfirmationControl()
+        return
+    end
+    BridgeState.resetConfirmationArmed = false
+    BridgeClearResetConfirmationControl()
+    BridgeSetSetupBusy(true, "Replacing the Forge match; setup controls are temporarily disabled.")
+    BridgeResetSession()
 end
 
 function BridgeAttachToActiveSession(done)

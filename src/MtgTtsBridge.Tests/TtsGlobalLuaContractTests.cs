@@ -230,6 +230,33 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void SetupCallbacks_DeferLifecycleWorkToInternalHandlers()
+    {
+        var newMatchStart = Script.IndexOf("function BridgePressNewMatch", StringComparison.Ordinal);
+        var newMatchEnd = Script.IndexOf("function BridgeDoPressNewMatch", newMatchStart, StringComparison.Ordinal);
+        var newMatchClickBody = Script[newMatchStart..newMatchEnd];
+        Assert.Contains("setup-click:new-match", newMatchClickBody);
+        Assert.Contains("Wait.frames(function()", newMatchClickBody);
+        Assert.Contains("BridgeDoPressNewMatch", newMatchClickBody);
+        Assert.DoesNotContain("BridgeSpawnResetConfirmationControl()", newMatchClickBody);
+        Assert.DoesNotContain("BridgeClearResetConfirmationControl()", newMatchClickBody);
+
+        var confirmStart = Script.IndexOf("function BridgePressConfirmNewMatch", StringComparison.Ordinal);
+        var confirmEnd = Script.IndexOf("function BridgeDoPressConfirmNewMatch", confirmStart, StringComparison.Ordinal);
+        var confirmClickBody = Script[confirmStart..confirmEnd];
+        Assert.Contains("setup-click:confirm", confirmClickBody);
+        Assert.Contains("Wait.frames(function()", confirmClickBody);
+        Assert.Contains("BridgeDoPressConfirmNewMatch", confirmClickBody);
+        Assert.DoesNotContain("BridgeResetSession()", confirmClickBody);
+
+        Assert.Contains("setup-deferred:new-match", Script);
+        Assert.Contains("setup-confirm-spawned", Script);
+        Assert.Contains("setup-deferred:confirm", Script);
+        Assert.Contains("function BridgeDoPressStartMatch", Script);
+        Assert.Contains("function BridgeDoPressResume", Script);
+    }
+
+    [Fact]
     public void PlayerTargets_AreMachineTypedAndUseConfiguredSeatSurface()
     {
         Assert.Contains("action.targetKind == \"player\"", Script);
