@@ -687,6 +687,15 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void LibraryDeckResolution_UsesLibraryAnchorProximityWhenMultipleDeckCandidatesExist()
+    {
+        Assert.Contains("function BridgeSelectNearestDeckCandidate(seat, candidates)", Script);
+        Assert.Contains("BridgeSelectNearestDeckCandidate(seat, candidates)", Script);
+        Assert.Contains("local nearest = BridgeSelectNearestDeckCandidate(seat, matches)", Script);
+        Assert.Contains("ambiguous library deck match for", Script);
+    }
+
+    [Fact]
     public void StructuredMappingMisses_DeferToSnapshotInsteadOfImmediateDesync()
     {
         Assert.Contains("function BridgeCanDeferStructuredMoveToSnapshot", Script);

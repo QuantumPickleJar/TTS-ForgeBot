@@ -378,6 +378,44 @@ function BridgeFindLibraryDeckCandidatesForSeat(seatId)
     return candidates
 end
 
+function BridgeSelectNearestDeckCandidate(seat, candidates)
+    if seat == nil or candidates == nil or #candidates == 0 then return nil end
+    local libraryAnchor = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
+    if libraryAnchor == nil then return nil end
+    local okAnchor, anchorPosition = pcall(function() return libraryAnchor.getPosition() end)
+    if not okAnchor or anchorPosition == nil then return nil end
+
+    local nearest = nil
+    local nearestDistance = nil
+    local secondDistance = nil
+    for _, candidate in ipairs(candidates) do
+        if BridgeObjectIsUsable(candidate) then
+            local okPosition, position = pcall(function() return candidate.getPosition() end)
+            if okPosition and position ~= nil then
+                local dx = position.x - anchorPosition.x
+                local dz = position.z - anchorPosition.z
+                local squaredDistance = dx * dx + dz * dz
+                if nearestDistance == nil or squaredDistance < nearestDistance then
+                    secondDistance = nearestDistance
+                    nearestDistance = squaredDistance
+                    nearest = candidate
+                elseif secondDistance == nil or squaredDistance < secondDistance then
+                    secondDistance = squaredDistance
+                end
+            end
+        end
+    end
+
+    if nearest == nil or nearestDistance == nil then return nil end
+    local maxRadius = (seat.libraryAssetRadius or 4) + 2
+    local nearAnchor = nearestDistance <= (maxRadius * maxRadius)
+    local clearlyNearest = secondDistance == nil or (secondDistance - nearestDistance) > 0.25
+    if nearAnchor or clearlyNearest then
+        return nearest
+    end
+    return nil
+end
+
 function BridgeResolveSeatLibraryDeck(seatId)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then return nil, {}, "unknown seat" end
@@ -390,6 +428,12 @@ function BridgeResolveSeatLibraryDeck(seatId)
 
     if #candidates == 1 then
         return candidates[1], candidates, nil
+    end
+    if #candidates > 1 then
+        local nearest = BridgeSelectNearestDeckCandidate(seat, candidates)
+        if nearest ~= nil then
+            return nearest, candidates, nil
+        end
     end
     if #candidates == 0 then
         return nil, candidates, "no deck candidates found near library anchor"
@@ -4185,17 +4229,17 @@ function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
     end
 
     local candidates = seatId and BridgeFindLibraryDeckCandidatesForSeat(seatId) or {}
-    local matchDeck = nil
-    local matchCount = 0
+    local matches = {}
     for _, deck in ipairs(candidates) do
         if BridgeDeckContainsCardName(deck, expectedName) then
-            matchDeck = deck
-            matchCount = matchCount + 1
+            table.insert(matches, deck)
         end
     end
-    if matchCount == 1 then return matchDeck end
-    if matchCount > 1 then
-        print(string.format("[Bridge] ambiguous library deck match for %s (%d candidates)", tostring(expectedName), matchCount))
+    if #matches == 1 then return matches[1] end
+    if #matches > 1 then
+        local nearest = BridgeSelectNearestDeckCandidate(seat, matches)
+        if nearest ~= nil then return nearest end
+        print(string.format("[Bridge] ambiguous library deck match for %s (%d candidates)", tostring(expectedName), #matches))
         return nil
     end
 
