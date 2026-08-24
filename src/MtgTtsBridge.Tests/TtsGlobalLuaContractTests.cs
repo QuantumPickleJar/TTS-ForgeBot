@@ -301,8 +301,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)", materializeBody);
         Assert.DoesNotContain("local libraryZone = getObjectFromGUID(seat.libraryZoneGuid)", materializeBody);
 
-        var takeStart = Script.IndexOf("function BridgeTakeNamedCardFromDeck", StringComparison.Ordinal);
-        var takeEnd = Script.IndexOf("function BridgeSetPhysicalFaceDown", takeStart, StringComparison.Ordinal);
+        var takeStart = Script.IndexOf("function BridgeTakeCardFromDeckByIdentity", StringComparison.Ordinal);
+        var takeEnd = Script.IndexOf("function BridgeTakeNamedCardFromDeck", takeStart, StringComparison.Ordinal);
         var takeBody = Script[takeStart..takeEnd];
         Assert.Contains("BridgeObjectIsUsable(deck)", takeBody);
         Assert.Contains("local deckGuid = BridgeSafeObjectGuid(deck)", takeBody);
@@ -622,18 +622,26 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void StructuredCardMove_PrefersDestinationZoneWhenInstanceMappingIsMissing()
+    public void StructuredCardMove_UsesAuthoritativeRecoveryOrderWithoutCrossZoneGuessing()
     {
-        Assert.Contains("table.insert(fallbackZones, event.destinationZone)", Script);
-        Assert.Contains("table.insert(fallbackZones, event.sourceZone or \"hand\")", Script);
-        Assert.Contains("BridgeResolvePhysicalCard(event, zoneName)", Script);
-        Assert.Contains("stale mapped object for structured move", Script);
-        Assert.Contains("object.tag ~= \"Card\"", Script);
+        Assert.Contains("local attemptedZones = {}", Script);
+        Assert.Contains("object = tryResolveFromZone(event.sourceZone)", Script);
+        Assert.Contains("local idempotent = tryResolveFromZone(event.destinationZone)", Script);
+        Assert.Contains("authoritativeSource=", Script);
+        Assert.Contains("authoritativeDestination=", Script);
+        Assert.DoesNotContain("for _, zoneName in ipairs({\"hand\", \"battlefield\", \"graveyard\", \"stack\", \"exile\", \"library\"})", Script);
+        Assert.DoesNotContain("table.insert(fallbackZones", Script);
+    }
 
-        var destinationInsert = Script.IndexOf("table.insert(fallbackZones, event.destinationZone)", StringComparison.Ordinal);
-        var sourceInsert = Script.IndexOf("table.insert(fallbackZones, event.sourceZone or \"hand\")", StringComparison.Ordinal);
-        Assert.True(destinationInsert >= 0);
-        Assert.True(sourceInsert > destinationInsert);
+    [Fact]
+    public void StructuredCardMove_RecoversDeadGuidsUsingDeckContainedIdentityForDraws()
+    {
+        Assert.Contains("TTS Card GUIDs can disappear when cards become deck-contained.", Script);
+        Assert.Contains("BridgeTakeCardFromDeckByIdentity", Script);
+        Assert.Contains("preferredContainedGuid = staleMappedGuid or BridgeState.physicalByInstanceId[event.cardInstanceId]", Script);
+        Assert.Contains("if matched == nil and drawFromTop then", Script);
+        Assert.Contains("physical library card identity is ambiguous for the authoritative instance", Script);
+        Assert.Contains("authoritative draw identity does not match physical top-of-library card", Script);
     }
 
     [Fact]
@@ -686,5 +694,16 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("tap update deferred to snapshot reconcile", Script);
         Assert.Contains("counter update deferred to snapshot reconcile", Script);
         Assert.Contains("keyword update deferred to snapshot reconcile", Script);
+    }
+
+    [Fact]
+    public void TransitionPolling_UsesFastPathAndLatencyTelemetryAfterChoiceAcceptance()
+    {
+        Assert.Contains("transitionExpectedUntil", Script);
+        Assert.Contains("function BridgeCurrentEventPollDelay", Script);
+        Assert.Contains("BridgeScheduleEventPoll(0.05, BridgeState.eventPollGeneration)", Script);
+        Assert.Contains("BridgeState.latencyProbe = {", Script);
+        Assert.Contains("BridgeRecordLatencyProbeDecisionReady", Script);
+        Assert.Contains("[Bridge latency] action=", Script);
     }
 }

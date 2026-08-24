@@ -5,6 +5,9 @@ BRIDGE_MANA_COUNTER_SOURCES = {
     R = "220d2f", G = "cdbccc", C = "aeeb11"
 }
 BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
+BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
+BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
+BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
 
 -- Seat identity remains independent of controller type and TTS color.
 BRIDGE_SEATS = {
@@ -129,6 +132,8 @@ BridgeState = {
     setupBusy = false,
     doctorInitializedUi = false,
     doctorRetryAttempt = 0,
+    transitionExpectedUntil = 0,
+    latencyProbe = nil,
 }
 
 BridgeHttp = {}
@@ -752,6 +757,50 @@ function BridgeStopDecisionPolling()
     BridgeState.decisionPollScheduled = false
 end
 
+function BridgeMarkTransitionExpected(seconds)
+    local duration = tonumber(seconds or 0) or 0
+    if duration <= 0 then
+        BridgeState.transitionExpectedUntil = 0
+        return
+    end
+    BridgeState.transitionExpectedUntil = os.clock() + duration
+end
+
+function BridgeTransitionExpected()
+    local untilTs = tonumber(BridgeState.transitionExpectedUntil or 0) or 0
+    return untilTs > 0 and os.clock() <= untilTs
+end
+
+function BridgeCurrentEventPollDelay()
+    if BridgeTransitionExpected()
+        or BridgeState.submitting
+        or BridgeState.pendingDecision ~= nil
+        or #BridgeState.eventQueue > 0 then
+        return BRIDGE_EVENT_POLL_INTERVAL_ACTIVE
+    end
+    return BRIDGE_EVENT_POLL_INTERVAL_IDLE
+end
+
+function BridgeRecordLatencyProbeDecisionReady(decision)
+    local probe = BridgeState.latencyProbe
+    if probe == nil or probe.nextDecisionAt ~= nil then return end
+    probe.nextDecisionAt = os.clock()
+    local submitMs = math.floor((probe.acceptedAt - probe.submittedAt) * 1000)
+    local eventMs = probe.firstEventReceivedAt ~= nil and math.floor((probe.firstEventReceivedAt - probe.acceptedAt) * 1000) or -1
+    local turnMs = probe.turnChangedAppliedAt ~= nil and math.floor((probe.turnChangedAppliedAt - probe.acceptedAt) * 1000) or -1
+    local decisionMs = math.floor((probe.nextDecisionAt - probe.acceptedAt) * 1000)
+    print(string.format(
+        "[Bridge latency] action=%s submit=%dms firstEvent=%sms turnChanged=%sms nextDecision=%dms total=%dms decision=%s",
+        tostring(probe.actionId),
+        submitMs,
+        eventMs >= 0 and tostring(eventMs) or "n/a",
+        turnMs >= 0 and tostring(turnMs) or "n/a",
+        decisionMs,
+        math.floor((probe.nextDecisionAt - probe.submittedAt) * 1000),
+        tostring(decision and decision.decisionId)))
+    BridgeState.latencyProbe = nil
+end
+
 function BridgeScheduleDecisionPoll(delay, generation, attempt)
     if generation ~= BridgeState.decisionPollGeneration then return end
     if BridgeState.lastDecision ~= nil or BridgeState.submitting then return end
@@ -777,6 +826,8 @@ function BridgePollForNextDecision(generation, attempt)
         BridgeState.decisionPollInFlight = false
         if ok and body ~= nil then
             BridgeState.lastDecision = body
+            BridgeMarkTransitionExpected(0)
+            BridgeRecordLatencyProbeDecisionReady(body)
             printDecision(body)
             return
         end
@@ -791,7 +842,12 @@ function BridgePollForNextDecision(generation, attempt)
                 BridgeShowError("Forge did not expose a follow-up decision within 90 seconds")
                 return
             end
-            BridgeScheduleDecisionPoll(0.5, generation, attempt + 1)
+            local retryDelay = BridgeTransitionExpected() and 0.1 or 0.5
+            if BridgeTransitionExpected() and attempt > 40 then
+                BridgeMarkTransitionExpected(0)
+                retryDelay = 0.5
+            end
+            BridgeScheduleDecisionPoll(retryDelay, generation, attempt + 1)
             return
         end
 
@@ -802,7 +858,7 @@ end
 
 function BridgeStartDecisionPolling()
     BridgeStopDecisionPolling()
-    BridgeScheduleDecisionPoll(0.25, BridgeState.decisionPollGeneration, 1)
+    BridgeScheduleDecisionPoll(BridgeTransitionExpected() and 0.1 or 0.25, BridgeState.decisionPollGeneration, 1)
 end
 
 function BridgeSubmitChoice(decisionId, actionId)
@@ -835,9 +891,21 @@ function BridgeSubmitChoice(decisionId, actionId)
     BridgeState.pendingDecisionDeferredCursor = 0
     BridgeState.pendingDecisionDeferredApplied = 0
     BridgeState.submitting = true
+    local submittedAt = os.clock()
+    BridgeState.latencyProbe = {
+        actionId = actionId,
+        decisionId = decisionId,
+        submittedAt = submittedAt,
+        acceptedAt = nil,
+        firstEventReceivedAt = nil,
+        turnChangedAppliedAt = nil,
+        nextDecisionAt = nil
+    }
     BridgeHttp.requestJson("POST", "/api/v1/choice", payload, function(ok, body, err)
         BridgeState.submitting = false
         if not ok then
+            BridgeState.latencyProbe = nil
+            BridgeMarkTransitionExpected(0)
             BridgeClearHighlights()
             BridgeRollbackPendingIntent()
             BridgeResetSelectionState()
@@ -852,6 +920,14 @@ function BridgeSubmitChoice(decisionId, actionId)
         end
 
         print("[Bridge] choice accepted.")
+        local probe = BridgeState.latencyProbe
+        if probe ~= nil then
+            probe.acceptedAt = os.clock()
+            local submitMs = math.floor((probe.acceptedAt - probe.submittedAt) * 1000)
+            print(string.format("[Bridge latency] choice POST accepted in %dms (action=%s)", submitMs, tostring(actionId)))
+        end
+        BridgeMarkTransitionExpected(2.5)
+        BridgeScheduleEventPoll(0.05, BridgeState.eventPollGeneration)
 
         if body ~= nil and body.committedEvent ~= nil then
             print("[Bridge] committed: " .. tostring(body.committedEvent.summary))
@@ -860,6 +936,8 @@ function BridgeSubmitChoice(decisionId, actionId)
         if body ~= nil and body.currentDecision ~= nil then
             BridgeStopDecisionPolling()
             BridgeState.lastDecision = body.currentDecision
+            BridgeMarkTransitionExpected(0)
+            BridgeRecordLatencyProbeDecisionReady(body.currentDecision)
             printDecision(body.currentDecision)
         else
             BridgeState.lastDecision = nil
@@ -948,7 +1026,7 @@ function BridgeTryPresentPendingDecision(reason)
         local elapsed = os.clock() - deferredAt
         local stalledProgress = BridgeState.pendingDecisionDeferredCursor == eventCursor
             and BridgeState.pendingDecisionDeferredApplied == applied
-        if elapsed < 3.0 or not stalledProgress then
+        if elapsed < BRIDGE_DECISION_DEFER_STALL_SECONDS or not stalledProgress then
             BridgeState.pendingDecisionDeferredAt = deferredAt
             BridgeState.pendingDecisionDeferredCursor = eventCursor
             BridgeState.pendingDecisionDeferredApplied = applied
@@ -3446,6 +3524,8 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.snapshotForgeSequence = 0
     BridgeState.zoneAnchorGuidBySeatAndZone = {}
     BridgeState.yieldSeatId = nil
+    BridgeState.transitionExpectedUntil = 0
+    BridgeState.latencyProbe = nil
     BridgeState.pendingDecision = nil
     BridgeState.pendingDecisionDeferredAt = nil
     BridgeState.pendingDecisionDeferredCursor = 0
@@ -3536,6 +3616,10 @@ function BridgePollEvents(generation)
                     return
                 end
 
+                local probe = BridgeState.latencyProbe
+                if probe ~= nil and probe.acceptedAt ~= nil and probe.firstEventReceivedAt == nil then
+                    probe.firstEventReceivedAt = os.clock()
+                end
                 BridgeState.lastReceivedEventSequence = event.sequence
                 table.insert(BridgeState.eventQueue, event)
             end
@@ -3543,7 +3627,7 @@ function BridgePollEvents(generation)
             BridgeTryPresentPendingDecision("poll-noqueue")
             end
 
-            BridgeScheduleEventPoll(1, generation)
+            BridgeScheduleEventPoll(BridgeCurrentEventPollDelay(), generation)
     end)
 end
 
@@ -3612,6 +3696,10 @@ function BridgeApplyAuthoritativeEvent(event)
 
     if event.kind == "turn_changed" then
         BridgeReturnAttackPresentation(nil)
+        local probe = BridgeState.latencyProbe
+        if probe ~= nil and probe.acceptedAt ~= nil and probe.turnChangedAppliedAt == nil then
+            probe.turnChangedAppliedAt = os.clock()
+        end
         if event.activeSeatId ~= nil then
             BridgeState.currentTurnSeatId = event.activeSeatId
         else
@@ -3624,6 +3712,7 @@ function BridgeApplyAuthoritativeEvent(event)
         if BridgeState.yieldSeatId ~= nil and BridgeState.yieldSeatId ~= event.seatId then
             BridgeState.yieldSeatId = nil
         end
+        BridgeMarkTransitionExpected(0)
         return true, 0.1
     end
 
@@ -3882,76 +3971,150 @@ function BridgeApplyStructuredCardMove(event)
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then return false, "structured zone change has no configured seat" end
 
+    local staleMappedGuid = nil
+    local attemptedZones = {}
+    local resolveError = nil
+
     local guid = BridgeState.physicalByInstanceId[event.cardInstanceId]
     local object = guid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
-    if object ~= nil and object.tag ~= "Card" then
-        local allowsDeckHandle = event.destinationZone == "library" and object.tag == "Deck"
-        if not allowsDeckHandle then
-            print(string.format(
-                "[Bridge] stale mapped object for structured move seq=%s kind=%s instance=%s source=%s dest=%s mappedGuid=%s mappedTag=%s",
-                tostring(event.sequence), tostring(event.kind), tostring(event.cardInstanceId),
-                tostring(event.sourceZone), tostring(event.destinationZone), tostring(guid), tostring(object.tag)))
-            BridgeState.physicalByInstanceId[event.cardInstanceId] = nil
-            object = nil
-            guid = nil
-        end
-    end
-    if object == nil then
-        local fallbackZones = {}
-        if event.sourceZone ~= nil and event.sourceZone ~= "" then
-            table.insert(fallbackZones, event.sourceZone)
-        end
-        if event.destinationZone ~= nil and event.destinationZone ~= "" then
-            table.insert(fallbackZones, event.destinationZone)
-        end
-        table.insert(fallbackZones, event.sourceZone or "hand")
-        if event.destinationZone ~= nil and event.destinationZone ~= "" and event.destinationZone ~= event.sourceZone then
-            table.insert(fallbackZones, event.destinationZone)
-        end
-        for _, zoneName in ipairs({"hand", "battlefield", "graveyard", "stack", "exile", "library"}) do
-            if zoneName ~= event.sourceZone and zoneName ~= event.destinationZone then
-                table.insert(fallbackZones, zoneName)
-            end
-        end
-
-        local resolved, resolveError = nil, nil
-        for _, zoneName in ipairs(fallbackZones) do
-            local candidate, candidateError = BridgeResolvePhysicalCard(event, zoneName)
-            if candidate ~= nil then
-                resolved = candidate
-                resolveError = nil
-                break
-            end
-            resolveError = candidateError
-        end
-        if resolved == nil then
-            return false, resolveError or ("no physical GUID mapped for authoritative instance " .. tostring(event.cardInstanceId))
-        end
-        object = resolved
-        guid = object.getGUID()
+    if guid ~= nil and object == nil then
+        staleMappedGuid = guid
+        BridgeState.physicalByInstanceId[event.cardInstanceId] = nil
+        BridgeState.physicalSeatByGuid[guid] = nil
+        BridgeState.physicalZoneByGuid[guid] = nil
+        guid = nil
     end
 
-    if object == nil and event.sourceZone == "library" then
-        local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId]
-        if expectedName == nil then return false, "mapped library card has no physical identity" end
-        local deck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
-        if deck == nil then return false, "mapped library card identity is not present in a physical deck" end
+    local function allowsMappedDeckHandle(mappedObject)
+        if mappedObject == nil or mappedObject.tag ~= "Deck" then return false end
+        return event.sourceZone == "library" or event.destinationZone == "library"
+    end
+
+    if object ~= nil and object.tag ~= "Card" and not allowsMappedDeckHandle(object) then
+        print(string.format(
+            "[Bridge] stale mapped object for structured move seq=%s kind=%s instance=%s source=%s dest=%s mappedGuid=%s mappedTag=%s",
+            tostring(event.sequence), tostring(event.kind), tostring(event.cardInstanceId),
+            tostring(event.sourceZone), tostring(event.destinationZone), tostring(guid), tostring(object.tag)))
+        BridgeState.physicalByInstanceId[event.cardInstanceId] = nil
+        BridgeState.physicalSeatByGuid[guid] = nil
+        BridgeState.physicalZoneByGuid[guid] = nil
+        object = nil
+        guid = nil
+    end
+
+    local function recordAttempt(zoneName)
+        if zoneName == nil or zoneName == "" then return end
+        table.insert(attemptedZones, zoneName)
+    end
+
+    local function tryResolveFromZone(zoneName)
+        if zoneName == nil or zoneName == "" then return nil end
+        recordAttempt(zoneName)
+        local candidate, candidateError = BridgeResolvePhysicalCard(event, zoneName, {skipMappedLookup = true})
+        if candidate ~= nil then
+            resolveError = nil
+            return candidate
+        end
+        resolveError = candidateError
+        return nil
+    end
+
+    local function libraryDrawError(detail)
+        local attemptSummary = #attemptedZones > 0 and table.concat(attemptedZones, ",") or "none"
+        return BridgePhysicalMappingError(
+            event,
+            event.sourceZone or "library",
+            0,
+            tostring(detail) .. "; authoritativeSource=" .. tostring(event.sourceZone)
+                .. "; authoritativeDestination=" .. tostring(event.destinationZone)
+                .. "; attemptedZones=" .. attemptSummary,
+            {mappedGuid = staleMappedGuid}
+        )
+    end
+
+    local function moveFromLibraryDeckToHand(deck)
         local hand, handError = BridgeTryGetSeatHandTransform(event.seatId)
         if hand == nil then return false, handError end
-        BridgeTakeNamedCardFromDeck(deck, expectedName, hand.position, true, function(drawn, takeError)
+        local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
+        local preferredContainedGuid = staleMappedGuid or BridgeState.physicalByInstanceId[event.cardInstanceId]
+        BridgeTakeCardFromDeckByIdentity(deck, expectedName, preferredContainedGuid, event.kind == "draw", hand.position, true, function(drawn, takeError)
             if drawn == nil then
-                BridgeStopOnDesync(takeError)
+                BridgeStopOnDesync(libraryDrawError(takeError))
                 return
             end
-                BridgeState.physicalByInstanceId[event.cardInstanceId] = drawn.getGUID()
-                BridgeState.physicalSeatByGuid[drawn.getGUID()] = event.seatId
-                BridgeState.physicalZoneByGuid[drawn.getGUID()] = event.destinationZone
-                drawn.use_hands = true
-                BridgeSetPhysicalFaceDown(drawn, seat, event.faceDown == true)
+            local drawnGuid = BridgeSafeObjectGuid(drawn)
+            if drawnGuid == nil then
+                BridgeStopOnDesync(libraryDrawError("physical library returned a card with no GUID"))
+                return
+            end
+            BridgeState.physicalByInstanceId[event.cardInstanceId] = drawnGuid
+            BridgeState.physicalSeatByGuid[drawnGuid] = event.seatId
+            BridgeState.physicalZoneByGuid[drawnGuid] = event.destinationZone
+            drawn.use_hands = true
+            BridgeSetPhysicalFaceDown(drawn, seat, event.faceDown == true)
         end)
         return true, nil
     end
-    if object == nil then return false, "mapped physical card is unavailable for structured zone change" end
+
+    if object == nil then
+        object = tryResolveFromZone(event.sourceZone)
+    end
+    if object == nil and event.destinationZone ~= nil and event.destinationZone ~= event.sourceZone then
+        local idempotent = tryResolveFromZone(event.destinationZone)
+        if idempotent ~= nil and idempotent.tag == "Card" then
+            object = idempotent
+        end
+    end
+
+    if event.sourceZone == "library" and event.destinationZone == "hand" and (object == nil or object.tag == "Deck") then
+        local deck = object
+        if deck == nil then
+            local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
+            if expectedName ~= nil and expectedName ~= "" then
+                deck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
+            end
+            if deck == nil then deck = BridgeFindLibraryDeckForSeat(event.seatId) end
+        end
+        if deck == nil then
+            return false, libraryDrawError(resolveError or "physical library deck not found for authoritative draw")
+        end
+        return moveFromLibraryDeckToHand(deck)
+    end
+
+    if object == nil then
+        local attemptSummary = #attemptedZones > 0 and table.concat(attemptedZones, ",") or "none"
+        return false, BridgePhysicalMappingError(
+            event,
+            event.sourceZone or "unknown",
+            0,
+            tostring(resolveError or ("no physical GUID mapped for authoritative instance " .. tostring(event.cardInstanceId)))
+                .. "; authoritativeSource=" .. tostring(event.sourceZone)
+                .. "; authoritativeDestination=" .. tostring(event.destinationZone)
+                .. "; attemptedZones=" .. attemptSummary,
+            {mappedGuid = staleMappedGuid}
+        )
+    end
+
+    if object.tag == "Deck" then
+        return false, BridgePhysicalMappingError(
+            event,
+            event.sourceZone or "unknown",
+            0,
+            "resolved object is a deck for non-library->hand move",
+            {mappedGuid = staleMappedGuid}
+        )
+    end
+
+    guid = BridgeSafeObjectGuid(object)
+    if guid == nil then
+        return false, BridgePhysicalMappingError(
+            event,
+            event.sourceZone or "unknown",
+            0,
+            "resolved physical card has no GUID",
+            {mappedGuid = staleMappedGuid}
+        )
+    end
 
     if event.destinationZone == "hand" then
         local hand, handError = BridgeTryGetSeatHandTransform(event.seatId)
@@ -4039,24 +4202,75 @@ function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
     return nil
 end
 
-function BridgeTakeNamedCardFromDeck(deck, expectedName, position, smooth, callback)
+function BridgeTakeCardFromDeckByIdentity(deck, expectedName, preferredContainedGuid, drawFromTop, position, smooth, callback)
     if not BridgeObjectIsUsable(deck) then
         callback(nil, "physical library deck is no longer available")
         return
     end
-    local matched = nil
+
     local containedCards = {}
     local containedOk = pcall(function() containedCards = deck.getObjects() or {} end)
-    if not containedOk then containedCards = {} end
-    for _, contained in ipairs(containedCards) do
-        if BridgeCardNameMatches(contained.nickname or contained.name, expectedName) then
-            matched = contained
-            break
+    if not containedOk then
+        callback(nil, "could not inspect physical library deck contents")
+        return
+    end
+    if #containedCards == 0 then
+        callback(nil, "physical library deck is empty")
+        return
+    end
+
+    local matched = nil
+    if preferredContainedGuid ~= nil then
+        for _, contained in ipairs(containedCards) do
+            if tostring(contained.guid) == tostring(preferredContainedGuid) and contained.index ~= nil then
+                matched = contained
+                local containedName = contained.nickname or contained.name
+                if expectedName ~= nil and expectedName ~= "" and not BridgeCardNameMatches(containedName, expectedName) then
+                    callback(nil, "mapped deck-contained identity does not match the authoritative card name")
+                    return
+                end
+                break
+            end
         end
     end
-    if matched == nil or matched.index == nil then
-        callback(nil, "physical library has no indexed card matching the authoritative identity")
-        return
+
+    if matched == nil and drawFromTop then
+        local top = containedCards[1]
+        if top == nil or top.index == nil then
+            callback(nil, "physical top-of-library card has no index")
+            return
+        end
+        if expectedName ~= nil and expectedName ~= "" then
+            local topName = top.nickname or top.name
+            if not BridgeCardNameMatches(topName, expectedName) then
+                callback(nil, "authoritative draw identity does not match physical top-of-library card")
+                return
+            end
+        end
+        matched = top
+    end
+
+    if matched == nil then
+        local matches = {}
+        for _, contained in ipairs(containedCards) do
+            local containedName = contained.nickname or contained.name
+            if expectedName ~= nil and expectedName ~= "" and BridgeCardNameMatches(containedName, expectedName) then
+                table.insert(matches, contained)
+            end
+        end
+        if #matches == 0 then
+            callback(nil, "physical library has no indexed card matching the authoritative identity")
+            return
+        end
+        if #matches > 1 then
+            callback(nil, "physical library card identity is ambiguous for the authoritative instance")
+            return
+        end
+        if matches[1].index == nil then
+            callback(nil, "matched physical library card has no index")
+            return
+        end
+        matched = matches[1]
     end
 
     local deckGuid = BridgeSafeObjectGuid(deck)
@@ -4080,6 +4294,10 @@ function BridgeTakeNamedCardFromDeck(deck, expectedName, position, smooth, callb
             callback(taken, nil)
         end
     })
+end
+
+function BridgeTakeNamedCardFromDeck(deck, expectedName, position, smooth, callback)
+    BridgeTakeCardFromDeckByIdentity(deck, expectedName, nil, false, position, smooth, callback)
 end
 
 function BridgeSetPhysicalFaceDown(object, seat, faceDown)
@@ -4209,23 +4427,33 @@ function BridgeSetCardKeywordState(object, keyword, enabled)
     return true, nil
 end
 
-function BridgeResolvePhysicalCard(event, expectedZone)
-    if event.cardInstanceId ~= nil then
+function BridgeResolvePhysicalCard(event, expectedZone, options)
+    options = options or {}
+    if not options.skipMappedLookup and event.cardInstanceId ~= nil then
         local existingGuid = BridgeState.physicalByInstanceId[event.cardInstanceId]
         if existingGuid ~= nil then
             local existing = getObjectFromGUID(existingGuid)
             if existing == nil then
-                return nil, BridgePhysicalMappingError(event, expectedZone, 0, "mapped object disappeared")
+                -- TTS Card GUIDs can disappear when cards become deck-contained.
+                BridgeState.physicalByInstanceId[event.cardInstanceId] = nil
+                BridgeState.physicalSeatByGuid[existingGuid] = nil
+                BridgeState.physicalZoneByGuid[existingGuid] = nil
+            else
+                if existing.tag == "Card" then
+                    local mappedZone = BridgeState.physicalZoneByGuid[existingGuid]
+                    if options.allowMappedZoneMismatch == true or expectedZone == nil or mappedZone == nil or mappedZone == expectedZone then
+                        return existing, nil
+                    end
+                end
+                if expectedZone == "library" and existing.tag == "Deck" then
+                    return existing, nil
+                end
+                if existing.tag ~= "Card" and not (expectedZone == "library" and existing.tag == "Deck") then
+                    -- A stale mapping can temporarily point at a deck object while the
+                    -- authoritative card instance has moved into a public zone.
+                    BridgeState.physicalByInstanceId[event.cardInstanceId] = nil
+                end
             end
-            if existing.tag == "Card" then
-                return existing, nil
-            end
-            if expectedZone == "library" and existing.tag == "Deck" then
-                return existing, nil
-            end
-            -- A stale mapping can temporarily point at a deck object while the
-            -- authoritative card instance has moved into a public zone.
-            BridgeState.physicalByInstanceId[event.cardInstanceId] = nil
         end
     end
 
@@ -4242,7 +4470,11 @@ function BridgeResolvePhysicalCard(event, expectedZone)
         end
         source = handObjects
     elseif expectedZone == "library" then
-        local deck = BridgeFindSeatLibraryDeckWithCard(seat, event.cardName)
+        local deck = nil
+        if event.cardName ~= nil and event.cardName ~= "" then
+            deck = BridgeFindSeatLibraryDeckWithCard(seat, event.cardName)
+        end
+        if deck == nil then deck = BridgeFindLibraryDeckForSeat(event.seatId) end
         if deck ~= nil then
             return deck, nil
         end
@@ -4259,9 +4491,11 @@ function BridgeResolvePhysicalCard(event, expectedZone)
     end
 
     local matches = {}
-    for _, object in ipairs(source) do
-        if object.tag == "Card" and BridgeCardNameMatches(object.getName(), event.cardName) then
-            table.insert(matches, object)
+    for _, sourceObject in ipairs(source) do
+        if sourceObject.tag == "Card" then
+            if event.cardName == nil or event.cardName == "" or BridgeCardNameMatches(sourceObject.getName(), event.cardName) then
+                table.insert(matches, sourceObject)
+            end
         end
     end
 
@@ -4279,8 +4513,9 @@ function BridgeResolvePhysicalCard(event, expectedZone)
     return object, nil
 end
 
-function BridgePhysicalMappingError(event, expectedZone, candidateCount, detail)
-    local mappedGuid = event.cardInstanceId and BridgeState.physicalByInstanceId[event.cardInstanceId] or nil
+function BridgePhysicalMappingError(event, expectedZone, candidateCount, detail, options)
+    options = options or {}
+    local mappedGuid = options.mappedGuid or (event.cardInstanceId and BridgeState.physicalByInstanceId[event.cardInstanceId] or nil)
     local mappedObject = BridgeGetLiveObjectByGuid(mappedGuid)
     local mappedTag = mappedObject and mappedObject.tag or "nil"
     return string.format(
