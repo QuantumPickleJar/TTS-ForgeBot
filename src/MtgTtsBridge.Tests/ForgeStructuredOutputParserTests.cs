@@ -95,6 +95,20 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void KeywordNormalization_StripsReminderSuffixesForCanonicalCapabilityKeys()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        reconciler.Apply("session-a", Parse(parser, Frame(1, Player(
+            battlefield: [Card(19, "Emberheart Challenger", "battlefield", 0)]))));
+
+        var events = reconciler.Apply("session-a", Parse(parser, Frame(2, Player(
+            battlefield: [Card(19, "Emberheart Challenger", "battlefield", 0, keywords: "[\"Prowess (Whenever you cast a noncreature spell, this creature gets +1/+1 until end of turn.)\"]")]))));
+
+        Assert.Equal("Prowess", Assert.Single(events, item => item.Kind == "keyword_added").Keyword);
+    }
+
+    [Fact]
     public void ManaPoolChanges_AreAbsoluteAndIncludeAllDisplayColors()
     {
         var parser = new ForgeStructuredOutputParser();

@@ -51,7 +51,11 @@ public sealed class ForgeStructuredStateReconciler
             FaceDown: card.FaceDown,
             PhasedOut: card.PhasedOut,
             Counters: new Dictionary<string, int>(card.Counters, StringComparer.OrdinalIgnoreCase),
-            Keywords: card.Keywords.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            Keywords: card.Keywords
+                .Select(NormalizeKeyword)
+                .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray());
 
         var seats = source.Players.Select(player => new GameSeatSnapshotDto(
             player.SeatId,
@@ -185,6 +189,17 @@ public sealed class ForgeStructuredStateReconciler
             .SelectMany(zone => zone.Cards)
             .Concat(snapshot.Stack)
             .ToDictionary(card => card.CardInstanceId, StringComparer.Ordinal);
+
+    private static string NormalizeKeyword(string keyword)
+    {
+        var normalized = (keyword ?? string.Empty).Trim();
+        var reminderIndex = normalized.IndexOf(" (", StringComparison.Ordinal);
+        if (reminderIndex > 0)
+        {
+            normalized = normalized[..reminderIndex].TrimEnd();
+        }
+        return normalized;
+    }
 
     private static IEnumerable<string> UnionKeys(
         IReadOnlyDictionary<string, int>? first,

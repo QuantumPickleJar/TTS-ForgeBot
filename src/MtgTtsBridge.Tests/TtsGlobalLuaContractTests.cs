@@ -221,7 +221,9 @@ public sealed class TtsGlobalLuaContractTests
         var onLoad = Script.IndexOf("function BridgeOnLoad", StringComparison.Ordinal);
         var next = Script.IndexOf("function BridgeShowPreparationReadiness", onLoad, StringComparison.Ordinal);
         var onLoadBody = Script[onLoad..next];
-        Assert.Contains("BridgeEnsureSetupControls", onLoadBody);
+        Assert.Contains("BridgeDoctor(function(report)", onLoadBody);
+        Assert.Contains("BridgeInitializeInteractiveUi()", onLoadBody);
+        Assert.Contains("BridgeScheduleCompanionRetry(1)", onLoadBody);
         Assert.DoesNotContain("BridgeAttachToActiveSession", onLoadBody);
         Assert.Contains("function BridgePressStartMatch", Script);
         Assert.Contains("function BridgePressResume", Script);
@@ -545,7 +547,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void SnapshotBootstrap_IndexesLibrariesWithoutUnpackingThem()
     {
-        Assert.Contains("local containedOk = pcall(function() containedCards = object.getObjects() or {} end)", Script);
+        Assert.Contains("object.getObjects() or {}", Script);
         Assert.Contains("for _, contained in ipairs(containedCards)", Script);
         Assert.Contains("if zone.name == \"library\" or cardIndex > #cards then", Script);
         Assert.DoesNotContain("BridgeExtractOneDeck", Script);
@@ -571,10 +573,22 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("BridgeStageSeatCardsForBootstrap(snapshot)", Script);
         Assert.Contains("function BridgeStageSeatCardsForBootstrap(snapshot)", Script);
+        Assert.Contains("IsGameCardCandidate(object, seatId, context)", Script);
         Assert.Contains("BridgeTryGetSeatHandObjects(seatId)", Script);
         Assert.Contains("BridgeNearestSeatIdForPosition", Script);
         Assert.Contains("function BridgeLibraryStagingPosition", Script);
         Assert.Contains("o.setPosition(staging)", Script);
+    }
+
+    [Fact]
+    public void GameCardEligibility_UsesReusableCandidateFilterWithoutNameSpecialCases()
+    {
+        Assert.Contains("function IsGameCardCandidate(object, seatId, context)", Script);
+        Assert.Contains("function BridgeBuildGameCardContext(snapshot)", Script);
+        Assert.Contains("BridgeCollectSeatAssets(seatSnapshot.seatId, seatSnapshot", Script);
+        Assert.Contains("BridgeCardFootprintLooksLikeMtg", Script);
+        Assert.Contains("BridgeCardMetadataLooksLikeMtg", Script);
+        Assert.DoesNotContain("How to Play", Script);
     }
 
     [Fact]
@@ -585,6 +599,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, \"graveyard\")", Script);
         Assert.Contains("BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, \"exile\")", Script);
         Assert.Contains("BridgeFindNamedZoneObjectForSeat", Script);
+        Assert.Contains("no graveyard anchor configured for seat", Script);
+        Assert.Contains("no exile anchor configured for seat", Script);
     }
 
     [Fact]
@@ -611,6 +627,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("table.insert(fallbackZones, event.destinationZone)", Script);
         Assert.Contains("table.insert(fallbackZones, event.sourceZone or \"hand\")", Script);
         Assert.Contains("BridgeResolvePhysicalCard(event, zoneName)", Script);
+        Assert.Contains("stale mapped object for structured move", Script);
+        Assert.Contains("object.tag ~= \"Card\"", Script);
 
         var destinationInsert = Script.IndexOf("table.insert(fallbackZones, event.destinationZone)", StringComparison.Ordinal);
         var sourceInsert = Script.IndexOf("table.insert(fallbackZones, event.sourceZone or \"hand\")", StringComparison.Ordinal);
@@ -645,6 +663,19 @@ public sealed class TtsGlobalLuaContractTests
     public void ProwessKeywordDecoration_IsRecognizedByTableIntegration()
     {
         Assert.Contains("prowess = \"mtg_prowesscounter\"", Script);
+        Assert.Contains("function BridgeNormalizeKeywordName", Script);
+        Assert.Contains("string.find(normalized, \" (\", 1, true)", Script);
+    }
+
+    [Fact]
+    public void DoctorPreflight_ReportsCompanionAndTableCapabilityWithoutMutatingCards()
+    {
+        Assert.Contains("function BridgeDoctor(done)", Script);
+        Assert.Contains("[BridgeDoctor] PASS=", Script);
+        Assert.Contains("companion.health", Script);
+        Assert.Contains("seat.deck.", Script);
+        Assert.Contains("table.piKeywords", Script);
+        Assert.Contains("COMPANION OFFLINE", Script);
     }
 
     [Fact]
