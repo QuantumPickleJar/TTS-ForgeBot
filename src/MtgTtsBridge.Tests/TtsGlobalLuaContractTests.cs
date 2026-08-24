@@ -435,7 +435,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgeTakeNamedCardFromDeck", Script);
         Assert.Contains("BridgeCardNameMatches(contained.nickname or contained.name, expectedName)", Script);
         Assert.Contains("index = matched.index", Script);
-        Assert.Contains("physical library returned a card with the wrong identity", Script);
+        Assert.Contains("physical library extraction mismatched authoritative identity", Script);
         Assert.Contains("BridgeSetPhysicalFaceDown(object, seat, card.faceDown == true)", Script);
         Assert.Contains("BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)", Script);
     }
@@ -634,28 +634,28 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void StructuredCardMove_RecoversDeadGuidsUsingDeckContainedIdentityForDraws()
+    public void StructuredCardMove_RecoversDeadGuidsAndPerformsFreshLibraryInventorySelection()
     {
-        Assert.Contains("containedGuid == nil or tostring(containedGuid) ~= tostring(guid)", Script);
+        Assert.Contains("BridgeState.physicalByInstanceId[event.cardInstanceId] = nil", Script);
         Assert.Contains("BridgeTakeCardFromDeckByIdentity", Script);
-        Assert.Contains("preferredContainedGuid = BridgeState.libraryContainedGuidByInstanceId[event.cardInstanceId]", Script);
-        Assert.Contains("if matched == nil and drawFromTop then", Script);
-        Assert.Contains("library extraction needs contained identity mapping", Script);
-        Assert.Contains("authoritative draw identity does not match physical top-of-library card", Script);
+        Assert.Contains("physical library inventory has no card matching authoritative identity", Script);
+        Assert.DoesNotContain("mapped deck-contained identity does not match the authoritative card name", Script);
+        Assert.DoesNotContain("authoritative draw identity does not match physical top-of-library card", Script);
     }
 
     [Fact]
-    public void SnapshotBootstrap_BuildsContainedLibraryLedgerAndPublishesPerInstanceContainedMappings()
+    public void SnapshotBootstrap_TracksContainedLibraryAsNameMultiplicityNotContainedGuidIdentity()
     {
-        Assert.Contains("libraryContainedGuidByInstanceId = {}", Script);
-        Assert.Contains("libraryContainerGuidByInstanceId = {}", Script);
+        Assert.DoesNotContain("libraryContainedGuidByInstanceId", Script);
+        Assert.DoesNotContain("libraryContainerGuidByInstanceId", Script);
+        Assert.DoesNotContain("BridgeAssignContainedLibraryIdentity", Script);
+        Assert.DoesNotContain("BridgeClearContainedLibraryIdentity", Script);
         Assert.Contains("function BridgeBuildSeatLibraryLedger(seatSnapshot)", Script);
-        Assert.Contains("BridgeAssignContainedLibraryIdentity(mapping.card.cardInstanceId, mapping.asset.containerGuid, guid)", Script);
-        Assert.Contains("BridgeClearContainedLibraryIdentity(mapping.card.cardInstanceId)", Script);
+        Assert.Contains("countByName[normalizedName] = (countByName[normalizedName] or 0) + 1", Script);
     }
 
     [Fact]
-    public void SnapshotBootstrap_DuplicateCardsUseDeterministicOneToOneContainedAssignment()
+    public void SnapshotBootstrap_DuplicateContainedCardsUseDeterministicSelectionWithoutGuidUniquenessAssumption()
     {
         Assert.Contains("table.sort(containedCards, function(left, right)", Script);
         Assert.Contains("local authoritativeCountByName = {}", Script);
@@ -672,35 +672,35 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void ContainedLibraryIdentity_IsUsedForExtractionAndClearedAfterLooseReacquisition()
+    public void LibraryExtraction_UsesFreshDeckObjectsAndAssignsLooseGuidAfterTakeObject()
     {
-        Assert.Contains("snapshot card has no contained-library identity mapping for extraction", Script);
         Assert.Contains("BridgeTakeCardFromDeckByIdentity(", Script);
+        Assert.Contains("containedCards = deck.getObjects() or {}", Script);
+        Assert.Contains("index = matched.index", Script);
         Assert.Contains("BridgeRecordLooseCardIdentity(event.cardInstanceId, drawnGuid, event.seatId, event.destinationZone)", Script);
-        Assert.Contains("BridgeClearContainedLibraryIdentity(card.cardInstanceId)", Script);
     }
 
     [Fact]
-    public void LibraryIdentityRegressionA_DuplicateCopiesBuildStableContainedLedgerMappings()
+    public void LibraryIdentityRegressionA_DuplicateCopiesCanShareContainedGuidsAndStillReconcileByCounts()
     {
-        Assert.Contains("BridgeState.physicalByInstanceId[mapping.card.cardInstanceId] = guid", Script);
-        Assert.Contains("BridgeAssignContainedLibraryIdentity(mapping.card.cardInstanceId, mapping.asset.containerGuid, guid)", Script);
+        Assert.Contains("local physicalCount = looseCount + containedCount", Script);
+        Assert.Contains("if physicalCount < expectedCount then", Script);
         Assert.Contains("local containedCandidates = ledger.byName[normalized] or {}", Script);
     }
 
     [Fact]
-    public void LibraryIdentityRegressionB_OpeningHandExtractionUsesPerInstanceContainedGuid()
+    public void LibraryIdentityRegressionB_DistinctForgeInstancesDoNotRequireDistinctContainedGuids()
     {
-        Assert.Contains("local preferredContainedGuid = BridgeState.libraryContainedGuidByInstanceId[card.cardInstanceId]", Script);
         Assert.Contains("BridgeTakeCardFromDeckByIdentity(", Script);
-        Assert.Contains("preferredContainedGuid,", Script);
+        Assert.DoesNotContain("preferredContainedGuid", Script);
     }
 
     [Fact]
-    public void LibraryIdentityRegressionC_DrawExtractionUsesPerInstanceContainedGuid()
+    public void LibraryIdentityRegressionC_DrawRescansDeckAndUsesCurrentIndexEachTime()
     {
-        Assert.Contains("local preferredContainedGuid = BridgeState.libraryContainedGuidByInstanceId[event.cardInstanceId]", Script);
         Assert.Contains("moveFromLibraryDeckToHand", Script);
+        Assert.Contains("table.sort(containedCards, function(left, right)", Script);
+        Assert.Contains("index = matched.index", Script);
     }
 
     [Fact]
@@ -712,24 +712,35 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void LibraryIdentityRegressionE_MixedDuplicatesConsumeContainedCardsWithoutReuse()
+    public void LibraryIdentityRegressionE_MixedDuplicatesNeverRequireContainedGuidUniqueness()
     {
         Assert.Contains("table.remove(containedCandidates, 1)", Script);
         Assert.Contains("assignedContainedByName[normalized] = (assignedContainedByName[normalized] or 0) + 1", Script);
+        Assert.DoesNotContain("mapped deck-contained identity does not match the authoritative card name", Script);
     }
 
     [Fact]
-    public void LibraryIdentityRegressionF_ContainedGuidMappingRemainsValidWithoutLiveCardObject()
+    public void LibraryIdentityRegressionF_ResumeCanReconstructWithoutPersistedContainedMappings()
     {
-        Assert.Contains("if containedGuid ~= nil and tostring(containedGuid) == tostring(existingGuid) then", Script);
-        Assert.Contains("if expectedZone == \"library\" and container ~= nil and container.tag == \"Deck\" then", Script);
+        Assert.Contains("BridgeState.physicalByInstanceId = {}", Script);
+        Assert.Contains("BridgeState.cardNameByInstanceId = {}", Script);
+        Assert.Contains("BridgeBuildSeatLibraryLedger(seatSnapshot)", Script);
     }
 
     [Fact]
-    public void LibraryIdentityRegressionG_ExtractionTransitionsContainedIdentityToLooseGuid()
+    public void LibraryIdentityRegressionG_LibraryReentryClearsLooseGuidAssociation()
     {
         Assert.Contains("function BridgeRecordLooseCardIdentity", Script);
-        Assert.Contains("BridgeClearContainedLibraryIdentity(event.cardInstanceId)", Script);
+        Assert.Contains("function BridgeRecordLibraryContainedState", Script);
+        Assert.Contains("BridgeState.physicalByInstanceId[cardInstanceId] = nil", Script);
+    }
+
+    [Fact]
+    public void LibraryIdentityRegressionH_ForgeDrawDoesNotDependOnPhysicalTopCardIdentity()
+    {
+        Assert.DoesNotContain("if matched == nil and drawFromTop then", Script);
+        Assert.DoesNotContain("authoritative draw identity does not match physical top-of-library card", Script);
+        Assert.Contains("for _, contained in ipairs(containedCards) do", Script);
     }
 
     [Fact]
