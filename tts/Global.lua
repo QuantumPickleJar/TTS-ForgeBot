@@ -4927,7 +4927,7 @@ function BridgeApplyAuthoritativeEvent(event)
             BridgeLog("[Bridge] face update deferred to snapshot reconcile: " .. tostring(resolveError))
             return true, 0.1
         end
-        BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
+        BridgeSetFaceState(object, event, event.seatId)
         return true, 0.1, nil
     end
 
@@ -5622,8 +5622,23 @@ function BridgeSetPhasedState(object, phased)
     return true, nil
 end
 
+function BridgeSetFaceState(object, forgeState, seatId)
+    if object == nil or forgeState == nil then return object end
+    local guid = BridgeSafeObjectGuid(object)
+    local resolvedSeatId = seatId or (guid and BridgeState.physicalSeatByGuid[guid]) or forgeState.ownerSeatId
+    local seat = BRIDGE_SEATS[resolvedSeatId]
+    if seat ~= nil and forgeState.faceDown ~= nil then
+        -- Face-down is an explicit Forge state. Do not infer Morph/Manifest or
+        -- DFC state IDs from text; a native state replacement needs a runtime
+        -- verified structured face identifier before it is safe to use.
+        BridgeSetPhysicalFaceDown(object, seat, forgeState.faceDown == true)
+    end
+    return object
+end
+
 function BridgeApplyCardPresentationSnapshot(object, cardSnapshot)
     if object == nil or cardSnapshot == nil then return false, "missing card presentation input" end
+    BridgeSetFaceState(object, cardSnapshot)
     local applied, applyError = BridgeMutateUnifiedState(object, function(unified)
         BridgeApplyDerivedStatsToUnified(unified, cardSnapshot.currentPower, cardSnapshot.currentToughness)
         BridgeApplyOwnerControllerToUnified(unified, cardSnapshot.ownerSeatId, cardSnapshot.controllerSeatId)
