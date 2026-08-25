@@ -56,6 +56,21 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void Reconciliation_DoesNotPromoteLegacyZeroStatsToNonCreatureCharacteristics()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        reconciler.Apply("session-a", Parse(parser, Frame(1, Player(
+            battlefield: [Card(12, "Mountain", "battlefield", 0, currentTypes: "[\"land\"]")]))));
+
+        var mountain = Assert.Single(reconciler.Current!.Seats[0].Zones
+            .Single(zone => zone.Name == "battlefield").Cards);
+
+        Assert.Null(mountain.CurrentPower);
+        Assert.Null(mountain.CurrentToughness);
+    }
+
+    [Fact]
     public void Reconciliation_DiffsLiveGameEventReasonsWithoutRequiringGameStartedReason()
     {
         var parser = new ForgeStructuredOutputParser();

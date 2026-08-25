@@ -61,14 +61,24 @@ public sealed class ForgeStructuredStateReconciler
                 .ToArray(),
             NetPower: card.NetPower,
             NetToughness: card.NetToughness,
-            CurrentPower: card.CurrentPower ?? card.NetPower,
-            CurrentToughness: card.CurrentToughness ?? card.NetToughness,
+            // NetPower/NetToughness are retained as legacy transport fields,
+            // but they are deliberately zero for non-creatures. Never promote
+            // those zeros into nullable current characteristics or TTS will
+            // render lands and other non-creatures as 0/0. Older structured
+            // feeds may omit current characteristics for creatures, so retain
+            // the compatibility fallback only when the authoritative type
+            // list explicitly identifies a creature.
+            CurrentPower: card.CurrentPower ?? (HasCreatureType(card) ? card.NetPower : null),
+            CurrentToughness: card.CurrentToughness ?? (HasCreatureType(card) ? card.NetToughness : null),
             CurrentTypes: (card.CurrentTypes ?? [])
                 .Select(NormalizeType)
                 .Where(type => !string.IsNullOrWhiteSpace(type))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(type => type, StringComparer.Ordinal)
                 .ToArray());
+
+        static bool HasCreatureType(ForgeStructuredCard card) =>
+            card.CurrentTypes?.Any(type => string.Equals(type, "creature", StringComparison.OrdinalIgnoreCase)) == true;
 
         var seats = source.Players.Select(player => new GameSeatSnapshotDto(
             player.SeatId,
