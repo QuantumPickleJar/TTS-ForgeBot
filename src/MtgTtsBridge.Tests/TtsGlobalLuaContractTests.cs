@@ -957,7 +957,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void GraveyardCards_RemainIndividuallyMappedAndCenteredOnThePrintedZone()
     {
-        Assert.Contains("graveyardAnchor = {x = 1.75, y = 2.0", Script);
+        Assert.Contains("graveyardAnchor = {x = 1.7714, y = 2.0, z = -12.2921}", Script);
         Assert.Contains("function BridgeGraveyardPosition", Script);
         Assert.Contains("BridgeState.graveyardCounts[seatId]", Script);
         Assert.Contains("local graveyardPosition = BridgeGraveyardPosition(event.seatId)", Script);
@@ -1062,6 +1062,19 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("tap update deferred to snapshot reconcile", Script);
         Assert.Contains("counter update deferred to snapshot reconcile", Script);
         Assert.Contains("keyword update deferred to snapshot reconcile", Script);
+    }
+
+    [Fact]
+    public void ExtractedTableGeometryAndPresentationRegistryProtectGameCardIdentity()
+    {
+        Assert.Contains("graveyardAnchor = {x = 1.7714, y = 2.0, z = -12.2921}", Script);
+        Assert.Contains("exileAnchor = {x = 1.7575, y = 2.0, z = -15.9598}", Script);
+        Assert.Contains("graveyardAnchor = {x = 1.7476, y = 2.0, z = 12.3162}", Script);
+        Assert.Contains("exileAnchor = {x = 1.7837, y = 2.0, z = 15.9528}", Script);
+        Assert.Contains("presentationOnlyGuids = { [\"946716\"]", Script);
+        Assert.Contains("function BridgeRegisterPresentationObject(objectOrGuid, kind)", Script);
+        Assert.Contains("if BridgeIsPresentationOnlyObject(object) then return false end", Script);
+        Assert.Contains("refusing Forge mapping for presentation object", Script);
     }
 
     [Fact]

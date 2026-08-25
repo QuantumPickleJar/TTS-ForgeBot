@@ -66,9 +66,11 @@ BRIDGE_SEATS = {
         faceUpRotation = {x = 0, y = 180, z = 0},
         graveyardZoneGuid = nil,
         exileZoneGuid = nil,
-        -- Centered on the printed graveyard below this seat's library column.
-        graveyardAnchor = {x = 1.75, y = 2.0, z = -12.0},
-        exileAnchor = {x = 10.8, y = 2.0, z = -13.8},
+        -- Extracted native table geometry; y is a deliberate card drop height.
+        libraryAnchor = {x = 1.7772, y = 2.0, z = -8.7126},
+        graveyardAnchor = {x = 1.7714, y = 2.0, z = -12.2921},
+        exileAnchor = {x = 1.7575, y = 2.0, z = -15.9598},
+        commandAnchor = {x = 37.3817, y = 2.0, z = -3.1542},
         includeCardGuids = {},
         excludeCardGuids = {},
         battlefieldAnchors = {
@@ -91,9 +93,11 @@ BRIDGE_SEATS = {
         faceUpRotation = {x = 0, y = 0, z = 0},
         graveyardZoneGuid = nil,
         exileZoneGuid = nil,
-        -- Centered on the printed graveyard below this seat's library column.
-        graveyardAnchor = {x = 1.75, y = 2.0, z = 12.0},
-        exileAnchor = {x = 10.8, y = 2.0, z = 13.8},
+        -- Extracted native table geometry; y is a deliberate card drop height.
+        libraryAnchor = {x = 1.7983, y = 2.0, z = 8.7004},
+        graveyardAnchor = {x = 1.7476, y = 2.0, z = 12.3162},
+        exileAnchor = {x = 1.7837, y = 2.0, z = 15.9528},
+        commandAnchor = {x = 37.3622, y = 2.0, z = 3.1347},
         includeCardGuids = {},
         excludeCardGuids = {},
         battlefieldAnchors = {
@@ -169,6 +173,8 @@ BridgeState = {
     cardNameByInstanceId = {},
     physicalSeatByGuid = {},
     physicalZoneByGuid = {},
+    -- Table helpers are never candidates for Forge CardInstanceId mapping.
+    presentationOnlyGuids = { ["946716"] = {kind = "utility_cards_deck"} },
     battlefieldCounts = {},
     graveyardCounts = {},
     currentTurnSeatId = nil,
@@ -215,6 +221,25 @@ function BridgeSafeObjectGuid(object)
     return guid
 end
 
+function BridgeRegisterPresentationObject(objectOrGuid, kind)
+    local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
+    if guid == nil then return false end
+    BridgeState.presentationOnlyGuids[guid] = {kind = kind or "presentation"}
+    return true
+end
+
+function BridgeUnregisterPresentationObject(objectOrGuid)
+    local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
+    if guid == nil then return false end
+    BridgeState.presentationOnlyGuids[guid] = nil
+    return true
+end
+
+function BridgeIsPresentationOnlyObject(objectOrGuid)
+    local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
+    return guid ~= nil and BridgeState.presentationOnlyGuids[guid] ~= nil
+end
+
 function BridgeSafeObjectName(object)
     if not BridgeObjectIsUsable(object) then return nil end
     local ok, name = pcall(function() return object.getName() end)
@@ -229,6 +254,10 @@ function BridgeSafeObjectCall(object, action)
 end
 
 function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
+    if BridgeIsPresentationOnlyObject(guid) then
+        BridgeLog("[Bridge] refusing Forge mapping for presentation object " .. tostring(guid))
+        return false
+    end
     if cardInstanceId ~= nil then
         local previousGuid = BridgeState.physicalByInstanceId[cardInstanceId]
         if previousGuid ~= nil and previousGuid ~= guid then
@@ -243,6 +272,7 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
     end
     BridgeState.physicalSeatByGuid[guid] = seatId
     BridgeState.physicalZoneByGuid[guid] = zoneName
+    return true
 end
 
 function BridgeRecordLibraryContainedState(cardInstanceId, seatId, cardName)
@@ -396,6 +426,7 @@ end
 
 function IsGameCardCandidate(object, seatId, context)
     if not BridgeObjectIsUsable(object) then return false end
+    if BridgeIsPresentationOnlyObject(object) then return false end
     if object.tag ~= "Card" and object.tag ~= "Deck" then return false end
 
     local seat = BRIDGE_SEATS[seatId]
