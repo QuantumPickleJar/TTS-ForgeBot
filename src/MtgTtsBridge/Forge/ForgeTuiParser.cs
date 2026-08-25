@@ -102,18 +102,22 @@ public sealed partial class ForgeTuiParser
                 IsOrdered: shape.IsOrdered),
             actions.ToDictionary(
                 option => $"{decisionId}-choice-{option.Number}",
-                option => GetInputValue(option, kind),
+                option => GetInputValue(option, kind, prompt.Value),
                 StringComparer.Ordinal)));
     }
 
-    private static string GetInputValue(ForgeTuiMenuOption option, string kind)
+    private static string GetInputValue(ForgeTuiMenuOption option, string kind, string inputPrompt)
     {
         if ((kind is "blocker_selection" or "attacker_selection")
             && (string.Equals(option.Label, "done", StringComparison.OrdinalIgnoreCase)
                 || option.Label.StartsWith("No further blockers", StringComparison.OrdinalIgnoreCase)
                 || option.Label.StartsWith("No further attackers", StringComparison.OrdinalIgnoreCase)))
         {
-            return "done";
+            // --numeric-choices presents 0 as the explicit finish action.
+            // The text controller's one-at-a-time prompts alone accept "done".
+            return inputPrompt.Contains("Enter choice", StringComparison.OrdinalIgnoreCase)
+                ? option.Number.ToString(CultureInfo.InvariantCulture)
+                : "done";
         }
 
         return option.Number.ToString(CultureInfo.InvariantCulture);

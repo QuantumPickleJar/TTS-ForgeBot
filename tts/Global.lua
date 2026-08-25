@@ -3027,13 +3027,13 @@ function onObjectDrop(playerColor, object)
             and (BRIDGE_SEATS[intent.seatId] and BRIDGE_SEATS[intent.seatId].attackLaneZ or nil)
             or (BRIDGE_SEATS[intent.seatId] and BRIDGE_SEATS[intent.seatId].blockerLaneZ or nil)
         local droppedInLane = laneZ ~= nil and math.abs(current.z - laneZ) <= 1.35
+        -- A normal pickup/drop is a valid desktop and VR selection gesture.
+        -- The bridge performs the lane preview after Forge accepts the exact
+        -- offered action, so players need not drag a card to a narrow row.
         if not movedEnough and not droppedInLane then
             print(string.format(
-                "[Bridge] combat drop ignored for %s (guid=%s movedSq=%.3f laneHit=%s)",
-                tostring(intent.action.type), tostring(intent.guid), dx * dx + dz * dz, tostring(droppedInLane)))
-            BridgeRollbackPendingIntent()
-            BridgeRenderDecision(decision)
-            return
+                "[Bridge] combat selection accepted in place for %s (guid=%s)",
+                tostring(intent.action.type), tostring(intent.guid)))
         end
         print(string.format(
             "[Bridge] combat drop accepted for %s (guid=%s movedSq=%.3f laneHit=%s action=%s decision=%s)",

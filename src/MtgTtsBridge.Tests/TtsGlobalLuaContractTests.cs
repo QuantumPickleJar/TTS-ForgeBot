@@ -135,11 +135,11 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void CombatDrop_AcceptsExplicitLanePlacementAndLogsIgnoredNearDrops()
+    public void CombatDrop_AcceptsExplicitLanePlacementOrStandardPickupDropSelection()
     {
         Assert.Contains("local droppedInLane", Script);
         Assert.Contains("math.abs(current.z - laneZ) <= 1.35", Script);
-        Assert.Contains("combat drop ignored", Script);
+        Assert.Contains("combat selection accepted in place", Script);
         Assert.Contains("combat drop accepted", Script);
     }
 
@@ -862,6 +862,14 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("--numeric-choices", settings);
         Assert.DoesNotContain("SynthesizeCombatActions", adapter);
         Assert.DoesNotContain("SynthesizeBlockerAssignments", adapter);
+    }
+
+    [Fact]
+    public void CombatCardsCanBeSelectedWithAStandardPickupAndDropWithoutLanePrecision()
+    {
+        Assert.Contains("combat selection accepted in place for %s (guid=%s)", Script);
+        Assert.DoesNotContain("combat drop ignored for %s", Script);
+        Assert.Contains("BridgeMoveToAttackLane(intent.seatId, object)", Script);
     }
 
     [Fact]

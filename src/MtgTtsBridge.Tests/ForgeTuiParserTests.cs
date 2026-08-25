@@ -157,7 +157,7 @@ public sealed class ForgeTuiParserTests
         var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
         Assert.Equal("blocker_selection", decision.Decision.Kind);
         Assert.Equal("finish_blocking", decision.Decision.Actions[0].Type);
-        Assert.Equal("done", decision.Inputs[decision.Decision.Actions[0].ActionId]);
+        Assert.Equal("0", decision.Inputs[decision.Decision.Actions[0].ActionId]);
         Assert.Equal("choose_blocker", decision.Decision.Actions[1].Type);
         Assert.Equal("Hired Claw", decision.Decision.Actions[1].CardIdentity);
         Assert.Equal("1", decision.Inputs[decision.Decision.Actions[1].ActionId]);
@@ -322,6 +322,9 @@ public sealed class ForgeTuiParserTests
         var blocker = Assert.Single(blockerDecision.Decision.Actions, action => action.Type == "choose_blocker");
         Assert.Equal("1", blockerDecision.Inputs[blocker.ActionId]);
         Assert.NotEqual("91", blockerDecision.Inputs[blocker.ActionId]);
+
+        var finish = Assert.Single(blockerDecision.Decision.Actions, action => action.Type == "finish_blocking");
+        Assert.Equal("0", blockerDecision.Inputs[finish.ActionId]);
     }
 
     [Fact]
