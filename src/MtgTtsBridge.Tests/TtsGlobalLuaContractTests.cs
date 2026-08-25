@@ -757,6 +757,30 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void SnapshotReconcile_DefersPublicMovementUntilItsBridgeEventCursorIsApplied()
+    {
+        Assert.Contains("EventCursor = _latestEventSequence", File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "MtgTtsBridge", "Forge", "ForgeTuiAdapter.cs")));
+        Assert.Contains("function BridgeSnapshotMayMutatePublicZones", Script);
+        Assert.Contains("snapshotCursor <= tonumber(BridgeState.lastAppliedEventSequence", Script);
+        Assert.Contains("BridgeState.deferredSnapshotReconcile = {snapshot = snapshot, reason = reason}", Script);
+        Assert.Contains("BridgeTryApplyDeferredSnapshotReconcile(\"event \" .. tostring(event.sequence))", Script);
+        Assert.Contains("forgeSequence=%s eventCursor=%s received=%s applied=%s queued=%s..%s", Script);
+    }
+
+    [Fact]
+    public void TapAndExactDestinationSafety_DoNotTurnAHandCardOrSuppressWrongMappings()
+    {
+        Assert.Contains("if trackedZone ~= \"battlefield\" then", Script);
+        Assert.Contains("tap presentation deferred event=%s instance=%s trackedZone=%s", Script);
+        Assert.Contains("physicalInstanceIdByGuid", Script);
+        Assert.Contains("mapped destination GUID belongs to a different Forge instance", Script);
+        Assert.Contains("exact mapped destination belongs to a different seat", Script);
+        Assert.Contains("idempotent move event=%s instance=%s already at %s", Script);
+        Assert.Contains("idempotent move event=%s instance=%s already at battlefield", Script);
+    }
+
+    [Fact]
     public void RealDecisionIdentity_WinsOverDuplicateNameFallback()
     {
         Assert.Contains("action.cardInstanceId and BridgeState.physicalByInstanceId[action.cardInstanceId]", Script);
@@ -802,6 +826,42 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("tap update deferred to snapshot reconcile", Script);
         Assert.Contains("counter update deferred to snapshot reconcile", Script);
         Assert.Contains("keyword update deferred to snapshot reconcile", Script);
+    }
+
+    [Fact]
+    public void DuplicateSemanticLandPresentation_DefersWhenItsExactStructuredMoveIsPending()
+    {
+        Assert.Contains("pendingStructuredZoneTransitionByInstanceId", Script);
+        Assert.Contains("pendingTransition.destinationZone == \"battlefield\"", Script);
+        Assert.Contains("semantic land presentation deferred event=%s instance=%s after structured move=%s", Script);
+        Assert.Contains("This does not suppress unrelated or wrong-instance moves", Script);
+    }
+
+    [Fact]
+    public void ManaPresentation_UsesOnlyTheExactMappedBattlefieldInstance()
+    {
+        var manaStart = Script.IndexOf("if event.kind == \"mana_ability_used\" then", StringComparison.Ordinal);
+        var manaEnd = Script.IndexOf("if event.kind == \"attack_declared\" then", manaStart, StringComparison.Ordinal);
+        var manaHandler = Script[manaStart..manaEnd];
+
+        Assert.Contains("BridgeResolveMappedInstance(event)", manaHandler);
+        Assert.DoesNotContain("BridgeResolvePhysicalCard(event, \"battlefield\")", manaHandler);
+        Assert.Contains("mana presentation deferred event=%s instance=%s reason=%s", manaHandler);
+        Assert.Contains("mana presentation deferred event=%s instance=%s trackedZone=%s", manaHandler);
+        Assert.Contains("BridgeScheduleSnapshotReconcile(\"mana event \" .. tostring(event.sequence))", manaHandler);
+    }
+
+    [Fact]
+    public void DefaultForgeLaunchUsesNumericCombatChoicesAndNeverSynthesizesCardIdCombatInputs()
+    {
+        var launcher = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tools", "Start-ForgeBot.ps1"));
+        var settings = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "MtgTtsBridge", "appsettings.json"));
+        var adapter = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "MtgTtsBridge", "Forge", "ForgeTuiAdapter.cs"));
+
+        Assert.Contains("--numeric-choices", launcher);
+        Assert.Contains("--numeric-choices", settings);
+        Assert.DoesNotContain("SynthesizeCombatActions", adapter);
+        Assert.DoesNotContain("SynthesizeBlockerAssignments", adapter);
     }
 
     [Fact]

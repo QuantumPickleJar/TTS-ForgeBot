@@ -58,7 +58,7 @@ if ([string]::IsNullOrWhiteSpace($AiDeck)) { $AiDeck = Join-Path $forgeRoot 'for
 $HumanDeck = (Resolve-Path $HumanDeck).Path
 $AiDeck = (Resolve-Path $AiDeck).Path
 
-$forgeArguments = "-Dforge.assets.dir=`"$assetsDirectory`" -jar `"$($jar.FullName)`" tui `"$HumanDeck`" `"$AiDeck`" --p1 tui --p2 ai --seed $Seed"
+$forgeArguments = "-Dforge.assets.dir=`"$assetsDirectory`" -jar `"$($jar.FullName)`" tui `"$HumanDeck`" `"$AiDeck`" --p1 tui --p2 ai --numeric-choices --seed $Seed"
 Write-Host 'Starting ForgeBot at http://127.0.0.1:43110'
 Write-Host 'Health endpoint: http://127.0.0.1:43110/health'
 Write-Host "Forge JAR: $($jar.FullName)"

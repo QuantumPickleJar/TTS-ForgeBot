@@ -33,7 +33,10 @@ public sealed class ForgeStructuredStateReconciler
 
         var events = Diff(Current, next);
         Current = next;
-        return events;
+        // Preserve the producer-local snapshot sequence on every event. It is
+        // diagnostic metadata only; TTS orders physical work by the bridge's
+        // monotonic event cursor, not by this Forge-local value.
+        return events.Select(@event => @event with { ForgeSequence = next.ForgeSequence }).ToArray();
     }
 
     private static GameSnapshotDto ConvertSnapshot(string sessionId, ForgeStructuredSnapshot source)

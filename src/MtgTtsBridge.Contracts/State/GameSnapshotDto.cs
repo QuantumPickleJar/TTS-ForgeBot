@@ -9,7 +9,10 @@ public sealed record GameSnapshotDto(
     long ForgeSequence,
     string Reason,
     IReadOnlyList<GameSeatSnapshotDto> Seats,
-    IReadOnlyList<GameCardSnapshotDto> Stack);
+    IReadOnlyList<GameCardSnapshotDto> Stack,
+    // Bridge event-stream cursor captured with this snapshot. ForgeSequence is
+    // producer-local; EventCursor is the only safe ordering comparison for TTS.
+    long EventCursor = 0);
 
 public sealed record GameSeatSnapshotDto(
     string SeatId,

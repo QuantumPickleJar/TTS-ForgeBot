@@ -114,6 +114,7 @@ BridgeState = {
     eventQueue = {},
     animationRunning = false,
     physicalByInstanceId = {},
+    physicalInstanceIdByGuid = {},
     cardNameByInstanceId = {},
     physicalSeatByGuid = {},
     physicalZoneByGuid = {},
@@ -127,6 +128,12 @@ BridgeState = {
     snapshotForgeSequence = 0,
     snapshotReconcileInFlight = false,
     snapshotReconcilePending = false,
+    deferredSnapshotReconcile = nil,
+    -- A textual semantic event (such as land_played) can immediately follow
+    -- the same exact structured card_moved event.  Keep the exact transition
+    -- identity so the second renderer never treats a temporarily unresolved
+    -- first renderer as a name-based physical desync.
+    pendingStructuredZoneTransitionByInstanceId = {},
     zoneAnchorGuidBySeatAndZone = {},
     bootstrapping = false,
     setupBusy = false,
@@ -168,7 +175,16 @@ end
 
 function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
     if cardInstanceId ~= nil then
+        local previousGuid = BridgeState.physicalByInstanceId[cardInstanceId]
+        if previousGuid ~= nil and previousGuid ~= guid then
+            BridgeState.physicalInstanceIdByGuid[previousGuid] = nil
+        end
+        local previousInstanceId = BridgeState.physicalInstanceIdByGuid[guid]
+        if previousInstanceId ~= nil and previousInstanceId ~= cardInstanceId then
+            BridgeState.physicalByInstanceId[previousInstanceId] = nil
+        end
         BridgeState.physicalByInstanceId[cardInstanceId] = guid
+        BridgeState.physicalInstanceIdByGuid[guid] = cardInstanceId
     end
     BridgeState.physicalSeatByGuid[guid] = seatId
     BridgeState.physicalZoneByGuid[guid] = zoneName
@@ -178,6 +194,7 @@ function BridgeRecordLibraryContainedState(cardInstanceId, seatId, cardName)
     if cardInstanceId == nil then return end
     local existingGuid = BridgeState.physicalByInstanceId[cardInstanceId]
     if existingGuid ~= nil then
+        BridgeState.physicalInstanceIdByGuid[existingGuid] = nil
         BridgeState.physicalSeatByGuid[existingGuid] = nil
         BridgeState.physicalZoneByGuid[existingGuid] = nil
     end
@@ -1135,14 +1152,98 @@ function BridgeShouldReconcileAfterEvent(event)
     return event.kind == "spell_resolved"
         or event.kind == "land_played"
         or event.kind == "card_moved"
-        or event.kind == "mana_ability_used"
-        or event.kind == "tap_changed"
-        or event.kind == "counter_changed"
 end
 
 function BridgeCanDeferStructuredMoveToSnapshot(event)
     local destinationZone = string.lower(tostring(event.destinationZone or ""))
     return event.kind == "card_moved" and BridgeZoneIsPublicForReconcile(destinationZone)
+end
+
+function BridgeQueuedEventRange()
+    local minimum, maximum = nil, nil
+    for _, queued in ipairs(BridgeState.eventQueue or {}) do
+        local sequence = tonumber(queued.sequence or 0) or 0
+        if sequence > 0 then
+            minimum = minimum == nil and sequence or math.min(minimum, sequence)
+            maximum = maximum == nil and sequence or math.max(maximum, sequence)
+        end
+    end
+    return minimum or 0, maximum or 0
+end
+
+function BridgeLogSnapshotOrdering(marker, snapshot, reason)
+    local minQueued, maxQueued = BridgeQueuedEventRange()
+    print(string.format(
+        "[Bridge] snapshot %s reason=%s forgeSequence=%s eventCursor=%s received=%s applied=%s queued=%s..%s",
+        tostring(marker), tostring(reason), tostring(snapshot and snapshot.forgeSequence),
+        tostring(snapshot and snapshot.eventCursor), tostring(BridgeState.lastReceivedEventSequence),
+        tostring(BridgeState.lastAppliedEventSequence), tostring(minQueued), tostring(maxQueued)))
+end
+
+function BridgeSnapshotMayMutatePublicZones(snapshot)
+    local snapshotCursor = tonumber(snapshot and snapshot.eventCursor or 0) or 0
+    -- ForgeSequence is local to the child process and is not comparable to the
+    -- bridge event stream. EventCursor is captured atomically with the HTTP
+    -- snapshot and is the ordering invariant for public embodiment.
+    return snapshotCursor <= tonumber(BridgeState.lastAppliedEventSequence or 0)
+end
+
+function BridgeApplySafeSnapshotReconcile(snapshot, reason)
+    local movedCount = 0
+    for _, seatSnapshot in ipairs(snapshot.seats or {}) do
+        BridgeApplySeatSnapshotVisualState(seatSnapshot)
+        for _, zone in ipairs(seatSnapshot.zones or {}) do
+            local zoneName = string.lower(tostring(zone.name or ""))
+            if BridgeZoneIsPublicForReconcile(zoneName) then
+                for _, card in ipairs(zone.cards or {}) do
+                    local mappedGuid = BridgeState.physicalByInstanceId[card.cardInstanceId]
+                    local mappedObject = mappedGuid and getObjectFromGUID(mappedGuid) or nil
+                    local mappedZone = mappedGuid and BridgeState.physicalZoneByGuid[mappedGuid] or nil
+                    local mappedNeedsFix = mappedObject == nil or mappedObject.tag ~= "Card" or mappedZone ~= zoneName
+                    if mappedNeedsFix then
+                        -- The log intentionally omits cardName: a snapshot can
+                        -- contain identities that should not be public chat.
+                        print(string.format(
+                            "[Bridge] snapshot candidate instance=%s oldZone=%s destinationZone=%s",
+                            tostring(card.cardInstanceId), tostring(mappedZone), tostring(zoneName)))
+                        local evt = {
+                            seatId = seatSnapshot.seatId,
+                            cardInstanceId = card.cardInstanceId,
+                            cardName = card.cardName,
+                            sourceZone = nil,
+                            destinationZone = zoneName,
+                            faceDown = card.faceDown
+                        }
+                        local moved, moveError = BridgeApplyStructuredCardMove(evt)
+                        if moved then
+                            movedCount = movedCount + 1
+                        else
+                            print("[Bridge] snapshot reconcile skipped a move: " .. tostring(moveError))
+                        end
+                    end
+
+                    local guid = BridgeState.physicalByInstanceId[card.cardInstanceId]
+                    local object = guid and getObjectFromGUID(guid) or nil
+                    if object ~= nil and object.tag == "Card" and zoneName == "battlefield" then
+                        BridgeSetPhysicalTapped(object, card.tapped == true)
+                    end
+                end
+            end
+        end
+    end
+    BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
+    BridgeLogSnapshotOrdering("applied", snapshot, reason)
+    if movedCount > 0 then
+        print(string.format("[Bridge] snapshot reconcile (%s): corrected %d public card location(s)", tostring(reason), movedCount))
+    end
+end
+
+function BridgeTryApplyDeferredSnapshotReconcile(reason)
+    local pending = BridgeState.deferredSnapshotReconcile
+    if pending == nil or not BridgeSnapshotMayMutatePublicZones(pending.snapshot) then return end
+    BridgeState.deferredSnapshotReconcile = nil
+    BridgeState.pendingStructuredZoneTransitionByInstanceId = {}
+    BridgeApplySafeSnapshotReconcile(pending.snapshot, pending.reason or reason or "deferred")
 end
 
 function BridgeScheduleSnapshotReconcile(reason)
@@ -1155,48 +1256,11 @@ function BridgeScheduleSnapshotReconcile(reason)
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
         BridgeState.snapshotReconcileInFlight = false
         if ok and snapshot ~= nil and snapshot.sessionId == BridgeState.eventSessionId then
-            local movedCount = 0
-            for _, seatSnapshot in ipairs(snapshot.seats or {}) do
-                BridgeApplySeatSnapshotVisualState(seatSnapshot)
-                for _, zone in ipairs(seatSnapshot.zones or {}) do
-                    local zoneName = string.lower(tostring(zone.name or ""))
-                    if BridgeZoneIsPublicForReconcile(zoneName) then
-                        for _, card in ipairs(zone.cards or {}) do
-                            local evt = {
-                                seatId = seatSnapshot.seatId,
-                                cardInstanceId = card.cardInstanceId,
-                                cardName = card.cardName,
-                                sourceZone = nil,
-                                destinationZone = zoneName,
-                                faceDown = card.faceDown
-                            }
-                            local mappedGuid = BridgeState.physicalByInstanceId[card.cardInstanceId]
-                            local mappedObject = mappedGuid and getObjectFromGUID(mappedGuid) or nil
-                            local mappedZone = mappedGuid and BridgeState.physicalZoneByGuid[mappedGuid] or nil
-                            local mappedNeedsFix = mappedObject == nil
-                                or mappedObject.tag ~= "Card"
-                                or mappedZone ~= zoneName
-                            if mappedNeedsFix then
-                                local moved, moveError = BridgeApplyStructuredCardMove(evt)
-                                if moved then
-                                    movedCount = movedCount + 1
-                                else
-                                    print("[Bridge] snapshot reconcile skipped a move: " .. tostring(moveError))
-                                end
-                            end
-
-                            local guid = BridgeState.physicalByInstanceId[card.cardInstanceId]
-                            local object = guid and getObjectFromGUID(guid) or nil
-                            if object ~= nil and object.tag == "Card" and zoneName == "battlefield" then
-                                BridgeSetPhysicalTapped(object, card.tapped == true)
-                            end
-                        end
-                    end
-                end
-            end
-            BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
-            if movedCount > 0 then
-                print(string.format("[Bridge] snapshot reconcile (%s): corrected %d public card location(s)", tostring(reason), movedCount))
+            if BridgeSnapshotMayMutatePublicZones(snapshot) then
+                BridgeApplySafeSnapshotReconcile(snapshot, reason)
+            else
+                BridgeState.deferredSnapshotReconcile = {snapshot = snapshot, reason = reason}
+                BridgeLogSnapshotOrdering("deferred", snapshot, reason)
             end
         elseif not ok then
             print("[Bridge] snapshot reconcile failed: " .. tostring(err))
@@ -2821,6 +2885,7 @@ function BridgeRenderDecision(decision)
                 local recoveredGuid = BridgeSafeObjectGuid(fallbackMatches[1])
                 if recoveredGuid ~= nil then
                     BridgeState.physicalByInstanceId[action.cardInstanceId] = recoveredGuid
+                    BridgeState.physicalInstanceIdByGuid[recoveredGuid] = action.cardInstanceId
                     if action.cardIdentity ~= nil then
                         BridgeState.cardNameByInstanceId[action.cardInstanceId] = action.cardIdentity
                     end
@@ -3401,6 +3466,7 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets)
             BridgeRecordLibraryContainedState(mapping.card.cardInstanceId, seatSnapshot.seatId, mapping.card.cardName)
         else
             BridgeState.physicalByInstanceId[mapping.card.cardInstanceId] = guid
+            BridgeState.physicalInstanceIdByGuid[guid] = mapping.card.cardInstanceId
             BridgeState.physicalSeatByGuid[guid] = seatSnapshot.seatId
             BridgeState.physicalZoneByGuid[guid] = mapping.zoneName
             if mapping.asset.object ~= nil then
@@ -3433,6 +3499,7 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
             BridgeState.physicalZoneByGuid[guid] = nil
         end
         BridgeState.physicalByInstanceId[card.cardInstanceId] = actualGuid
+        BridgeState.physicalInstanceIdByGuid[actualGuid] = card.cardInstanceId
         BridgeState.cardNameByInstanceId[card.cardInstanceId] = card.cardName
         BridgeState.physicalSeatByGuid[actualGuid] = seatSnapshot.seatId
         BridgeState.physicalZoneByGuid[actualGuid] = zone.name
@@ -3662,6 +3729,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.eventQueue = {}
     BridgeState.animationRunning = false
     BridgeState.physicalByInstanceId = {}
+    BridgeState.physicalInstanceIdByGuid = {}
     BridgeState.cardNameByInstanceId = {}
     BridgeState.physicalSeatByGuid = {}
     BridgeState.physicalZoneByGuid = {}
@@ -3673,6 +3741,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.attackOriginByGuid = {}
     BridgeState.attackLaneGuidBySeatId = {}
     BridgeState.snapshotForgeSequence = 0
+    BridgeState.deferredSnapshotReconcile = nil
     BridgeState.zoneAnchorGuidBySeatAndZone = {}
     BridgeState.yieldSeatId = nil
     BridgeState.transitionExpectedUntil = 0
@@ -3804,6 +3873,7 @@ function BridgeProcessEventQueue()
 
     table.remove(BridgeState.eventQueue, 1)
     BridgeState.lastAppliedEventSequence = event.sequence
+    BridgeTryApplyDeferredSnapshotReconcile("event " .. tostring(event.sequence))
     BridgeTryPresentPendingDecision("event-applied")
     if BridgeShouldReconcileAfterEvent(event) then
         BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence))
@@ -3930,6 +4000,14 @@ function BridgeApplyAuthoritativeEvent(event)
 
     if event.kind == "card_moved" then
         local applied, moveError = BridgeApplyStructuredCardMove(event)
+        if event.cardInstanceId ~= nil and event.destinationZone ~= nil then
+            BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId] = {
+                sourceZone = event.sourceZone,
+                destinationZone = event.destinationZone,
+                sequence = event.sequence,
+                applied = applied == true,
+            }
+        end
         if not applied and BridgeCanDeferStructuredMoveToSnapshot(event) then
             print("[Bridge] structured move deferred to snapshot reconcile: " .. tostring(moveError))
             return true, 0.1
@@ -3954,6 +4032,14 @@ function BridgeApplyAuthoritativeEvent(event)
         local object, resolveError = BridgeResolveMappedInstance(event)
         if object == nil then
             print("[Bridge] tap update deferred to snapshot reconcile: " .. tostring(resolveError))
+            return true, 0.1
+        end
+        local guid = BridgeSafeObjectGuid(object)
+        local trackedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
+        if trackedZone ~= "battlefield" then
+            print(string.format(
+                "[Bridge] tap presentation deferred event=%s instance=%s trackedZone=%s",
+                tostring(event.sequence), tostring(event.cardInstanceId), tostring(trackedZone)))
             return true, 0.1
         end
         BridgeSetPhysicalTapped(object, event.tapped == true)
@@ -4020,8 +4106,48 @@ function BridgeApplyAuthoritativeEvent(event)
     if event.kind == "land_played" then
         -- Land can be played from hand or library (e.g., via abilities)
         local sourceZone = event.sourceZone or "hand"
+        local pendingTransition = event.cardInstanceId ~= nil
+            and BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId]
+            or nil
+        local mappedGuid = event.cardInstanceId and BridgeState.physicalByInstanceId[event.cardInstanceId] or nil
+        local mappedObject = mappedGuid and BridgeGetLiveObjectByGuid(mappedGuid) or nil
+        if mappedObject ~= nil and mappedObject.tag == "Card"
+            and BridgeState.physicalZoneByGuid[mappedGuid] == "battlefield" then
+            if BridgeState.physicalSeatByGuid[mappedGuid] ~= event.seatId then
+                return false, BridgePhysicalMappingError(event, "battlefield", 0,
+                    "exact mapped destination belongs to a different seat", {mappedGuid = mappedGuid})
+            end
+            local inverseInstanceId = BridgeState.physicalInstanceIdByGuid[mappedGuid]
+            if inverseInstanceId ~= nil and inverseInstanceId ~= event.cardInstanceId then
+                return false, BridgePhysicalMappingError(event, "battlefield", 0,
+                    "mapped destination GUID belongs to a different Forge instance", {mappedGuid = mappedGuid})
+            end
+            BridgeRecordLooseCardIdentity(event.cardInstanceId, mappedGuid, event.seatId, "battlefield")
+            BridgeSetPhysicalFaceDown(mappedObject, seat, event.faceDown == true)
+            print(string.format(
+                "[Bridge] idempotent move event=%s instance=%s already at battlefield",
+                tostring(event.sequence), tostring(event.cardInstanceId)))
+            return true, 0.1
+        end
         local object, resolveError = BridgeResolvePhysicalCard(event, sourceZone)
-        if object == nil then return false, 0, resolveError end
+        if object == nil then
+            -- Forge emitted an ordered, exact card_moved immediately before
+            -- this text-derived land_played event.  If that structured move
+            -- could not yet bind the physical card, do not make a second
+            -- source-zone lookup (or name fallback) fatal.  The deferred
+            -- snapshot is deliberately held behind the event cursor and will
+            -- repair the public embodiment after the ordered stream catches
+            -- up.  This does not suppress unrelated or wrong-instance moves.
+            if pendingTransition ~= nil
+                and pendingTransition.destinationZone == "battlefield"
+                and pendingTransition.sourceZone == sourceZone then
+                print(string.format(
+                    "[Bridge] semantic land presentation deferred event=%s instance=%s after structured move=%s",
+                    tostring(event.sequence), tostring(event.cardInstanceId), tostring(pendingTransition.sequence)))
+                return true, 0.1
+            end
+            return false, 0, resolveError
+        end
         
         -- If it's a deck object (from library), draw the top card
         if object.tag == "Deck" then
@@ -4061,8 +4187,29 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "mana_ability_used" then
-        local object, resolveError = BridgeResolvePhysicalCard(event, "battlefield")
-        if object == nil then return false, 0, resolveError end
+        -- Mana use is a presentation-only consequence of Forge's exact card
+        -- instance.  Never resolve it by name: duplicate Mountains are common
+        -- and choosing one locally would be a rules/UI lie.  A preceding
+        -- structured move may still be awaiting the cursor-gated snapshot;
+        -- defer the visual tap in that case (and for any other missing exact
+        -- mapping) rather than turning a correct Forge action into a desync.
+        local object, resolveError = BridgeResolveMappedInstance(event)
+        if object == nil then
+            print(string.format(
+                "[Bridge] mana presentation deferred event=%s instance=%s reason=%s",
+                tostring(event.sequence), tostring(event.cardInstanceId), tostring(resolveError)))
+            BridgeScheduleSnapshotReconcile("mana event " .. tostring(event.sequence))
+            return true, 0.1
+        end
+        local guid = BridgeSafeObjectGuid(object)
+        local trackedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
+        if trackedZone ~= "battlefield" then
+            print(string.format(
+                "[Bridge] mana presentation deferred event=%s instance=%s trackedZone=%s",
+                tostring(event.sequence), tostring(event.cardInstanceId), tostring(trackedZone)))
+            BridgeScheduleSnapshotReconcile("mana event " .. tostring(event.sequence))
+            return true, 0.1
+        end
         local rotated, rotationError = pcall(function() BridgeSetPhysicalTapped(object, true) end)
         if not rotated then
             return false, 0, "event " .. tostring(event.sequence) .. " could not tap mapped object: " .. tostring(rotationError)
@@ -4148,6 +4295,34 @@ function BridgeApplyStructuredCardMove(event)
         BridgeState.physicalZoneByGuid[guid] = nil
         object = nil
         guid = nil
+    end
+
+    -- A snapshot may have already placed this exact Forge instance at the
+    -- authoritative destination. This is safe only with the inverse exact-id
+    -- check and matching seat; never use a same-name card as an idempotence
+    -- substitute.
+    if object ~= nil and object.tag == "Card" and event.destinationZone ~= nil then
+        local mappedSeat = BridgeState.physicalSeatByGuid[guid]
+        local mappedZone = BridgeState.physicalZoneByGuid[guid]
+        local inverseInstanceId = BridgeState.physicalInstanceIdByGuid[guid]
+        if mappedZone == event.destinationZone then
+            if mappedSeat ~= event.seatId then
+                return false, BridgePhysicalMappingError(event, event.destinationZone, 0,
+                    "exact mapped destination belongs to a different seat", {mappedGuid = guid})
+            end
+            if inverseInstanceId ~= nil and inverseInstanceId ~= event.cardInstanceId then
+                return false, BridgePhysicalMappingError(event, event.destinationZone, 0,
+                    "mapped destination GUID belongs to a different Forge instance", {mappedGuid = guid})
+            end
+            BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, event.destinationZone)
+            if event.destinationZone == "battlefield" then
+                BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
+            end
+            print(string.format(
+                "[Bridge] idempotent move event=%s instance=%s already at %s",
+                tostring(event.sequence), tostring(event.cardInstanceId), tostring(event.destinationZone)))
+            return true, nil
+        end
     end
 
     local function recordAttempt(zoneName)

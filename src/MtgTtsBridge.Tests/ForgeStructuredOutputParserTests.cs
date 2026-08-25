@@ -79,6 +79,31 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void Reconciliation_OrdersSoulstoneZoneTransitionBeforeItsTapPresentation()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        reconciler.Apply("session-a", Parse(parser, Frame(1, Player(
+            hand: [Card(88, "Soulstone Sanctuary", "hand", 0)]))));
+
+        var events = reconciler.Apply("session-a", Parse(parser, Frame(2, Player(
+            battlefield: [Card(88, "Soulstone Sanctuary", "battlefield", 0, tapped: true)]))));
+
+        var movementIndex = events
+            .Select((item, index) => (item, index))
+            .Single(pair => pair.item.Kind == "card_moved" && pair.item.ForgeObjectId == 88).index;
+        var tapIndex = events
+            .Select((item, index) => (item, index))
+            .Single(pair => pair.item.Kind == "tap_changed" && pair.item.ForgeObjectId == 88).index;
+
+        Assert.True(movementIndex < tapIndex);
+        Assert.Equal("hand", events[movementIndex].SourceZone);
+        Assert.Equal("battlefield", events[movementIndex].DestinationZone);
+        Assert.True(events[tapIndex].Tapped);
+        Assert.All(events, item => Assert.Equal(2, item.ForgeSequence));
+    }
+
+    [Fact]
     public void SnapshotReplacement_ReconcilesAuthoritativeAbsoluteRemovalState()
     {
         var parser = new ForgeStructuredOutputParser();

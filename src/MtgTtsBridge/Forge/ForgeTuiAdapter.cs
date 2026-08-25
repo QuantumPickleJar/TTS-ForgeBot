@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
 using MtgTtsBridge.Contracts.Actions;
@@ -93,6 +92,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             };
             return Task.FromResult<GameSnapshotDto?>(snapshot with
             {
+                EventCursor = _latestEventSequence,
                 Seats = snapshot.Seats.Select(seat => seat with
                 {
                     Zones = seat.Zones.Select(zone => zone with
@@ -263,7 +263,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             waiter = NewDecisionWaiter();
         }
 
-        _logger.LogDebug("Forge TUI stdin: {ForgeInput}", forgeInput);
+        _logger.LogInformation("Forge TUI stdin action={ActionId} input={ForgeInput}", request.ActionId, forgeInput);
         await process.StandardInput.WriteLineAsync(forgeInput).ConfigureAwait(false);
         await process.StandardInput.FlushAsync().ConfigureAwait(false);
 
@@ -395,36 +395,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     ? action with { CardInstanceId = $"forge:{_sessionId}:{action.CardInstanceId["forge-object:".Length..]}" }
                     : action).ToArray();
 
-            // Forge "one at a time" combat mode emits no numbered creature menu.
-            // Synthesize choose_attacker/choose_blocker actions from snapshot state.
             var inputs = decision.Inputs.ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.Ordinal);
-            if ((decision.Decision.Kind is "attacker_selection" or "blocker_selection")
-                && actions.All(a => a.Type is "finish_attacking" or "finish_blocking" or "choose_none"))
-            {
-                var synthesized = SynthesizeCombatActions(decision.Decision.Kind, decision.Decision.DecisionId, inputs);
-                if (synthesized.Length > 0)
-                {
-                    actions = actions.Concat(synthesized).ToArray();
-                    _logger.LogInformation(
-                        "Synthesized {Count} {Kind} actions from snapshot state for decision {DecisionId}",
-                        synthesized.Length, decision.Decision.Kind, decision.Decision.DecisionId);
-                }
-            }
-            
-            // Auto-assign blockers when blocker_assignment has no menu options.
-            // For single attacker scenarios, assign all blockers to block attacker 0.
-            if (decision.Decision.Kind == "blocker_assignment"
-                && actions.All(a => a.Type is "finish_blocking" or "choose_none"))
-            {
-                var synthesized = SynthesizeBlockerAssignments(decision.Decision.DecisionId, inputs);
-                if (synthesized.Length > 0)
-                {
-                    actions = actions.Concat(synthesized).ToArray();
-                    _logger.LogInformation(
-                        "Synthesized {Count} blocker assignments for decision {DecisionId}",
-                        synthesized.Length, decision.Decision.DecisionId);
-                }
-            }
 
             _currentDecision = decision.Decision with { SeatId = _options.HumanSeatId, Actions = actions };
             _currentDecision = _currentDecision with
@@ -439,85 +410,6 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _currentInputs = inputs;
             _state = "awaiting_human_decision";
         }
-    }
-
-    private LegalActionDto[] SynthesizeCombatActions(string kind, string decisionId, Dictionary<string, string> inputs)
-    {
-        var snapshot = _structuredState.Current;
-        if (snapshot is null) return [];
-        var humanSeat = snapshot.Seats.FirstOrDefault(s => string.Equals(s.SeatId, _options.HumanSeatId, StringComparison.Ordinal));
-        if (humanSeat is null) return [];
-        var battlefield = humanSeat.Zones.FirstOrDefault(z => string.Equals(z.Name, "battlefield", StringComparison.OrdinalIgnoreCase));
-        if (battlefield is null) return [];
-
-        var candidates = battlefield.Cards
-            .Where(card => !card.Tapped
-                && !card.PhasedOut
-                && !string.Equals(card.BattlefieldKind, "land", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-
-        var actionType = kind == "attacker_selection" ? "choose_attacker" : "choose_blocker";
-        var synthesized = new List<LegalActionDto>();
-        foreach (var card in candidates)
-        {
-            var actionId = $"{decisionId}-synth-{card.ForgeCardId}";
-            synthesized.Add(new LegalActionDto(
-                ActionId: actionId,
-                Type: actionType,
-                DisplayName: $"{card.CurrentCardName} ({card.ForgeCardId})",
-                RequiresFollowup: kind == "blocker_selection",
-                CardIdentity: card.CardName,
-                ObjectIdentity: null,
-                TargetKind: null,
-                TargetSeatId: null,
-                CardInstanceId: card.CardInstanceId));
-            inputs[actionId] = card.ForgeCardId.ToString(CultureInfo.InvariantCulture);
-        }
-        return synthesized.ToArray();
-    }
-
-    private LegalActionDto[] SynthesizeBlockerAssignments(string decisionId, Dictionary<string, string> inputs)
-    {
-        // For now, auto-assign all blockers to block attacker 0.
-        // This handles single-attacker scenarios. Multi-attacker scenarios would need
-        // additional UI for the player to choose which blocker blocks which attacker.
-        var snapshot = _structuredState.Current;
-        if (snapshot is null) return [];
-        
-        var humanSeat = snapshot.Seats.FirstOrDefault(s => string.Equals(s.SeatId, _options.HumanSeatId, StringComparison.Ordinal));
-        if (humanSeat is null) return [];
-        
-        var battlefield = humanSeat.Zones.FirstOrDefault(z => string.Equals(z.Name, "battlefield", StringComparison.OrdinalIgnoreCase));
-        if (battlefield is null) return [];
-
-        // Find blockers (tapped creatures that were just declared as blockers)
-        var blockers = battlefield.Cards
-            .Where(card => card.Tapped
-                && !card.PhasedOut
-                && !string.Equals(card.BattlefieldKind, "land", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-
-        if (blockers.Length == 0) return [];
-
-        var synthesized = new List<LegalActionDto>();
-        foreach (var (blocker, index) in blockers.Select((b, i) => (b, i)))
-        {
-            var actionId = $"{decisionId}-assign-{blocker.ForgeCardId}";
-            var assignmentInput = $"{blocker.ForgeCardId} blocks 0"; // Assign to attacker 0
-            
-            synthesized.Add(new LegalActionDto(
-                ActionId: actionId,
-                Type: "assign_blocker",
-                DisplayName: $"{blocker.CurrentCardName} blocks attacker",
-                RequiresFollowup: false,
-                CardIdentity: blocker.CardName,
-                ObjectIdentity: null,
-                TargetKind: null,
-                TargetSeatId: null,
-                CardInstanceId: blocker.CardInstanceId));
-            inputs[actionId] = assignmentInput;
-        }
-        return synthesized.ToArray();
     }
 
     private void SetUnsupportedPrompt(ForgeTuiUnsupportedPrompt prompt)

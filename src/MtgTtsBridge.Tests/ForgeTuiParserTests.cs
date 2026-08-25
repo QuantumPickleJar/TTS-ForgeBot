@@ -308,6 +308,35 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void NumericCombatMenus_UseForgePresentedIndicesRatherThanCardIds()
+    {
+        var parser = new ForgeTuiParser();
+        var attackers = parser.Append("Declare attackers:\n  0. No further attackers\n  1. Hired Claw [id=91] (1/2)\nEnter choice (0-1): ");
+        var attackerDecision = Assert.IsType<ForgeTuiDecision>(attackers.ParsedDecision);
+        var attacker = Assert.Single(attackerDecision.Decision.Actions, action => action.Type == "choose_attacker");
+        Assert.Equal("1", attackerDecision.Inputs[attacker.ActionId]);
+        Assert.NotEqual("91", attackerDecision.Inputs[attacker.ActionId]);
+
+        var blockers = parser.Append("Who should block this attacker?\n  0. No further blockers\n  1. Hired Claw [id=91] (1/2)\nEnter choice (0-1): ");
+        var blockerDecision = Assert.IsType<ForgeTuiDecision>(blockers.ParsedDecision);
+        var blocker = Assert.Single(blockerDecision.Decision.Actions, action => action.Type == "choose_blocker");
+        Assert.Equal("1", blockerDecision.Inputs[blocker.ActionId]);
+        Assert.NotEqual("91", blockerDecision.Inputs[blocker.ActionId]);
+    }
+
+    [Fact]
+    public void NumericCombatChoice_DoesNotIncludeItsBridgeActionIdInForgeInput()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("Declare attackers:\n  0. No further attackers\n  1. Hired Claw [id=91] (1/2)\nEnter choice (0-1): ");
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
+        var action = Assert.Single(decision.Decision.Actions, item => item.Type == "choose_attacker");
+
+        Assert.Equal("1", decision.Inputs[action.ActionId]);
+        Assert.DoesNotContain("forge-tui", decision.Inputs[action.ActionId], StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DuplicateMountains_KeepDistinctInstanceIds()
     {
         var parser = new ForgeTuiParser();
