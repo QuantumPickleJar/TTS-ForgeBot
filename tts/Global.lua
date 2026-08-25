@@ -4136,6 +4136,10 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
                 local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
                 if object ~= nil then
                     BridgeSetPhysicalTapped(object, card.tapped == true)
+                    local presentationApplied, presentationError = BridgeApplyCardPresentationSnapshot(object, card)
+                    if not presentationApplied then
+                        BridgeLog("[Bridge] optional card presentation skipped: " .. tostring(presentationError))
+                    end
                     for counterType, counterValue in pairs(card.counters or {}) do
                         local ok, counterError = BridgeSetCardCounterState(object, counterType, counterValue)
                         if not ok then BridgeLog("[Bridge] counter visual unsupported: " .. tostring(counterError)) end
@@ -4628,12 +4632,65 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "stats_changed" then
-        -- Net power/toughness is observed directly from Forge. It is diagnostic
-        -- presentation evidence (including temporary Prowess changes), never a
-        -- locally calculated rules result.
+        local object, resolveError = BridgeResolveMappedInstance(event)
+        if object == nil then
+            BridgeLog("[Bridge] stats update deferred to snapshot reconcile: " .. tostring(resolveError))
+            return true, 0.1
+        end
+        local power = event.currentPower
+        local toughness = event.currentToughness
+        if power == nil then power = event.netPower end
+        if toughness == nil then toughness = event.netToughness end
+        local applied, statsError = BridgeSetDerivedStats(object, power, toughness)
+        if not applied then BridgeLog("[Bridge] optional P/T presentation skipped: " .. tostring(statsError)) end
         BridgeLog(string.format(
             "[Bridge] authoritative stats instance=%s power=%s toughness=%s",
-            tostring(event.cardInstanceId), tostring(event.netPower), tostring(event.netToughness)))
+            tostring(event.cardInstanceId), tostring(power), tostring(toughness)))
+        return true, 0.1, nil
+    end
+
+    if event.kind == "controller_changed" then
+        local object, resolveError = BridgeResolveMappedInstance(event)
+        if object == nil then
+            BridgeLog("[Bridge] ownership update deferred to snapshot reconcile: " .. tostring(resolveError))
+            return true, 0.1
+        end
+        local applied, ownershipError = BridgeSetOwnerController(object, event.ownerSeatId, event.controllerSeatId)
+        if not applied then BridgeLog("[Bridge] optional owner/controller presentation skipped: " .. tostring(ownershipError)) end
+        return true, 0.1, nil
+    end
+
+    if event.kind == "characteristic_changed" then
+        local object, resolveError = BridgeResolveMappedInstance(event)
+        if object == nil then
+            BridgeLog("[Bridge] characteristic update deferred to snapshot reconcile: " .. tostring(resolveError))
+            return true, 0.1
+        end
+        if event.currentPower ~= nil or event.currentToughness ~= nil then
+            local applied, statsError = BridgeSetDerivedStats(object, event.currentPower, event.currentToughness)
+            if not applied then BridgeLog("[Bridge] optional characteristic P/T presentation skipped: " .. tostring(statsError)) end
+        end
+        return true, 0.1, nil
+    end
+
+    if event.kind == "phasing_changed" then
+        local object, resolveError = BridgeResolveMappedInstance(event)
+        if object == nil then
+            BridgeLog("[Bridge] phasing update deferred to snapshot reconcile: " .. tostring(resolveError))
+            return true, 0.1
+        end
+        local applied, phaseError = BridgeSetPhasedState(object, event.phasedOut == true)
+        if not applied then BridgeLog("[Bridge] optional phasing presentation skipped: " .. tostring(phaseError)) end
+        return true, 0.1, nil
+    end
+
+    if event.kind == "face_changed" then
+        local object, resolveError = BridgeResolveMappedInstance(event)
+        if object == nil then
+            BridgeLog("[Bridge] face update deferred to snapshot reconcile: " .. tostring(resolveError))
+            return true, 0.1
+        end
+        BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
         return true, 0.1, nil
     end
 
@@ -5208,6 +5265,130 @@ function BridgeResolveMappedInstance(event)
     return object, nil
 end
 
+-- Table-native presentation adapter.  Forge supplies the resulting state; this
+-- code only drives the already-installed Encoder modules to display it.
+local BRIDGE_UNIFIED_PROPERTY = "_MTG_Simplified_UNIFIED"
+local BRIDGE_KEYWORDS_PROPERTY = "πKeywords"
+local BRIDGE_PHASE_PROPERTY = "MTG_Phase"
+
+function BridgeEnsureTableEncoded(object)
+    if not BridgeObjectIsUsable(object) then return nil, "card object is unavailable" end
+    local encoder = Global.getVar("Encoder")
+    if encoder == nil then return nil, "Easy Modules Encoder is unavailable" end
+
+    local ok, encodedOrError = pcall(function()
+        return encoder.call("APIobjectExists", {obj = object})
+    end)
+    if not ok then return nil, "could not inspect Encoder state: " .. tostring(encodedOrError) end
+    if encodedOrError ~= true then
+        local encoded, encodeError = pcall(function()
+            encoder.call("APIencodeObject", {obj = object})
+        end)
+        if not encoded then return nil, "could not encode card: " .. tostring(encodeError) end
+    end
+    return encoder, nil
+end
+
+function BridgeEnsureEncoderProperty(object, propertyId)
+    local encoder, encoderError = BridgeEnsureTableEncoded(object)
+    if encoder == nil then return nil, encoderError end
+    local ok, enabledOrError = pcall(function()
+        return encoder.call("APIobjIsPropEnabled", {obj = object, propID = propertyId})
+    end)
+    if not ok then return nil, "could not inspect Encoder property " .. tostring(propertyId) .. ": " .. tostring(enabledOrError) end
+    if enabledOrError ~= true then
+        local enabled, enableError = pcall(function()
+            encoder.call("APIobjEnableProp", {obj = object, propID = propertyId})
+        end)
+        if not enabled then return nil, "could not enable Encoder property " .. tostring(propertyId) .. ": " .. tostring(enableError) end
+    end
+    return encoder, nil
+end
+
+function BridgeMutateUnifiedState(object, mutate)
+    local encoder, encoderError = BridgeEnsureEncoderProperty(object, BRIDGE_UNIFIED_PROPERTY)
+    if encoder == nil then return false, encoderError end
+    local ok, applyError = pcall(function()
+        local encoded = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_UNIFIED_PROPERTY})
+        if encoded == nil or encoded.tyrantUnified == nil then error("card lacks Easy Modules Unified metadata") end
+        mutate(encoded.tyrantUnified)
+        encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_UNIFIED_PROPERTY, data = encoded})
+        -- Rebuild through Encoder: direct card buttons do not survive this call.
+        encoder.call("APIrebuildButtons", {obj = object})
+    end)
+    if not ok then return false, tostring(applyError) end
+    return true, nil
+end
+
+function BridgeSetUnifiedState(object, patch)
+    if type(patch) ~= "table" then return false, "Unified patch must be a table" end
+    return BridgeMutateUnifiedState(object, function(unified)
+        for field, value in pairs(patch) do
+            unified[field] = value
+        end
+    end)
+end
+
+local function BridgeApplyDerivedStatsToUnified(unified, power, toughness)
+    if power == nil and toughness == nil then
+        unified.displayPowTou = false
+        return
+    end
+    local activeFace = unified.activeFace
+    local cardFace = unified.cardFaces and unified.cardFaces[activeFace] or nil
+    local basePower = cardFace and tonumber(cardFace.basePower) or nil
+    local baseToughness = cardFace and tonumber(cardFace.baseToughness) or nil
+    if power ~= nil then unified.power = basePower and (tonumber(power) - basePower) or tonumber(power) end
+    if toughness ~= nil then unified.toughness = baseToughness and (tonumber(toughness) - baseToughness) or tonumber(toughness) end
+    unified.displayPowTou = true
+end
+
+function BridgeSetDerivedStats(object, power, toughness)
+    return BridgeMutateUnifiedState(object, function(unified)
+        BridgeApplyDerivedStatsToUnified(unified, power, toughness)
+    end)
+end
+
+local function BridgeApplyOwnerControllerToUnified(unified, ownerSeatId, controllerSeatId)
+    local ownerSeat = BRIDGE_SEATS[ownerSeatId]
+    local controllerSeat = BRIDGE_SEATS[controllerSeatId]
+    if ownerSeat ~= nil then unified.ownerColor = ownerSeat.ttsColor end
+    if controllerSeat ~= nil then unified.controllerColor = controllerSeat.ttsColor end
+    unified.displayOwnership = ownerSeat ~= nil or controllerSeat ~= nil
+end
+
+function BridgeSetOwnerController(object, ownerSeatId, controllerSeatId)
+    return BridgeMutateUnifiedState(object, function(unified)
+        BridgeApplyOwnerControllerToUnified(unified, ownerSeatId, controllerSeatId)
+    end)
+end
+
+function BridgeSetPhasedState(object, phased)
+    local encoder, encoderError = BridgeEnsureEncoderProperty(object, BRIDGE_PHASE_PROPERTY)
+    if encoder == nil then return false, encoderError end
+    local ok, applyError = pcall(function()
+        local data = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
+        if data == nil then error("card lacks Phasing metadata") end
+        data.mtg_phased = phased == true
+        encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY, data = data})
+        encoder.call("APIrebuildButtons", {obj = object})
+    end)
+    if not ok then return false, tostring(applyError) end
+    return true, nil
+end
+
+function BridgeApplyCardPresentationSnapshot(object, cardSnapshot)
+    if object == nil or cardSnapshot == nil then return false, "missing card presentation input" end
+    local applied, applyError = BridgeMutateUnifiedState(object, function(unified)
+        BridgeApplyDerivedStatsToUnified(unified, cardSnapshot.currentPower, cardSnapshot.currentToughness)
+        BridgeApplyOwnerControllerToUnified(unified, cardSnapshot.ownerSeatId, cardSnapshot.controllerSeatId)
+    end)
+    if not applied then return false, applyError end
+    local phased, phaseError = BridgeSetPhasedState(object, cardSnapshot.phasedOut == true)
+    if not phased then BridgeLog("[Bridge] optional phasing presentation skipped: " .. tostring(phaseError)) end
+    return true, nil
+end
+
 -- Existing table integration: Easy Modules Unified is the authoritative visual
 -- sink for +1/+1 and generic named counters. Values are set absolutely so event
 -- replay cannot double the physical display.
@@ -5222,19 +5403,12 @@ function BridgeSetCardCounterState(object, counterType, counterValue)
         return false, "unsupported existing-table counter type " .. tostring(counterType)
     end
 
-    local encoder = Global.getVar("Encoder")
-    if encoder == nil then return false, "Easy Modules Encoder is unavailable" end
-    local ok, applyError = pcall(function()
-        local encoded = encoder.call("APIobjGetPropData", {obj = object, propID = "_MTG_Simplified_UNIFIED"})
-        if encoded == nil or encoded.tyrantUnified == nil then error("card is not encoded with Easy Modules Unified") end
-        encoded.tyrantUnified[field] = counterValue
-        if field == "plusOneCounters" then encoded.tyrantUnified.displayPlusOne = counterValue ~= 0 end
-        if field == "namedCounters" then encoded.tyrantUnified.displayCounters = counterValue ~= 0 end
-        encoder.call("APIobjSetPropData", {obj = object, propID = "_MTG_Simplified_UNIFIED", data = encoded})
-        encoder.call("APIrebuildButtons", {obj = object})
+    local ok, applyError = BridgeMutateUnifiedState(object, function(unified)
+        unified[field] = counterValue
+        if field == "plusOneCounters" then unified.displayPlusOne = counterValue ~= 0 end
+        if field == "namedCounters" then unified.displayCounters = counterValue ~= 0 end
     end)
-    if not ok then return false, tostring(applyError) end
-    return true, nil
+    return ok, applyError
 end
 
 local BRIDGE_KEYWORD_PROPERTIES = {
@@ -5243,7 +5417,6 @@ local BRIDGE_KEYWORD_PROPERTIES = {
     ["double strike"] = "mtg_doublestrikecounter", ["first strike"] = "mtg_firststrikecounter",
     hexproof = "mtg_hexproofcounter", indestructible = "mtg_indestructiblecounter",
     lifelink = "mtg_lifelinkcounter", menace = "mtg_menacecounter",
-    prowess = "mtg_prowesscounter",
     reach = "mtg_reachcounter", trample = "mtg_tramplecounter",
     vigilance = "mtg_vigilancecounter", stun = "mtg_stuncounter"
 }
@@ -5267,10 +5440,10 @@ function BridgeSetCardKeywordState(object, keyword, enabled)
     local property = BRIDGE_KEYWORD_PROPERTIES[normalized]
     if property == nil then return false, "unsupported existing-table keyword " .. tostring(keyword) end
 
-    local encoder = Global.getVar("Encoder")
-    if encoder == nil then return false, "Easy Modules Encoder is unavailable" end
+    local encoder, encoderError = BridgeEnsureEncoderProperty(object, BRIDGE_KEYWORDS_PROPERTY)
+    if encoder == nil then return false, encoderError end
     local ok, applyError = pcall(function()
-        local data = encoder.call("APIobjGetPropData", {obj = object, propID = "πKeywords"})
+        local data = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY})
         if data == nil then error("card is not encoded with πKeywords") end
         data[property] = enabled and 1 or 0
         data.activeIcons = data.activeIcons or {}
@@ -5280,7 +5453,7 @@ function BridgeSetCardKeywordState(object, keyword, enabled)
         end
         if enabled and found == nil then table.insert(data.activeIcons, property) end
         if not enabled and found ~= nil then table.remove(data.activeIcons, found) end
-        encoder.call("APIobjSetPropData", {obj = object, propID = "πKeywords", data = data})
+        encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY, data = data})
         encoder.call("APIrebuildButtons", {obj = object})
     end)
     if not ok then return false, tostring(applyError) end

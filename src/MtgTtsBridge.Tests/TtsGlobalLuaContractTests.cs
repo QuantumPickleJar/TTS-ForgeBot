@@ -342,9 +342,17 @@ public sealed class TtsGlobalLuaContractTests
     public void ExistingCardModules_AreUpdatedByAbsoluteAuthoritativeState()
     {
         Assert.Contains("APIobjGetPropData", Script);
-        Assert.Contains("propID = \"_MTG_Simplified_UNIFIED\"", Script);
-        Assert.Contains("encoded.tyrantUnified[field] = counterValue", Script);
-        Assert.Contains("propID = \"πKeywords\"", Script);
+        Assert.Contains("local BRIDGE_UNIFIED_PROPERTY = \"_MTG_Simplified_UNIFIED\"", Script);
+        Assert.Contains("function BridgeEnsureTableEncoded(object)", Script);
+        Assert.Contains("APIobjectExists", Script);
+        Assert.Contains("APIobjIsPropEnabled", Script);
+        Assert.Contains("function BridgeSetDerivedStats(object, power, toughness)", Script);
+        Assert.Contains("unified.displayPowTou = true", Script);
+        Assert.Contains("function BridgeSetOwnerController(object, ownerSeatId, controllerSeatId)", Script);
+        Assert.Contains("unified.displayOwnership", Script);
+        Assert.Contains("function BridgeSetPhasedState(object, phased)", Script);
+        Assert.Contains("data.mtg_phased = phased == true", Script);
+        Assert.Contains("local BRIDGE_KEYWORDS_PROPERTY = \"πKeywords\"", Script);
         Assert.Contains("data[property] = enabled and 1 or 0", Script);
         Assert.Contains("APIobjSetPropData", Script);
         Assert.Contains("APIrebuildButtons", Script);
@@ -1011,9 +1019,10 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void ProwessKeywordDecoration_IsRecognizedByTableIntegration()
+    public void ProwessUsesForgeCurrentPowerToughness_NotANonexistentTableIcon()
     {
-        Assert.Contains("prowess = \"mtg_prowesscounter\"", Script);
+        Assert.DoesNotContain("mtg_prowesscounter", Script);
+        Assert.Contains("BridgeSetDerivedStats(object, power, toughness)", Script);
         Assert.Contains("function BridgeNormalizeKeywordName", Script);
         Assert.Contains("string.find(normalized, \" (\", 1, true)", Script);
     }
