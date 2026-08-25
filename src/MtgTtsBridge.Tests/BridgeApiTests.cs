@@ -241,7 +241,7 @@ public sealed class BridgeApiTests
         using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
         var sessionId = await StartSessionAsync(client);
-        var json = $$"""{"sessionId":"{{sessionId}}","decisionId":"decision-1-main","actionId":"play_mountain","requestId":"runtime-1-choice-1","clientRuntimeId":"runtime-1","clientRevision":"2026-08-25-forensic-v9","source":"pass_button"}""";
+        var json = $$"""{"sessionId":"{{sessionId}}","decisionId":"decision-1-main","actionId":"play_mountain","requestId":"runtime-1-choice-1","clientRuntimeId":"runtime-1","clientRevision":"2026-08-25-f2b-v1","source":"pass_button"}""";
 
         var response = await client.PostAsync("/api/v1/choice", new StringContent(json, System.Text.Encoding.UTF8, "application/json"));
 
