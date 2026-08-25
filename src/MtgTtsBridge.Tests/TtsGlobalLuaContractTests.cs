@@ -717,7 +717,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-25-f2b-v2\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-25-f2b-v3\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -1115,6 +1115,26 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("mana presentation deferred event=%s instance=%s reason=%s", manaHandler);
         Assert.Contains("mana presentation deferred event=%s instance=%s trackedZone=%s", manaHandler);
         Assert.Contains("BridgeScheduleSnapshotReconcile(\"mana event \" .. tostring(event.sequence))", manaHandler);
+    }
+
+    [Fact]
+    public void LandsNeverUseLegacyZeroNetStatsAndAttackPresentationCanRepairLateMapping()
+    {
+        var statsStart = Script.IndexOf("if event.kind == \"stats_changed\" then", StringComparison.Ordinal);
+        var statsEnd = Script.IndexOf("if event.kind == \"controller_changed\" then", statsStart, StringComparison.Ordinal);
+        var statsHandler = Script[statsStart..statsEnd];
+        Assert.Contains("local power = event.currentPower", statsHandler);
+        Assert.Contains("local toughness = event.currentToughness", statsHandler);
+        Assert.DoesNotContain("event.netPower", statsHandler);
+        Assert.DoesNotContain("event.netToughness", statsHandler);
+
+        var attackStart = Script.IndexOf("if event.kind == \"attack_declared\" then", StringComparison.Ordinal);
+        var attackEnd = Script.IndexOf("if event.kind == \"block_declared\" then", attackStart, StringComparison.Ordinal);
+        var attackHandler = Script[attackStart..attackEnd];
+        Assert.Contains("allowUntrackedByName = true", attackHandler);
+        Assert.Contains("attack presentation deferred", attackHandler);
+        Assert.Contains("BridgeScheduleSnapshotReconcile", attackHandler);
+        Assert.Contains("repaired untracked attack presentation mapping", Script);
     }
 
     [Fact]

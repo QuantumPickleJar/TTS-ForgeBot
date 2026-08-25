@@ -11,7 +11,7 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
-BRIDGE_SCRIPT_REVISION = "2026-08-25-f2b-v2"
+BRIDGE_SCRIPT_REVISION = "2026-08-25-f2b-v3"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -4874,10 +4874,12 @@ function BridgeApplyAuthoritativeEvent(event)
             BridgeLog("[Bridge] stats update deferred to snapshot reconcile: " .. tostring(resolveError))
             return true, 0.1
         end
+        -- NetPower/NetToughness are legacy transport fields.  They are zero
+        -- for noncreatures, so using them here incorrectly displays 0/0 on
+        -- lands.  Only Forge's nullable current characteristics may drive the
+        -- native P/T display; nil/nil explicitly clears a stale display.
         local power = event.currentPower
         local toughness = event.currentToughness
-        if power == nil then power = event.netPower end
-        if toughness == nil then toughness = event.netToughness end
         local applied, statsError = BridgeSetDerivedStats(object, power, toughness)
         if not applied then BridgeLog("[Bridge] optional P/T presentation skipped: " .. tostring(statsError)) end
         BridgeLog(string.format(
@@ -5077,8 +5079,16 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "attack_declared" then
-        local object, resolveError = BridgeResolvePhysicalCard(event, "battlefield")
-        if object == nil then return false, 0, resolveError end
+        local object, resolveError = BridgeResolvePhysicalCard(event, "battlefield", {allowUntrackedByName = true})
+        if object == nil then
+            -- Attack declaration is a presentation event, not a zone
+            -- transition. A just-created/just-reconciled permanent may not yet
+            -- have its reverse GUID ledger entry; let the authoritative
+            -- snapshot repair that mapping instead of halting the match.
+            BridgeLog("[Bridge] attack presentation deferred: " .. tostring(resolveError))
+            BridgeScheduleSnapshotReconcile("attack presentation " .. tostring(event.sequence))
+            return true, 0.1
+        end
         BridgeMoveToAttackLane(event.seatId, object)
         object.highlightOn({1.0, 0.45, 0.0}, 2)
         return true, 1.0
@@ -5969,6 +5979,24 @@ function BridgeResolvePhysicalCard(event, expectedZone, options)
             if event.cardName == nil or event.cardName == "" or BridgeCardNameMatches(sourceObject.getName(), event.cardName) then
                 table.insert(matches, sourceObject)
             end
+        end
+    end
+
+    if #matches == 0 and options.allowUntrackedByName == true then
+        -- A semantic attack/block event can arrive before the normal snapshot
+        -- has recorded the physical reverse mapping. Recover only from a
+        -- unique, same-seat, same-name game card; never guess among duplicates.
+        for _, candidate in ipairs(getAllObjects()) do
+            if candidate.tag == "Card"
+                and IsGameCardCandidate(candidate, event.seatId, nil)
+                and BridgeObjectIsOnSeatSide(candidate, seat)
+                and (event.cardName == nil or event.cardName == "" or BridgeCardNameMatches(candidate.getName(), event.cardName)) then
+                table.insert(matches, candidate)
+            end
+        end
+        if #matches == 1 then
+            BridgeLog("[Bridge] repaired untracked attack presentation mapping instance=" .. tostring(event.cardInstanceId)
+                .. " guid=" .. tostring(matches[1].getGUID()))
         end
     end
 
