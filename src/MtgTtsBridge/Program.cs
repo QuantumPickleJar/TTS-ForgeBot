@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Windows.Forms;
+using MtgTtsBridge;
 using MtgTtsBridge.Contracts.Actions;
 using MtgTtsBridge.Contracts.State;
 using MtgTtsBridge.Forge;
@@ -8,12 +9,20 @@ var trayIcon = new BridgeTrayIcon();
 
 var builder = WebApplication.CreateBuilder(args);
 
+var processIdentity = new BridgeProcessIdentity();
+builder.Services.AddSingleton(processIdentity);
+
 var listenUrl = builder.Configuration["Bridge:ListenUrl"] ?? "http://127.0.0.1:43110";
 builder.WebHost.UseUrls(listenUrl);
 
 var adapterName = builder.Environment.IsEnvironment("Testing")
 	? "Mock"
 	: builder.Configuration["Bridge:Adapter"] ?? "Mock";
+
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+	BridgePortOwnershipGuard.ThrowIfAlreadyListening(listenUrl);
+}
 
 if (string.Equals(adapterName, "ForgeTui", StringComparison.OrdinalIgnoreCase))
 {
@@ -27,7 +36,7 @@ else
 
 var app = builder.Build();
 
-app.MapGet("/health", async (IForgeAdapter adapter, CancellationToken cancellationToken) =>
+app.MapGet("/health", async (IForgeAdapter adapter, BridgeProcessIdentity identity, CancellationToken cancellationToken) =>
 {
 	var state = await adapter.GetStateAsync(cancellationToken);
 	trayIcon.Update(state);
@@ -40,7 +49,11 @@ app.MapGet("/health", async (IForgeAdapter adapter, CancellationToken cancellati
 		HasActiveDecision: state.CurrentDecision is not null,
 		CurrentDecisionId: state.CurrentDecision?.DecisionId,
 		LastCommittedEvent: state.LastCommittedEvent,
-		Diagnostic: state.Diagnostic));
+		Diagnostic: state.Diagnostic,
+		BridgeRevision: BridgeProcessIdentity.Revision,
+		BridgeProcessInstanceId: identity.ProcessInstanceId,
+		ProcessId: identity.ProcessId,
+		ProcessStartUtc: identity.ProcessStartUtc));
 });
 
 app.MapPost("/api/v1/session/start", async (IForgeAdapter adapter, CancellationToken cancellationToken) =>
@@ -110,14 +123,37 @@ app.MapGet("/api/v1/embodiment/snapshot", async (IForgeAdapter adapter, Cancella
 		: Results.Ok(snapshot);
 });
 
-app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter adapter, CancellationToken cancellationToken) =>
+app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter adapter, HttpContext httpContext, ILogger<Program> logger, CancellationToken cancellationToken) =>
 {
 	if (string.IsNullOrWhiteSpace(request.DecisionId) || string.IsNullOrWhiteSpace(request.ActionId))
 	{
 		return Results.BadRequest(new ErrorResponseDto(
 			ErrorCode: "invalid_request",
-			Message: "Both decisionId and actionId are required.",
+			Message: "sessionId, decisionId, actionId, requestId, clientRuntimeId, clientRevision, and source are required.",
 			DecisionId: request.DecisionId));
+	}
+	if (string.IsNullOrWhiteSpace(request.SessionId)
+		|| string.IsNullOrWhiteSpace(request.RequestId)
+		|| string.IsNullOrWhiteSpace(request.ClientRuntimeId)
+		|| string.IsNullOrWhiteSpace(request.ClientRevision)
+		|| string.IsNullOrWhiteSpace(request.Source))
+	{
+		logger.LogWarning(
+			"LEGACY_OR_MALFORMED_CHOICE remote={Remote} decision={Decision} action={Action} requestId={RequestId} clientRuntimeId={ClientRuntimeId} clientRevision={ClientRevision} source={Source} session={Session}",
+			httpContext.Connection.RemoteIpAddress,
+			request.DecisionId,
+			request.ActionId,
+			request.RequestId ?? "(missing)",
+			request.ClientRuntimeId ?? "(missing)",
+			request.ClientRevision ?? "(missing)",
+			request.Source ?? "(missing)",
+			request.SessionId ?? "(missing)");
+		return Results.BadRequest(new ErrorResponseDto(
+			ErrorCode: "invalid_request",
+			Message: "sessionId, requestId, clientRuntimeId, clientRevision, and source are required.",
+			DecisionId: request.DecisionId,
+			ReceivedSessionId: request.SessionId,
+			RequestId: request.RequestId));
 	}
 
 	var outcome = await adapter.SubmitChoiceAsync(request, cancellationToken);
@@ -127,12 +163,16 @@ app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter ada
 		var errorResponse = new ErrorResponseDto(
 			ErrorCode: outcome.ErrorCode ?? "choice_rejected",
 			Message: outcome.ErrorMessage ?? "Choice was rejected by the adapter.",
-			DecisionId: request.DecisionId);
+			DecisionId: request.DecisionId,
+			ExpectedSessionId: outcome.ExpectedSessionId,
+			ReceivedSessionId: outcome.ReceivedSessionId,
+			RequestId: request.RequestId);
 
 		return outcome.ErrorCode switch
 		{
 			"stale_decision_id" => Results.Conflict(errorResponse),
 			"decision_already_resolved" => Results.Conflict(errorResponse),
+			"stale_session" => Results.Conflict(errorResponse),
 			"unknown_decision_id" => Results.NotFound(errorResponse),
 			"unknown_action_id" => Results.BadRequest(errorResponse),
 			"no_pending_decision" => Results.Conflict(errorResponse),
@@ -148,8 +188,8 @@ app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter ada
 		CommittedEvent: outcome.State.LastCommittedEvent));
 });
 
-app.Logger.LogInformation("MtgTtsBridge listening on {ListenUrl}", listenUrl);
-Console.WriteLine($"MtgTtsBridge listening on {listenUrl}");
+app.Logger.LogInformation("BRIDGE_PROCESS_STARTED revision={Revision} instance={Instance} pid={Pid} startUtc={StartUtc} listenUrl={ListenUrl}", BridgeProcessIdentity.Revision, processIdentity.ProcessInstanceId, processIdentity.ProcessId, processIdentity.ProcessStartUtc, listenUrl);
+Console.WriteLine($"MtgTtsBridge listening on {listenUrl} revision={BridgeProcessIdentity.Revision} instance={processIdentity.ProcessInstanceId} pid={processIdentity.ProcessId} startUtc={processIdentity.ProcessStartUtc:O}");
 trayIcon.Show();
 
 try

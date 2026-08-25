@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
+using MtgTtsBridge;
 using MtgTtsBridge.Contracts.Actions;
 using MtgTtsBridge.Contracts.Events;
 using MtgTtsBridge.Contracts.State;
@@ -23,6 +24,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     // it is consumed so duplicate HTTP delivery can be acknowledged without a
     // second stdin write, while a conflicting action remains a hard reject.
     private readonly Dictionary<string, ResolvedChoice> _resolvedChoices = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, SeenDecision> _seenDecisions = new(StringComparer.Ordinal);
+    private readonly Queue<string> _seenDecisionOrder = new();
     private Process? _process;
     private CancellationTokenSource? _processCancellation;
     private TaskCompletionSource<ForgeTuiDecision>? _nextDecision;
@@ -47,6 +50,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private long? _latestObservedForgeSequence;
 
     private const int EventHistoryLimit = 512;
+    private const int DecisionHistoryLimit = 128;
 
     public ForgeTuiAdapter(IOptions<ForgeTuiOptions> options, ILogger<ForgeTuiAdapter> logger)
     {
@@ -191,6 +195,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _latestObservedActiveSeatId = null;
             _latestObservedForgeSequence = null;
             _resolvedChoices.Clear();
+            _seenDecisions.Clear();
+            _seenDecisionOrder.Clear();
             _sessionId = Guid.NewGuid().ToString("N");
             _state = "starting";
             _currentDecision = null;
@@ -242,7 +248,12 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             var currentDecisionId = _currentDecision?.DecisionId;
             var resolvedAlready = _resolvedChoices.TryGetValue(request.DecisionId, out var resolvedChoice);
             _logger.LogInformation(
-                "Forge choice request session={SessionId} decision={DecisionId} action={ActionId} currentDecision={CurrentDecisionId} state={State} resolvedAlready={ResolvedAlready} previouslyAcceptedAction={PreviouslyAcceptedAction}",
+                "CHOICE_REQUEST requestId={RequestId} clientRuntimeId={ClientRuntimeId} clientRevision={ClientRevision} source={Source} requestSessionId={RequestSessionId} serverSessionId={ServerSessionId} decision={DecisionId} action={ActionId} currentDecision={CurrentDecisionId} state={State} resolvedAlready={ResolvedAlready} previouslyAcceptedAction={PreviouslyAcceptedAction}",
+                request.RequestId ?? "(missing)",
+                request.ClientRuntimeId ?? "(missing)",
+                request.ClientRevision ?? "(missing)",
+                request.Source ?? "(missing)",
+                request.SessionId ?? "(missing)",
                 _sessionId ?? "(none)",
                 request.DecisionId,
                 request.ActionId,
@@ -250,6 +261,16 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 _state,
                 resolvedAlready,
                 resolvedChoice?.ActionId ?? "(none)");
+
+            if (!string.Equals(request.SessionId, _sessionId, StringComparison.Ordinal))
+            {
+                LogChoiceRejection(request, "WRONG_SESSION", currentDecisionId);
+                return Reject(
+                    "stale_session",
+                    "The provided choice belongs to a different Forge session.",
+                    expectedSessionId: _sessionId,
+                    receivedSessionId: request.SessionId);
+            }
 
             // This check deliberately precedes the no-pending-decision check.
             // The first request clears _currentDecision before waiting for
@@ -266,6 +287,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     return new ForgeChoiceResult(true, CreateState(), null, null);
                 }
 
+                LogChoiceRejection(request, "RESOLVED_THIS_SESSION", currentDecisionId);
                 return Reject(
                     "decision_already_resolved",
                     "The provided decisionId was already resolved with a different action.");
@@ -273,14 +295,17 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
             if (_currentDecision is null || _currentInputs is null)
             {
+                LogChoiceRejection(request, ClassifyDecision(request.DecisionId), currentDecisionId);
                 return Reject("no_pending_decision", "No Forge TUI decision is currently active.");
             }
             if (!string.Equals(request.DecisionId, _currentDecision.DecisionId, StringComparison.Ordinal))
             {
+                LogChoiceRejection(request, ClassifyDecision(request.DecisionId), currentDecisionId);
                 return Reject("unknown_decision_id", "The provided decisionId is unknown for the current session state.");
             }
             if (!_currentInputs.TryGetValue(request.ActionId, out var mappedInput) || mappedInput is null)
             {
+                LogChoiceRejection(request, "CURRENT", currentDecisionId);
                 return Reject("unknown_action_id", "The provided actionId is not legal for this Forge TUI decision.");
             }
             forgeInput = mappedInput;
@@ -290,6 +315,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 return Reject("forge_process_exited", "The Forge TUI process exited before the choice could be submitted.");
             }
             _resolvedChoices.Add(_currentDecision.DecisionId, new ResolvedChoice(request.ActionId, "awaiting_forge"));
+            MarkDecisionResolved(_currentDecision.DecisionId, request.ActionId);
             _currentDecision = null;
             _currentInputs = null;
             _state = "awaiting_forge";
@@ -344,6 +370,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     }
 
     private sealed record ResolvedChoice(string ActionId, string State);
+    private sealed record SeenDecision(DateTimeOffset FirstPresentedAtUtc, string? ResolvedActionId, DateTimeOffset? ResolvedAtUtc);
 
     private async Task ReadOutputAsync(StreamReader reader, bool isError, CancellationToken cancellationToken)
     {
@@ -456,6 +483,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _currentDecision = decision.Decision with { SeatId = _options.HumanSeatId, Actions = actions };
             _currentDecision = _currentDecision with
             {
+                SessionId = _sessionId,
                 EventCursor = _latestEventSequence,
                 ForgeSequence = _latestObservedForgeSequence ?? _structuredState.Current?.ForgeSequence,
                 TurnNumber = _latestObservedTurnNumber,
@@ -465,7 +493,59 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             };
             _currentInputs = inputs;
             _state = "awaiting_human_decision";
+            RecordDecisionPresented(_currentDecision.DecisionId);
+            _logger.LogInformation(
+                "DECISION_PRESENTED session={SessionId} decision={DecisionId} state={State}",
+                _sessionId,
+                _currentDecision.DecisionId,
+                _state);
         }
+    }
+
+    private void RecordDecisionPresented(string decisionId)
+    {
+        if (_seenDecisions.ContainsKey(decisionId)) return;
+
+        _seenDecisions.Add(decisionId, new SeenDecision(DateTimeOffset.UtcNow, null, null));
+        _seenDecisionOrder.Enqueue(decisionId);
+        while (_seenDecisionOrder.Count > DecisionHistoryLimit)
+        {
+            _seenDecisions.Remove(_seenDecisionOrder.Dequeue());
+        }
+    }
+
+    private void MarkDecisionResolved(string decisionId, string actionId)
+    {
+        if (_seenDecisions.TryGetValue(decisionId, out var seen))
+        {
+            _seenDecisions[decisionId] = seen with
+            {
+                ResolvedActionId = actionId,
+                ResolvedAtUtc = DateTimeOffset.UtcNow
+            };
+        }
+    }
+
+    private string ClassifyDecision(string decisionId)
+    {
+        if (string.Equals(_currentDecision?.DecisionId, decisionId, StringComparison.Ordinal)) return "CURRENT";
+        if (_resolvedChoices.ContainsKey(decisionId)) return "RESOLVED_THIS_SESSION";
+        return _seenDecisions.ContainsKey(decisionId) ? "SEEN_BUT_NOT_CURRENT" : "NEVER_SEEN_THIS_SESSION";
+    }
+
+    private void LogChoiceRejection(ChoiceRequestDto request, string classification, string? currentDecisionId)
+    {
+        _logger.LogWarning(
+            "CHOICE_REJECTED requestId={RequestId} clientRuntimeId={ClientRuntimeId} requestSessionId={RequestSessionId} serverSessionId={ServerSessionId} decision={DecisionId} classification={Classification} currentDecision={CurrentDecisionId} adapterState={AdapterState} processInstance={ProcessInstance}",
+            request.RequestId ?? "(missing)",
+            request.ClientRuntimeId ?? "(missing)",
+            request.SessionId ?? "(missing)",
+            _sessionId,
+            request.DecisionId,
+            classification,
+            currentDecisionId ?? "(none)",
+            _state,
+            BridgeProcessIdentity.InstanceId);
     }
 
     private void SetUnsupportedPrompt(ForgeTuiUnsupportedPrompt prompt)
@@ -661,7 +741,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
     }
 
-    private ForgeChoiceResult Reject(string code, string message) => new(false, CreateState(), code, message);
+    private ForgeChoiceResult Reject(string code, string message, string? expectedSessionId = null, string? receivedSessionId = null) =>
+        new(false, CreateState(), code, message, expectedSessionId, receivedSessionId);
 
     private AdapterStateDto CreateState()
     {

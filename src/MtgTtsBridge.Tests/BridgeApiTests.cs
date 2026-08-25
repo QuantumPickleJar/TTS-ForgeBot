@@ -22,6 +22,10 @@ public sealed class BridgeApiTests
         Assert.NotNull(health);
         Assert.Equal("ok", health.Status);
         Assert.Equal("MockForgeAdapter", health.Adapter);
+        Assert.Equal(BridgeProcessIdentity.Revision, health.BridgeRevision);
+        Assert.False(string.IsNullOrWhiteSpace(health.BridgeProcessInstanceId));
+        Assert.True(health.ProcessId > 0);
+        Assert.NotNull(health.ProcessStartUtc);
     }
 
     [Fact]
@@ -47,11 +51,11 @@ public sealed class BridgeApiTests
         using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        await StartSessionAsync(client);
+        var sessionId = await StartSessionAsync(client);
 
         var response = await client.PostAsJsonAsync(
             "/api/v1/choice",
-            new ChoiceRequestDto("decision-1-main", "cast_lightning_strike"));
+            Choice(sessionId, "decision-1-main", "cast_lightning_strike"));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -70,17 +74,17 @@ public sealed class BridgeApiTests
         using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        await StartSessionAsync(client);
+        var sessionId = await StartSessionAsync(client);
 
         var initialChoice = await client.PostAsJsonAsync(
             "/api/v1/choice",
-            new ChoiceRequestDto("decision-1-main", "cast_lightning_strike"));
+            Choice(sessionId, "decision-1-main", "cast_lightning_strike"));
 
         Assert.Equal(HttpStatusCode.OK, initialChoice.StatusCode);
 
         var staleChoice = await client.PostAsJsonAsync(
             "/api/v1/choice",
-            new ChoiceRequestDto("decision-1-main", "play_mountain"));
+            Choice(sessionId, "decision-1-main", "play_mountain"));
 
         Assert.Equal(HttpStatusCode.Conflict, staleChoice.StatusCode);
 
@@ -95,11 +99,11 @@ public sealed class BridgeApiTests
         using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        await StartSessionAsync(client);
+        var sessionId = await StartSessionAsync(client);
 
         var response = await client.PostAsJsonAsync(
             "/api/v1/choice",
-            new ChoiceRequestDto("decision-1-main", "not_a_real_action"));
+            Choice(sessionId, "decision-1-main", "not_a_real_action"));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
@@ -114,17 +118,17 @@ public sealed class BridgeApiTests
         using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        await StartSessionAsync(client);
+        var sessionId = await StartSessionAsync(client);
 
         var toTargetDecision = await client.PostAsJsonAsync(
             "/api/v1/choice",
-            new ChoiceRequestDto("decision-1-main", "cast_lightning_strike"));
+            Choice(sessionId, "decision-1-main", "cast_lightning_strike"));
 
         Assert.Equal(HttpStatusCode.OK, toTargetDecision.StatusCode);
 
         var targetResponse = await client.PostAsJsonAsync(
             "/api/v1/choice",
-            new ChoiceRequestDto("decision-2-target", "target_opponent"));
+            Choice(sessionId, "decision-2-target", "target_opponent"));
 
         Assert.Equal(HttpStatusCode.OK, targetResponse.StatusCode);
 
@@ -146,11 +150,11 @@ public sealed class BridgeApiTests
         using var factory = new TestWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        await StartSessionAsync(client);
+        var sessionId = await StartSessionAsync(client);
 
         var playMountain = await client.PostAsJsonAsync(
             "/api/v1/choice",
-            new ChoiceRequestDto("decision-1-main", "play_mountain"));
+            Choice(sessionId, "decision-1-main", "play_mountain"));
 
         Assert.Equal(HttpStatusCode.OK, playMountain.StatusCode);
 
@@ -223,11 +227,48 @@ public sealed class BridgeApiTests
         Assert.Equal("snapshot_unavailable", error?.ErrorCode);
     }
 
-    private static async Task StartSessionAsync(HttpClient client)
+    private static async Task<string> StartSessionAsync(HttpClient client)
     {
         var response = await client.PostAsync("/api/v1/session/start", content: null);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<SessionStartResponseDto>();
+        return Assert.IsType<string>(body?.SessionId);
     }
+
+    [Fact]
+    public async Task PreviousSessionChoice_IsRejectedAsStaleSessionWithoutAdvancingTheNewSession()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var oldSessionId = await StartSessionAsync(client);
+        var reset = await client.PostAsync("/api/v1/session/reset", content: null);
+        var replacement = await reset.Content.ReadFromJsonAsync<SessionStartResponseDto>();
+        Assert.NotNull(replacement);
+        Assert.NotEqual(oldSessionId, replacement.SessionId);
+
+        var stale = await client.PostAsJsonAsync("/api/v1/choice", Choice(oldSessionId, "decision-1-main", "pass_priority"));
+
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        var error = await stale.Content.ReadFromJsonAsync<ErrorResponseDto>();
+        Assert.Equal("stale_session", error?.ErrorCode);
+        Assert.Equal(replacement.SessionId, error?.ExpectedSessionId);
+        Assert.Equal(oldSessionId, error?.ReceivedSessionId);
+
+        var decision = await GetDecisionAsync(client);
+        Assert.Equal("decision-1-main", decision.DecisionId);
+        Assert.Equal(replacement.SessionId, decision.SessionId);
+    }
+
+    private static ChoiceRequestDto Choice(string sessionId, string decisionId, string actionId) =>
+        new(decisionId, actionId)
+        {
+            SessionId = sessionId,
+            RequestId = $"test-{Guid.NewGuid():N}",
+            ClientRuntimeId = "test-runtime",
+            ClientRevision = "test-revision",
+            Source = "test"
+        };
 
     private static async Task<DecisionDto> GetDecisionAsync(HttpClient client)
     {

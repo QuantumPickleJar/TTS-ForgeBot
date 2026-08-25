@@ -8,7 +8,7 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
-BRIDGE_SCRIPT_REVISION = "2026-08-25-console-logging-v8"
+BRIDGE_SCRIPT_REVISION = "2026-08-25-forensic-v9"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -17,6 +17,11 @@ BRIDGE_SCRIPT_REVISION = "2026-08-25-console-logging-v8"
 -- every bridge timer/request; a callback from an older script is then inert.
 BRIDGE_RUNTIME_EPOCH = (tonumber(BRIDGE_RUNTIME_EPOCH) or 0) + 1
 local BRIDGE_RUNTIME_EPOCH_LOCAL = BRIDGE_RUNTIME_EPOCH
+local BRIDGE_CLIENT_RUNTIME_ID = table.concat({
+    tostring(os.time()),
+    tostring(math.floor(os.clock() * 1000000)),
+    tostring(math.random(100000, 999999))
+}, "-")
 
 function BridgeRuntimeIsCurrent(epoch)
     return epoch == BRIDGE_RUNTIME_EPOCH
@@ -134,6 +139,7 @@ BridgeState = {
     manaCounterGuidBySeatId = {},
     submitting = false,
     choiceAttemptSequence = 0,
+    choiceRequestSequence = 0,
     choiceTransactions = {},
     retiredChoiceDecisionIds = {},
     retiredChoiceDecisionOrder = {},
@@ -187,6 +193,9 @@ BridgeState = {
     doctorRetryAttempt = 0,
     transitionExpectedUntil = 0,
     latencyProbe = nil,
+    sessionRecoveryInFlight = false,
+    choiceProtocolPaused = false,
+    choiceProtocolFailureTimes = {},
 }
 
 BridgeHttp = {}
@@ -973,10 +982,9 @@ function BridgePollForNextDecision(generation, attempt)
 
         BridgeState.decisionPollInFlight = false
         if ok and body ~= nil then
-            BridgeState.lastDecision = body
             BridgeMarkTransitionExpected(0)
             BridgeRecordLatencyProbeDecisionReady(body)
-            printDecision(body, expectedSessionId, presentationGeneration)
+            BridgeAcceptDecision(body, "decision_poll", expectedSessionId, presentationGeneration)
             return
         end
 
@@ -1057,6 +1065,23 @@ function BridgeRetireChoiceTransactionsForDecision(decisionId)
 end
 
 function BridgeSubmitChoice(decisionId, actionId, source)
+    -- This guard sits at the actual choice producer, not just around timer and
+    -- HTTP callbacks. A callback closure from a previous v9-or-newer runtime
+    -- can retain this function and attempt to submit after Save & Play; it must
+    -- become inert before it can construct an outbound request.
+    if not BridgeRuntimeIsCurrent(BRIDGE_RUNTIME_EPOCH_LOCAL) then
+        BridgeLog("[Bridge] CHOICE_POST_BLOCKED reason=retired_runtime runtime="
+            .. tostring(BRIDGE_CLIENT_RUNTIME_ID) .. " epoch=" .. tostring(BRIDGE_RUNTIME_EPOCH_LOCAL))
+        return
+    end
+    if BridgeState.choiceProtocolPaused then
+        BridgeLog("[Bridge] choice submission blocked: protocol is paused; source=" .. tostring(source))
+        return
+    end
+    if source == nil or source == "" then
+        BridgeLog("[Bridge] CHOICE_POST_BLOCKED reason=missing_source")
+        return
+    end
     if decisionId == nil or decisionId == "" then
         decisionId = BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil
     end
@@ -1112,7 +1137,27 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         nextDecisionAt = nil
     }
 
-    BridgeHttp.requestJson("POST", "/api/v1/choice", { decisionId = decisionId, actionId = actionId }, function(ok, body, err, request)
+    BridgeState.choiceRequestSequence = (BridgeState.choiceRequestSequence or 0) + 1
+    local requestId = tostring(BRIDGE_CLIENT_RUNTIME_ID) .. "-choice-" .. tostring(BridgeState.choiceRequestSequence)
+    local requestSessionId = BridgeState.eventSessionId
+    BridgeLog(string.format(
+        "[Bridge] CHOICE_POST requestId=%s runtime=%s revision=%s epoch=%s session=%s decision=%s action=%s source=%s transactionState=%s lastDecision=%s eventCursor=%s appliedCursor=%s",
+        tostring(requestId), tostring(BRIDGE_CLIENT_RUNTIME_ID), tostring(BRIDGE_SCRIPT_REVISION),
+        tostring(BRIDGE_RUNTIME_EPOCH_LOCAL), tostring(requestSessionId), tostring(decisionId),
+        tostring(actionId), tostring(source), tostring(transaction.state),
+        tostring(BridgeState.lastDecision and BridgeState.lastDecision.decisionId or "nil"),
+        tostring(BridgeState.lastDecision and BridgeState.lastDecision.eventCursor or "nil"),
+        tostring(BridgeState.lastAppliedEventSequence or 0)))
+
+    BridgeHttp.requestJson("POST", "/api/v1/choice", {
+        sessionId = requestSessionId,
+        decisionId = decisionId,
+        actionId = actionId,
+        requestId = requestId,
+        clientRuntimeId = BRIDGE_CLIENT_RUNTIME_ID,
+        clientRevision = BRIDGE_SCRIPT_REVISION,
+        source = source
+    }, function(ok, body, err, request)
         BridgeState.submitting = false
         local activeTransaction = BridgeState.choiceTransactions[decisionId]
         if activeTransaction == nil or activeTransaction.actionId ~= actionId then return end
@@ -1127,6 +1172,11 @@ function BridgeSubmitChoice(decisionId, actionId, source)
             BridgeClearHighlights()
             BridgeRollbackPendingIntent()
             BridgeResetSelectionState()
+            BridgeRecordChoiceProtocolFailure(body, err, requestId)
+            if body ~= nil and body.errorCode == "stale_session" then
+                BridgeRecoverFromStaleSession(body, requestId)
+                return
+            end
             if BridgeIsStaleChoiceRejection(body) then
                 BridgeState.yieldSeatId = nil
                 BridgeState.lastDecision = nil
@@ -1135,9 +1185,13 @@ function BridgeSubmitChoice(decisionId, actionId, source)
                 BridgeStartDecisionPolling()
                 return
             end
-            BridgeShowError("choice rejected: " .. tostring(err))
+            -- Choice protocol failures are forensic data. Keep the first and
+            -- subsequent details in the scripting/Bridge logs; the circuit
+            -- breaker provides the single player-facing notification if the
+            -- failures become a burst.
+            BridgeLog("[Bridge] choice rejected: " .. tostring(err))
             if body ~= nil and body.errorCode ~= nil then
-                BridgeShowError("errorCode=" .. tostring(body.errorCode) .. " message=" .. tostring(body.message))
+                BridgeLog("[Bridge] errorCode=" .. tostring(body.errorCode) .. " message=" .. tostring(body.message))
             end
             return
         end
@@ -1158,10 +1212,9 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         BridgeCommitPendingIntent()
         if body ~= nil and body.currentDecision ~= nil then
             BridgeStopDecisionPolling()
-            BridgeState.lastDecision = body.currentDecision
             BridgeMarkTransitionExpected(0)
             BridgeRecordLatencyProbeDecisionReady(body.currentDecision)
-            printDecision(body.currentDecision, activeTransaction.sessionId, activeTransaction.presentationGeneration)
+            BridgeAcceptDecision(body.currentDecision, "choice_response", activeTransaction.sessionId, activeTransaction.presentationGeneration)
         else
             BridgeState.lastDecision = nil
             BridgeClearHighlights()
@@ -1169,6 +1222,59 @@ function BridgeSubmitChoice(decisionId, actionId, source)
             BridgeLog("[Bridge] no pending decision.")
             BridgeStartDecisionPolling()
         end
+    end)
+end
+
+function BridgeRecordChoiceProtocolFailure(body, err, requestId)
+    local now = os.clock()
+    local failures = BridgeState.choiceProtocolFailureTimes or {}
+    table.insert(failures, now)
+    while #failures > 0 and now - failures[1] > 2 do
+        table.remove(failures, 1)
+    end
+    BridgeState.choiceProtocolFailureTimes = failures
+    if #failures < 3 or BridgeState.choiceProtocolPaused then return end
+
+    BridgeState.choiceProtocolPaused = true
+    BridgeState.yieldSeatId = nil
+    BridgeClearHighlights()
+    BridgeRollbackPendingIntent()
+    BridgeResetSelectionState()
+    BridgeHideMainPriorityControls()
+    BridgeLog("[Bridge] CHOICE_PROTOCOL_PAUSED runtime=" .. tostring(BRIDGE_CLIENT_RUNTIME_ID)
+        .. " session=" .. tostring(BridgeState.eventSessionId)
+        .. " failures=" .. tostring(#failures)
+        .. " requestId=" .. tostring(requestId)
+        .. " lastCode=" .. tostring(body and body.errorCode)
+        .. " lastError=" .. tostring(err))
+    BridgeSetStatus("CHOICE PROTOCOL PAUSED", "Inspect bridge/TTS diagnostics, then use BridgeRefreshDecision or reconnect.")
+    broadcastToAll("[Bridge] CHOICE PROTOCOL PAUSED — inspect diagnostics", {1.0, 0.2, 0.2})
+end
+
+function BridgeRecoverFromStaleSession(body, requestId)
+    if BridgeState.sessionRecoveryInFlight then
+        BridgeLog("[Bridge] stale_session recovery already in progress; requestId=" .. tostring(requestId))
+        return
+    end
+
+    BridgeState.sessionRecoveryInFlight = true
+    BridgeState.choiceProtocolPaused = false
+    BridgeState.choiceProtocolFailureTimes = {}
+    BridgeState.yieldSeatId = nil
+    BridgeState.lastDecision = nil
+    BridgeState.pendingDecision = nil
+    BridgeClearHighlights()
+    BridgeRollbackPendingIntent()
+    BridgeResetSelectionState()
+    BridgeHideMainPriorityControls()
+    BridgeStopDecisionPolling()
+    BridgeStopEventPolling()
+    BridgeLog("[Bridge] STALE_SESSION requestId=" .. tostring(requestId)
+        .. " expectedSession=" .. tostring(body.expectedSessionId)
+        .. " receivedSession=" .. tostring(body.receivedSessionId)
+        .. " — reattaching without replaying the rejected choice")
+    BridgeStartSessionIfNone(function()
+        BridgeState.sessionRecoveryInFlight = false
     end)
 end
 
@@ -1277,7 +1383,7 @@ function BridgeTryPresentPendingDecision(reason)
         "[Bridge] releasing gated decision %s (%s) cursor=%s applied=%s",
         tostring(decision.decisionId), tostring(reason or "event"),
         tostring(eventCursor), tostring(applied)))
-    printDecision(decision)
+    BridgeAcceptDecision(decision, "pending_decision_release", BridgeState.eventSessionId, BridgeState.decisionPresentationGeneration)
 end
 
 function BridgeZoneIsPublicForReconcile(zoneName)
@@ -1291,6 +1397,13 @@ function BridgeShouldReconcileAfterEvent(event)
     return event.kind == "spell_resolved"
         or event.kind == "land_played"
         or event.kind == "card_moved"
+end
+
+function BridgeResumeChoiceProtocol(reason)
+    if not BridgeState.choiceProtocolPaused then return end
+    BridgeState.choiceProtocolPaused = false
+    BridgeState.choiceProtocolFailureTimes = {}
+    BridgeLog("[Bridge] CHOICE_PROTOCOL_RESUMED reason=" .. tostring(reason))
 end
 
 function BridgeCanDeferStructuredMoveToSnapshot(event)
@@ -1612,6 +1725,7 @@ function BridgeOnLoad()
     -- This integration does not use Global XML UI; clear stale/broken XML left in saves.
     pcall(function() UI.setXml("") end)
     BridgeLog("[Bridge] ForgeBot integration loaded. revision=" .. tostring(BRIDGE_SCRIPT_REVISION)
+        .. " runtimeId=" .. tostring(BRIDGE_CLIENT_RUNTIME_ID)
         .. " runtimeEpoch=" .. tostring(BRIDGE_RUNTIME_EPOCH_LOCAL))
     BridgeSetStatus("CLIENT LOADED", "Running ForgeBot preflight...")
     BridgeDoctor(function(report)
@@ -2228,7 +2342,7 @@ function BridgeFetchDecisionAfterAttach()
             return
         end
         if decisionOk and decisionBody ~= nil then
-            printDecision(decisionBody, expectedSessionId, presentationGeneration)
+            BridgeAcceptDecision(decisionBody, "attach_response", expectedSessionId, presentationGeneration)
             return
         end
 
@@ -2239,6 +2353,7 @@ function BridgeFetchDecisionAfterAttach()
 end
 
 function BridgeRefreshDecision()
+    BridgeResumeChoiceProtocol("manual_refresh")
     local expectedSessionId = BridgeState.eventSessionId
     local presentationGeneration = BridgeState.decisionPresentationGeneration
     BridgeGetDecision(function(ok, body, err)
@@ -2248,7 +2363,7 @@ function BridgeRefreshDecision()
             return
         end
         if ok and body ~= nil then
-            printDecision(body, expectedSessionId, presentationGeneration)
+            BridgeAcceptDecision(body, "decision_refresh", expectedSessionId, presentationGeneration)
         else
             BridgeShowError("decision fetch failed: " .. tostring(err))
         end
@@ -2279,7 +2394,7 @@ function BridgeStartSessionIfNone(done)
                     BridgeStartEventPolling(body.sessionId, true)
                     BridgeTraceStart("START-19 decision-poll-start")
                     if body ~= nil and body.currentDecision ~= nil then
-                        printDecision(body.currentDecision, body.sessionId, BridgeState.decisionPresentationGeneration)
+                        BridgeAcceptDecision(body.currentDecision, "session_start_response", body.sessionId, BridgeState.decisionPresentationGeneration)
                     else
                         BridgeRefreshDecision()
                     end
@@ -2310,7 +2425,7 @@ function BridgeResetSession()
             -- mutation records are acknowledged instead of replayed.
             BridgeStartEventPolling(body.sessionId, true)
             if body ~= nil and body.currentDecision ~= nil then
-                printDecision(body.currentDecision, body.sessionId, BridgeState.decisionPresentationGeneration)
+                BridgeAcceptDecision(body.currentDecision, "session_reset_response", body.sessionId, BridgeState.decisionPresentationGeneration)
             else
                 BridgeRefreshDecision()
             end
@@ -2323,15 +2438,22 @@ function BridgeSmokeTest()
     BridgeAttachToActiveSession()
 end
 
-function printDecision(decision, expectedSessionId, presentationGeneration)
+function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationGeneration)
     if decision == nil then
-        BridgeLog("[Bridge] decision payload missing.")
+        BridgeLog("[Bridge] DECISION_REJECT origin=" .. tostring(origin) .. " reason=missing_payload")
         return
     end
 
     if expectedSessionId ~= nil and (expectedSessionId ~= BridgeState.eventSessionId
         or presentationGeneration ~= BridgeState.decisionPresentationGeneration) then
-        BridgeLog("[Bridge] ignored delayed decision render from a replaced Forge session")
+        BridgeLog("[Bridge] DECISION_REJECT origin=" .. tostring(origin) .. " reason=replaced_generation decision=" .. tostring(decision.decisionId))
+        return
+    end
+
+    if decision.sessionId == nil or decision.sessionId ~= BridgeState.eventSessionId then
+        BridgeLog("[Bridge] DECISION_REJECT origin=" .. tostring(origin) .. " reason=wrong_session decision="
+            .. tostring(decision.decisionId) .. " decisionSession=" .. tostring(decision.sessionId)
+            .. " activeSession=" .. tostring(BridgeState.eventSessionId))
         return
     end
 
@@ -2391,6 +2513,11 @@ function printDecision(decision, expectedSessionId, presentationGeneration)
     end
 
     BridgeState.lastDecision = decision
+    BridgeLog(string.format(
+        "[Bridge] DECISION_ACCEPT origin=%s runtime=%s revision=%s epoch=%s session=%s decision=%s eventCursor=%s forgeSequence=%s presentationGeneration=%s",
+        tostring(origin), tostring(BRIDGE_CLIENT_RUNTIME_ID), tostring(BRIDGE_SCRIPT_REVISION),
+        tostring(BRIDGE_RUNTIME_EPOCH_LOCAL), tostring(BridgeState.eventSessionId), tostring(decision.decisionId),
+        tostring(decision.eventCursor), tostring(decision.forgeSequence), tostring(BridgeState.decisionPresentationGeneration)))
     local seat = BRIDGE_SEATS[decision.seatId]
     local actor = seat and seat.ttsColor or decision.seatId
     if decision.kind == "attacker_selection" then

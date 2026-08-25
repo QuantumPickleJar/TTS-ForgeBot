@@ -698,7 +698,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-25-console-logging-v8\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-25-forensic-v9\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -751,6 +751,8 @@ public sealed class TtsGlobalLuaContractTests
     public void ChoiceSubmission_PostsAtTheIdempotentServerBoundaryWithoutGetPreflight()
     {
         Assert.Contains("BridgeHttp.requestJson(\"POST\", \"/api/v1/choice\"", Script);
+        Assert.Contains("CHOICE_POST_BLOCKED reason=retired_runtime", Script);
+        Assert.Contains("CHOICE_POST_BLOCKED reason=missing_source", Script);
         Assert.Contains("if transaction.actionId == actionId then", Script);
         Assert.Contains("conflicting action ignored for an already-submitting Forge decision", Script);
         Assert.DoesNotContain("function BridgePostValidatedChoice", Script);
@@ -758,6 +760,28 @@ public sealed class TtsGlobalLuaContractTests
         var submitEnd = Script.IndexOf("function BridgeChoose", submitStart, StringComparison.Ordinal);
         Assert.True(submitStart >= 0 && submitEnd > submitStart);
         Assert.DoesNotContain("BridgeHttp.requestJson(\"GET\", \"/api/v1/decision\"", Script[submitStart..submitEnd]);
+        Assert.Contains("sessionId = requestSessionId", Script[submitStart..submitEnd]);
+        Assert.Contains("clientRuntimeId = BRIDGE_CLIENT_RUNTIME_ID", Script[submitStart..submitEnd]);
+        Assert.Contains("[Bridge] CHOICE_POST requestId=", Script);
+    }
+
+    [Fact]
+    public void DecisionAcceptance_IsCentralizedAndSessionProvenanced()
+    {
+        Assert.Contains("function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationGeneration)", Script);
+        Assert.Contains("[Bridge] DECISION_ACCEPT origin=", Script);
+        Assert.Contains("reason=wrong_session", Script);
+        Assert.DoesNotContain("function printDecision", Script);
+    }
+
+    [Fact]
+    public void ChoiceProtocolFailures_PauseAutomationOnceForForensics()
+    {
+        Assert.Contains("function BridgeRecordChoiceProtocolFailure", Script);
+        Assert.Contains("now - failures[1] > 2", Script);
+        Assert.Contains("BridgeState.choiceProtocolPaused = true", Script);
+        Assert.Contains("CHOICE PROTOCOL PAUSED", Script);
+        Assert.Contains("choice submission blocked: protocol is paused", Script);
     }
 
     [Fact]
@@ -765,8 +789,8 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("decisionPresentationGeneration = 0", Script);
         Assert.Contains("BridgeState.decisionPresentationGeneration = BridgeState.decisionPresentationGeneration + 1", Script);
-        Assert.Contains("function printDecision(decision, expectedSessionId, presentationGeneration)", Script);
-        Assert.Contains("ignored delayed decision render from a replaced Forge session", Script);
+        Assert.Contains("function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationGeneration)", Script);
+        Assert.Contains("reason=replaced_generation", Script);
         Assert.Contains("ignored delayed decision fetch from a replaced Forge session", Script);
         Assert.Contains("ignored delayed decision refresh from a replaced Forge session", Script);
     }

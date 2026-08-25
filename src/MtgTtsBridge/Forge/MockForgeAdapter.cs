@@ -63,6 +63,15 @@ public sealed class MockForgeAdapter : IForgeAdapter
 
         lock (_sync)
         {
+            if (!string.Equals(request.SessionId, _sessionId, StringComparison.Ordinal))
+            {
+                return Task.FromResult(Reject(
+                    "stale_session",
+                    "The provided choice belongs to a different Forge session.",
+                    _sessionId,
+                    request.SessionId));
+            }
+
             if (_currentDecision is null)
             {
                 return Task.FromResult(Reject("no_pending_decision", "No decision is currently active."));
@@ -115,7 +124,7 @@ public sealed class MockForgeAdapter : IForgeAdapter
         _sessionId = Guid.NewGuid().ToString("N");
         _state = "awaiting_human_decision";
         _pendingFollowupActionId = null;
-        _currentDecision = BuildMainDecision();
+        _currentDecision = BuildMainDecision() with { SessionId = _sessionId };
         _lastCommittedEvent = null;
         _eventCounter = 0;
         _resolvedDecisionIds.Clear();
@@ -150,7 +159,7 @@ public sealed class MockForgeAdapter : IForgeAdapter
 
             case "cast_lightning_strike":
                 _pendingFollowupActionId = action.ActionId;
-                _currentDecision = BuildTargetDecision();
+                _currentDecision = BuildTargetDecision() with { SessionId = _sessionId };
                 _state = "awaiting_followup_choice";
                 _lastCommittedEvent = null;
                 return Accept();
@@ -197,13 +206,15 @@ public sealed class MockForgeAdapter : IForgeAdapter
             ErrorMessage: null);
     }
 
-    private ForgeChoiceResult Reject(string errorCode, string errorMessage)
+    private ForgeChoiceResult Reject(string errorCode, string errorMessage, string? expectedSessionId = null, string? receivedSessionId = null)
     {
         return new ForgeChoiceResult(
             Accepted: false,
             State: CreateStateSnapshot(),
             ErrorCode: errorCode,
-            ErrorMessage: errorMessage);
+            ErrorMessage: errorMessage,
+            ExpectedSessionId: expectedSessionId,
+            ReceivedSessionId: receivedSessionId);
     }
 
     private AdapterStateDto CreateStateSnapshot()
@@ -307,10 +318,7 @@ public sealed class MockForgeAdapter : IForgeAdapter
                 CardInstanceId: action.CardInstanceId))
             .ToArray();
 
-        return new DecisionDto(
-            DecisionId: decision.DecisionId,
-            Kind: decision.Kind,
-            Actions: actions);
+        return decision with { Actions = actions };
     }
 
     private static CommittedEventDto? CloneCommittedEvent(CommittedEventDto? committedEvent)

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MtgTtsBridge.Contracts.Actions;
+using MtgTtsBridge.Contracts.State;
 using MtgTtsBridge.Forge;
 
 namespace MtgTtsBridge.Tests;
@@ -151,16 +152,16 @@ public sealed class ForgeTuiAdapterTests
             var mountain = Assert.Single(decision.Actions, action => action.CardIdentity == "Mountain");
 
             var accepted = await adapter.SubmitChoiceAsync(
-                new ChoiceRequestDto(decision.DecisionId, mountain.ActionId), CancellationToken.None);
+                new ChoiceRequestDto(decision.DecisionId, mountain.ActionId) { SessionId = initial.SessionId }, CancellationToken.None);
             Assert.True(accepted.Accepted);
             Assert.Equal("forge-tui-2", accepted.State.CurrentDecision?.DecisionId);
 
             var duplicate = await adapter.SubmitChoiceAsync(
-                new ChoiceRequestDto(decision.DecisionId, mountain.ActionId), CancellationToken.None);
+                new ChoiceRequestDto(decision.DecisionId, mountain.ActionId) { SessionId = initial.SessionId }, CancellationToken.None);
             Assert.True(duplicate.Accepted);
 
             var conflicting = await adapter.SubmitChoiceAsync(
-                new ChoiceRequestDto(decision.DecisionId, "forge-tui-1-choice-0"), CancellationToken.None);
+                new ChoiceRequestDto(decision.DecisionId, "forge-tui-1-choice-0") { SessionId = initial.SessionId }, CancellationToken.None);
             Assert.False(conflicting.Accepted);
             Assert.Equal("decision_already_resolved", conflicting.ErrorCode);
         }
@@ -211,7 +212,7 @@ public sealed class ForgeTuiAdapterTests
             var decision = Assert.IsType<MtgTtsBridge.Contracts.State.DecisionDto>(initial.CurrentDecision);
             var pass = Assert.Single(decision.Actions, action => action.Type == "pass_priority");
 
-            var first = adapter.SubmitChoiceAsync(new ChoiceRequestDto(decision.DecisionId, pass.ActionId), CancellationToken.None);
+            var first = adapter.SubmitChoiceAsync(new ChoiceRequestDto(decision.DecisionId, pass.ActionId) { SessionId = initial.SessionId }, CancellationToken.None);
             for (var attempt = 0; attempt < 50; attempt++)
             {
                 if ((await adapter.GetStateAsync(CancellationToken.None)).State == "awaiting_forge") break;
@@ -219,8 +220,8 @@ public sealed class ForgeTuiAdapterTests
             }
             Assert.Equal("awaiting_forge", (await adapter.GetStateAsync(CancellationToken.None)).State);
 
-            var duplicate = await adapter.SubmitChoiceAsync(new ChoiceRequestDto(decision.DecisionId, pass.ActionId), CancellationToken.None);
-            var unknown = await adapter.SubmitChoiceAsync(new ChoiceRequestDto("not-a-forge-decision", pass.ActionId), CancellationToken.None);
+            var duplicate = await adapter.SubmitChoiceAsync(new ChoiceRequestDto(decision.DecisionId, pass.ActionId) { SessionId = initial.SessionId }, CancellationToken.None);
+            var unknown = await adapter.SubmitChoiceAsync(new ChoiceRequestDto("not-a-forge-decision", pass.ActionId) { SessionId = initial.SessionId }, CancellationToken.None);
             var original = await first;
 
             Assert.True(duplicate.Accepted);
@@ -230,6 +231,58 @@ public sealed class ForgeTuiAdapterTests
             Assert.Equal("forge-tui-2", original.State.CurrentDecision?.DecisionId);
             var inputs = (await File.ReadAllLinesAsync(inputLog)).Select(input => input.Trim()).ToArray();
             Assert.Equal(new[] { "0" }, inputs);
+        }
+        finally
+        {
+            File.Delete(script);
+            File.Delete(inputLog);
+        }
+    }
+
+    [Fact]
+    public async Task PreviousSessionChoice_IsRejectedBeforeAnyForgeStdinWrite()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-stale-session-{Guid.NewGuid():N}.cmd");
+        var inputLog = Path.Combine(Path.GetTempPath(), $"forge-tui-stale-session-{Guid.NewGuid():N}.log");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            echo %choice% > "__INPUT_LOG__"
+            """.Replace("__INPUT_LOG__", inputLog));
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                    DecisionTimeoutSeconds = 5,
+                }),
+                NullLogger<ForgeTuiAdapter>.Instance);
+
+            var state = await adapter.StartSessionAsync(CancellationToken.None);
+            var decision = Assert.IsType<DecisionDto>(state.CurrentDecision);
+            var pass = Assert.Single(decision.Actions, action => action.Type == "pass_priority");
+
+            var rejection = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(decision.DecisionId, pass.ActionId) { SessionId = "previous-session" },
+                CancellationToken.None);
+
+            Assert.False(rejection.Accepted);
+            Assert.Equal("stale_session", rejection.ErrorCode);
+            Assert.Equal(state.SessionId, rejection.ExpectedSessionId);
+            Assert.Equal("previous-session", rejection.ReceivedSessionId);
+            Assert.Equal("awaiting_human_decision", (await adapter.GetStateAsync(CancellationToken.None)).State);
+            Assert.False(File.Exists(inputLog));
         }
         finally
         {

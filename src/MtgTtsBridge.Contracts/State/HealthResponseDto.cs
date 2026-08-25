@@ -10,4 +10,8 @@ public sealed record HealthResponseDto(
     bool HasActiveDecision,
     string? CurrentDecisionId,
     CommittedEventDto? LastCommittedEvent,
-    AdapterDiagnosticDto? Diagnostic = null);
+    AdapterDiagnosticDto? Diagnostic = null,
+    string? BridgeRevision = null,
+    string? BridgeProcessInstanceId = null,
+    int? ProcessId = null,
+    DateTimeOffset? ProcessStartUtc = null);

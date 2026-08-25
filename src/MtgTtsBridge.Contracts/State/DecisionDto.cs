@@ -14,6 +14,7 @@ public sealed record DecisionDto(
     bool AllowsCancel = false,
     bool IsOrdered = false)
 {
+    public string? SessionId { get; init; }
     public long? EventCursor { get; init; }
     public long? ForgeSequence { get; init; }
     public int? TurnNumber { get; init; }
