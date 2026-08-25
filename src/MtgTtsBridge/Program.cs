@@ -132,6 +132,7 @@ app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter ada
 		return outcome.ErrorCode switch
 		{
 			"stale_decision_id" => Results.Conflict(errorResponse),
+			"decision_already_resolved" => Results.Conflict(errorResponse),
 			"unknown_decision_id" => Results.NotFound(errorResponse),
 			"unknown_action_id" => Results.BadRequest(errorResponse),
 			"no_pending_decision" => Results.Conflict(errorResponse),

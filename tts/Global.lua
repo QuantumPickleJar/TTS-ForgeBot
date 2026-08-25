@@ -8,7 +8,41 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
-BRIDGE_SCRIPT_REVISION = "2026-08-25-choice-preflight-v3"
+BRIDGE_SCRIPT_REVISION = "2026-08-25-console-logging-v8"
+
+-- TTS can leave callbacks scheduled by the previous Global.lua alive during a
+-- Save & Play reload.  Generations inside BridgeState start from zero again,
+-- so they cannot distinguish that retired runtime from the freshly loaded
+-- one.  This epoch intentionally lives outside BridgeState and is captured by
+-- every bridge timer/request; a callback from an older script is then inert.
+BRIDGE_RUNTIME_EPOCH = (tonumber(BRIDGE_RUNTIME_EPOCH) or 0) + 1
+local BRIDGE_RUNTIME_EPOCH_LOCAL = BRIDGE_RUNTIME_EPOCH
+
+function BridgeRuntimeIsCurrent(epoch)
+    return epoch == BRIDGE_RUNTIME_EPOCH
+end
+
+-- TTS print() writes to game chat. Keep protocol and diagnostic traffic in
+-- the scripting console; explicit broadcastToAll calls remain user-facing.
+function BridgeLog(message)
+    log(tostring(message))
+end
+
+function BridgeWaitTime(callback, delay)
+    local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    Wait.time(function()
+        if not BridgeRuntimeIsCurrent(epoch) then return end
+        callback()
+    end, delay)
+end
+
+function BridgeWaitFrames(callback, frames)
+    local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    Wait.frames(function()
+        if not BridgeRuntimeIsCurrent(epoch) then return end
+        callback()
+    end, frames)
+end
 
 -- Seat identity remains independent of controller type and TTS color.
 BRIDGE_SEATS = {
@@ -99,6 +133,10 @@ BridgeState = {
     combatSelectedByGuid = {},
     manaCounterGuidBySeatId = {},
     submitting = false,
+    choiceAttemptSequence = 0,
+    choiceTransactions = {},
+    retiredChoiceDecisionIds = {},
+    retiredChoiceDecisionOrder = {},
     pendingIntent = nil,
     pendingIntentControlGuids = {},
     pendingDecision = nil,
@@ -113,6 +151,7 @@ BridgeState = {
     eventRequestInFlight = false,
     eventPollScheduled = false,
     decisionPollGeneration = 0,
+    decisionPresentationGeneration = 0,
     decisionPollInFlight = false,
     decisionPollScheduled = false,
     eventRetryCount = 0,
@@ -148,8 +187,6 @@ BridgeState = {
     doctorRetryAttempt = 0,
     transitionExpectedUntil = 0,
     latencyProbe = nil,
-    rejectedChoiceDecisionIds = {},
-    rejectedChoiceNoticeDecisionIds = {},
 }
 
 BridgeHttp = {}
@@ -220,8 +257,7 @@ function BridgeTraceStart(marker, detail)
     else
         message = "[Bridge] " .. tostring(marker)
     end
-    print(message)
-    pcall(function() log(message) end)
+    BridgeLog(message)
 end
 
 function BridgeRunTraced(marker, action)
@@ -559,10 +595,19 @@ end
 
 function BridgeHttp.requestJson(method, path, payload, callback)
     local url = BRIDGE_BASE_URL .. path
+    local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+
+    local function handleIfCurrent(request)
+        if not BridgeRuntimeIsCurrent(epoch) then
+            BridgeLog("[Bridge] ignored HTTP callback from retired Global.lua runtime")
+            return
+        end
+        BridgeHttp.handleResponse(request, callback)
+    end
 
     if method == "GET" then
         WebRequest.get(url, function(request)
-            BridgeHttp.handleResponse(request, callback)
+            handleIfCurrent(request)
         end)
         return
     end
@@ -574,7 +619,7 @@ function BridgeHttp.requestJson(method, path, payload, callback)
     }
 
     WebRequest.custom(url, method, true, body, headers, function(request)
-        BridgeHttp.handleResponse(request, callback)
+        handleIfCurrent(request)
     end)
 end
 
@@ -788,7 +833,7 @@ function BridgeStageSeatCardsForBootstrap(snapshot)
     end
 
     if stagedCount > 0 then
-        print("[Bridge] staged " .. tostring(stagedCount) .. " loose card(s) near library before authoritative bootstrap")
+        BridgeLog("[Bridge] staged " .. tostring(stagedCount) .. " loose card(s) near library before authoritative bootstrap")
     end
     return true, nil
 end
@@ -844,22 +889,10 @@ function BridgeResetSessionRequest(callback)
 end
 
 function BridgeGetDecision(callback)
-    BridgeHttp.requestJson("GET", "/api/v1/decision", nil, function(ok, body, err, request)
-        if ok and body ~= nil then
-            BridgeState.lastDecision = body
-        else
-            BridgeState.lastDecision = nil
-            BridgeState.pendingDecision = nil
-            BridgeState.pendingDecisionDeferredAt = nil
-            BridgeState.pendingDecisionDeferredCursor = 0
-            BridgeState.pendingDecisionDeferredApplied = 0
-            BridgeClearHighlights()
-            BridgeResetSelectionState()
-            BridgeHideMainPriorityControls()
-        end
-
-        callback(ok, body, err, request)
-    end)
+    -- The caller owns state changes after it validates the response's session
+    -- and presentation generation.  Mutating BridgeState here would let a
+    -- delayed response clear or replace a newer decision before that check.
+    BridgeHttp.requestJson("GET", "/api/v1/decision", nil, callback)
 end
 
 function BridgeStopDecisionPolling()
@@ -900,7 +933,7 @@ function BridgeRecordLatencyProbeDecisionReady(decision)
     local eventMs = probe.firstEventReceivedAt ~= nil and math.floor((probe.firstEventReceivedAt - probe.acceptedAt) * 1000) or -1
     local turnMs = probe.turnChangedAppliedAt ~= nil and math.floor((probe.turnChangedAppliedAt - probe.acceptedAt) * 1000) or -1
     local decisionMs = math.floor((probe.nextDecisionAt - probe.acceptedAt) * 1000)
-    print(string.format(
+    BridgeLog(string.format(
         "[Bridge latency] action=%s submit=%dms firstEvent=%sms turnChanged=%sms nextDecision=%dms total=%dms decision=%s",
         tostring(probe.actionId),
         submitMs,
@@ -918,7 +951,7 @@ function BridgeScheduleDecisionPoll(delay, generation, attempt)
     if BridgeState.decisionPollInFlight or BridgeState.decisionPollScheduled then return end
 
     BridgeState.decisionPollScheduled = true
-    Wait.time(function()
+    BridgeWaitTime(function()
         if generation ~= BridgeState.decisionPollGeneration then return end
         BridgeState.decisionPollScheduled = false
         BridgePollForNextDecision(generation, attempt)
@@ -930,16 +963,20 @@ function BridgePollForNextDecision(generation, attempt)
     if BridgeState.lastDecision ~= nil or BridgeState.submitting then return end
     if BridgeState.decisionPollInFlight then return end
 
+    local expectedSessionId = BridgeState.eventSessionId
+    local presentationGeneration = BridgeState.decisionPresentationGeneration
     BridgeState.decisionPollInFlight = true
     BridgeHttp.requestJson("GET", "/api/v1/decision", nil, function(ok, body, err, request)
         if generation ~= BridgeState.decisionPollGeneration then return end
+        if expectedSessionId ~= BridgeState.eventSessionId
+            or presentationGeneration ~= BridgeState.decisionPresentationGeneration then return end
 
         BridgeState.decisionPollInFlight = false
         if ok and body ~= nil then
             BridgeState.lastDecision = body
             BridgeMarkTransitionExpected(0)
             BridgeRecordLatencyProbeDecisionReady(body)
-            printDecision(body)
+            printDecision(body, expectedSessionId, presentationGeneration)
             return
         end
 
@@ -947,7 +984,7 @@ function BridgePollForNextDecision(generation, attempt)
         local noPendingDecision = (body ~= nil and body.errorCode == "no_pending_decision") or responseCode == 404
         if noPendingDecision then
             if attempt == 1 or attempt % 10 == 0 then
-                print("[Bridge] waiting for Forge's next decision...")
+                BridgeLog("[Bridge] waiting for Forge's next decision...")
             end
             if attempt >= 180 then
                 BridgeShowError("Forge did not expose a follow-up decision within 90 seconds")
@@ -980,129 +1017,85 @@ function BridgeDecisionHasAction(decision, actionId)
     return false
 end
 
-function BridgeIsStaleChoiceRejection(body, request)
-    local responseCode = request and tonumber(request.response_code) or nil
+function BridgeIsStaleChoiceRejection(body)
     local errorCode = body and body.errorCode or nil
-    return responseCode == 404
-        or responseCode == 409
-        or errorCode == "stale_decision_id"
+    return errorCode == "stale_decision_id"
         or errorCode == "unknown_decision_id"
+        or errorCode == "decision_already_resolved"
         or errorCode == "no_pending_decision"
 end
 
-function BridgeSubmitChoice(decisionId, actionId)
-    if BridgeState.submitting then
-        print("[Bridge] choice submission already in progress.")
-        return
+function BridgeLogChoiceAttempt(source, decisionId, actionId, transactionState)
+    BridgeState.choiceAttemptSequence = (BridgeState.choiceAttemptSequence or 0) + 1
+    local attempt = BridgeState.choiceAttemptSequence
+    BridgeLog(string.format(
+        "[Bridge] choice-attempt=%s source=%s session=%s decision=%s action=%s submitting=%s transactionState=%s yieldSeat=%s",
+        tostring(attempt), tostring(source or "unknown"), tostring(BridgeState.eventSessionId or "nil"),
+        tostring(decisionId), tostring(actionId), tostring(BridgeState.submitting == true),
+        tostring(transactionState or "none"), tostring(BridgeState.yieldSeatId or "nil")))
+    return attempt
+end
+
+function BridgeRetireChoiceTransactionsForDecision(decisionId)
+    for existingDecisionId, _ in pairs(BridgeState.choiceTransactions or {}) do
+        if existingDecisionId ~= decisionId then
+            BridgeState.choiceTransactions[existingDecisionId] = nil
+            if BridgeState.retiredChoiceDecisionIds[existingDecisionId] ~= true then
+                BridgeState.retiredChoiceDecisionIds[existingDecisionId] = true
+                table.insert(BridgeState.retiredChoiceDecisionOrder, existingDecisionId)
+            end
+        end
     end
 
+    -- Delayed HTTP callbacks are allowed to arrive after polling has moved on.
+    -- Keep only a small session-local tombstone window so they cannot re-arm a
+    -- consumed decision, without accumulating an unbounded rejected-ID table.
+    while #BridgeState.retiredChoiceDecisionOrder > 32 do
+        local retiredId = table.remove(BridgeState.retiredChoiceDecisionOrder, 1)
+        BridgeState.retiredChoiceDecisionIds[retiredId] = nil
+    end
+end
+
+function BridgeSubmitChoice(decisionId, actionId, source)
     if decisionId == nil or decisionId == "" then
         decisionId = BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil
     end
-    if actionId == nil or actionId == "" then
-        print("[Bridge] actionId is required.")
+    local transaction = decisionId and BridgeState.choiceTransactions[decisionId] or nil
+    BridgeLogChoiceAttempt(source, decisionId, actionId, transaction and transaction.state or "none")
+
+    if decisionId == nil or actionId == nil or actionId == "" then
         return
     end
-
-    if decisionId == nil
-        or BridgeState.rejectedChoiceDecisionIds[decisionId] == true
-        or BridgeState.lastDecision == nil
-        or BridgeState.lastDecision.decisionId ~= decisionId
-        or not BridgeDecisionHasAction(BridgeState.lastDecision, actionId) then
-        BridgeState.yieldSeatId = nil
-        BridgeClearHighlights()
-        BridgeRollbackPendingIntent()
-        BridgeResetSelectionState()
-        return
-    end
-
-    -- Validate against the adapter immediately before POST. This prevents a
-    -- physical control that survived a decision transition from ever creating
-    -- a stale-choice 404/409 storm. Forge remains the sole legality authority.
-    BridgeState.submitting = true
-    BridgeHttp.requestJson("GET", "/api/v1/decision", nil, function(ok, current, err, request)
-        BridgeState.submitting = false
-        local currentMatches = ok
-            and current ~= nil
-            and current.decisionId == decisionId
-            and BridgeDecisionHasAction(current, actionId)
-        if currentMatches then
-            BridgeState.lastDecision = current
-            BridgePostValidatedChoice(decisionId, actionId)
+    if transaction ~= nil then
+        if transaction.actionId == actionId then
+            -- Same logical choice is already in flight or complete. Do not
+            -- issue another POST; the adapter independently accepts it too.
             return
         end
-
-        BridgeState.rejectedChoiceDecisionIds[decisionId] = true
-        BridgeState.yieldSeatId = nil
-        BridgeState.lastDecision = nil
-        BridgeClearHighlights()
-        BridgeRollbackPendingIntent()
-        BridgeResetSelectionState()
-
-        if ok and current ~= nil then
-            print("[Bridge] stale physical choice discarded before POST; presenting Forge decision " .. tostring(current.decisionId))
-            printDecision(current)
-        else
-            if BridgeState.rejectedChoiceNoticeDecisionIds[decisionId] ~= true then
-                BridgeState.rejectedChoiceNoticeDecisionIds[decisionId] = true
-                print("[Bridge] stale physical choice discarded before POST; Forge has no matching active decision")
-            end
-            BridgeStartDecisionPolling()
+        if transaction.conflictReported ~= true then
+            transaction.conflictReported = true
+            BridgeShowError("conflicting action ignored for an already-submitting Forge decision")
         end
-    end)
-end
-
-function BridgePostValidatedChoice(decisionId, actionId)
-    if BridgeState.submitting then
-        print("[Bridge] choice submission already in progress.")
         return
     end
-
-    if decisionId == nil or decisionId == "" then
-        if BridgeState.lastDecision == nil then
-            print("[Bridge] No cached decision. Run BridgeSmokeTest() first.")
-            return
-        end
-
-        decisionId = BridgeState.lastDecision.decisionId
-    end
-
-    if actionId == nil or actionId == "" then
-        print("[Bridge] actionId is required.")
-        return
-    end
-
-    if BridgeState.rejectedChoiceDecisionIds[decisionId] == true then
-        -- A stale control, delayed callback, or repeated GET must never turn a
-        -- decision that Forge already rejected into another POST storm.
-        BridgeState.yieldSeatId = nil
-        BridgeState.lastDecision = nil
-        BridgeClearHighlights()
-        BridgeRollbackPendingIntent()
-        BridgeResetSelectionState()
-        if BridgeState.rejectedChoiceNoticeDecisionIds[decisionId] ~= true then
-            BridgeState.rejectedChoiceNoticeDecisionIds[decisionId] = true
-            BridgeShowError("blocked repeat submission for rejected Forge decision " .. tostring(decisionId))
-        end
-        BridgeStartDecisionPolling()
-        return
-    end
-
+    if BridgeState.submitting then return end
     if BridgeState.lastDecision == nil
         or BridgeState.lastDecision.decisionId ~= decisionId
         or not BridgeDecisionHasAction(BridgeState.lastDecision, actionId) then
-        BridgeShowError("not submitting a stale or no-longer-offered Forge choice")
-        BridgeClearHighlights()
-        BridgeRollbackPendingIntent()
-        BridgeResetSelectionState()
         return
     end
 
-    local payload = {
-        decisionId = decisionId,
-        actionId = actionId
+    -- The decision-scoped transaction is installed before any asynchronous
+    -- network work. Atomicity ultimately lives in the adapter; this prevents
+    -- duplicate physical callbacks from needlessly reaching that boundary.
+    transaction = {
+        actionId = actionId,
+        state = "posting",
+        source = source,
+        sessionId = BridgeState.eventSessionId,
+        presentationGeneration = BridgeState.decisionPresentationGeneration
     }
-
+    BridgeState.choiceTransactions[decisionId] = transaction
     BridgeState.pendingDecision = nil
     BridgeState.pendingDecisionDeferredAt = nil
     BridgeState.pendingDecisionDeferredCursor = 0
@@ -1118,21 +1111,27 @@ function BridgePostValidatedChoice(decisionId, actionId)
         turnChangedAppliedAt = nil,
         nextDecisionAt = nil
     }
-    BridgeHttp.requestJson("POST", "/api/v1/choice", payload, function(ok, body, err, request)
+
+    BridgeHttp.requestJson("POST", "/api/v1/choice", { decisionId = decisionId, actionId = actionId }, function(ok, body, err, request)
         BridgeState.submitting = false
+        local activeTransaction = BridgeState.choiceTransactions[decisionId]
+        if activeTransaction == nil or activeTransaction.actionId ~= actionId then return end
+        if activeTransaction.sessionId ~= BridgeState.eventSessionId
+            or activeTransaction.presentationGeneration ~= BridgeState.decisionPresentationGeneration then
+            return
+        end
         if not ok then
+            activeTransaction.state = "rejected"
             BridgeState.latencyProbe = nil
             BridgeMarkTransitionExpected(0)
             BridgeClearHighlights()
             BridgeRollbackPendingIntent()
             BridgeResetSelectionState()
-            if BridgeIsStaleChoiceRejection(body, request) then
-                -- A rejected decision cannot be rendered again: doing so would
-                -- let yield/autopass repeatedly submit the same stale action.
-                BridgeState.rejectedChoiceDecisionIds[decisionId] = true
+            if BridgeIsStaleChoiceRejection(body) then
                 BridgeState.yieldSeatId = nil
                 BridgeState.lastDecision = nil
-                BridgeShowError("Forge decision changed; stale input discarded. Refreshing current decision.")
+                BridgeLog("[Bridge] rejected Forge transaction retired decision=" .. tostring(decisionId)
+                    .. " action=" .. tostring(actionId) .. " code=" .. tostring(body and body.errorCode or "unknown"))
                 BridgeStartDecisionPolling()
                 return
             end
@@ -1140,46 +1139,41 @@ function BridgePostValidatedChoice(decisionId, actionId)
             if body ~= nil and body.errorCode ~= nil then
                 BridgeShowError("errorCode=" .. tostring(body.errorCode) .. " message=" .. tostring(body.message))
             end
-            if BridgeState.lastDecision ~= nil then
-                BridgeRenderDecision(BridgeState.lastDecision)
-            end
             return
         end
 
-        print("[Bridge] choice accepted.")
+        activeTransaction.state = "accepted"
+        BridgeLog("[Bridge] choice accepted.")
         local probe = BridgeState.latencyProbe
         if probe ~= nil then
             probe.acceptedAt = os.clock()
             local submitMs = math.floor((probe.acceptedAt - probe.submittedAt) * 1000)
-            print(string.format("[Bridge latency] choice POST accepted in %dms (action=%s)", submitMs, tostring(actionId)))
+            BridgeLog(string.format("[Bridge latency] choice POST accepted in %dms (action=%s)", submitMs, tostring(actionId)))
         end
         BridgeMarkTransitionExpected(2.5)
         BridgeScheduleEventPoll(0.05, BridgeState.eventPollGeneration)
-
         if body ~= nil and body.committedEvent ~= nil then
-            print("[Bridge] committed: " .. tostring(body.committedEvent.summary))
+            BridgeLog("[Bridge] committed: " .. tostring(body.committedEvent.summary))
         end
-
         BridgeCommitPendingIntent()
-
         if body ~= nil and body.currentDecision ~= nil then
             BridgeStopDecisionPolling()
             BridgeState.lastDecision = body.currentDecision
             BridgeMarkTransitionExpected(0)
             BridgeRecordLatencyProbeDecisionReady(body.currentDecision)
-            printDecision(body.currentDecision)
+            printDecision(body.currentDecision, activeTransaction.sessionId, activeTransaction.presentationGeneration)
         else
             BridgeState.lastDecision = nil
             BridgeClearHighlights()
             BridgeHideMainPriorityControls()
-            print("[Bridge] no pending decision.")
+            BridgeLog("[Bridge] no pending decision.")
             BridgeStartDecisionPolling()
         end
     end)
 end
 
 function BridgeChoose(actionId)
-    BridgeSubmitChoice(nil, actionId)
+    BridgeSubmitChoice(nil, actionId, "developer_choose")
 end
 
 function BridgeChooseTargetOpponent()
@@ -1261,7 +1255,7 @@ function BridgeTryPresentPendingDecision(reason)
         end
         local ignoreStale = BridgeShouldIgnoreStaleDecision(pending)
         if ignoreStale then
-            print(string.format(
+            BridgeLog(string.format(
                 "[Bridge] dropping stale deferred decision %s after %.1fs wait (cursor=%s applied=%s)",
                 tostring(pending.decisionId), elapsed, tostring(eventCursor), tostring(applied)))
             BridgeState.pendingDecision = nil
@@ -1270,7 +1264,7 @@ function BridgeTryPresentPendingDecision(reason)
             BridgeState.pendingDecisionDeferredApplied = 0
             return
         end
-        print(string.format(
+        BridgeLog(string.format(
             "[Bridge] forcing deferred decision %s after %.1fs with unchanged cursor/applied (%s/%s)",
             tostring(pending.decisionId), elapsed, tostring(eventCursor), tostring(applied)))
     end
@@ -1279,7 +1273,7 @@ function BridgeTryPresentPendingDecision(reason)
     BridgeState.pendingDecisionDeferredAt = nil
     BridgeState.pendingDecisionDeferredCursor = 0
     BridgeState.pendingDecisionDeferredApplied = 0
-    print(string.format(
+    BridgeLog(string.format(
         "[Bridge] releasing gated decision %s (%s) cursor=%s applied=%s",
         tostring(decision.decisionId), tostring(reason or "event"),
         tostring(eventCursor), tostring(applied)))
@@ -1318,7 +1312,7 @@ end
 
 function BridgeLogSnapshotOrdering(marker, snapshot, reason)
     local minQueued, maxQueued = BridgeQueuedEventRange()
-    print(string.format(
+    BridgeLog(string.format(
         "[Bridge] snapshot %s reason=%s forgeSequence=%s eventCursor=%s received=%s applied=%s queued=%s..%s",
         tostring(marker), tostring(reason), tostring(snapshot and snapshot.forgeSequence),
         tostring(snapshot and snapshot.eventCursor), tostring(BridgeState.lastReceivedEventSequence),
@@ -1348,7 +1342,7 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                     if mappedNeedsFix then
                         -- The log intentionally omits cardName: a snapshot can
                         -- contain identities that should not be public chat.
-                        print(string.format(
+                        BridgeLog(string.format(
                             "[Bridge] snapshot candidate instance=%s oldZone=%s destinationZone=%s",
                             tostring(card.cardInstanceId), tostring(mappedZone), tostring(zoneName)))
                         local evt = {
@@ -1364,7 +1358,7 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                         if moved then
                             movedCount = movedCount + 1
                         else
-                            print("[Bridge] snapshot reconcile skipped a move: " .. tostring(moveError))
+                            BridgeLog("[Bridge] snapshot reconcile skipped a move: " .. tostring(moveError))
                         end
                     end
 
@@ -1380,7 +1374,7 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
     BridgeLogSnapshotOrdering("applied", snapshot, reason)
     if movedCount > 0 then
-        print(string.format("[Bridge] snapshot reconcile (%s): corrected %d public card location(s)", tostring(reason), movedCount))
+        BridgeLog(string.format("[Bridge] snapshot reconcile (%s): corrected %d public card location(s)", tostring(reason), movedCount))
     end
 end
 
@@ -1409,9 +1403,9 @@ function BridgeScheduleSnapshotReconcile(reason)
                 BridgeLogSnapshotOrdering("deferred", snapshot, reason)
             end
         elseif not ok then
-            print("[Bridge] snapshot reconcile failed: " .. tostring(err))
+            BridgeLog("[Bridge] snapshot reconcile failed: " .. tostring(err))
         elseif snapshot ~= nil then
-            print("[Bridge] snapshot reconcile skipped due to session mismatch")
+            BridgeLog("[Bridge] snapshot reconcile skipped due to session mismatch")
         end
 
         if BridgeState.snapshotReconcilePending then
@@ -1438,11 +1432,11 @@ function BridgeDoctorAddCheck(report, name, status, detail)
 end
 
 function BridgeDoctorPrintReport(report)
-    print(string.format(
+    BridgeLog(string.format(
         "[BridgeDoctor] PASS=%d WARN=%d FAIL=%d",
         tonumber(report.pass or 0), tonumber(report.warn or 0), tonumber(report.fail or 0)))
     for _, check in ipairs(report.checks or {}) do
-        print(string.format("[BridgeDoctor] %-4s %s :: %s", check.status, check.name, check.detail))
+        BridgeLog(string.format("[BridgeDoctor] %-4s %s :: %s", check.status, check.name, check.detail))
     end
 end
 
@@ -1570,7 +1564,7 @@ end
 function BridgeInitializeInteractiveUi()
     if BridgeState.doctorInitializedUi then return end
     BridgeState.doctorInitializedUi = true
-    Wait.frames(function()
+    BridgeWaitFrames(function()
         BridgeTryStartupStep("destroy_transient_controls", BridgeDestroyTransientControls)
         BridgeTryStartupStep("ensure_setup_controls", BridgeEnsureSetupControls)
         BridgeTryStartupStep("ensure_turn_counters", BridgeEnsureTurnCounters)
@@ -1583,16 +1577,16 @@ function BridgeScheduleCompanionRetry(attempt)
     if BridgeState.doctorInitializedUi then return end
     local currentAttempt = tonumber(attempt or 1) or 1
     BridgeState.doctorRetryAttempt = currentAttempt
-    Wait.time(function()
+    BridgeWaitTime(function()
         if BridgeState.doctorInitializedUi then return end
         BridgeGetHealth(function(ok, body, err)
             if ok and body ~= nil then
-                print("[Bridge] companion became reachable; initializing controls.")
+                BridgeLog("[Bridge] companion became reachable; initializing controls.")
                 BridgeInitializeInteractiveUi()
                 return
             end
             if currentAttempt == 1 or currentAttempt % 6 == 0 then
-                print("[Bridge] companion still offline; retrying health in 5s (" .. tostring(currentAttempt) .. ")")
+                BridgeLog("[Bridge] companion still offline; retrying health in 5s (" .. tostring(currentAttempt) .. ")")
             end
             BridgeSetStatus("COMPANION OFFLINE", "Bridge unreachable at 127.0.0.1:43110")
             if currentAttempt == 1 then
@@ -1617,14 +1611,15 @@ end
 function BridgeOnLoad()
     -- This integration does not use Global XML UI; clear stale/broken XML left in saves.
     pcall(function() UI.setXml("") end)
-    print("[Bridge] ForgeBot integration loaded. revision=" .. tostring(BRIDGE_SCRIPT_REVISION))
+    BridgeLog("[Bridge] ForgeBot integration loaded. revision=" .. tostring(BRIDGE_SCRIPT_REVISION)
+        .. " runtimeEpoch=" .. tostring(BRIDGE_RUNTIME_EPOCH_LOCAL))
     BridgeSetStatus("CLIENT LOADED", "Running ForgeBot preflight...")
     BridgeDoctor(function(report)
         if report.companionOk then
             BridgeInitializeInteractiveUi()
         else
             BridgeSetStatus("COMPANION OFFLINE", "Bridge unreachable at 127.0.0.1:43110")
-            print("[Bridge] companion unavailable on load; skipping bootstrap and waiting for retry.")
+            BridgeLog("[Bridge] companion unavailable on load; skipping bootstrap and waiting for retry.")
             broadcastToAll("[Bridge] COMPANION OFFLINE: bridge unreachable at 127.0.0.1:43110", {1.0, 0.55, 0.1})
             BridgeScheduleCompanionRetry(1)
         end
@@ -1744,14 +1739,14 @@ function BridgeShowPreparationReadiness()
     BridgeGetHealth(function(ok, body, err)
         if not ok then
             BridgeSetStatus("COMPANION OFFLINE", "Bridge unreachable at 127.0.0.1:43110")
-            print("[Bridge] preparation: companion unavailable: " .. tostring(err))
+            BridgeLog("[Bridge] preparation: companion unavailable: " .. tostring(err))
             return
         end
         local humanDeck, humanCandidates = BridgeResolveSeatLibraryDeck("forge-player-1")
         local aiDeck, aiCandidates = BridgeResolveSeatLibraryDeck("forge-player-2")
         local humanDeckOk = humanDeck ~= nil and #humanCandidates <= 1
         local aiDeckOk = aiDeck ~= nil and #aiCandidates <= 1
-        print(string.format(
+        BridgeLog(string.format(
             "[Bridge] preparation: Companion=READY Human deck=%s AI deck=%s active=%s",
             humanDeckOk and "FOUND" or "MISSING/AMBIG", aiDeckOk and "FOUND" or "MISSING/AMBIG",
             tostring(body.sessionId ~= nil and body.sessionId ~= "session-not-started" and body.adapterState ~= "not_started" and body.adapterState ~= "failed")))
@@ -1994,7 +1989,7 @@ function BridgePressStartMatch(object, playerColor, altClick)
     local color = playerColor
     local alt = altClick == true
     BridgeTraceStart("START-01 click", tostring(color or "unknown"))
-    Wait.frames(function()
+    BridgeWaitFrames(function()
         BridgeRunTraced("START-02 deferred-handler", function()
             BridgeDoPressStartMatch(color, alt)
         end)
@@ -2038,7 +2033,7 @@ end
 function BridgePressResume(object, playerColor, altClick)
     local color = playerColor
     local alt = altClick == true
-    Wait.frames(function()
+    BridgeWaitFrames(function()
         BridgeDoPressResume(color, alt)
     end, 1)
 end
@@ -2055,14 +2050,14 @@ end
 function BridgePressNewMatch(object, playerColor, altClick)
     local color = playerColor
     local alt = altClick == true
-    print("setup-click:new-match")
-    Wait.frames(function()
+    BridgeLog("setup-click:new-match")
+    BridgeWaitFrames(function()
         BridgeDoPressNewMatch(color, alt)
     end, 1)
 end
 
 function BridgeDoPressNewMatch(playerColor, altClick)
-    print("setup-deferred:new-match")
+    BridgeLog("setup-deferred:new-match")
     if BridgeState.setupBusy then
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
         return
@@ -2071,7 +2066,7 @@ function BridgeDoPressNewMatch(playerColor, altClick)
     BridgeClearResetConfirmationControl()
     BridgeSpawnResetConfirmationControl()
     broadcastToAll("[Bridge] NEW MATCH is destructive. Click it again within 10 seconds to confirm.", {1.0, 0.55, 0.1})
-    Wait.time(function()
+    BridgeWaitTime(function()
         if BridgeState.resetConfirmationArmed then
             BridgeState.resetConfirmationArmed = false
             BridgeClearResetConfirmationControl()
@@ -2104,7 +2099,7 @@ function BridgeSpawnResetConfirmationControl()
             local guid = BridgeSafeObjectGuid(control)
             if guid == nil then return end
             BridgeState.resetConfirmationGuid = guid
-            Wait.frames(function()
+            BridgeWaitFrames(function()
                 local live = BridgeGetLiveObjectByGuid(guid)
                 if live == nil then return end
                 BridgeSafeObjectCall(live, function(o)
@@ -2125,7 +2120,7 @@ function BridgeSpawnResetConfirmationControl()
                         tooltip = "Confirm replacing the active Forge match"
                     })
                 end)
-                print("setup-confirm-spawned")
+                BridgeLog("setup-confirm-spawned")
             end, 1)
         end
     })
@@ -2134,14 +2129,14 @@ end
 function BridgePressConfirmNewMatch(object, playerColor, altClick)
     local color = playerColor
     local alt = altClick == true
-    print("setup-click:confirm")
-    Wait.frames(function()
+    BridgeLog("setup-click:confirm")
+    BridgeWaitFrames(function()
         BridgeDoPressConfirmNewMatch(color, alt)
     end, 1)
 end
 
 function BridgeDoPressConfirmNewMatch(playerColor, altClick)
-    print("setup-deferred:confirm")
+    BridgeLog("setup-deferred:confirm")
     if BridgeState.setupBusy then
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
         return
@@ -2166,7 +2161,7 @@ function BridgeAttachToActiveSession(done)
             return
         end
 
-        print("[Bridge] health ok. adapter=" .. tostring(body.adapter) .. " state=" .. tostring(body.adapterState))
+        BridgeLog("[Bridge] health ok. adapter=" .. tostring(body.adapter) .. " state=" .. tostring(body.adapterState))
         if body.adapterState == "starting" then
             BridgeWaitForForgeInitialization(1, done)
             return
@@ -2208,9 +2203,9 @@ function BridgeWaitForForgeInitialization(attempt, done)
         if body.adapterState == "starting" then
             BridgeSetStatus("FORGE INITIALIZING", "Loading Forge card database (" .. tostring(attempt * 2) .. "s)")
             if attempt == 1 or attempt % 10 == 0 then
-                print("[Bridge] Forge is initializing... (" .. tostring(attempt * 2) .. "s)")
+                BridgeLog("[Bridge] Forge is initializing... (" .. tostring(attempt * 2) .. "s)")
             end
-            Wait.time(function() BridgeWaitForForgeInitialization(attempt + 1, done) end, 2)
+            BridgeWaitTime(function() BridgeWaitForForgeInitialization(attempt + 1, done) end, 2)
             return
         end
         if body.adapterState == "failed" then
@@ -2224,22 +2219,36 @@ function BridgeWaitForForgeInitialization(attempt, done)
 end
 
 function BridgeFetchDecisionAfterAttach()
+    local expectedSessionId = BridgeState.eventSessionId
+    local presentationGeneration = BridgeState.decisionPresentationGeneration
     BridgeGetDecision(function(decisionOk, decisionBody, decisionErr)
+        if expectedSessionId ~= BridgeState.eventSessionId
+            or presentationGeneration ~= BridgeState.decisionPresentationGeneration then
+            BridgeLog("[Bridge] ignored delayed decision fetch from a replaced Forge session")
+            return
+        end
         if decisionOk and decisionBody ~= nil then
-            printDecision(decisionBody)
+            printDecision(decisionBody, expectedSessionId, presentationGeneration)
             return
         end
 
         BridgeHideMainPriorityControls()
-        print("[Bridge] no active decision available (" .. tostring(decisionErr) .. "). This script will not restart Forge automatically.")
-        print("[Bridge] When Forge reaches a decision, run BridgeRefreshDecision().")
+        BridgeLog("[Bridge] no active decision available (" .. tostring(decisionErr) .. "). This script will not restart Forge automatically.")
+        BridgeLog("[Bridge] When Forge reaches a decision, run BridgeRefreshDecision().")
     end)
 end
 
 function BridgeRefreshDecision()
+    local expectedSessionId = BridgeState.eventSessionId
+    local presentationGeneration = BridgeState.decisionPresentationGeneration
     BridgeGetDecision(function(ok, body, err)
+        if expectedSessionId ~= BridgeState.eventSessionId
+            or presentationGeneration ~= BridgeState.decisionPresentationGeneration then
+            BridgeLog("[Bridge] ignored delayed decision refresh from a replaced Forge session")
+            return
+        end
         if ok and body ~= nil then
-            printDecision(body)
+            printDecision(body, expectedSessionId, presentationGeneration)
         else
             BridgeShowError("decision fetch failed: " .. tostring(err))
         end
@@ -2260,7 +2269,7 @@ function BridgeStartSessionIfNone(done)
                 return
             end
 
-            print("[Bridge] started or attached session: " .. tostring(body and body.sessionId))
+            BridgeLog("[Bridge] started or attached session: " .. tostring(body and body.sessionId))
             -- The start route may attach to a match that already exists. Do not replay
             -- its historical physical events; an explicit reset is the new-match path.
             BridgeBootstrapWhenAvailable(body.sessionId, 1, function(bootstrapOk, bootstrapError)
@@ -2269,8 +2278,11 @@ function BridgeStartSessionIfNone(done)
                     BridgeTraceStart("START-18 event-poll-start")
                     BridgeStartEventPolling(body.sessionId, true)
                     BridgeTraceStart("START-19 decision-poll-start")
-                    if body ~= nil and body.currentDecision ~= nil then printDecision(body.currentDecision)
-                    else BridgeRefreshDecision() end
+                    if body ~= nil and body.currentDecision ~= nil then
+                        printDecision(body.currentDecision, body.sessionId, BridgeState.decisionPresentationGeneration)
+                    else
+                        BridgeRefreshDecision()
+                    end
                     BridgeTraceStart("START-20 ready")
                     if done then done() end
                 end)
@@ -2291,14 +2303,17 @@ function BridgeResetSession()
             return
         end
 
-        print("[Bridge] active match explicitly replaced: " .. tostring(body and body.sessionId))
+        BridgeLog("[Bridge] active match explicitly replaced: " .. tostring(body and body.sessionId))
         BridgeBootstrapWhenAvailable(body.sessionId, 1, function(bootstrapOk, bootstrapError)
             if not bootstrapOk then BridgeSetSetupBusy(false); BridgeStopOnDesync(bootstrapError); return end
             -- The snapshot is authoritative through this point, so opening
             -- mutation records are acknowledged instead of replayed.
             BridgeStartEventPolling(body.sessionId, true)
-            if body ~= nil and body.currentDecision ~= nil then printDecision(body.currentDecision)
-            else BridgeRefreshDecision() end
+            if body ~= nil and body.currentDecision ~= nil then
+                printDecision(body.currentDecision, body.sessionId, BridgeState.decisionPresentationGeneration)
+            else
+                BridgeRefreshDecision()
+            end
             BridgeSetSetupBusy(false)
         end)
     end)
@@ -2308,26 +2323,36 @@ function BridgeSmokeTest()
     BridgeAttachToActiveSession()
 end
 
-function printDecision(decision)
+function printDecision(decision, expectedSessionId, presentationGeneration)
     if decision == nil then
-        print("[Bridge] decision payload missing.")
+        BridgeLog("[Bridge] decision payload missing.")
         return
     end
 
-
-    if BridgeState.rejectedChoiceDecisionIds[decision.decisionId] == true then
-        -- Do not re-arm physical controls for a decision the choice endpoint
-        -- has already declared invalid. Wait for a genuinely new decision ID.
-        BridgeState.lastDecision = nil
-        BridgeClearHighlights()
-        BridgeHideMainPriorityControls()
-        BridgeStartDecisionPolling()
+    if expectedSessionId ~= nil and (expectedSessionId ~= BridgeState.eventSessionId
+        or presentationGeneration ~= BridgeState.decisionPresentationGeneration) then
+        BridgeLog("[Bridge] ignored delayed decision render from a replaced Forge session")
         return
     end
+
+    if BridgeState.retiredChoiceDecisionIds[decision.decisionId] == true
+        or BridgeState.choiceTransactions[decision.decisionId] ~= nil then
+        -- A delayed GET/render callback must never make a consumed decision
+        -- actionable again. The next distinct Forge decision will retire the
+        -- old transaction and render normally.
+        if BridgeState.lastDecision == nil or BridgeState.lastDecision.decisionId == decision.decisionId then
+            BridgeState.lastDecision = nil
+            BridgeClearHighlights()
+            BridgeHideMainPriorityControls()
+        end
+        return
+    end
+
+    BridgeRetireChoiceTransactionsForDecision(decision.decisionId)
 
     local ignoreStale, eventCursor, applied = BridgeShouldIgnoreStaleDecision(decision)
     if ignoreStale then
-        print(string.format(
+        BridgeLog(string.format(
             "[Bridge] ignoring stale main-priority decision %s (cursor=%s, applied=%s)",
             tostring(decision.decisionId), tostring(eventCursor), tostring(applied)))
         return
@@ -2343,7 +2368,7 @@ function printDecision(decision)
         BridgeClearHighlights()
         BridgeResetSelectionState()
         BridgeHideMainPriorityControls()
-        print(string.format(
+        BridgeLog(string.format(
             "[Bridge] gating decision %s until events catch up (cursor=%s, applied=%s)",
             tostring(decision.decisionId), tostring(deferCursor), tostring(deferApplied)))
         return
@@ -2385,19 +2410,19 @@ function printDecision(decision)
     end
     BridgeRenderDecision(decision)
 
-    print("[Bridge] decision " .. tostring(decision.decisionId) .. " kind=" .. tostring(decision.kind))
+    BridgeLog("[Bridge] decision " .. tostring(decision.decisionId) .. " kind=" .. tostring(decision.kind))
 
     if decision.actions == nil then
-        print("[Bridge] no actions.")
+        BridgeLog("[Bridge] no actions.")
         return
     end
 
     for index, action in ipairs(decision.actions) do
         local followup = action.requiresFollowup and "yes" or "no"
-        print(string.format("[Bridge]   %d. %s (%s) id=%s followup=%s", index, tostring(action.displayName), tostring(action.type), tostring(action.actionId), followup))
+        BridgeLog(string.format("[Bridge]   %d. %s (%s) id=%s followup=%s", index, tostring(action.displayName), tostring(action.type), tostring(action.actionId), followup))
     end
 
-    print("[Bridge] use BridgeChoose('<actionId>') to submit an action.")
+    BridgeLog("[Bridge] use BridgeChoose('<actionId>') to submit an action.")
 end
 
 function BridgeNormalizeCardName(name)
@@ -2567,7 +2592,7 @@ function BridgeChooseDecisionOption(object, playerColor, altClick)
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
     BridgeClearHighlights()
     BridgeResetSelectionState()
-    BridgeSubmitChoice(decisionId, actionId)
+    BridgeSubmitChoice(decisionId, actionId, "generic_option_control")
 end
 
 function BridgeEnsureContextualCompletionControl(decision)
@@ -2632,7 +2657,7 @@ function BridgeCompleteCombatSelection(object, playerColor, altClick)
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
     BridgeClearHighlights()
     BridgeResetSelectionState()
-    BridgeSubmitChoice(decisionId, actionId)
+    BridgeSubmitChoice(decisionId, actionId, "contextual_done")
 end
 
 function BridgeInstallTargetButton(object, targetSeatId)
@@ -2704,7 +2729,7 @@ function BridgeSelectPlayerTargetControl(object, playerColor, altClick)
     end
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
     BridgeClearHighlights()
-    BridgeSubmitChoice(decisionId, actionId)
+    BridgeSubmitChoice(decisionId, actionId, "player_target_control")
 end
 
 function BridgeEnsureEndTurnButton(seatId)
@@ -2817,7 +2842,7 @@ function BridgePressPass(object, playerColor, altClick)
     for _, action in ipairs(decision.actions or {}) do
         if action.type == "pass_priority" then
             BridgeClearHighlights()
-            BridgeSubmitChoice(decision.decisionId, action.actionId)
+            BridgeSubmitChoice(decision.decisionId, action.actionId, "pass_button")
             return
         end
     end
@@ -2846,7 +2871,7 @@ function BridgePressEndTurn(object, playerColor, altClick)
         if action.type == "pass_priority" then
             BridgeState.yieldSeatId = decision.seatId
             BridgeClearHighlights()
-            BridgeSubmitChoice(decision.decisionId, action.actionId)
+            BridgeSubmitChoice(decision.decisionId, action.actionId, "yield_button")
             return
         end
     end
@@ -2857,7 +2882,7 @@ function BridgeClaimHumanTtsColor(seatId, playerColor)
     local seat = BRIDGE_SEATS[seatId]
     if seat ~= nil and seat.animateAuthoritativeEvents == false and playerColor ~= nil then
         if seat.ttsColor ~= playerColor then
-            print("[Bridge] bound human seat " .. tostring(seatId) .. " to TTS color " .. tostring(playerColor))
+            BridgeLog("[Bridge] bound human seat " .. tostring(seatId) .. " to TTS color " .. tostring(playerColor))
         end
         seat.ttsColor = playerColor
     end
@@ -2881,7 +2906,7 @@ function BridgeSelectPlayerTarget(object, playerColor, altClick)
         BridgeShowError("this target decision belongs to TTS color " .. tostring(actorSeat.ttsColor))
         return
     end
-    BridgeSubmitChoice(decision.decisionId, action.actionId)
+    BridgeSubmitChoice(decision.decisionId, action.actionId, "player_target_surface")
 end
 
 function BridgeResetSelectionState()
@@ -2950,7 +2975,7 @@ function BridgeConfirmCastPreview(object, playerColor, altClick)
     end
     BridgeClaimHumanTtsColor(intent.seatId, playerColor)
     BridgeClearPendingIntentControls()
-    BridgeSubmitChoice(intent.decisionId, intent.action.actionId)
+    BridgeSubmitChoice(intent.decisionId, intent.action.actionId, "cast_confirm")
 end
 
 function BridgeCancelCastPreview(object, playerColor, altClick)
@@ -3024,7 +3049,7 @@ function BridgeConfirmSelection(object, playerColor, altClick)
         for _, action in ipairs(decision.actions or {}) do
             if action.type == "finish_attacking" or action.type == "finish_blocking" or action.type == "choose_none" then
                 BridgeResetSelectionState()
-                BridgeSubmitChoice(decision.decisionId, action.actionId)
+                BridgeSubmitChoice(decision.decisionId, action.actionId, "selection_zero_confirm")
                 return
             end
         end
@@ -3038,7 +3063,7 @@ function BridgeConfirmSelection(object, playerColor, altClick)
     for actionId, selected in pairs(BridgeState.selectedActionIds) do
         if selected then
             BridgeResetSelectionState()
-            BridgeSubmitChoice(decision.decisionId, actionId)
+            BridgeSubmitChoice(decision.decisionId, actionId, "selection_confirm")
             return
         end
     end
@@ -3083,7 +3108,7 @@ function BridgeRenderDecision(decision)
         else
             for _, action in ipairs(decision.actions) do
                 if action.type == "pass_priority" then
-                    BridgeSubmitChoice(decision.decisionId, action.actionId)
+                    BridgeSubmitChoice(decision.decisionId, action.actionId, "yield_auto_pass")
                     return
                 end
             end
@@ -3179,12 +3204,12 @@ function BridgeRenderDecision(decision)
                         BridgeState.physicalZoneByGuid[recoveredGuid] = "hand"
                     end
                     matches = fallbackMatches
-                    print(string.format(
+                    BridgeLog(string.format(
                         "[Bridge] repaired instance mapping for %s -> %s (%s)",
                         tostring(action.cardInstanceId), tostring(recoveredGuid), tostring(action.cardIdentity or action.type)))
                 end
             elseif #fallbackMatches > 1 then
-                print(string.format(
+                BridgeLog(string.format(
                     "[Bridge] instance mapping ambiguous for %s (%s): %d candidates",
                     tostring(action.cardInstanceId), tostring(action.cardIdentity or action.type), #fallbackMatches))
             end
@@ -3192,7 +3217,7 @@ function BridgeRenderDecision(decision)
 
         if action.cardIdentity ~= nil and #matches > 0 then
             if mappedGuid == nil and #matches > 1 then
-                print(string.format("[Bridge] duplicate card name '%s': highlighting all %d candidates", tostring(action.cardIdentity), #matches))
+                BridgeLog(string.format("[Bridge] duplicate card name '%s': highlighting all %d candidates", tostring(action.cardIdentity), #matches))
             end
 
             for _, object in ipairs(matches) do
@@ -3219,7 +3244,7 @@ end
 
 function BridgeShowError(message)
     local text = "[Bridge] " .. tostring(message)
-    print(text)
+    BridgeLog(text)
     broadcastToAll(text, {1.0, 0.2, 0.2})
 end
 
@@ -3272,14 +3297,14 @@ function onObjectPickUp(playerColor, object)
         object.setPositionSmooth(BridgeState.pendingIntent.position, false, true)
         object.setRotationSmooth(BridgeState.pendingIntent.rotation, false, true)
         BridgeState.pendingIntent = nil
-        Wait.frames(function() BridgeRenderDecision(decision) end, 2)
+        BridgeWaitFrames(function() BridgeRenderDecision(decision) end, 2)
         return
     end
 
     -- Player scoreboards and other non-card targets are selection surfaces,
     -- not draggable game pieces, so the grab itself commits the offered target.
     if object.tag ~= "Card" then
-        BridgeSubmitChoice(decision.decisionId, action.actionId)
+        BridgeSubmitChoice(decision.decisionId, action.actionId, "physical_target_pickup")
     end
 end
 
@@ -3330,11 +3355,11 @@ function onObjectDrop(playerColor, object)
         -- The bridge performs the lane preview after Forge accepts the exact
         -- offered action, so players need not drag a card to a narrow row.
         if not movedEnough and not droppedInLane then
-            print(string.format(
+            BridgeLog(string.format(
                 "[Bridge] combat selection accepted in place for %s (guid=%s)",
                 tostring(intent.action.type), tostring(intent.guid)))
         end
-        print(string.format(
+        BridgeLog(string.format(
             "[Bridge] combat drop accepted for %s (guid=%s movedSq=%.3f laneHit=%s action=%s decision=%s)",
             tostring(intent.action.type), tostring(intent.guid), dx * dx + dz * dz, tostring(droppedInLane),
             tostring(intent.action.actionId), tostring(intent.decisionId)))
@@ -3346,7 +3371,15 @@ function onObjectDrop(playerColor, object)
         end
     end
 
-    BridgeSubmitChoice(intent.decisionId, intent.action.actionId)
+    local submissionSource = "physical_card_drop"
+    if intent.action.type == "choose_attacker" then
+        submissionSource = "attacker_drop"
+    elseif intent.action.type == "choose_blocker" then
+        submissionSource = "blocker_drop"
+    elseif intent.action.type == "play_land" then
+        submissionSource = "physical_land_drop"
+    end
+    BridgeSubmitChoice(intent.decisionId, intent.action.actionId, submissionSource)
 end
 
 function BridgeCommitPendingIntent()
@@ -3450,7 +3483,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
             -- contained-card ledger. This is a short state-settle, not a
             -- timing-based replacement for deterministic insertion above.
             BridgeTraceStart("START-13 library-settle")
-            Wait.frames(function()
+            BridgeWaitFrames(function()
                 BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
                     BridgeRunTraced("START annotate-callback", function()
                         if not annotated then
@@ -3463,7 +3496,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
                                 BridgeState.bootstrapping = false
                                 if not seatsOk then callback(false, seatsError); return end
                                 BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
-                                print(string.format(
+                                BridgeLog(string.format(
                                     "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
                                     #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
                                 callback(true, nil)
@@ -3487,9 +3520,9 @@ function BridgeBootstrapWhenAvailable(sessionId, attempt, callback)
             return
         end
         if attempt == 1 or attempt % 5 == 0 then
-            print("[Bridge] waiting for Forge's authoritative snapshot...")
+            BridgeLog("[Bridge] waiting for Forge's authoritative snapshot...")
         end
-        Wait.time(function() BridgeBootstrapWhenAvailable(sessionId, attempt + 1, callback) end, 2)
+        BridgeWaitTime(function() BridgeBootstrapWhenAvailable(sessionId, attempt + 1, callback) end, 2)
     end)
 end
 
@@ -3557,10 +3590,10 @@ function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback)
                 for _, zone in ipairs(seatSnapshot.zones or {}) do
                     authoritativeCount = authoritativeCount + #(zone.cards or {})
                 end
-                print(string.format(
+                BridgeLog(string.format(
                     "[Bridge] seat asset inventory not ready: seat=%s attempt=%d physical=%d authoritative=%d; retrying",
                     tostring(seatSnapshot.seatId), attempt, #assets, authoritativeCount))
-                Wait.frames(function()
+                BridgeWaitFrames(function()
                     BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt + 1, callback)
                 end, 60)
                 return
@@ -3570,7 +3603,7 @@ function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback)
         end
         BridgeMaterializeSeatSnapshot(seatSnapshot, 1, 1, function(materialized, materializeError)
             if not materialized then callback(false, materializeError); return end
-            Wait.frames(function()
+            BridgeWaitFrames(function()
                 BridgeApplySeatSnapshotVisualState(seatSnapshot)
                 callback(true, nil)
             end, 30)
@@ -3723,7 +3756,7 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets)
                 "library reconciliation failed: seat=%s card=%s forgeExpected=%d physicalContained=%d physicalLoose=%d unmappedForgeInstances=%d unassignedContained=%d",
                 tostring(seatSnapshot.seatId), tostring(normalizedName), expectedCount, containedCount, looseCount,
                 expectedCount - physicalCount, math.max(containedCount, 0))
-            print("[Bridge] " .. detail)
+            BridgeLog("[Bridge] " .. detail)
             return false, "library reconciliation failed for seat " .. tostring(seatSnapshot.seatId)
                 .. "; see host log for multiplicity diagnostics"
         end
@@ -3774,7 +3807,7 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets)
                 "library reconciliation failed: seat=%s card=%s forgeExpected=%d physicalContained=%d physicalLoose=%d unmappedForgeInstances=%d unassignedContained=%d",
                 tostring(seatSnapshot.seatId), tostring(normalized), expectedCount, containedCount, looseCount,
                 unmappedForgeInstances, unassignedContained)
-            print("[Bridge] " .. detail)
+            BridgeLog("[Bridge] " .. detail)
             return false, "library reconciliation failed for seat " .. tostring(seatSnapshot.seatId)
                 .. "; see host log for multiplicity diagnostics"
         end
@@ -3834,7 +3867,7 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
             callback(false, placeError)
             return
         end
-        Wait.frames(function()
+        BridgeWaitFrames(function()
             BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex + 1, callback)
         end, 2)
     end
@@ -3948,11 +3981,11 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
                     BridgeSetPhysicalTapped(object, card.tapped == true)
                     for counterType, counterValue in pairs(card.counters or {}) do
                         local ok, counterError = BridgeSetCardCounterState(object, counterType, counterValue)
-                        if not ok then print("[Bridge] counter visual unsupported: " .. tostring(counterError)) end
+                        if not ok then BridgeLog("[Bridge] counter visual unsupported: " .. tostring(counterError)) end
                     end
                     for _, keyword in ipairs(card.keywords or {}) do
                         local ok, keywordError = BridgeSetCardKeywordState(object, keyword, true)
-                        if not ok then print("[Bridge] keyword visual unsupported: " .. tostring(keywordError)) end
+                        if not ok then BridgeLog("[Bridge] keyword visual unsupported: " .. tostring(keywordError)) end
                     end
                 end
             end
@@ -4008,7 +4041,7 @@ end
 
 function BridgeSetManaBank(seatId, manaPool)
     if not BridgeEnsureManaBank(seatId) then return end
-    Wait.frames(function()
+    BridgeWaitFrames(function()
         for _, color in ipairs(BRIDGE_MANA_COLORS) do
             local guid = BridgeState.manaCounterGuidBySeatId[seatId][color]
             local counter = guid and BridgeGetLiveObjectByGuid(guid) or nil
@@ -4049,6 +4082,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeStopEventPolling()
     BridgeStopDecisionPolling()
     BridgeReturnAttackPresentation(nil)
+    BridgeState.decisionPresentationGeneration = BridgeState.decisionPresentationGeneration + 1
     BridgeState.eventSessionId = sessionId
     BridgeState.lastReceivedEventSequence = 0
     BridgeState.lastAppliedEventSequence = 0
@@ -4073,8 +4107,9 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.yieldSeatId = nil
     BridgeState.transitionExpectedUntil = 0
     BridgeState.latencyProbe = nil
-    BridgeState.rejectedChoiceDecisionIds = {}
-    BridgeState.rejectedChoiceNoticeDecisionIds = {}
+    BridgeState.choiceTransactions = {}
+    BridgeState.retiredChoiceDecisionIds = {}
+    BridgeState.retiredChoiceDecisionOrder = {}
     BridgeState.pendingDecision = nil
     BridgeState.pendingDecisionDeferredAt = nil
     BridgeState.pendingDecisionDeferredCursor = 0
@@ -4105,7 +4140,7 @@ function BridgeScheduleEventPoll(delay, generation)
     end
 
     BridgeState.eventPollScheduled = true
-    Wait.time(function()
+    BridgeWaitTime(function()
         if not BridgeState.eventPolling or generation ~= BridgeState.eventPollGeneration then
             return
         end
@@ -4140,7 +4175,7 @@ function BridgePollEvents(generation)
 
             BridgeState.eventRetryCount = BridgeState.eventRetryCount + 1
             local retryDelay = math.min(2 ^ (BridgeState.eventRetryCount - 1), 5)
-            print(string.format("[Bridge] transient event poll failure (%s); retrying in %.1f seconds", tostring(err), retryDelay))
+            BridgeLog(string.format("[Bridge] transient event poll failure (%s); retrying in %.1f seconds", tostring(err), retryDelay))
             BridgeScheduleEventPoll(retryDelay, generation)
             return
         end
@@ -4155,7 +4190,7 @@ function BridgePollEvents(generation)
             BridgeState.lastReceivedEventSequence = body.latestSequence or BridgeState.lastReceivedEventSequence
             BridgeState.lastAppliedEventSequence = BridgeState.lastReceivedEventSequence
             BridgeState.skipExistingEventsOnAttach = false
-            print("[Bridge] attached at authoritative event sequence " .. tostring(BridgeState.lastAppliedEventSequence))
+            BridgeLog("[Bridge] attached at authoritative event sequence " .. tostring(BridgeState.lastAppliedEventSequence))
             BridgeTryPresentPendingDecision("attach-catchup")
         else
             for _, event in ipairs(body.events or {}) do
@@ -4208,7 +4243,7 @@ function BridgeProcessEventQueue()
         BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence))
     end
     local generation = BridgeState.eventPollGeneration
-    Wait.time(function()
+    BridgeWaitTime(function()
         if generation ~= BridgeState.eventPollGeneration then
             return
         end
@@ -4219,7 +4254,7 @@ end
 
 function BridgeApplyAuthoritativeEvent(event)
     if event.containsHiddenIdentity == true then
-        print(string.format(
+        BridgeLog(string.format(
             "[Bridge] private event seq=%s kind=%s seat=%s instance=%s source=%s dest=%s (card identity redacted)",
             tostring(event.sequence),
             tostring(event.kind),
@@ -4228,7 +4263,7 @@ function BridgeApplyAuthoritativeEvent(event)
             tostring(event.sourceZone),
             tostring(event.destinationZone)))
     else
-        print(string.format(
+        BridgeLog(string.format(
             "[Bridge] event seq=%s kind=%s seat=%s instance=%s source=%s dest=%s card=%s",
             tostring(event.sequence),
             tostring(event.kind),
@@ -4258,7 +4293,7 @@ function BridgeApplyAuthoritativeEvent(event)
         BridgeRecordAuthoritativeTurn(BridgeState.currentTurnSeatId, tonumber(event.turnNumber or 0))
         local turnSeat = BRIDGE_SEATS[BridgeState.currentTurnSeatId]
         BridgeSetStatus("CURRENT TURN: " .. tostring(turnSeat and turnSeat.ttsColor or BridgeState.currentTurnSeatId), BridgeTurnLabel() .. " - AI THINKING")
-        print("[Bridge] authoritative turn changed to seat " .. tostring(BridgeState.currentTurnSeatId) .. " turn=" .. tostring(event.turnNumber))
+        BridgeLog("[Bridge] authoritative turn changed to seat " .. tostring(BridgeState.currentTurnSeatId) .. " turn=" .. tostring(event.turnNumber))
         if BridgeState.yieldSeatId ~= nil and BridgeState.yieldSeatId ~= event.seatId then
             BridgeState.yieldSeatId = nil
         end
@@ -4338,7 +4373,7 @@ function BridgeApplyAuthoritativeEvent(event)
             }
         end
         if not applied and BridgeCanDeferStructuredMoveToSnapshot(event) then
-            print("[Bridge] structured move deferred to snapshot reconcile: " .. tostring(moveError))
+            BridgeLog("[Bridge] structured move deferred to snapshot reconcile: " .. tostring(moveError))
             return true, 0.1
         end
         return applied, 1.0, moveError
@@ -4356,7 +4391,7 @@ function BridgeApplyAuthoritativeEvent(event)
                 -- card_moved event. Do not require it to still be in stack (or
                 -- re-resolve it by name) for this explanatory semantic event.
                 BridgeState.pendingCastBySeatId[event.seatId] = nil
-                print(string.format(
+                BridgeLog(string.format(
                     "[Bridge] idempotent spell resolution event=%s instance=%s after structured graveyard move=%s",
                     tostring(event.sequence), tostring(event.cardInstanceId), tostring(structuredMove.sequence)))
                 return true, 0.1
@@ -4376,7 +4411,7 @@ function BridgeApplyAuthoritativeEvent(event)
                         "resolved spell destination GUID belongs to a different Forge instance", {mappedGuid = mappedGuid})
                 end
                 BridgeState.pendingCastBySeatId[event.seatId] = nil
-                print(string.format(
+                BridgeLog(string.format(
                     "[Bridge] idempotent spell resolution event=%s instance=%s already at graveyard",
                     tostring(event.sequence), tostring(event.cardInstanceId)))
                 return true, 0.1
@@ -4394,13 +4429,13 @@ function BridgeApplyAuthoritativeEvent(event)
     if event.kind == "tap_changed" then
         local object, resolveError = BridgeResolveMappedInstance(event)
         if object == nil then
-            print("[Bridge] tap update deferred to snapshot reconcile: " .. tostring(resolveError))
+            BridgeLog("[Bridge] tap update deferred to snapshot reconcile: " .. tostring(resolveError))
             return true, 0.1
         end
         local guid = BridgeSafeObjectGuid(object)
         local trackedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
         if trackedZone ~= "battlefield" then
-            print(string.format(
+            BridgeLog(string.format(
                 "[Bridge] tap presentation deferred event=%s instance=%s trackedZone=%s",
                 tostring(event.sequence), tostring(event.cardInstanceId), tostring(trackedZone)))
             return true, 0.1
@@ -4412,12 +4447,12 @@ function BridgeApplyAuthoritativeEvent(event)
     if event.kind == "counter_changed" then
         local object, resolveError = BridgeResolveMappedInstance(event)
         if object == nil then
-            print("[Bridge] counter update deferred to snapshot reconcile: " .. tostring(resolveError))
+            BridgeLog("[Bridge] counter update deferred to snapshot reconcile: " .. tostring(resolveError))
             return true, 0.1
         end
         local applied, counterError = BridgeSetCardCounterState(object, event.counterType, event.counterValue)
         if not applied then
-            print("[Bridge] optional physical counter decoration skipped: " .. tostring(counterError))
+            BridgeLog("[Bridge] optional physical counter decoration skipped: " .. tostring(counterError))
         end
         return true, 0.1, nil
     end
@@ -4425,12 +4460,12 @@ function BridgeApplyAuthoritativeEvent(event)
     if event.kind == "keyword_added" or event.kind == "keyword_removed" then
         local object, resolveError = BridgeResolveMappedInstance(event)
         if object == nil then
-            print("[Bridge] keyword update deferred to snapshot reconcile: " .. tostring(resolveError))
+            BridgeLog("[Bridge] keyword update deferred to snapshot reconcile: " .. tostring(resolveError))
             return true, 0.1
         end
         local applied, keywordError = BridgeSetCardKeywordState(object, event.keyword, event.kind == "keyword_added")
         if not applied then
-            print("[Bridge] optional physical keyword decoration skipped: " .. tostring(keywordError))
+            BridgeLog("[Bridge] optional physical keyword decoration skipped: " .. tostring(keywordError))
         end
         return true, 0.1, nil
     end
@@ -4439,7 +4474,7 @@ function BridgeApplyAuthoritativeEvent(event)
         -- Net power/toughness is observed directly from Forge. It is diagnostic
         -- presentation evidence (including temporary Prowess changes), never a
         -- locally calculated rules result.
-        print(string.format(
+        BridgeLog(string.format(
             "[Bridge] authoritative stats instance=%s power=%s toughness=%s",
             tostring(event.cardInstanceId), tostring(event.netPower), tostring(event.netToughness)))
         return true, 0.1, nil
@@ -4497,7 +4532,7 @@ function BridgeApplyAuthoritativeEvent(event)
             end
             BridgeRecordLooseCardIdentity(event.cardInstanceId, mappedGuid, event.seatId, "battlefield")
             BridgeSetPhysicalFaceDown(mappedObject, seat, event.faceDown == true)
-            print(string.format(
+            BridgeLog(string.format(
                 "[Bridge] idempotent move event=%s instance=%s already at battlefield",
                 tostring(event.sequence), tostring(event.cardInstanceId)))
             return true, 0.1
@@ -4514,7 +4549,7 @@ function BridgeApplyAuthoritativeEvent(event)
             if pendingTransition ~= nil
                 and pendingTransition.destinationZone == "battlefield"
                 and pendingTransition.sourceZone == sourceZone then
-                print(string.format(
+                BridgeLog(string.format(
                     "[Bridge] semantic land presentation deferred event=%s instance=%s after structured move=%s",
                     tostring(event.sequence), tostring(event.cardInstanceId), tostring(pendingTransition.sequence)))
                 return true, 0.1
@@ -4530,7 +4565,7 @@ function BridgeApplyAuthoritativeEvent(event)
             })
             if drawn == nil then return false, 0, "could not draw land from library deck" end
             object = drawn
-            Wait.frames(function()
+            BridgeWaitFrames(function()
                 if event.cardInstanceId ~= nil then
                     BridgeRecordLooseCardIdentity(event.cardInstanceId, object.getGUID(), event.seatId, "library")
                 end
@@ -4568,7 +4603,7 @@ function BridgeApplyAuthoritativeEvent(event)
         -- mapping) rather than turning a correct Forge action into a desync.
         local object, resolveError = BridgeResolveMappedInstance(event)
         if object == nil then
-            print(string.format(
+            BridgeLog(string.format(
                 "[Bridge] mana presentation deferred event=%s instance=%s reason=%s",
                 tostring(event.sequence), tostring(event.cardInstanceId), tostring(resolveError)))
             BridgeScheduleSnapshotReconcile("mana event " .. tostring(event.sequence))
@@ -4577,7 +4612,7 @@ function BridgeApplyAuthoritativeEvent(event)
         local guid = BridgeSafeObjectGuid(object)
         local trackedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
         if trackedZone ~= "battlefield" then
-            print(string.format(
+            BridgeLog(string.format(
                 "[Bridge] mana presentation deferred event=%s instance=%s trackedZone=%s",
                 tostring(event.sequence), tostring(event.cardInstanceId), tostring(trackedZone)))
             BridgeScheduleSnapshotReconcile("mana event " .. tostring(event.sequence))
@@ -4659,7 +4694,7 @@ function BridgeApplyStructuredCardMove(event)
     end
 
     if object ~= nil and object.tag ~= "Card" and not allowsMappedDeckHandle(object) then
-        print(string.format(
+        BridgeLog(string.format(
             "[Bridge] stale mapped object for structured move seq=%s kind=%s instance=%s source=%s dest=%s mappedGuid=%s mappedTag=%s",
             tostring(event.sequence), tostring(event.kind), tostring(event.cardInstanceId),
             tostring(event.sourceZone), tostring(event.destinationZone), tostring(guid), tostring(object.tag)))
@@ -4691,7 +4726,7 @@ function BridgeApplyStructuredCardMove(event)
             if event.destinationZone == "battlefield" then
                 BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
             end
-            print(string.format(
+            BridgeLog(string.format(
                 "[Bridge] idempotent move event=%s instance=%s already at %s",
                 tostring(event.sequence), tostring(event.cardInstanceId), tostring(event.destinationZone)))
             return true, nil
@@ -4889,7 +4924,7 @@ function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
     if #matches > 1 then
         local nearest = BridgeSelectNearestDeckCandidate(seat, matches)
         if nearest ~= nil then return nearest end
-        print(string.format("[Bridge] ambiguous library deck match for %s (%d candidates)", tostring(expectedName), #matches))
+        BridgeLog(string.format("[Bridge] ambiguous library deck match for %s (%d candidates)", tostring(expectedName), #matches))
         return nil
     end
 
@@ -5358,7 +5393,7 @@ function BridgeStopOnDesync(message)
 end
 
 function BridgePrintEventSyncStatus()
-    print(string.format(
+    BridgeLog(string.format(
         "[Bridge] event sync session=%s polling=%s received=%s applied=%s queued=%d retries=%d inFlight=%s",
         tostring(BridgeState.eventSessionId), tostring(BridgeState.eventPolling),
         tostring(BridgeState.lastReceivedEventSequence), tostring(BridgeState.lastAppliedEventSequence),
@@ -5367,10 +5402,10 @@ end
 
 function BridgeDumpSyncState()
     BridgePrintEventSyncStatus()
-    print("[Bridge] pendingIntent=" .. JSON.encode(BridgeState.pendingIntent or {}))
-    print("[Bridge] yieldSeatId=" .. tostring(BridgeState.yieldSeatId))
-    print("[Bridge] pendingQueue=" .. JSON.encode(BridgeState.eventQueue))
-    print("[Bridge] physicalByInstanceId=" .. JSON.encode(BridgeState.physicalByInstanceId))
-    print("[Bridge] physicalSeatByGuid=" .. JSON.encode(BridgeState.physicalSeatByGuid))
-    print("[Bridge] physicalZoneByGuid=" .. JSON.encode(BridgeState.physicalZoneByGuid))
+    BridgeLog("[Bridge] pendingIntent=" .. JSON.encode(BridgeState.pendingIntent or {}))
+    BridgeLog("[Bridge] yieldSeatId=" .. tostring(BridgeState.yieldSeatId))
+    BridgeLog("[Bridge] pendingQueue=" .. JSON.encode(BridgeState.eventQueue))
+    BridgeLog("[Bridge] physicalByInstanceId=" .. JSON.encode(BridgeState.physicalByInstanceId))
+    BridgeLog("[Bridge] physicalSeatByGuid=" .. JSON.encode(BridgeState.physicalSeatByGuid))
+    BridgeLog("[Bridge] physicalZoneByGuid=" .. JSON.encode(BridgeState.physicalZoneByGuid))
 end

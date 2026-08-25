@@ -55,14 +55,14 @@ public sealed class TtsGlobalLuaContractTests
     {
         var pickup = Script.IndexOf("function onObjectPickUp", StringComparison.Ordinal);
         var drop = Script.IndexOf("function onObjectDrop", StringComparison.Ordinal);
-        var submit = Script.IndexOf("BridgeSubmitChoice(intent.decisionId, intent.action.actionId)", drop, StringComparison.Ordinal);
+        var submit = Script.IndexOf("BridgeSubmitChoice(intent.decisionId, intent.action.actionId, submissionSource)", drop, StringComparison.Ordinal);
 
         Assert.True(pickup >= 0);
         Assert.True(drop > pickup);
         Assert.True(submit > drop);
         Assert.Contains("useHands = object.use_hands", Script);
         Assert.Contains("object.use_hands = intent.useHands", Script);
-        Assert.Contains("BridgeRenderDecision(BridgeState.lastDecision)", Script);
+        Assert.Contains("if decision ~= nil then BridgeRenderDecision(decision) end", Script);
     }
 
     [Fact]
@@ -238,7 +238,7 @@ public sealed class TtsGlobalLuaContractTests
         var newMatchEnd = Script.IndexOf("function BridgeDoPressNewMatch", newMatchStart, StringComparison.Ordinal);
         var newMatchClickBody = Script[newMatchStart..newMatchEnd];
         Assert.Contains("setup-click:new-match", newMatchClickBody);
-        Assert.Contains("Wait.frames(function()", newMatchClickBody);
+        Assert.Contains("BridgeWaitFrames(function()", newMatchClickBody);
         Assert.Contains("BridgeDoPressNewMatch", newMatchClickBody);
         Assert.DoesNotContain("BridgeSpawnResetConfirmationControl()", newMatchClickBody);
         Assert.DoesNotContain("BridgeClearResetConfirmationControl()", newMatchClickBody);
@@ -247,7 +247,7 @@ public sealed class TtsGlobalLuaContractTests
         var confirmEnd = Script.IndexOf("function BridgeDoPressConfirmNewMatch", confirmStart, StringComparison.Ordinal);
         var confirmClickBody = Script[confirmStart..confirmEnd];
         Assert.Contains("setup-click:confirm", confirmClickBody);
-        Assert.Contains("Wait.frames(function()", confirmClickBody);
+        Assert.Contains("BridgeWaitFrames(function()", confirmClickBody);
         Assert.Contains("BridgeDoPressConfirmNewMatch", confirmClickBody);
         Assert.DoesNotContain("BridgeResetSession()", confirmClickBody);
 
@@ -671,7 +671,7 @@ public sealed class TtsGlobalLuaContractTests
     public void SnapshotBootstrap_MultiplicityMismatchIncludesSeatAndCountDiagnostics()
     {
         Assert.Contains("library reconciliation failed: seat=%s card=%s forgeExpected=%d physicalContained=%d physicalLoose=%d unmappedForgeInstances=%d unassignedContained=%d", Script);
-        Assert.Contains("print(\"[Bridge] \" .. detail)", Script);
+        Assert.Contains("BridgeLog(\"[Bridge] \" .. detail)", Script);
     }
 
     [Fact]
@@ -684,37 +684,91 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void StaleChoiceRejection_ClearsYieldAndRefreshesInsteadOfResubmittingTheOldDecision()
+    public void ChoiceRejection_UsesStructuredErrorCodesRatherThanTreatingEvery409AsStale()
     {
         Assert.Contains("function BridgeIsStaleChoiceRejection", Script);
-        Assert.Contains("responseCode == 404", Script);
-        Assert.Contains("responseCode == 409", Script);
         Assert.Contains("errorCode == \"unknown_decision_id\"", Script);
+        Assert.Contains("errorCode == \"decision_already_resolved\"", Script);
+        Assert.Contains("errorCode == \"no_pending_decision\"", Script);
+        Assert.DoesNotContain("responseCode == 409", Script);
         Assert.Contains("BridgeState.yieldSeatId = nil", Script);
-        Assert.Contains("Forge decision changed; stale input discarded", Script);
         Assert.Contains("BridgeStartDecisionPolling()", Script);
     }
 
     [Fact]
-    public void RejectedDecision_CannotIssueAnotherChoicePostWithinTheSameSession()
+    public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-25-choice-preflight-v3\"", Script);
-        Assert.Contains("BridgeState.rejectedChoiceDecisionIds[decisionId] == true", Script);
-        Assert.Contains("BridgeState.rejectedChoiceDecisionIds[decisionId] = true", Script);
-        Assert.Contains("BridgeState.rejectedChoiceDecisionIds[decision.decisionId] == true", Script);
-        Assert.Contains("blocked repeat submission for rejected Forge decision", Script);
-        Assert.Contains("BridgeState.rejectedChoiceDecisionIds = {}", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-25-console-logging-v8\"", Script);
+        Assert.Contains("choiceTransactions = {}", Script);
+        Assert.Contains("retiredChoiceDecisionIds = {}", Script);
+        Assert.Contains("function BridgeLogChoiceAttempt", Script);
+        Assert.Contains("choice-attempt=%s source=%s", Script);
+        Assert.Contains("BridgeState.choiceTransactions[decisionId] = transaction", Script);
+        Assert.Contains("while #BridgeState.retiredChoiceDecisionOrder > 32 do", Script);
+        Assert.Contains("BridgeState.retiredChoiceDecisionIds = {}", Script);
     }
 
     [Fact]
-    public void ChoiceSubmission_PreflightsTheCurrentForgeDecisionBeforePosting()
+    public void SaveAndPlayReload_RetiresTimersAndHttpCallbacksFromThePreviousLuaRuntime()
     {
-        Assert.Contains("function BridgePostValidatedChoice(decisionId, actionId)", Script);
-        Assert.Contains("BridgeHttp.requestJson(\"GET\", \"/api/v1/decision\"", Script);
-        Assert.Contains("current.decisionId == decisionId", Script);
-        Assert.Contains("BridgeDecisionHasAction(current, actionId)", Script);
-        Assert.Contains("BridgePostValidatedChoice(decisionId, actionId)", Script);
-        Assert.Contains("stale physical choice discarded before POST", Script);
+        Assert.Contains("BRIDGE_RUNTIME_EPOCH = (tonumber(BRIDGE_RUNTIME_EPOCH) or 0) + 1", Script);
+        Assert.Contains("function BridgeRuntimeIsCurrent(epoch)", Script);
+        Assert.Contains("function BridgeWaitTime(callback, delay)", Script);
+        Assert.Contains("function BridgeWaitFrames(callback, frames)", Script);
+        Assert.Contains("local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL", Script);
+        Assert.Contains("ignored HTTP callback from retired Global.lua runtime", Script);
+        Assert.Contains("BridgeWaitTime(function()", Script);
+        Assert.Contains("BridgeWaitFrames(function()", Script);
+    }
+
+    [Fact]
+    public void Diagnostics_UseTheScriptingConsoleWhileErrorsBroadcastOnlyOnce()
+    {
+        Assert.Contains("function BridgeLog(message)", Script);
+        Assert.Contains("log(tostring(message))", Script);
+        Assert.DoesNotMatch(@"(?m)^\s*print\(", Script);
+
+        var start = Script.IndexOf("function BridgeShowError", StringComparison.Ordinal);
+        var end = Script.IndexOf("function onObjectPickUp", start, StringComparison.Ordinal);
+        var body = Script[start..end];
+        Assert.Contains("BridgeLog(text)", body);
+        Assert.Contains("broadcastToAll(text", body);
+    }
+
+    [Fact]
+    public void DecisionFetch_LeavesStateMutationToTheGenerationValidatedCaller()
+    {
+        var start = Script.IndexOf("function BridgeGetDecision", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeStopDecisionPolling", start, StringComparison.Ordinal);
+        var body = Script[start..end];
+
+        Assert.Contains("BridgeHttp.requestJson(\"GET\", \"/api/v1/decision\", nil, callback)", body);
+        Assert.DoesNotContain("BridgeState.lastDecision =", body);
+        Assert.DoesNotContain("BridgeClearHighlights()", body);
+    }
+
+    [Fact]
+    public void ChoiceSubmission_PostsAtTheIdempotentServerBoundaryWithoutGetPreflight()
+    {
+        Assert.Contains("BridgeHttp.requestJson(\"POST\", \"/api/v1/choice\"", Script);
+        Assert.Contains("if transaction.actionId == actionId then", Script);
+        Assert.Contains("conflicting action ignored for an already-submitting Forge decision", Script);
+        Assert.DoesNotContain("function BridgePostValidatedChoice", Script);
+        var submitStart = Script.IndexOf("function BridgeSubmitChoice", StringComparison.Ordinal);
+        var submitEnd = Script.IndexOf("function BridgeChoose", submitStart, StringComparison.Ordinal);
+        Assert.True(submitStart >= 0 && submitEnd > submitStart);
+        Assert.DoesNotContain("BridgeHttp.requestJson(\"GET\", \"/api/v1/decision\"", Script[submitStart..submitEnd]);
+    }
+
+    [Fact]
+    public void DelayedDecisionResponses_CannotRenderControlsFromAReplacedSession()
+    {
+        Assert.Contains("decisionPresentationGeneration = 0", Script);
+        Assert.Contains("BridgeState.decisionPresentationGeneration = BridgeState.decisionPresentationGeneration + 1", Script);
+        Assert.Contains("function printDecision(decision, expectedSessionId, presentationGeneration)", Script);
+        Assert.Contains("ignored delayed decision render from a replaced Forge session", Script);
+        Assert.Contains("ignored delayed decision fetch from a replaced Forge session", Script);
+        Assert.Contains("ignored delayed decision refresh from a replaced Forge session", Script);
     }
 
     [Fact]

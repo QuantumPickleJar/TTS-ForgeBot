@@ -113,7 +113,7 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
-    public async Task Choice_UsesMappedNumericInputAndRejectsResolvedDecisionAsStale()
+    public async Task Choice_UsesMappedNumericInputAndTreatsSameResolvedChoiceAsIdempotent()
     {
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
         if (!File.Exists(command)) return;
@@ -155,14 +155,86 @@ public sealed class ForgeTuiAdapterTests
             Assert.True(accepted.Accepted);
             Assert.Equal("forge-tui-2", accepted.State.CurrentDecision?.DecisionId);
 
-            var stale = await adapter.SubmitChoiceAsync(
+            var duplicate = await adapter.SubmitChoiceAsync(
                 new ChoiceRequestDto(decision.DecisionId, mountain.ActionId), CancellationToken.None);
-            Assert.False(stale.Accepted);
-            Assert.Equal("stale_decision_id", stale.ErrorCode);
+            Assert.True(duplicate.Accepted);
+
+            var conflicting = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(decision.DecisionId, "forge-tui-1-choice-0"), CancellationToken.None);
+            Assert.False(conflicting.Accepted);
+            Assert.Equal("decision_already_resolved", conflicting.ErrorCode);
         }
         finally
         {
             File.Delete(script);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentDuplicateChoice_ConsumesForgeDecisionAndWritesStdinOnlyOnce()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-idempotent-{Guid.NewGuid():N}.cmd");
+        var inputLog = Path.Combine(Path.GetTempPath(), $"forge-tui-idempotent-{Guid.NewGuid():N}.log");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            echo %choice% > "__INPUT_LOG__"
+            if not "%choice%"=="0" exit /b 9
+            ping 127.0.0.1 -n 2 >nul
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice2=
+            echo %choice2% >> "__INPUT_LOG__"
+            """.Replace("__INPUT_LOG__", inputLog));
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                    DecisionTimeoutSeconds = 5,
+                }),
+                NullLogger<ForgeTuiAdapter>.Instance);
+
+            var initial = await adapter.StartSessionAsync(CancellationToken.None);
+            var decision = Assert.IsType<MtgTtsBridge.Contracts.State.DecisionDto>(initial.CurrentDecision);
+            var pass = Assert.Single(decision.Actions, action => action.Type == "pass_priority");
+
+            var first = adapter.SubmitChoiceAsync(new ChoiceRequestDto(decision.DecisionId, pass.ActionId), CancellationToken.None);
+            for (var attempt = 0; attempt < 50; attempt++)
+            {
+                if ((await adapter.GetStateAsync(CancellationToken.None)).State == "awaiting_forge") break;
+                await Task.Delay(20);
+            }
+            Assert.Equal("awaiting_forge", (await adapter.GetStateAsync(CancellationToken.None)).State);
+
+            var duplicate = await adapter.SubmitChoiceAsync(new ChoiceRequestDto(decision.DecisionId, pass.ActionId), CancellationToken.None);
+            var unknown = await adapter.SubmitChoiceAsync(new ChoiceRequestDto("not-a-forge-decision", pass.ActionId), CancellationToken.None);
+            var original = await first;
+
+            Assert.True(duplicate.Accepted);
+            Assert.False(unknown.Accepted);
+            Assert.Equal("no_pending_decision", unknown.ErrorCode);
+            Assert.True(original.Accepted);
+            Assert.Equal("forge-tui-2", original.State.CurrentDecision?.DecisionId);
+            var inputs = (await File.ReadAllLinesAsync(inputLog)).Select(input => input.Trim()).ToArray();
+            Assert.Equal(new[] { "0" }, inputs);
+        }
+        finally
+        {
+            File.Delete(script);
+            File.Delete(inputLog);
         }
     }
 
