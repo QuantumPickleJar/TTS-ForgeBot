@@ -39,9 +39,9 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void BattlefieldMovement_ReleasesHandsAndUsesMeasuredBlueAnchors()
+    public void BattlefieldMovement_ReleasesHandsAndUsesAdjustedBlueLandAnchor()
     {
-        Assert.Contains("land = {x = 6.5, y = 2.0, z = 11.5}", Script);
+        Assert.Contains("land = {x = 6.5, y = 2.0, z = 19.0}", Script);
         Assert.Contains("creature = {x = 7.0, y = 2.0, z = 3.5}", Script);
 
         var releaseHand = Script.IndexOf("object.use_hands = false", StringComparison.Ordinal);
@@ -333,6 +333,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("action.targetSeatId", Script);
         Assert.Contains("targetSurfaceGuid", Script);
         Assert.Contains("click_function = \"BridgeSelectPlayerTarget\"", Script);
+        Assert.Contains("function BridgeSpawnPlayerTargetControl", Script);
+        Assert.Contains("click_function = \"BridgeSelectPlayerTargetControl\"", Script);
         Assert.DoesNotContain("action.displayName == \"Player", Script);
     }
 
@@ -673,6 +675,64 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void SnapshotBootstrap_InsertsLooseCardsIntoTheResolvedDeckBeforeReadingTheLibraryLedger()
+    {
+        Assert.Contains("local deck = BridgeResolveSeatLibraryDeck(seatId)", Script);
+        Assert.Contains("deck.putObject(o)", Script);
+        Assert.Contains("START-13 library-settle", Script);
+        Assert.Contains("Wait.frames(function()", Script);
+    }
+
+    [Fact]
+    public void StaleChoiceRejection_ClearsYieldAndRefreshesInsteadOfResubmittingTheOldDecision()
+    {
+        Assert.Contains("function BridgeIsStaleChoiceRejection", Script);
+        Assert.Contains("responseCode == 404", Script);
+        Assert.Contains("responseCode == 409", Script);
+        Assert.Contains("errorCode == \"unknown_decision_id\"", Script);
+        Assert.Contains("BridgeState.yieldSeatId = nil", Script);
+        Assert.Contains("Forge decision changed; stale input discarded", Script);
+        Assert.Contains("BridgeStartDecisionPolling()", Script);
+    }
+
+    [Fact]
+    public void RejectedDecision_CannotIssueAnotherChoicePostWithinTheSameSession()
+    {
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-25-choice-preflight-v3\"", Script);
+        Assert.Contains("BridgeState.rejectedChoiceDecisionIds[decisionId] == true", Script);
+        Assert.Contains("BridgeState.rejectedChoiceDecisionIds[decisionId] = true", Script);
+        Assert.Contains("BridgeState.rejectedChoiceDecisionIds[decision.decisionId] == true", Script);
+        Assert.Contains("blocked repeat submission for rejected Forge decision", Script);
+        Assert.Contains("BridgeState.rejectedChoiceDecisionIds = {}", Script);
+    }
+
+    [Fact]
+    public void ChoiceSubmission_PreflightsTheCurrentForgeDecisionBeforePosting()
+    {
+        Assert.Contains("function BridgePostValidatedChoice(decisionId, actionId)", Script);
+        Assert.Contains("BridgeHttp.requestJson(\"GET\", \"/api/v1/decision\"", Script);
+        Assert.Contains("current.decisionId == decisionId", Script);
+        Assert.Contains("BridgeDecisionHasAction(current, actionId)", Script);
+        Assert.Contains("BridgePostValidatedChoice(decisionId, actionId)", Script);
+        Assert.Contains("stale physical choice discarded before POST", Script);
+    }
+
+    [Fact]
+    public void CardSelection_IsPresentedAsAnOrangeRequiredChoiceRatherThanABlueCastAction()
+    {
+        Assert.Contains("elseif decision.kind == \"card_selection\"", Script);
+        Assert.Contains("Required Forge selection (for example, discard)", Script);
+        Assert.Contains("if decision.kind ~= \"main_priority\" then", Script);
+    }
+
+    [Fact]
+    public void PhysicalPickup_RejectsAnActionThatDoesNotBelongToTheCurrentDecision()
+    {
+        Assert.Contains("if not BridgeDecisionHasAction(decision, action.actionId) then", Script);
+        Assert.Contains("card action is stale; waiting for the current Forge decision", Script);
+    }
+
+    [Fact]
     public void LibraryExtraction_UsesFreshDeckObjectsAndAssignsLooseGuidAfterTakeObject()
     {
         Assert.Contains("BridgeTakeCardFromDeckByIdentity(", Script);
@@ -806,6 +866,34 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgeGraveyardPosition", Script);
         Assert.Contains("BridgeState.graveyardCounts[seatId]", Script);
         Assert.Contains("local graveyardPosition = BridgeGraveyardPosition(event.seatId)", Script);
+        Assert.Contains("x = anchor.x", Script);
+        Assert.Contains("y = anchor.y + 0.08 + count * 0.12", Script);
+        Assert.Contains("object.setLock(true)", Script);
+    }
+
+    [Fact]
+    public void CastSpellIntent_IsReversibleBeforeForgeReceivesIt()
+    {
+        Assert.Contains("function BridgeEnsureCastPreviewControls", Script);
+        Assert.Contains("CAST /\\nCONFIRM", Script);
+        Assert.Contains("CANCEL /\\nRETURN", Script);
+        Assert.Contains("function BridgeConfirmCastPreview", Script);
+        Assert.Contains("function BridgeCancelCastPreview", Script);
+        Assert.Contains("BridgeEnsureCastPreviewControls(intent)", Script);
+        Assert.Contains("BridgeRollbackPendingIntent()", Script);
+    }
+
+    [Fact]
+    public void CombatCandidates_AreOrangeFollowupChoices()
+    {
+        Assert.Contains("if decision.kind ~= \"main_priority\" then", Script);
+        Assert.Contains("highlightColor = {1.0, 0.55, 0.0}", Script);
+    }
+
+    [Fact]
+    public void AiLandRow_IsMovedFartherTowardItsTableSide()
+    {
+        Assert.Contains("land = {x = 6.5, y = 2.0, z = 19.0}", Script);
     }
 
     [Fact]

@@ -8,6 +8,7 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
+BRIDGE_SCRIPT_REVISION = "2026-08-25-choice-preflight-v3"
 
 -- Seat identity remains independent of controller type and TTS color.
 BRIDGE_SEATS = {
@@ -27,7 +28,7 @@ BRIDGE_SEATS = {
         graveyardZoneGuid = nil,
         exileZoneGuid = nil,
         -- Centered on the printed graveyard below this seat's library column.
-        graveyardAnchor = {x = 1.75, y = 2.0, z = -13.8},
+        graveyardAnchor = {x = 1.75, y = 2.0, z = -12.0},
         exileAnchor = {x = 10.8, y = 2.0, z = -13.8},
         includeCardGuids = {},
         excludeCardGuids = {},
@@ -52,12 +53,12 @@ BRIDGE_SEATS = {
         graveyardZoneGuid = nil,
         exileZoneGuid = nil,
         -- Centered on the printed graveyard below this seat's library column.
-        graveyardAnchor = {x = 1.75, y = 2.0, z = 13.8},
+        graveyardAnchor = {x = 1.75, y = 2.0, z = 12.0},
         exileAnchor = {x = 10.8, y = 2.0, z = 13.8},
         includeCardGuids = {},
         excludeCardGuids = {},
         battlefieldAnchors = {
-            land = {x = 6.5, y = 2.0, z = 11.5},
+            land = {x = 6.5, y = 2.0, z = 19.0},
             creature = {x = 7.0, y = 2.0, z = 3.5}
         }
     }
@@ -74,6 +75,7 @@ BridgeState = {
     actionByGuid = {},
     highlightedGuids = {},
     targetButtonIndexByGuid = {},
+    playerTargetControlGuids = {},
     endTurnObjectGuidBySeatId = {},
     passObjectGuidBySeatId = {},
     setupObjectGuidByKind = {},
@@ -98,6 +100,7 @@ BridgeState = {
     manaCounterGuidBySeatId = {},
     submitting = false,
     pendingIntent = nil,
+    pendingIntentControlGuids = {},
     pendingDecision = nil,
     pendingDecisionDeferredAt = nil,
     pendingDecisionDeferredCursor = 0,
@@ -145,6 +148,8 @@ BridgeState = {
     doctorRetryAttempt = 0,
     transitionExpectedUntil = 0,
     latencyProbe = nil,
+    rejectedChoiceDecisionIds = {},
+    rejectedChoiceNoticeDecisionIds = {},
 }
 
 BridgeHttp = {}
@@ -622,6 +627,26 @@ function BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat)
     if not BridgeObjectIsUsable(object) then return false end
     local seat = seatId and BRIDGE_SEATS[seatId] or nil
     if seat == nil then return false end
+
+    -- Do not merely drop cards above the scripting-zone marker and hope that
+    -- physics merges them before the library ledger is inspected. On this
+    -- table the marker is several units above the actual Deck, which left a
+    -- transient (and occasionally permanent) under-count during bootstrap.
+    -- Inserting into the resolved physical Deck is deterministic and does not
+    -- assign any Forge identity; the later ledger remains authoritative.
+    local deck = BridgeResolveSeatLibraryDeck(seatId)
+    if deck ~= nil then
+        local inserted = BridgeSafeObjectCall(object, function(o)
+            o.use_hands = false
+            BridgeSetPhysicalFaceDown(o, seat, true)
+            deck.putObject(o)
+        end)
+        if inserted then return true end
+    end
+
+    -- Retain a spatial fallback for unusual tables where the configured deck
+    -- cannot accept a loose card. The subsequent inventory retry will still
+    -- fail loudly if the card never becomes part of the physical library.
     local staging = BridgeLibraryStagingPosition(seat, stagedBySeat, seatId)
     if staging == nil then return false end
     local staged = BridgeSafeObjectCall(object, function(o)
@@ -947,7 +972,87 @@ function BridgeStartDecisionPolling()
     BridgeScheduleDecisionPoll(BridgeTransitionExpected() and 0.1 or 0.25, BridgeState.decisionPollGeneration, 1)
 end
 
+function BridgeDecisionHasAction(decision, actionId)
+    if decision == nil or actionId == nil then return false end
+    for _, action in ipairs(decision.actions or {}) do
+        if action.actionId == actionId then return true end
+    end
+    return false
+end
+
+function BridgeIsStaleChoiceRejection(body, request)
+    local responseCode = request and tonumber(request.response_code) or nil
+    local errorCode = body and body.errorCode or nil
+    return responseCode == 404
+        or responseCode == 409
+        or errorCode == "stale_decision_id"
+        or errorCode == "unknown_decision_id"
+        or errorCode == "no_pending_decision"
+end
+
 function BridgeSubmitChoice(decisionId, actionId)
+    if BridgeState.submitting then
+        print("[Bridge] choice submission already in progress.")
+        return
+    end
+
+    if decisionId == nil or decisionId == "" then
+        decisionId = BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil
+    end
+    if actionId == nil or actionId == "" then
+        print("[Bridge] actionId is required.")
+        return
+    end
+
+    if decisionId == nil
+        or BridgeState.rejectedChoiceDecisionIds[decisionId] == true
+        or BridgeState.lastDecision == nil
+        or BridgeState.lastDecision.decisionId ~= decisionId
+        or not BridgeDecisionHasAction(BridgeState.lastDecision, actionId) then
+        BridgeState.yieldSeatId = nil
+        BridgeClearHighlights()
+        BridgeRollbackPendingIntent()
+        BridgeResetSelectionState()
+        return
+    end
+
+    -- Validate against the adapter immediately before POST. This prevents a
+    -- physical control that survived a decision transition from ever creating
+    -- a stale-choice 404/409 storm. Forge remains the sole legality authority.
+    BridgeState.submitting = true
+    BridgeHttp.requestJson("GET", "/api/v1/decision", nil, function(ok, current, err, request)
+        BridgeState.submitting = false
+        local currentMatches = ok
+            and current ~= nil
+            and current.decisionId == decisionId
+            and BridgeDecisionHasAction(current, actionId)
+        if currentMatches then
+            BridgeState.lastDecision = current
+            BridgePostValidatedChoice(decisionId, actionId)
+            return
+        end
+
+        BridgeState.rejectedChoiceDecisionIds[decisionId] = true
+        BridgeState.yieldSeatId = nil
+        BridgeState.lastDecision = nil
+        BridgeClearHighlights()
+        BridgeRollbackPendingIntent()
+        BridgeResetSelectionState()
+
+        if ok and current ~= nil then
+            print("[Bridge] stale physical choice discarded before POST; presenting Forge decision " .. tostring(current.decisionId))
+            printDecision(current)
+        else
+            if BridgeState.rejectedChoiceNoticeDecisionIds[decisionId] ~= true then
+                BridgeState.rejectedChoiceNoticeDecisionIds[decisionId] = true
+                print("[Bridge] stale physical choice discarded before POST; Forge has no matching active decision")
+            end
+            BridgeStartDecisionPolling()
+        end
+    end)
+end
+
+function BridgePostValidatedChoice(decisionId, actionId)
     if BridgeState.submitting then
         print("[Bridge] choice submission already in progress.")
         return
@@ -964,6 +1069,32 @@ function BridgeSubmitChoice(decisionId, actionId)
 
     if actionId == nil or actionId == "" then
         print("[Bridge] actionId is required.")
+        return
+    end
+
+    if BridgeState.rejectedChoiceDecisionIds[decisionId] == true then
+        -- A stale control, delayed callback, or repeated GET must never turn a
+        -- decision that Forge already rejected into another POST storm.
+        BridgeState.yieldSeatId = nil
+        BridgeState.lastDecision = nil
+        BridgeClearHighlights()
+        BridgeRollbackPendingIntent()
+        BridgeResetSelectionState()
+        if BridgeState.rejectedChoiceNoticeDecisionIds[decisionId] ~= true then
+            BridgeState.rejectedChoiceNoticeDecisionIds[decisionId] = true
+            BridgeShowError("blocked repeat submission for rejected Forge decision " .. tostring(decisionId))
+        end
+        BridgeStartDecisionPolling()
+        return
+    end
+
+    if BridgeState.lastDecision == nil
+        or BridgeState.lastDecision.decisionId ~= decisionId
+        or not BridgeDecisionHasAction(BridgeState.lastDecision, actionId) then
+        BridgeShowError("not submitting a stale or no-longer-offered Forge choice")
+        BridgeClearHighlights()
+        BridgeRollbackPendingIntent()
+        BridgeResetSelectionState()
         return
     end
 
@@ -987,7 +1118,7 @@ function BridgeSubmitChoice(decisionId, actionId)
         turnChangedAppliedAt = nil,
         nextDecisionAt = nil
     }
-    BridgeHttp.requestJson("POST", "/api/v1/choice", payload, function(ok, body, err)
+    BridgeHttp.requestJson("POST", "/api/v1/choice", payload, function(ok, body, err, request)
         BridgeState.submitting = false
         if not ok then
             BridgeState.latencyProbe = nil
@@ -995,6 +1126,16 @@ function BridgeSubmitChoice(decisionId, actionId)
             BridgeClearHighlights()
             BridgeRollbackPendingIntent()
             BridgeResetSelectionState()
+            if BridgeIsStaleChoiceRejection(body, request) then
+                -- A rejected decision cannot be rendered again: doing so would
+                -- let yield/autopass repeatedly submit the same stale action.
+                BridgeState.rejectedChoiceDecisionIds[decisionId] = true
+                BridgeState.yieldSeatId = nil
+                BridgeState.lastDecision = nil
+                BridgeShowError("Forge decision changed; stale input discarded. Refreshing current decision.")
+                BridgeStartDecisionPolling()
+                return
+            end
             BridgeShowError("choice rejected: " .. tostring(err))
             if body ~= nil and body.errorCode ~= nil then
                 BridgeShowError("errorCode=" .. tostring(body.errorCode) .. " message=" .. tostring(body.message))
@@ -1476,7 +1617,7 @@ end
 function BridgeOnLoad()
     -- This integration does not use Global XML UI; clear stale/broken XML left in saves.
     pcall(function() UI.setXml("") end)
-    print("[Bridge] ForgeBot integration loaded.")
+    print("[Bridge] ForgeBot integration loaded. revision=" .. tostring(BRIDGE_SCRIPT_REVISION))
     BridgeSetStatus("CLIENT LOADED", "Running ForgeBot preflight...")
     BridgeDoctor(function(report)
         if report.companionOk then
@@ -2173,6 +2314,17 @@ function printDecision(decision)
         return
     end
 
+
+    if BridgeState.rejectedChoiceDecisionIds[decision.decisionId] == true then
+        -- Do not re-arm physical controls for a decision the choice endpoint
+        -- has already declared invalid. Wait for a genuinely new decision ID.
+        BridgeState.lastDecision = nil
+        BridgeClearHighlights()
+        BridgeHideMainPriorityControls()
+        BridgeStartDecisionPolling()
+        return
+    end
+
     local ignoreStale, eventCursor, applied = BridgeShouldIgnoreStaleDecision(decision)
     if ignoreStale then
         print(string.format(
@@ -2222,6 +2374,8 @@ function printDecision(decision)
         BridgeSetStatus("DECLARE BLOCKERS", "Drag/select highlighted creatures into block row\nDONE BLOCKING")
     elseif decision.kind == "blocker_assignment" then
         BridgeSetStatus("ASSIGN BLOCKERS", "Choose which attacker each blocker will block\nDONE ASSIGNING")
+    elseif decision.kind == "card_selection" then
+        BridgeSetStatus("CHOOSE CARD", "Required Forge selection (for example, discard) — this is not a cast action")
     elseif decision.kind == "target_selection" or decision.kind == "defender_selection" then
         BridgeSetStatus("CHOOSE TARGET", BridgeTurnLabel() .. " - " .. tostring(actor) .. " priority")
     elseif decision.kind == "generic_numeric_selection" then
@@ -2301,6 +2455,11 @@ function BridgeClearHighlights()
     BridgeState.highlightedGuids = {}
     BridgeState.actionByGuid = {}
     BridgeState.targetButtonIndexByGuid = {}
+    for _, guid in ipairs(BridgeState.playerTargetControlGuids or {}) do
+        local object = BridgeGetLiveObjectByGuid(guid)
+        if object ~= nil then BridgeSafeObjectCall(object, function(o) o.destruct() end) end
+    end
+    BridgeState.playerTargetControlGuids = {}
 end
 
 function BridgeClearOptionControls()
@@ -2497,6 +2656,57 @@ function BridgeInstallTargetButton(object, targetSeatId)
     BridgeState.targetButtonIndexByGuid[object.getGUID()] = nextIndex
 end
 
+function BridgeSpawnPlayerTargetControl(targetObject, targetSeatId, decision, action)
+    if targetObject == nil or decision == nil or action == nil then return end
+    local targetPosition = targetObject.getPosition()
+    local targetSeat = BRIDGE_SEATS[targetSeatId]
+    spawnObject({
+        type = "BlockSquare",
+        position = {x = targetPosition.x, y = targetPosition.y + 1.1, z = targetPosition.z},
+        scale = {1.65, 0.22, 0.90},
+        callback_function = function(control)
+            if control == nil then return end
+            if BridgeState.lastDecision == nil or BridgeState.lastDecision.decisionId ~= decision.decisionId then
+                control.destruct()
+                return
+            end
+            control.setName("Forge Player Target")
+            control.setLock(true)
+            control.setColorTint({1.0, 0.55, 0.0})
+            control.setRotation({0, targetSeat and targetSeat.tableSideZ < 0 and 180 or 0, 0})
+            control.setVar("bridgeDecisionId", decision.decisionId)
+            control.setVar("bridgeActionId", action.actionId)
+            control.createButton({
+                click_function = "BridgeSelectPlayerTargetControl",
+                function_owner = Global,
+                label = "TARGET\n" .. tostring(targetSeat and targetSeat.ttsColor or targetSeatId),
+                position = {0, 0.45, 0},
+                width = 1000,
+                height = 420,
+                font_size = 140,
+                color = {1.0, 0.55, 0.0, 1.0},
+                font_color = {0.08, 0.08, 0.08, 1.0},
+                tooltip = "Choose this player as the Forge target"
+            })
+            table.insert(BridgeState.playerTargetControlGuids, control.getGUID())
+        end
+    })
+end
+
+function BridgeSelectPlayerTargetControl(object, playerColor, altClick)
+    if object == nil or BridgeState.submitting then return end
+    local decision = BridgeState.lastDecision
+    local decisionId = object.getVar("bridgeDecisionId")
+    local actionId = object.getVar("bridgeActionId")
+    if decision == nil or decision.decisionId ~= decisionId or actionId == nil then
+        BridgeShowError("player target control is stale")
+        return
+    end
+    BridgeClaimHumanTtsColor(decision.seatId, playerColor)
+    BridgeClearHighlights()
+    BridgeSubmitChoice(decisionId, actionId)
+end
+
 function BridgeEnsureEndTurnButton(seatId)
     local existingGuid = BridgeState.endTurnObjectGuidBySeatId[seatId]
     local existing = BridgeGetLiveObjectByGuid(existingGuid)
@@ -2684,6 +2894,70 @@ function BridgeResetSelectionState()
     end
     BridgeState.selectionControlGuids = {}
     BridgeClearOptionControls()
+    BridgeClearPendingIntentControls()
+end
+
+function BridgeClearPendingIntentControls()
+    for _, guid in ipairs(BridgeState.pendingIntentControlGuids or {}) do
+        local object = BridgeGetLiveObjectByGuid(guid)
+        if object ~= nil then BridgeSafeObjectCall(object, function(o) o.destruct() end) end
+    end
+    BridgeState.pendingIntentControlGuids = {}
+end
+
+function BridgeEnsureCastPreviewControls(intent)
+    if intent == nil or intent.action == nil or intent.action.type ~= "cast_spell" then return end
+    if #(BridgeState.pendingIntentControlGuids or {}) > 0 then return end
+    local seat = BRIDGE_SEATS[intent.seatId]
+    if seat == nil then return end
+    local function spawnControl(name, label, x, color, callback)
+        spawnObject({
+            type = "BlockSquare",
+            position = {x = x, y = 1.6, z = seat.tableSideZ * 10.0},
+            scale = {2.7, 0.35, 1.4},
+            callback_function = function(control)
+                if control == nil then return end
+                control.setName(name)
+                control.setLock(true)
+                control.setColorTint(color)
+                control.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0})
+                control.createButton({
+                    click_function = callback,
+                    function_owner = Global,
+                    label = label,
+                    position = {0, 0.6, 0},
+                    width = 1050,
+                    height = 460,
+                    font_size = 145,
+                    color = color,
+                    font_color = {1, 1, 1, 1}
+                })
+                table.insert(BridgeState.pendingIntentControlGuids, control.getGUID())
+            end
+        })
+    end
+    spawnControl("Forge Confirm Cast", "CAST /\nCONFIRM", -0.5, {0.12, 0.52, 0.24}, "BridgeConfirmCastPreview")
+    spawnControl("Forge Cancel Cast", "CANCEL /\nRETURN", 5.5, {0.65, 0.2, 0.12}, "BridgeCancelCastPreview")
+end
+
+function BridgeConfirmCastPreview(object, playerColor, altClick)
+    local intent = BridgeState.pendingIntent
+    local decision = BridgeState.lastDecision
+    if intent == nil or decision == nil or decision.decisionId ~= intent.decisionId then
+        BridgeClearPendingIntentControls()
+        BridgeShowError("cast preview is stale")
+        return
+    end
+    BridgeClaimHumanTtsColor(intent.seatId, playerColor)
+    BridgeClearPendingIntentControls()
+    BridgeSubmitChoice(intent.decisionId, intent.action.actionId)
+end
+
+function BridgeCancelCastPreview(object, playerColor, altClick)
+    local decision = BridgeState.lastDecision
+    BridgeClearPendingIntentControls()
+    BridgeRollbackPendingIntent()
+    if decision ~= nil then BridgeRenderDecision(decision) end
 end
 
 function BridgeSelectionCount()
@@ -2818,7 +3092,7 @@ function BridgeRenderDecision(decision)
 
     local highlightColor = {0.53, 0.81, 0.98}
     local selectedCombatColor = {0.2, 1.0, 0.35}
-    if decision.kind == "target_selection" or decision.kind == "defender_selection" or decision.kind == "blocker_selection" or decision.kind == "blocker_assignment" then
+    if decision.kind ~= "main_priority" then
         highlightColor = {1.0, 0.55, 0.0}
     end
 
@@ -2869,6 +3143,7 @@ function BridgeRenderDecision(decision)
                 representedActionIds[action.actionId] = true
                 table.insert(BridgeState.highlightedGuids, guid)
                 BridgeInstallTargetButton(targetObject, action.targetSeatId)
+                BridgeSpawnPlayerTargetControl(targetObject, action.targetSeatId, decision, action)
             else
                 BridgeShowError("no physical target surface configured for seat " .. tostring(action.targetSeatId))
             end
@@ -2965,6 +3240,14 @@ function onObjectPickUp(playerColor, object)
         return
     end
 
+    if not BridgeDecisionHasAction(decision, action.actionId) then
+        -- The object was highlighted by an older decision. Never turn a
+        -- physical pickup into a submission for a different Forge prompt.
+        BridgeClearHighlights()
+        BridgeShowError("card action is stale; waiting for the current Forge decision")
+        return
+    end
+
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
 
     BridgeState.pendingIntent = {
@@ -3027,12 +3310,10 @@ function onObjectDrop(playerColor, object)
             BridgeState.physicalZoneByGuid[intent.guid] = "battlefield"
         else
             BridgeState.physicalZoneByGuid[intent.guid] = "stack"
-            BridgeState.pendingCastBySeatId[intent.seatId] = {
-                guid = intent.guid,
-                cardIdentity = intent.action.cardIdentity,
-                actionId = intent.action.actionId,
-                decisionId = intent.decisionId,
-            }
+            object.use_hands = false
+            object.setPositionSmooth(BRIDGE_STACK_POSITION, false, true)
+            BridgeEnsureCastPreviewControls(intent)
+            return
         end
     end
 
@@ -3071,6 +3352,7 @@ end
 function BridgeCommitPendingIntent()
     local intent = BridgeState.pendingIntent
     BridgeState.pendingIntent = nil
+    BridgeClearPendingIntentControls()
     if intent == nil then return end
 
     if intent.action.type == "choose_attacker" or intent.action.type == "choose_blocker" then
@@ -3096,12 +3378,21 @@ function BridgeCommitPendingIntent()
     else
         local object = getObjectFromGUID(intent.guid)
         if object ~= nil then object.use_hands = false end
+        if intent.action.type == "cast_spell" then
+            BridgeState.pendingCastBySeatId[intent.seatId] = {
+                guid = intent.guid,
+                cardIdentity = intent.action.cardIdentity,
+                actionId = intent.action.actionId,
+                decisionId = intent.decisionId,
+            }
+        end
     end
 end
 
 function BridgeRollbackPendingIntent()
     local intent = BridgeState.pendingIntent
     BridgeState.pendingIntent = nil
+    BridgeClearPendingIntentControls()
     if intent == nil then
         return
     end
@@ -3118,6 +3409,9 @@ function BridgeRollbackPendingIntent()
     -- unembodiable even though the player had only cancelled a physical move.
     BridgeState.physicalSeatByGuid[intent.guid] = intent.physicalSeatId
     BridgeState.physicalZoneByGuid[intent.guid] = intent.physicalZone
+    if intent.action ~= nil and intent.action.type == "cast_spell" then
+        BridgeState.pendingCastBySeatId[intent.seatId] = nil
+    end
 end
 
 function BridgeBootstrapCurrentSnapshot(sessionId, callback)
@@ -3152,26 +3446,32 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
                 return
             end
 
-            BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
-                BridgeRunTraced("START annotate-callback", function()
-                    if not annotated then
-                        BridgeState.bootstrapping = false
-                        callback(false, annotationError)
-                        return
-                    end
-                    BridgeBootstrapSeats(snapshot, 1, function(seatsOk, seatsError)
-                        BridgeRunTraced("START seat-bootstrap-callback", function()
+            -- Let Tabletop Simulator commit Deck.putObject before reading the
+            -- contained-card ledger. This is a short state-settle, not a
+            -- timing-based replacement for deterministic insertion above.
+            BridgeTraceStart("START-13 library-settle")
+            Wait.frames(function()
+                BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
+                    BridgeRunTraced("START annotate-callback", function()
+                        if not annotated then
                             BridgeState.bootstrapping = false
-                            if not seatsOk then callback(false, seatsError); return end
-                            BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
-                            print(string.format(
-                                "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
-                                #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
-                            callback(true, nil)
+                            callback(false, annotationError)
+                            return
+                        end
+                        BridgeBootstrapSeats(snapshot, 1, function(seatsOk, seatsError)
+                            BridgeRunTraced("START seat-bootstrap-callback", function()
+                                BridgeState.bootstrapping = false
+                                if not seatsOk then callback(false, seatsError); return end
+                                BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
+                                print(string.format(
+                                    "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
+                                    #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
+                                callback(true, nil)
+                            end)
                         end)
                     end)
                 end)
-            end)
+            end, 15)
         end)
     end)
 end
@@ -3773,6 +4073,8 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.yieldSeatId = nil
     BridgeState.transitionExpectedUntil = 0
     BridgeState.latencyProbe = nil
+    BridgeState.rejectedChoiceDecisionIds = {}
+    BridgeState.rejectedChoiceNoticeDecisionIds = {}
     BridgeState.pendingDecision = nil
     BridgeState.pendingDecisionDeferredAt = nil
     BridgeState.pendingDecisionDeferredCursor = 0
@@ -4560,6 +4862,7 @@ function BridgeMoveToGraveyard(event, object)
         object.use_hands = false
         BridgeSetPhysicalFaceDown(object, seat, false)
         object.setPositionSmooth(graveyardPosition, false, true)
+        object.setLock(true)
     end)
     if not moved then return false, "could not move card to graveyard: " .. tostring(movementError) end
     local guid = object.getGUID()
@@ -4991,15 +5294,15 @@ function BridgeGraveyardPosition(seatId)
     local anchor = BridgeResolveSeatZoneAnchor(seatId, "graveyard")
     if anchor == nil then return nil end
 
-    -- Keep individual physical cards distinct. Stacking TTS cards into a Deck
-    -- loses their individual GUIDs, which prevents exact Forge-instance
-    -- tracking and turns a later semantic spell_resolved line into a desync.
+    -- Visually pile the graveyard in one place, but retain each card object
+    -- and its exact Forge-instance mapping rather than letting TTS merge the
+    -- pile into a Deck.
     local count = BridgeState.graveyardCounts[seatId] or 0
     BridgeState.graveyardCounts[seatId] = count + 1
     return {
-        x = anchor.x + (count % 2) * 2.45,
-        y = anchor.y + 0.08,
-        z = anchor.z + math.floor(count / 2) * seat.tableSideZ * 3.55
+        x = anchor.x,
+        y = anchor.y + 0.08 + count * 0.12,
+        z = anchor.z
     }
 end
 
