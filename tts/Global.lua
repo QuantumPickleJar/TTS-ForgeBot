@@ -4140,14 +4140,16 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
                     if not presentationApplied then
                         BridgeLog("[Bridge] optional card presentation skipped: " .. tostring(presentationError))
                     end
-                    for counterType, counterValue in pairs(card.counters or {}) do
-                        local ok, counterError = BridgeSetCardCounterState(object, counterType, counterValue)
-                        if not ok then BridgeLog("[Bridge] counter visual unsupported: " .. tostring(counterError)) end
-                    end
+                    BridgeState.counterStateByInstanceId[card.cardInstanceId] = BridgeCopyCounterMap(card.counters)
+                    local countersApplied, counterError = BridgeSetCardCounters(object, card.counters)
+                    if not countersApplied then BridgeLog("[Bridge] counter visual unsupported: " .. tostring(counterError)) end
+                    local keywords = {}
                     for _, keyword in ipairs(card.keywords or {}) do
-                        local ok, keywordError = BridgeSetCardKeywordState(object, keyword, true)
-                        if not ok then BridgeLog("[Bridge] keyword visual unsupported: " .. tostring(keywordError)) end
+                        keywords[BridgeNormalizeKeywordName(keyword)] = true
                     end
+                    BridgeState.keywordStateByInstanceId[card.cardInstanceId] = keywords
+                    local keywordsApplied, keywordError = BridgeSetCardKeywords(object, card.keywords)
+                    if not keywordsApplied then BridgeLog("[Bridge] keyword visual unsupported: " .. tostring(keywordError)) end
                 end
             end
         end
@@ -4611,7 +4613,10 @@ function BridgeApplyAuthoritativeEvent(event)
             BridgeLog("[Bridge] counter update deferred to snapshot reconcile: " .. tostring(resolveError))
             return true, 0.1
         end
-        local applied, counterError = BridgeSetCardCounterState(object, event.counterType, event.counterValue)
+        local counters = BridgeState.counterStateByInstanceId[event.cardInstanceId] or {}
+        counters[BridgeNormalizeCounterName(event.counterType)] = tonumber(event.counterValue) or 0
+        BridgeState.counterStateByInstanceId[event.cardInstanceId] = BridgeCopyCounterMap(counters)
+        local applied, counterError = BridgeSetCardCounters(object, counters)
         if not applied then
             BridgeLog("[Bridge] optional physical counter decoration skipped: " .. tostring(counterError))
         end
@@ -4624,7 +4629,15 @@ function BridgeApplyAuthoritativeEvent(event)
             BridgeLog("[Bridge] keyword update deferred to snapshot reconcile: " .. tostring(resolveError))
             return true, 0.1
         end
-        local applied, keywordError = BridgeSetCardKeywordState(object, event.keyword, event.kind == "keyword_added")
+        local keywords = BridgeState.keywordStateByInstanceId[event.cardInstanceId] or {}
+        local normalized = BridgeNormalizeKeywordName(event.keyword)
+        if event.kind == "keyword_added" then keywords[normalized] = true else keywords[normalized] = nil end
+        BridgeState.keywordStateByInstanceId[event.cardInstanceId] = keywords
+        local absoluteKeywords = {}
+        for keyword, isEnabled in pairs(keywords) do
+            if isEnabled then table.insert(absoluteKeywords, keyword) end
+        end
+        local applied, keywordError = BridgeSetCardKeywords(object, absoluteKeywords)
         if not applied then
             BridgeLog("[Bridge] optional physical keyword decoration skipped: " .. tostring(keywordError))
         end
@@ -5270,6 +5283,7 @@ end
 local BRIDGE_UNIFIED_PROPERTY = "_MTG_Simplified_UNIFIED"
 local BRIDGE_KEYWORDS_PROPERTY = "πKeywords"
 local BRIDGE_PHASE_PROPERTY = "MTG_Phase"
+local BRIDGE_COUNTER_FALLBACK_PROPERTY = "ForgeBotState"
 
 function BridgeEnsureTableEncoded(object)
     if not BridgeObjectIsUsable(object) then return nil, "card object is unavailable" end
@@ -5392,6 +5406,60 @@ end
 -- Existing table integration: Easy Modules Unified is the authoritative visual
 -- sink for +1/+1 and generic named counters. Values are set absolutely so event
 -- replay cannot double the physical display.
+function BridgeNormalizeCounterName(counterType)
+    local normalized = string.lower(tostring(counterType or ""))
+    normalized = string.gsub(normalized, "^%s+", "")
+    normalized = string.gsub(normalized, "%s+$", "")
+    return normalized
+end
+
+function BridgeCopyCounterMap(counters)
+    local result = {}
+    for counterType, counterValue in pairs(counters or {}) do
+        local normalized = BridgeNormalizeCounterName(counterType)
+        local numeric = tonumber(counterValue) or 0
+        if normalized ~= "" and numeric > 0 then result[normalized] = numeric end
+    end
+    return result
+end
+
+function BridgeSetCardCounters(object, absoluteCounters)
+    local counters = BridgeCopyCounterMap(absoluteCounters)
+    local plusOne = counters["+1/+1"] or 0
+    local named = {}
+    for counterType, counterValue in pairs(counters) do
+        if counterType ~= "+1/+1" and counterType ~= "stun" then
+            table.insert(named, {counterType = counterType, counterValue = counterValue})
+        end
+    end
+    table.sort(named, function(left, right) return left.counterType < right.counterType end)
+
+    local applied, applyError = BridgeMutateUnifiedState(object, function(unified)
+        unified.plusOneCounters = plusOne
+        unified.displayPlusOne = plusOne ~= 0
+        -- Unified has one generic named counter display.  Never combine
+        -- different Forge counter types into an invented total.
+        if #named == 1 then
+            unified.namedCounters = named[1].counterValue
+            unified.displayCounters = named[1].counterValue ~= 0
+        else
+            unified.namedCounters = 0
+            unified.displayCounters = false
+        end
+    end)
+    if not applied then return false, applyError end
+
+    local stunApplied, stunError = BridgeSetCardKeywordState(object, "stun", (counters.stun or 0) > 0)
+    if not stunApplied then
+        BridgeLog("[Bridge] optional stun presentation skipped: " .. tostring(stunError))
+    end
+    local fallbackApplied, fallbackError = BridgeSetForgeBotCounterFallback(object, named)
+    if not fallbackApplied then
+        BridgeLog("[Bridge] optional counter fallback skipped: " .. tostring(fallbackError))
+    end
+    return true, nil
+end
+
 function BridgeSetCardCounterState(object, counterType, counterValue)
     if counterValue == nil or counterValue < 0 then
         return false, "invalid authoritative counter value " .. tostring(counterValue)
@@ -5458,6 +5526,115 @@ function BridgeSetCardKeywordState(object, keyword, enabled)
     end)
     if not ok then return false, tostring(applyError) end
     return true, nil
+end
+
+function BridgeSetCardKeywords(object, absoluteKeywords)
+    local enabled = {}
+    for _, keyword in ipairs(absoluteKeywords or {}) do
+        local normalized = BridgeNormalizeKeywordName(keyword)
+        if BRIDGE_KEYWORD_PROPERTIES[normalized] ~= nil then
+            enabled[normalized] = true
+        elseif normalized ~= "" then
+            BridgeLog("[Bridge] optional keyword decoration skipped: unsupported existing-table keyword " .. tostring(keyword))
+        end
+    end
+    local encoder, encoderError = BridgeEnsureEncoderProperty(object, BRIDGE_KEYWORDS_PROPERTY)
+    if encoder == nil then return false, encoderError end
+    local ok, applyError = pcall(function()
+        local data = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY})
+        if data == nil then error("card lacks πKeywords metadata") end
+        data.activeIcons = {}
+        for keyword, property in pairs(BRIDGE_KEYWORD_PROPERTIES) do
+            local isEnabled = enabled[keyword] == true
+            data[property] = isEnabled and 1 or 0
+            if isEnabled then table.insert(data.activeIcons, property) end
+        end
+        encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY, data = data})
+        encoder.call("APIrebuildButtons", {obj = object})
+    end)
+    if not ok then return false, tostring(applyError) end
+    return true, nil
+end
+
+-- This hidden Encoder property is only enabled when Unified's single generic
+-- counter display cannot faithfully show the complete Forge counter map.
+function BridgeEnsureForgeBotCounterFallbackProperty()
+    local encoder = Global.getVar("Encoder")
+    if encoder == nil then return nil, "Easy Modules Encoder is unavailable" end
+    local ok, existsOrError = pcall(function()
+        return encoder.call("APIpropertyExists", {propID = BRIDGE_COUNTER_FALLBACK_PROPERTY})
+    end)
+    if not ok then return nil, "could not inspect ForgeBot counter property: " .. tostring(existsOrError) end
+    if existsOrError ~= true then
+        local registered, registerError = pcall(function()
+            encoder.call("APIregisterProperty", {
+                propID = BRIDGE_COUNTER_FALLBACK_PROPERTY,
+                name = "ForgeBot Counters",
+                values = {},
+                funcOwner = Global,
+                activateFunc = "",
+                visible = false
+            })
+        end)
+        if not registered then return nil, "could not register ForgeBot counter property: " .. tostring(registerError) end
+    end
+    return encoder, nil
+end
+
+function BridgeSetForgeBotCounterFallback(object, namedCounters)
+    local encoder, encoderError = BridgeEnsureForgeBotCounterFallbackProperty()
+    if encoder == nil then return false, encoderError end
+    local needsFallback = #(namedCounters or {}) > 1
+    local ok, applyError = pcall(function()
+        local encoded = encoder.call("APIobjectExists", {obj = object})
+        if encoded ~= true then error("card is not Encoder-managed") end
+        local enabled = encoder.call("APIobjIsPropEnabled", {obj = object, propID = BRIDGE_COUNTER_FALLBACK_PROPERTY})
+        if needsFallback and enabled ~= true then
+            encoder.call("APIobjEnableProp", {obj = object, propID = BRIDGE_COUNTER_FALLBACK_PROPERTY})
+        elseif not needsFallback and enabled == true then
+            encoder.call("APIobjDisableProp", {obj = object, propID = BRIDGE_COUNTER_FALLBACK_PROPERTY})
+        end
+        encoder.call("APIrebuildButtons", {obj = object})
+    end)
+    if not ok then return false, tostring(applyError) end
+    return true, nil
+end
+
+function BridgeIgnoreCardPresentationClick()
+end
+
+-- Encoder invokes createButtons on the property owner during every rebuild.
+-- This is deliberately a property-owned button, never a persistent direct card
+-- button that would be erased by APIrebuildButtons.
+function createButtons(t)
+    local object = t and t.obj or nil
+    local guid = BridgeSafeObjectGuid(object)
+    local instanceId = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+    local counters = instanceId and BridgeState.counterStateByInstanceId[instanceId] or nil
+    if counters == nil then return end
+    local labels = {}
+    for counterType, counterValue in pairs(counters) do
+        if counterType ~= "+1/+1" and counterType ~= "stun" and tonumber(counterValue or 0) > 0 then
+            table.insert(labels, tostring(counterType) .. " " .. tostring(counterValue))
+        end
+    end
+    table.sort(labels)
+    if #labels < 2 then return end
+    BridgeSafeObjectCall(object, function(card)
+        card.createButton({
+            click_function = "BridgeIgnoreCardPresentationClick",
+            function_owner = Global,
+            label = table.concat(labels, "\n"),
+            position = {0.82, 0.29, -1.05},
+            rotation = {0, 0, 0},
+            width = 0,
+            height = 0,
+            font_size = 105,
+            color = {0, 0, 0, 0},
+            font_color = {1, 0.9, 0.35, 1},
+            tooltip = "Forge-authoritative counters"
+        })
+    end)
 end
 
 function BridgeResolvePhysicalCard(event, expectedZone, options)

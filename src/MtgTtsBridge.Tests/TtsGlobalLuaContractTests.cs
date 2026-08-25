@@ -352,7 +352,14 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("unified.displayOwnership", Script);
         Assert.Contains("function BridgeSetPhasedState(object, phased)", Script);
         Assert.Contains("data.mtg_phased = phased == true", Script);
+        Assert.Contains("function BridgeSetCardCounters(object, absoluteCounters)", Script);
+        Assert.Contains("function BridgeCopyCounterMap(counters)", Script);
+        Assert.Contains("if #named == 1 then", Script);
+        Assert.Contains("local BRIDGE_COUNTER_FALLBACK_PROPERTY = \"ForgeBotState\"", Script);
+        Assert.Contains("function BridgeSetForgeBotCounterFallback(object, namedCounters)", Script);
         Assert.Contains("local BRIDGE_KEYWORDS_PROPERTY = \"πKeywords\"", Script);
+        Assert.Contains("function BridgeSetCardKeywords(object, absoluteKeywords)", Script);
+        Assert.Contains("data.activeIcons = {}", Script);
         Assert.Contains("data[property] = enabled and 1 or 0", Script);
         Assert.Contains("APIobjSetPropData", Script);
         Assert.Contains("APIrebuildButtons", Script);
