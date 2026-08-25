@@ -779,6 +779,7 @@ function BridgeFindNamedZoneObjectForSeat(seatId, zoneName)
     local keyword = nil
     if zoneName == "graveyard" then keyword = "graveyard" end
     if zoneName == "exile" then keyword = "exile" end
+    if zoneName == "command" then keyword = "command" end
     if keyword == nil then return nil end
 
     local library = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
@@ -1471,6 +1472,7 @@ function BridgeZoneIsPublicForReconcile(zoneName)
         or zoneName == "graveyard"
         or zoneName == "stack"
         or zoneName == "exile"
+        or zoneName == "command"
 end
 
 function BridgeShouldReconcileAfterEvent(event)
@@ -4171,6 +4173,12 @@ function BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
         if not BridgeSafeObjectCall(object, function(o) o.setPosition(position) end) then
             return false, "failed to place exile card for seat " .. tostring(seatSnapshot.seatId)
         end
+    elseif zone.name == "command" then
+        local position = BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, "command")
+        if position == nil then return false, "missing command anchor for seat " .. tostring(seatSnapshot.seatId) end
+        if not BridgeSafeObjectCall(object, function(o) o.setPosition(position) end) then
+            return false, "failed to place command card for seat " .. tostring(seatSnapshot.seatId)
+        end
     end
     return true, nil
 end
@@ -5314,6 +5322,13 @@ function BridgeApplyStructuredCardMove(event)
             return false, "no exile anchor configured for seat " .. tostring(event.seatId)
         end
         object.setPositionSmooth(exilePosition, false, true)
+    elseif event.destinationZone == "command" then
+        object.use_hands = false
+        local commandPosition = BridgeResolveSeatZoneAnchor(event.seatId, "command")
+        if commandPosition == nil then
+            return false, "no command anchor configured for seat " .. tostring(event.seatId)
+        end
+        object.setPositionSmooth(commandPosition, false, true)
     elseif event.destinationZone == "library" then
         local libraryZone = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
         if libraryZone == nil then
