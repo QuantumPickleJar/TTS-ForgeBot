@@ -4,6 +4,9 @@ BRIDGE_MANA_COUNTER_SOURCES = {
     W = "cd8bb6", U = "4783af", B = "1c4a59",
     R = "220d2f", G = "cdbccc", C = "aeeb11"
 }
+BRIDGE_PLAYER_TRACKER_SOURCES = {
+    poison = "81ae86", experience = "1ea882", energy = "328fa7", speed = "2c18ff"
+}
 BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
@@ -63,6 +66,10 @@ BRIDGE_SEATS = {
         attackLaneZ = -0.9,
         blockerLaneZ = -2.2,
         manaBankOffset = {x = 2.5, y = 0.45, z = -0.60},  -- Positioned right of life counter, nudged toward battlefield
+        trackerOffsets = {
+            poison = {x = -2.8, y = 0.45, z = -0.55}, experience = {x = -4.0, y = 0.45, z = -0.55},
+            energy = {x = -5.2, y = 0.45, z = -0.55}, speed = {x = -6.4, y = 0.45, z = -0.55}
+        },
         faceUpRotation = {x = 0, y = 180, z = 0},
         graveyardZoneGuid = nil,
         exileZoneGuid = nil,
@@ -71,6 +78,8 @@ BRIDGE_SEATS = {
         graveyardAnchor = {x = 1.7714, y = 2.0, z = -12.2921},
         exileAnchor = {x = 1.7575, y = 2.0, z = -15.9598},
         commandAnchor = {x = 37.3817, y = 2.0, z = -3.1542},
+        monarchAnchor = {x = 37.3817, y = 2.35, z = -3.1542},
+        monarchRotation = {x = 0, y = 180, z = 0},
         includeCardGuids = {},
         excludeCardGuids = {},
         battlefieldAnchors = {
@@ -90,6 +99,10 @@ BRIDGE_SEATS = {
         attackLaneZ = 0.9,
         blockerLaneZ = 2.2,
         manaBankOffset = {x = 2.5, y = 0.45, z = 0.60},  -- Positioned right of life counter, nudged toward battlefield
+        trackerOffsets = {
+            poison = {x = -2.8, y = 0.45, z = 0.55}, experience = {x = -4.0, y = 0.45, z = 0.55},
+            energy = {x = -5.2, y = 0.45, z = 0.55}, speed = {x = -6.4, y = 0.45, z = 0.55}
+        },
         faceUpRotation = {x = 0, y = 0, z = 0},
         graveyardZoneGuid = nil,
         exileZoneGuid = nil,
@@ -98,6 +111,8 @@ BRIDGE_SEATS = {
         graveyardAnchor = {x = 1.7476, y = 2.0, z = 12.3162},
         exileAnchor = {x = 1.7837, y = 2.0, z = 15.9528},
         commandAnchor = {x = 37.3622, y = 2.0, z = 3.1347},
+        monarchAnchor = {x = 37.3622, y = 2.35, z = 3.1347},
+        monarchRotation = {x = 0, y = 0, z = 0},
         includeCardGuids = {},
         excludeCardGuids = {},
         battlefieldAnchors = {
@@ -141,6 +156,10 @@ BridgeState = {
     attackLaneGuidBySeatId = {},
     combatSelectedByGuid = {},
     manaCounterGuidBySeatId = {},
+    playerTrackerGuidBySeatId = {},
+    monarchHelperGuid = nil,
+    monarchSeatId = nil,
+    monarchSpawnInFlight = false,
     submitting = false,
     choiceAttemptSequence = 0,
     choiceRequestSequence = 0,
@@ -1503,6 +1522,7 @@ end
 
 function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     local movedCount = 0
+    BridgeSetMonarchSeat(snapshot and snapshot.monarchSeatId or nil)
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
         BridgeApplySeatSnapshotVisualState(seatSnapshot)
         for _, zone in ipairs(seatSnapshot.zones or {}) do
@@ -4160,6 +4180,7 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
     local lifeCounter = BridgeGetLiveObjectByGuid(seat.lifeCounterGuid)
     if lifeCounter ~= nil then lifeCounter.setValue(seatSnapshot.life) end
     BridgeSetManaBank(seatSnapshot.seatId, seatSnapshot.manaPool or {})
+    BridgeApplySeatTrackers(seatSnapshot)
     for _, zone in ipairs(seatSnapshot.zones or {}) do
         if zone.name == "battlefield" then
             for _, card in ipairs(zone.cards or {}) do
@@ -4247,6 +4268,161 @@ function BridgeSetManaBank(seatId, manaPool)
             end
         end
     end, 2)
+end
+
+function BridgeSetNativeTrackerValue(counter, value)
+    if counter == nil then return end
+    local amount = math.max(0, tonumber(value or 0) or 0)
+    counter.setVar("val", amount)
+    pcall(function() counter.call("updateVal") end)
+    pcall(function() counter.call("updateSave") end)
+end
+
+function BridgeTrackerPosition(seatId, kind)
+    local seat = BRIDGE_SEATS[seatId]
+    local offset = seat and seat.trackerOffsets and seat.trackerOffsets[kind]
+    local lifeCounter = seat and BridgeGetLiveObjectByGuid(seat.lifeCounterGuid) or nil
+    if offset == nil or lifeCounter == nil then return nil end
+    local lifePosition = lifeCounter.getPosition()
+    return {lifePosition.x + offset.x, lifePosition.y + offset.y, lifePosition.z + offset.z}
+end
+
+function BridgeSetSeatTracker(seatId, kind, value)
+    local amount = math.max(0, tonumber(value or 0) or 0)
+    local sourceGuid = BRIDGE_PLAYER_TRACKER_SOURCES[kind]
+    local position = BridgeTrackerPosition(seatId, kind)
+    if sourceGuid == nil or position == nil then return false, "missing table-native tracker configuration" end
+    BridgeState.playerTrackerGuidBySeatId[seatId] = BridgeState.playerTrackerGuidBySeatId[seatId] or {}
+    local expectedName = "Forge " .. tostring(kind) .. " " .. tostring(seatId)
+    local currentGuid = BridgeState.playerTrackerGuidBySeatId[seatId][kind]
+    local counter = currentGuid and BridgeGetLiveObjectByGuid(currentGuid) or nil
+    if counter == nil then
+        for _, object in ipairs(getAllObjects()) do
+            if BridgeObjectIsUsable(object) and BridgeSafeObjectName(object) == expectedName then
+                counter = object
+                break
+            end
+        end
+    end
+    if counter ~= nil then
+        BridgeRegisterPresentationObject(counter, "player_tracker_" .. kind)
+        BridgeState.playerTrackerGuidBySeatId[seatId][kind] = BridgeSafeObjectGuid(counter)
+        counter.setPosition(position)
+        BridgeSetNativeTrackerValue(counter, amount)
+        return true, nil
+    end
+    if amount == 0 then return true, nil end
+
+    local source = BridgeGetLiveObjectByGuid(sourceGuid)
+    if source == nil then return false, "missing reusable table tracker source for " .. tostring(kind) end
+    local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    source.takeObject({
+        position = position,
+        smooth = false,
+        callback_function = function(taken)
+            if not BridgeRuntimeIsCurrent(epoch) or not BridgeObjectIsUsable(taken) then return end
+            taken.setName(expectedName)
+            taken.setLock(true)
+            BridgeRegisterPresentationObject(taken, "player_tracker_" .. kind)
+            BridgeState.playerTrackerGuidBySeatId[seatId][kind] = BridgeSafeObjectGuid(taken)
+            BridgeWaitFrames(function()
+                if not BridgeRuntimeIsCurrent(epoch) then return end
+                BridgeSetNativeTrackerValue(taken, amount)
+            end, 2)
+        end
+    })
+    return true, nil
+end
+
+function BridgeApplySeatTrackers(seatSnapshot)
+    if seatSnapshot == nil then return end
+    BridgeSetSeatTracker(seatSnapshot.seatId, "poison", seatSnapshot.poison)
+    local counters = seatSnapshot.counters or {}
+    BridgeSetSeatTracker(seatSnapshot.seatId, "energy", counters.energy or counters.Energy or 0)
+    BridgeSetSeatTracker(seatSnapshot.seatId, "experience", counters.experience or counters.Experience or 0)
+    BridgeSetSeatTracker(seatSnapshot.seatId, "speed", seatSnapshot.speed or 0)
+end
+
+function BridgeFindLiveMonarchHelper()
+    local known = BridgeState.monarchHelperGuid and BridgeGetLiveObjectByGuid(BridgeState.monarchHelperGuid) or nil
+    if known ~= nil then return known end
+    for _, object in ipairs(getAllObjects()) do
+        local name = string.lower(tostring(BridgeSafeObjectName(object) or ""))
+        if BridgeObjectIsUsable(object) and object.tag == "Card" and string.sub(name, 1, 10) == "the monarch" then
+            BridgeRegisterPresentationObject(object, "monarch_helper")
+            BridgeState.monarchHelperGuid = BridgeSafeObjectGuid(object)
+            return object
+        end
+    end
+    return nil
+end
+
+function BridgePositionMonarchHelper(helper, seatId)
+    local seat = BRIDGE_SEATS[seatId]
+    if helper == nil or seat == nil or seat.monarchAnchor == nil then return false end
+    BridgeRegisterPresentationObject(helper, "monarch_helper")
+    BridgeState.monarchHelperGuid = BridgeSafeObjectGuid(helper)
+    BridgeState.monarchSeatId = seatId
+    BridgeSafeObjectCall(helper, function(card)
+        card.setLock(true)
+        card.interactable = false
+        card.setPositionSmooth(seat.monarchAnchor, false, true)
+        card.setRotationSmooth(seat.monarchRotation or seat.faceUpRotation, false, true)
+    end)
+    return true
+end
+
+function BridgeReturnMonarchHelper()
+    local helper = BridgeFindLiveMonarchHelper()
+    local utilityDeck = BridgeGetLiveObjectByGuid("946716")
+    if helper ~= nil and utilityDeck ~= nil and utilityDeck.tag == "Deck" then
+        BridgeSafeObjectCall(utilityDeck, function(deck) deck.putObject(helper) end)
+        BridgeUnregisterPresentationObject(helper)
+        BridgeState.monarchHelperGuid = nil
+    end
+    BridgeState.monarchSeatId = nil
+end
+
+function BridgeSetMonarchSeat(seatId)
+    if seatId == nil or BRIDGE_SEATS[seatId] == nil then
+        BridgeReturnMonarchHelper()
+        return
+    end
+    BridgeState.monarchSeatId = seatId
+    local helper = BridgeFindLiveMonarchHelper()
+    if helper ~= nil then
+        BridgePositionMonarchHelper(helper, seatId)
+        return
+    end
+    if BridgeState.monarchSpawnInFlight then return end
+    local utilityDeck = BridgeGetLiveObjectByGuid("946716")
+    if utilityDeck == nil or utilityDeck.tag ~= "Deck" then
+        BridgeLog("[Bridge] Monarch helper unavailable: native utility deck 946716 is missing")
+        return
+    end
+    local entry = nil
+    for _, contained in ipairs(utilityDeck.getObjects() or {}) do
+        local name = string.lower(tostring(contained.nickname or contained.name or ""))
+        if string.sub(name, 1, 10) == "the monarch" then entry = contained; break end
+    end
+    if entry == nil then
+        BridgeLog("[Bridge] Monarch helper unavailable: utility deck has no The Monarch card")
+        return
+    end
+    BridgeState.monarchSpawnInFlight = true
+    local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    utilityDeck.takeObject({
+        index = entry.index,
+        position = BRIDGE_SEATS[seatId].monarchAnchor,
+        smooth = false,
+        callback_function = function(taken)
+            if not BridgeRuntimeIsCurrent(epoch) then return end
+            BridgeState.monarchSpawnInFlight = false
+            if BridgeObjectIsUsable(taken) and BridgeState.monarchSeatId ~= nil then
+                BridgePositionMonarchHelper(taken, BridgeState.monarchSeatId)
+            end
+        end
+    })
 end
 
 function BridgeStartEventPolling(sessionId, skipExisting)
@@ -4543,6 +4719,15 @@ function BridgeApplyAuthoritativeEvent(event)
         if not updated then
             return false, 0, "could not set life for seat " .. tostring(event.seatId) .. ": " .. tostring(lifeError)
         end
+        if event.poisonCounters ~= nil then
+            BridgeSetSeatTracker(event.seatId, "poison", event.poisonCounters)
+        end
+        return true, 0.1
+    end
+
+    if event.kind == "designation_changed" then
+        if event.speed ~= nil then BridgeSetSeatTracker(event.seatId, "speed", event.speed) end
+        BridgeSetMonarchSeat(event.monarchSeatId)
         return true, 0.1
     end
 

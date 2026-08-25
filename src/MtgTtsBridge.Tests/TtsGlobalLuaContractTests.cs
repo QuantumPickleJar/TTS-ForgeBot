@@ -1078,6 +1078,19 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void PlayerTrackersAndMonarchUseNativeTableAssets()
+    {
+        Assert.Contains("BRIDGE_PLAYER_TRACKER_SOURCES", Script);
+        Assert.Contains("poison = \"81ae86\", experience = \"1ea882\", energy = \"328fa7\", speed = \"2c18ff\"", Script);
+        Assert.Contains("function BridgeSetSeatTracker(seatId, kind, value)", Script);
+        Assert.Contains("BridgeRegisterPresentationObject(taken, \"player_tracker_\" .. kind)", Script);
+        Assert.Contains("function BridgeSetMonarchSeat(seatId)", Script);
+        Assert.Contains("utility deck 946716", Script);
+        Assert.Contains("BridgeRegisterPresentationObject(helper, \"monarch_helper\")", Script);
+        Assert.Contains("BridgeSetMonarchSeat(snapshot and snapshot.monarchSeatId or nil)", Script);
+    }
+
+    [Fact]
     public void DuplicateSemanticLandPresentation_DefersWhenItsExactStructuredMoveIsPending()
     {
         Assert.Contains("pendingStructuredZoneTransitionByInstanceId", Script);
