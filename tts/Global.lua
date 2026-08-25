@@ -26,7 +26,8 @@ BRIDGE_SEATS = {
         faceUpRotation = {x = 0, y = 180, z = 0},
         graveyardZoneGuid = nil,
         exileZoneGuid = nil,
-        graveyardAnchor = {x = 4.5, y = 2.0, z = -13.8},
+        -- Centered on the printed graveyard below this seat's library column.
+        graveyardAnchor = {x = 1.75, y = 2.0, z = -13.8},
         exileAnchor = {x = 10.8, y = 2.0, z = -13.8},
         includeCardGuids = {},
         excludeCardGuids = {},
@@ -50,7 +51,8 @@ BRIDGE_SEATS = {
         faceUpRotation = {x = 0, y = 0, z = 0},
         graveyardZoneGuid = nil,
         exileZoneGuid = nil,
-        graveyardAnchor = {x = 4.5, y = 2.0, z = 13.8},
+        -- Centered on the printed graveyard below this seat's library column.
+        graveyardAnchor = {x = 1.75, y = 2.0, z = 13.8},
         exileAnchor = {x = 10.8, y = 2.0, z = 13.8},
         includeCardGuids = {},
         excludeCardGuids = {},
@@ -120,6 +122,7 @@ BridgeState = {
     physicalSeatByGuid = {},
     physicalZoneByGuid = {},
     battlefieldCounts = {},
+    graveyardCounts = {},
     currentTurnSeatId = nil,
     yieldSeatId = nil,
     counterStateByInstanceId = {},
@@ -2919,16 +2922,17 @@ function BridgeRenderDecision(decision)
 
             for _, object in ipairs(matches) do
                 local guid = object.getGUID()
+                -- Forge reprints selected combatants in the next decision. Keep
+                -- their action binding so selecting the same physical card sends
+                -- the toggle back to Forge instead of making it inert in TTS.
+                if action.type == "choose_attacker" or action.type == "choose_blocker" then
+                    BridgeState.combatSelectedByGuid[guid] = action.isSelected == true or nil
+                end
                 local selected = BridgeState.selectedActionIds[action.actionId] == true
                     or BridgeState.combatSelectedByGuid[guid] == true
                     or action.isSelected == true
                 object.highlightOn(selected and selectedCombatColor or highlightColor)
-                local combatSelected = selected and (action.type == "choose_attacker" or action.type == "choose_blocker")
-                if not combatSelected then
-                    BridgeState.actionByGuid[guid] = action
-                else
-                    BridgeState.combatSelectedByGuid[guid] = true
-                end
+                BridgeState.actionByGuid[guid] = action
                 representedActionIds[action.actionId] = true
                 table.insert(BridgeState.highlightedGuids, guid)
             end
@@ -3070,13 +3074,17 @@ function BridgeCommitPendingIntent()
     if intent == nil then return end
 
     if intent.action.type == "choose_attacker" or intent.action.type == "choose_blocker" then
-        -- Keep the physical preview in its combat lane. Forge's subsequent
-        -- authoritative attack/block event will confirm or correct it.
+        -- The Forge combat menu is a toggle: selecting a card shown as
+        -- [ATTACKING]/[BLOCKING] removes that staged declaration.
         local object = getObjectFromGUID(intent.guid)
         if object ~= nil then
             object.use_hands = false
-            BridgeState.combatSelectedByGuid[intent.guid] = true
-            object.highlightOn({0.2, 1.0, 0.35})
+            if intent.action.isSelected == true then
+                BridgeReturnCombatPreviewCard(intent.seatId, object)
+            else
+                BridgeState.combatSelectedByGuid[intent.guid] = true
+                object.highlightOn({0.2, 1.0, 0.35})
+            end
         end
     elseif intent.action.type ~= "play_land" and intent.action.type ~= "cast_spell" then
         local object = getObjectFromGUID(intent.guid)
@@ -3752,6 +3760,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.physicalSeatByGuid = {}
     BridgeState.physicalZoneByGuid = {}
     BridgeState.battlefieldCounts = {}
+    BridgeState.graveyardCounts = {}
     BridgeState.counterStateByInstanceId = {}
     BridgeState.keywordStateByInstanceId = {}
     BridgeState.untappedRotationByGuid = {}
@@ -4038,6 +4047,18 @@ function BridgeApplyAuthoritativeEvent(event)
     -- this only gives its already-authoritative result a physical location.
     if event.kind == "spell_resolved" and event.destinationZone == "graveyard" then
         if event.cardInstanceId ~= nil then
+            local structuredMove = BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId]
+            if structuredMove ~= nil and structuredMove.applied == true
+                and structuredMove.destinationZone == "graveyard" then
+                -- The exact instance has already been embodied by the ordered
+                -- card_moved event. Do not require it to still be in stack (or
+                -- re-resolve it by name) for this explanatory semantic event.
+                BridgeState.pendingCastBySeatId[event.seatId] = nil
+                print(string.format(
+                    "[Bridge] idempotent spell resolution event=%s instance=%s after structured graveyard move=%s",
+                    tostring(event.sequence), tostring(event.cardInstanceId), tostring(structuredMove.sequence)))
+                return true, 0.1
+            end
             local mappedGuid = BridgeState.physicalByInstanceId[event.cardInstanceId]
             local mappedObject = BridgeGetLiveObjectByGuid(mappedGuid)
             local mappedSeat = mappedGuid and BridgeState.physicalSeatByGuid[mappedGuid] or nil
@@ -4531,7 +4552,7 @@ end
 function BridgeMoveToGraveyard(event, object)
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then return false, "graveyard move has no configured seat" end
-    local graveyardPosition = BridgeResolveSeatZoneAnchor(event.seatId, "graveyard")
+    local graveyardPosition = BridgeGraveyardPosition(event.seatId)
     if graveyardPosition == nil then
         return false, "no graveyard anchor configured for seat " .. tostring(event.seatId)
     end
@@ -4963,6 +4984,38 @@ function BridgeMoveToBlockerLane(seatId, object)
         BridgeState.attackOriginByGuid[guid] = {x = position.x, y = position.y, z = position.z}
     end
     object.setPositionSmooth({x = position.x, y = math.max(position.y, 2.0), z = seat.blockerLaneZ}, false, true)
+end
+
+function BridgeGraveyardPosition(seatId)
+    local seat = BRIDGE_SEATS[seatId]
+    local anchor = BridgeResolveSeatZoneAnchor(seatId, "graveyard")
+    if anchor == nil then return nil end
+
+    -- Keep individual physical cards distinct. Stacking TTS cards into a Deck
+    -- loses their individual GUIDs, which prevents exact Forge-instance
+    -- tracking and turns a later semantic spell_resolved line into a desync.
+    local count = BridgeState.graveyardCounts[seatId] or 0
+    BridgeState.graveyardCounts[seatId] = count + 1
+    return {
+        x = anchor.x + (count % 2) * 2.45,
+        y = anchor.y + 0.08,
+        z = anchor.z + math.floor(count / 2) * seat.tableSideZ * 3.55
+    }
+end
+
+function BridgeReturnCombatPreviewCard(seatId, object)
+    if object == nil then return end
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then return end
+    local origin = BridgeState.attackOriginByGuid[guid]
+    if origin ~= nil and BridgeState.physicalZoneByGuid[guid] == "battlefield" then
+        object.setPositionSmooth(origin, false, true)
+    end
+    BridgeState.attackOriginByGuid[guid] = nil
+    if BridgeState.attackLaneGuidBySeatId[seatId] ~= nil then
+        BridgeState.attackLaneGuidBySeatId[seatId][guid] = nil
+    end
+    BridgeState.combatSelectedByGuid[guid] = nil
 end
 
 function BridgeReturnAttackPresentation(seatId)

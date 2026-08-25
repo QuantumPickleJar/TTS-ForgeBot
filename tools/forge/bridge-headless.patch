@@ -352,7 +352,7 @@ index 44aee4f4..959cd694 100644
          String version = BuildInfo.getVersionString().toLowerCase();
          if (version.contains("git") || version.contains("snapshot")) {
 diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-index 0d731bb6..dfa59194 100644
+index 0d731bb6..e32d896b 100644
 --- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 +++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 @@ -4,16 +4,25 @@ import com.google.common.collect.Multimap;
@@ -580,7 +580,23 @@ index 0d731bb6..dfa59194 100644
                          " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
                  }
  
-@@ -1210,7 +1275,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1178,9 +1243,13 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+ 
+                 Card selectedAttacker = possibleAttackers.get(choice - 1);
+ 
+-                // Check if already selected
++                // The TUI keeps declaration staging inside Forge. Re-selecting
++                // an already declared attacker is therefore a reversible
++                // toggle, not a rejected input.
+                 if (selectedAttackers.contains(selectedAttacker)) {
+-                    System.out.println(">> " + selectedAttacker.getName() + " is already attacking.");
++                    combat.removeFromCombat(selectedAttacker);
++                    selectedAttackers.remove(selectedAttacker);
++                    System.out.println(">> " + selectedAttacker.getName() + " is no longer attacking.");
+                     continue;
+                 }
+ 
+@@ -1210,7 +1279,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              System.out.println("\nAvailable attackers:");
              for (int i = 0; i < possibleAttackers.size(); i++) {
                  Card creature = possibleAttackers.get(i);
@@ -589,7 +605,7 @@ index 0d731bb6..dfa59194 100644
                      " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" +
                      (creature.isTapped() ? " (tapped)" : "") +
                      (creature.isSick() ? " (summoning sickness)" : ""));
-@@ -1346,7 +1411,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1346,7 +1415,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
                          if (combat.isBlocking(creature)) {
                              status = " [BLOCKING]";
                          }
@@ -598,7 +614,7 @@ index 0d731bb6..dfa59194 100644
                              " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
                      }
  
-@@ -1550,37 +1615,299 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1550,37 +1619,306 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          return toDiscard;
      }
  
@@ -747,7 +763,7 @@ index 0d731bb6..dfa59194 100644
 +                AbilitySub mode = possible.get(i);
 +                System.out.println("  " + (i + 1) + ". " + mode.getDescription()
 +                    + (selected.contains(mode) ? " [SELECTED]" : ""));
-+            }
+             }
 +            System.out.print("Enter choice (0-" + possible.size() + "): ");
 +            int choice = getIntInput(0, possible.size());
 +            if (choice == 0) {
@@ -758,11 +774,15 @@ index 0d731bb6..dfa59194 100644
 +            AbilitySub mode = possible.get(choice - 1);
 +            if (selected.contains(mode) && !allowRepeat) selected.remove(mode);
 +            else if (selected.size() < num) selected.add(mode);
-+        }
-+    }
+         }
+-        return unique;
+     }
 +
 +    @Override
 +    public int chooseNumber(SpellAbility sa, String title, int min, int max) {
++        // Forge asks several setup/internal questions with only one legal value.
++        // They are not player agency and must not block the first real TUI decision.
++        if (min == max) return min;
 +        System.out.println("\n=== FORGE CHOICE ===");
 +        System.out.println(title);
 +        System.out.println("[kind=numeric_selection min=1 max=1 selected=0 ordered=false]");
@@ -775,6 +795,7 @@ index 0d731bb6..dfa59194 100644
 +
 +    @Override
 +    public int chooseNumber(SpellAbility sa, String title, List<Integer> values, Player relatedPlayer) {
++        if (values.size() == 1) return values.get(0);
 +        System.out.println("\n=== FORGE CHOICE ===");
 +        System.out.println(title);
 +        System.out.println("[kind=numeric_selection min=1 max=1 selected=0 ordered=false]");
@@ -813,6 +834,9 @@ index 0d731bb6..dfa59194 100644
 +    }
 +
 +    private <T> int chooseOneTextOption(String kind, String prompt, List<T> options) {
++        // A single legal option is an automatic Forge choice, not an interaction.
++        // In particular, replacement/static abilities can ask this during setup.
++        if (options.size() == 1) return 0;
 +        System.out.println("\n=== FORGE CHOICE ===");
 +        System.out.println(prompt);
 +        System.out.println("[kind=" + kind + " min=1 max=1 selected=0 ordered=false]");
@@ -887,15 +911,14 @@ index 0d731bb6..dfa59194 100644
 +                forge.game.spellability.OptionalCostValue option = options.get(i);
 +                System.out.println("  " + (i + 1) + ". " + option
 +                    + (selected.contains(option) ? " [SELECTED]" : ""));
-             }
++            }
 +            System.out.print("Enter choice (0-" + options.size() + "): ");
 +            int choice = getIntInput(0, options.size());
 +            if (choice == 0) return selected;
 +            forge.game.spellability.OptionalCostValue option = options.get(choice - 1);
 +            if (selected.contains(option)) selected.remove(option); else selected.add(option);
-         }
--        return unique;
-     }
++        }
++    }
 +
 +    @Override
 +    public boolean chooseBinary(SpellAbility sa, String question, BinaryChoiceType kindOfChoice, Boolean defaultChoice) {

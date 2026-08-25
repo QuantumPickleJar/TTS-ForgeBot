@@ -594,7 +594,8 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void GraveyardAndExileMoves_PreferSeatZoneAnchorsOverBattlefieldFallback()
     {
-        Assert.Contains("BridgeResolveSeatZoneAnchor(event.seatId, \"graveyard\")", Script);
+        Assert.Contains("BridgeGraveyardPosition(event.seatId)", Script);
+        Assert.Contains("BridgeResolveSeatZoneAnchor(seatId, \"graveyard\")", Script);
         Assert.Contains("BridgeResolveSeatZoneAnchor(event.seatId, \"exile\")", Script);
         Assert.Contains("BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, \"graveyard\")", Script);
         Assert.Contains("BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, \"exile\")", Script);
@@ -760,6 +761,8 @@ public sealed class TtsGlobalLuaContractTests
     public void ExactResolvedSpellAlreadyInGraveyard_IsIdempotent()
     {
         Assert.Contains("idempotent spell resolution event=", Script);
+        Assert.Contains("after structured graveyard move=", Script);
+        Assert.Contains("structuredMove.destinationZone == \"graveyard\"", Script);
         Assert.Contains("mappedZone == \"graveyard\"", Script);
         Assert.Contains("inverseInstanceId ~= event.cardInstanceId", Script);
         Assert.Contains("BridgeState.pendingCastBySeatId[event.seatId] = nil", Script);
@@ -788,12 +791,21 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void GenericForgeTransaction_ShowsPhysicalDoneCountAndAllowsSelectedEntityToggle()
+    public void SelectedCombatCandidate_RemainsSelectableToUndoItsForgeStaging()
     {
-        Assert.Contains("DONE / CONFIRM\\nSelected %d / %d", Script);
-        Assert.Contains("decision.confirmRequired == true", Script);
-        Assert.Contains("local combatSelected = selected and", Script);
-        Assert.Contains("if not combatSelected then", Script);
+        Assert.Contains("BridgeState.actionByGuid[guid] = action", Script);
+        Assert.Contains("if intent.action.isSelected == true then", Script);
+        Assert.Contains("BridgeReturnCombatPreviewCard(intent.seatId, object)", Script);
+        Assert.Contains("function BridgeReturnCombatPreviewCard", Script);
+    }
+
+    [Fact]
+    public void GraveyardCards_RemainIndividuallyMappedAndCenteredOnThePrintedZone()
+    {
+        Assert.Contains("graveyardAnchor = {x = 1.75, y = 2.0", Script);
+        Assert.Contains("function BridgeGraveyardPosition", Script);
+        Assert.Contains("BridgeState.graveyardCounts[seatId]", Script);
+        Assert.Contains("local graveyardPosition = BridgeGraveyardPosition(event.seatId)", Script);
     }
 
     [Fact]
