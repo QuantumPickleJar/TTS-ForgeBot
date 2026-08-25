@@ -86,7 +86,8 @@ public sealed record ForgeStructuredSnapshot(
     long Sequence,
     string Reason,
     IReadOnlyList<ForgeStructuredPlayer> Players,
-    IReadOnlyList<ForgeStructuredCard> Stack);
+    IReadOnlyList<ForgeStructuredCard> Stack,
+    string? MonarchSeatId = null);
 
 public sealed record ForgeStructuredPlayer(
     string SeatId,
@@ -96,7 +97,9 @@ public sealed record ForgeStructuredPlayer(
     int Poison,
     IReadOnlyDictionary<string, int> Counters,
     IReadOnlyList<ForgeStructuredZone> Zones,
-    IReadOnlyDictionary<string, int>? ManaPool = null);
+    IReadOnlyDictionary<string, int>? ManaPool = null,
+    int Speed = 0,
+    IReadOnlyList<string>? Designations = null);
 
 public sealed record ForgeStructuredZone(string Name, IReadOnlyList<ForgeStructuredCard> Cards);
 
@@ -114,7 +117,10 @@ public sealed record ForgeStructuredCard(
     IReadOnlyDictionary<string, int> Counters,
     IReadOnlyList<string> Keywords,
     int? NetPower = null,
-    int? NetToughness = null);
+    int? NetToughness = null,
+    int? CurrentPower = null,
+    int? CurrentToughness = null,
+    IReadOnlyList<string>? CurrentTypes = null);
 
 public sealed class ForgeStructuredFrameException : InvalidOperationException
 {

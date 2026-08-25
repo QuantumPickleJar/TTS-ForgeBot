@@ -26,7 +26,18 @@ public sealed record AuthoritativeEventDto(
     string? ActiveSeatId = null,
     string? PrioritySeatId = null,
     int? NetPower = null,
-    int? NetToughness = null);
+    int? NetToughness = null,
+    int? CurrentPower = null,
+    int? CurrentToughness = null,
+    IReadOnlyList<string>? CurrentTypes = null,
+    string? CurrentCardName = null,
+    string? OwnerSeatId = null,
+    string? ControllerSeatId = null,
+    bool? FaceDown = null,
+    bool? PhasedOut = null,
+    int? Speed = null,
+    IReadOnlyList<string>? Designations = null,
+    string? MonarchSeatId = null);
 
 public sealed record EventBatchDto(
     long RequestedAfterSequence,

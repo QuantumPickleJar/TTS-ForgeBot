@@ -595,7 +595,18 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             ActiveSeatId: rawEvent.ActiveSeatId,
             PrioritySeatId: rawEvent.PrioritySeatId,
             NetPower: rawEvent.NetPower,
-            NetToughness: rawEvent.NetToughness);
+            NetToughness: rawEvent.NetToughness,
+            CurrentPower: rawEvent.CurrentPower,
+            CurrentToughness: rawEvent.CurrentToughness,
+            CurrentTypes: rawEvent.CurrentTypes,
+            CurrentCardName: rawEvent.CurrentCardName,
+            OwnerSeatId: rawEvent.OwnerSeatId,
+            ControllerSeatId: rawEvent.ControllerSeatId,
+            FaceDown: rawEvent.FaceDown,
+            PhasedOut: rawEvent.PhasedOut,
+            Speed: rawEvent.Speed,
+            Designations: rawEvent.Designations,
+            MonarchSeatId: rawEvent.MonarchSeatId);
         if (authoritativeEvent.Kind == "turn_changed")
         {
             _latestObservedTurnNumber = authoritativeEvent.TurnNumber ?? _latestObservedTurnNumber;

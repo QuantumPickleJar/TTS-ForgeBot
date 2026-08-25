@@ -60,7 +60,15 @@ public sealed class ForgeStructuredStateReconciler
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray(),
             NetPower: card.NetPower,
-            NetToughness: card.NetToughness);
+            NetToughness: card.NetToughness,
+            CurrentPower: card.CurrentPower ?? card.NetPower,
+            CurrentToughness: card.CurrentToughness ?? card.NetToughness,
+            CurrentTypes: (card.CurrentTypes ?? [])
+                .Select(NormalizeType)
+                .Where(type => !string.IsNullOrWhiteSpace(type))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(type => type, StringComparer.Ordinal)
+                .ToArray());
 
         var seats = source.Players.Select(player => new GameSeatSnapshotDto(
             player.SeatId,
@@ -72,14 +80,22 @@ public sealed class ForgeStructuredStateReconciler
             player.Zones.Select(zone => new GameZoneSnapshotDto(
                 zone.Name,
                 zone.Cards.Select(ConvertCard).ToArray())).ToArray(),
-            new Dictionary<string, int>(player.ManaPool ?? EmptyManaPool, StringComparer.OrdinalIgnoreCase))).ToArray();
+            new Dictionary<string, int>(player.ManaPool ?? EmptyManaPool, StringComparer.OrdinalIgnoreCase),
+            player.Speed,
+            (player.Designations ?? [])
+                .Select(NormalizeDesignation)
+                .Where(designation => !string.IsNullOrWhiteSpace(designation))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(designation => designation, StringComparer.Ordinal)
+                .ToArray())).ToArray();
 
         return new GameSnapshotDto(
             sessionId,
             source.Sequence,
             source.Reason,
             seats,
-            source.Stack.Select(ConvertCard).ToArray());
+            source.Stack.Select(ConvertCard).ToArray(),
+            MonarchSeatId: source.MonarchSeatId);
     }
 
     private static IReadOnlyList<ForgeTuiRawEvent> Diff(GameSnapshotDto previous, GameSnapshotDto next)
@@ -107,6 +123,19 @@ public sealed class ForgeStructuredStateReconciler
                     "mana_pool_changed", seat.SeatId, null, null, null, null,
                     $"Authoritative mana pool changed for {seat.SeatId}.",
                     ManaPool: seat.ManaPool));
+            }
+
+            if (beforeSeats.TryGetValue(seat.SeatId, out beforeSeat)
+                && (beforeSeat.Speed != seat.Speed
+                    || !SetEqual(beforeSeat.Designations, seat.Designations)
+                    || !string.Equals(previous.MonarchSeatId, next.MonarchSeatId, StringComparison.Ordinal)))
+            {
+                events.Add(new ForgeTuiRawEvent(
+                    "designation_changed", seat.SeatId, null, null, null, null,
+                    $"Authoritative player designations changed for {seat.SeatId}.",
+                    Speed: seat.Speed,
+                    Designations: seat.Designations,
+                    MonarchSeatId: next.MonarchSeatId));
             }
         }
 
@@ -144,15 +173,58 @@ public sealed class ForgeStructuredStateReconciler
             }
 
             if (oldCard is not null
-                && (oldCard.NetPower != card.NetPower || oldCard.NetToughness != card.NetToughness)
-                && (card.NetPower is not null || card.NetToughness is not null))
+                && (!string.Equals(oldCard.ControllerSeatId, card.ControllerSeatId, StringComparison.Ordinal)
+                    || !string.Equals(oldCard.OwnerSeatId, card.OwnerSeatId, StringComparison.Ordinal)))
+            {
+                events.Add(new ForgeTuiRawEvent(
+                    "controller_changed", seatId, card.CardName, card.ForgeCardId,
+                    card.Zone, card.Zone, "Authoritative owner/controller changed.",
+                    OwnerSeatId: card.OwnerSeatId,
+                    ControllerSeatId: card.ControllerSeatId));
+            }
+
+            if (oldCard is not null
+                && (!string.Equals(oldCard.CurrentCardName, card.CurrentCardName, StringComparison.Ordinal)
+                    || !SetEqual(oldCard.CurrentTypes, card.CurrentTypes)))
+            {
+                events.Add(new ForgeTuiRawEvent(
+                    "characteristic_changed", seatId, card.CardName, card.ForgeCardId,
+                    card.Zone, card.Zone, "Authoritative card characteristics changed.",
+                    CurrentCardName: card.CurrentCardName,
+                    CurrentTypes: card.CurrentTypes,
+                    CurrentPower: card.CurrentPower,
+                    CurrentToughness: card.CurrentToughness));
+            }
+
+            if (oldCard is not null && oldCard.FaceDown != card.FaceDown)
+            {
+                events.Add(new ForgeTuiRawEvent(
+                    "face_changed", seatId, card.CardName, card.ForgeCardId,
+                    card.Zone, card.Zone, "Authoritative face-down state changed.",
+                    CurrentCardName: card.CurrentCardName,
+                    FaceDown: card.FaceDown));
+            }
+
+            if (oldCard is not null && oldCard.PhasedOut != card.PhasedOut)
+            {
+                events.Add(new ForgeTuiRawEvent(
+                    "phasing_changed", seatId, card.CardName, card.ForgeCardId,
+                    card.Zone, card.Zone, "Authoritative phased state changed.",
+                    PhasedOut: card.PhasedOut));
+            }
+
+            if (oldCard is not null
+                && (oldCard.CurrentPower != card.CurrentPower || oldCard.CurrentToughness != card.CurrentToughness)
+                && (card.CurrentPower is not null || card.CurrentToughness is not null))
             {
                 events.Add(new ForgeTuiRawEvent(
                     "stats_changed", seatId, card.CardName, card.ForgeCardId,
                     card.Zone, card.Zone,
-                    $"Authoritative characteristics are {card.NetPower}/{card.NetToughness}.",
-                    NetPower: card.NetPower,
-                    NetToughness: card.NetToughness));
+                    $"Authoritative characteristics are {card.CurrentPower}/{card.CurrentToughness}.",
+                    NetPower: card.CurrentPower,
+                    NetToughness: card.CurrentToughness,
+                    CurrentPower: card.CurrentPower,
+                    CurrentToughness: card.CurrentToughness));
             }
 
             var enteringBattlefield = oldCard is not null
@@ -217,6 +289,14 @@ public sealed class ForgeStructuredStateReconciler
         }
         return normalized;
     }
+
+    private static string NormalizeType(string type) => (type ?? string.Empty).Trim().ToLowerInvariant();
+
+    private static string NormalizeDesignation(string designation) => (designation ?? string.Empty).Trim().ToLowerInvariant();
+
+    private static bool SetEqual(IReadOnlyList<string>? first, IReadOnlyList<string>? second) =>
+        new HashSet<string>(first ?? [], StringComparer.OrdinalIgnoreCase)
+            .SetEquals(second ?? []);
 
     private static IEnumerable<string> UnionKeys(
         IReadOnlyDictionary<string, int>? first,

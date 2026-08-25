@@ -170,6 +170,40 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void Reconciliation_TransportsForgeCharacteristicsControllerFacePhaseAndDesignations()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        reconciler.Apply("session-a", Parse(parser, Frame(1, Player(
+            battlefield: [Card(19, "Prototype Vehicle", "battlefield", 0,
+                netPower: 0, netToughness: 0, currentTypes: "[\"artifact\",\"vehicle\"]")]))));
+
+        var changed = reconciler.Apply("session-a", Parse(parser, Frame(2, Player(
+            battlefield: [Card(19, "Prototype Vehicle", "battlefield", 0,
+                controllerSeatId: "forge-player-2", faceDown: true, phasedOut: true,
+                netPower: 3, netToughness: 3,
+                currentTypes: "[\"artifact\",\"creature\",\"vehicle\"]")],
+            speed: 2, designations: "[\"monarch\",\"citys_blessing\"]"), monarchSeatId: "forge-player-1")));
+
+        var controller = Assert.Single(changed, item => item.Kind == "controller_changed");
+        Assert.Equal("forge-player-1", controller.OwnerSeatId);
+        Assert.Equal("forge-player-2", controller.ControllerSeatId);
+        var characteristic = Assert.Single(changed, item => item.Kind == "characteristic_changed");
+        Assert.Contains("creature", characteristic.CurrentTypes!);
+        Assert.Equal(3, characteristic.CurrentPower);
+        Assert.True(Assert.Single(changed, item => item.Kind == "face_changed").FaceDown);
+        Assert.True(Assert.Single(changed, item => item.Kind == "phasing_changed").PhasedOut);
+        var designation = Assert.Single(changed, item => item.Kind == "designation_changed");
+        Assert.Equal(2, designation.Speed);
+        Assert.Equal("forge-player-1", designation.MonarchSeatId);
+
+        var snapshot = reconciler.Current!;
+        Assert.Equal("forge-player-1", snapshot.MonarchSeatId);
+        Assert.Equal(2, snapshot.Seats[0].Speed);
+        Assert.Contains("citys_blessing", snapshot.Seats[0].Designations!);
+    }
+
+    [Fact]
     public void MalformedFrame_FailsVisibly()
     {
         var parser = new ForgeStructuredOutputParser();
@@ -196,17 +230,19 @@ public sealed class ForgeStructuredOutputParserTests
     private static ForgeStructuredSnapshot Parse(ForgeStructuredOutputParser parser, string frame) =>
         Assert.Single(parser.Append(frame + "\n").Snapshots);
 
-    private static string Frame(long sequence, string player, string reason = "test") =>
+    private static string Frame(long sequence, string player, string reason = "test", string? monarchSeatId = null) =>
         ForgeStructuredOutputParser.Sentinel
-        + $$"""{"version":1,"type":"snapshot","sequence":{{sequence}},"reason":"{{reason}}","players":[{{player}}],"stack":[]}""";
+        + $$"""{"version":1,"type":"snapshot","sequence":{{sequence}},"reason":"{{reason}}","monarchSeatId":{{(monarchSeatId is null ? "null" : "\"" + monarchSeatId + "\"")}},"players":[{{player}}],"stack":[]}""";
 
     private static string Player(
         IReadOnlyList<string>? library = null,
         IReadOnlyList<string>? hand = null,
         IReadOnlyList<string>? battlefield = null,
         IReadOnlyList<string>? graveyard = null,
-        string manaPool = "{\"W\":0,\"U\":0,\"B\":0,\"R\":0,\"G\":0,\"C\":0}") =>
-        $$"""{"seatId":"forge-player-1","forgePlayerId":1,"displayName":"Player 1","life":20,"poison":0,"counters":{},"manaPool":{{manaPool}},"zones":[{"name":"library","cards":[{{string.Join(',', library ?? [])}}]},{"name":"hand","cards":[{{string.Join(',', hand ?? [])}}]},{"name":"battlefield","cards":[{{string.Join(',', battlefield ?? [])}}]},{"name":"graveyard","cards":[{{string.Join(',', graveyard ?? [])}}]},{"name":"exile","cards":[]}]}""";
+        string manaPool = "{\"W\":0,\"U\":0,\"B\":0,\"R\":0,\"G\":0,\"C\":0}",
+        int speed = 0,
+        string designations = "[]") =>
+        $$"""{"seatId":"forge-player-1","forgePlayerId":1,"displayName":"Player 1","life":20,"poison":0,"counters":{},"manaPool":{{manaPool}},"speed":{{speed}},"designations":{{designations}},"zones":[{"name":"library","cards":[{{string.Join(',', library ?? [])}}]},{"name":"hand","cards":[{{string.Join(',', hand ?? [])}}]},{"name":"battlefield","cards":[{{string.Join(',', battlefield ?? [])}}]},{"name":"graveyard","cards":[{{string.Join(',', graveyard ?? [])}}]},{"name":"exile","cards":[]}]}""";
 
     private static string Card(
         int id,
@@ -217,6 +253,10 @@ public sealed class ForgeStructuredOutputParserTests
         string counters = "{}",
         string keywords = "[]",
         int? netPower = null,
-        int? netToughness = null) =>
-        $$"""{"forgeCardId":{{id}},"cardName":"{{name}}","currentCardName":"{{name}}","zone":"{{zone}}","zonePosition":{{position}},"ownerSeatId":"forge-player-1","controllerSeatId":"forge-player-1","tapped":{{tapped.ToString().ToLowerInvariant()}},"faceDown":false,"phasedOut":false,"netPower":{{(netPower?.ToString() ?? "null")}},"netToughness":{{(netToughness?.ToString() ?? "null")}},"counters":{{counters}},"keywords":{{keywords}}}""";
+        int? netToughness = null,
+        string controllerSeatId = "forge-player-1",
+        bool faceDown = false,
+        bool phasedOut = false,
+        string currentTypes = "[]") =>
+        $$"""{"forgeCardId":{{id}},"cardName":"{{name}}","currentCardName":"{{name}}","zone":"{{zone}}","zonePosition":{{position}},"ownerSeatId":"forge-player-1","controllerSeatId":"{{controllerSeatId}}","tapped":{{tapped.ToString().ToLowerInvariant()}},"faceDown":{{faceDown.ToString().ToLowerInvariant()}},"phasedOut":{{phasedOut.ToString().ToLowerInvariant()}},"netPower":{{(netPower?.ToString() ?? "null")}},"netToughness":{{(netToughness?.ToString() ?? "null")}},"currentPower":{{(netPower?.ToString() ?? "null")}},"currentToughness":{{(netToughness?.ToString() ?? "null")}},"currentTypes":{{currentTypes}},"counters":{{counters}},"keywords":{{keywords}}}""";
 }
