@@ -6,4 +6,5 @@ public sealed record ErrorResponseDto(
     string? DecisionId,
     string? ExpectedSessionId = null,
     string? ReceivedSessionId = null,
-    string? RequestId = null);
+    string? RequestId = null,
+    IReadOnlyList<string>? MissingFields = null);

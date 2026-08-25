@@ -627,6 +627,13 @@ function BridgeHttp.requestJson(method, path, payload, callback)
         ["Accept"] = "application/json"
     }
 
+    if path == "/api/v1/choice" then
+        -- A choice body contains protocol identifiers only, never card or
+        -- hidden-information data. Record the exact serialized wire shape so
+        -- a Lua/TTS transport issue can be distinguished from a legacy caller.
+        BridgeLog("[Bridge] CHOICE_WIRE_BODY " .. tostring(body))
+    end
+
     WebRequest.custom(url, method, true, body, headers, function(request)
         handleIfCurrent(request)
     end)
@@ -1140,6 +1147,21 @@ function BridgeSubmitChoice(decisionId, actionId, source)
     BridgeState.choiceRequestSequence = (BridgeState.choiceRequestSequence or 0) + 1
     local requestId = tostring(BRIDGE_CLIENT_RUNTIME_ID) .. "-choice-" .. tostring(BridgeState.choiceRequestSequence)
     local requestSessionId = BridgeState.eventSessionId
+    local missingProtocolFields = {}
+    if requestSessionId == nil or requestSessionId == "" then table.insert(missingProtocolFields, "sessionId") end
+    if requestId == nil or requestId == "" then table.insert(missingProtocolFields, "requestId") end
+    if BRIDGE_CLIENT_RUNTIME_ID == nil or BRIDGE_CLIENT_RUNTIME_ID == "" then table.insert(missingProtocolFields, "clientRuntimeId") end
+    if BRIDGE_SCRIPT_REVISION == nil or BRIDGE_SCRIPT_REVISION == "" then table.insert(missingProtocolFields, "clientRevision") end
+    if source == nil or source == "" then table.insert(missingProtocolFields, "source") end
+    if #missingProtocolFields > 0 then
+        BridgeState.submitting = false
+        transaction.state = "not_sent"
+        BridgeLog("[Bridge] CHOICE_NOT_SENT reason=missing_protocol_identity missingFields="
+            .. table.concat(missingProtocolFields, ",") .. " decision=" .. tostring(decisionId)
+            .. " action=" .. tostring(actionId))
+        BridgePauseChoiceProtocol("protocol identity missing; inspect diagnostics")
+        return
+    end
     BridgeLog(string.format(
         "[Bridge] CHOICE_POST requestId=%s runtime=%s revision=%s epoch=%s session=%s decision=%s action=%s source=%s transactionState=%s lastDecision=%s eventCursor=%s appliedCursor=%s",
         tostring(requestId), tostring(BRIDGE_CLIENT_RUNTIME_ID), tostring(BRIDGE_SCRIPT_REVISION),
@@ -1235,6 +1257,17 @@ function BridgeRecordChoiceProtocolFailure(body, err, requestId)
     BridgeState.choiceProtocolFailureTimes = failures
     if #failures < 3 or BridgeState.choiceProtocolPaused then return end
 
+    BridgePauseChoiceProtocol("three choice protocol failures in two seconds; inspect diagnostics")
+    BridgeLog("[Bridge] CHOICE_PROTOCOL_FAILURE_SUMMARY runtime=" .. tostring(BRIDGE_CLIENT_RUNTIME_ID)
+        .. " session=" .. tostring(BridgeState.eventSessionId)
+        .. " failures=" .. tostring(#failures)
+        .. " requestId=" .. tostring(requestId)
+        .. " lastCode=" .. tostring(body and body.errorCode)
+        .. " lastError=" .. tostring(err))
+end
+
+function BridgePauseChoiceProtocol(reason)
+    if BridgeState.choiceProtocolPaused then return end
     BridgeState.choiceProtocolPaused = true
     BridgeState.yieldSeatId = nil
     BridgeClearHighlights()
@@ -1243,12 +1276,9 @@ function BridgeRecordChoiceProtocolFailure(body, err, requestId)
     BridgeHideMainPriorityControls()
     BridgeLog("[Bridge] CHOICE_PROTOCOL_PAUSED runtime=" .. tostring(BRIDGE_CLIENT_RUNTIME_ID)
         .. " session=" .. tostring(BridgeState.eventSessionId)
-        .. " failures=" .. tostring(#failures)
-        .. " requestId=" .. tostring(requestId)
-        .. " lastCode=" .. tostring(body and body.errorCode)
-        .. " lastError=" .. tostring(err))
-    BridgeSetStatus("CHOICE PROTOCOL PAUSED", "Inspect bridge/TTS diagnostics, then use BridgeRefreshDecision or reconnect.")
-    broadcastToAll("[Bridge] CHOICE PROTOCOL PAUSED — inspect diagnostics", {1.0, 0.2, 0.2})
+        .. " reason=" .. tostring(reason))
+    BridgeSetStatus("FORGEBOT PROTOCOL PAUSED", tostring(reason))
+    broadcastToAll("[Bridge] FORGEBOT PROTOCOL PAUSED — " .. tostring(reason), {1.0, 0.2, 0.2})
 end
 
 function BridgeRecoverFromStaleSession(body, requestId)

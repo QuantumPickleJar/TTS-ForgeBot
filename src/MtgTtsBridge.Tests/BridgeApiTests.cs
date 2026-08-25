@@ -236,6 +236,35 @@ public sealed class BridgeApiTests
     }
 
     [Fact]
+    public async Task ChoiceWireShapeFromTts_BindsEveryProtocolIdentityField()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+        var sessionId = await StartSessionAsync(client);
+        var json = $$"""{"sessionId":"{{sessionId}}","decisionId":"decision-1-main","actionId":"play_mountain","requestId":"runtime-1-choice-1","clientRuntimeId":"runtime-1","clientRevision":"2026-08-25-forensic-v9","source":"pass_button"}""";
+
+        var response = await client.PostAsync("/api/v1/choice", new StringContent(json, System.Text.Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task LegacyChoiceWireShape_ReturnsExactMissingFields()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync("/api/v1/choice", new StringContent("{\"decisionId\":\"forge-tui-1\",\"actionId\":\"forge-tui-1-choice-0\"}", System.Text.Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponseDto>();
+        Assert.NotNull(error);
+        Assert.Equal("invalid_request", error.ErrorCode);
+        Assert.Equal(new[] { "sessionId", "requestId", "clientRuntimeId", "clientRevision", "source" }, error.MissingFields);
+        Assert.Equal("Missing required fields: sessionId, requestId, clientRuntimeId, clientRevision, source.", error.Message);
+    }
+
+    [Fact]
     public async Task PreviousSessionChoice_IsRejectedAsStaleSessionWithoutAdvancingTheNewSession()
     {
         using var factory = new TestWebApplicationFactory();

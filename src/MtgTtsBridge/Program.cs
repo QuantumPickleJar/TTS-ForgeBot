@@ -125,35 +125,37 @@ app.MapGet("/api/v1/embodiment/snapshot", async (IForgeAdapter adapter, Cancella
 
 app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter adapter, HttpContext httpContext, ILogger<Program> logger, CancellationToken cancellationToken) =>
 {
-	if (string.IsNullOrWhiteSpace(request.DecisionId) || string.IsNullOrWhiteSpace(request.ActionId))
-	{
-		return Results.BadRequest(new ErrorResponseDto(
-			ErrorCode: "invalid_request",
-			Message: "sessionId, decisionId, actionId, requestId, clientRuntimeId, clientRevision, and source are required.",
-			DecisionId: request.DecisionId));
-	}
-	if (string.IsNullOrWhiteSpace(request.SessionId)
-		|| string.IsNullOrWhiteSpace(request.RequestId)
-		|| string.IsNullOrWhiteSpace(request.ClientRuntimeId)
-		|| string.IsNullOrWhiteSpace(request.ClientRevision)
-		|| string.IsNullOrWhiteSpace(request.Source))
+	var missingFields = new List<string>();
+	if (string.IsNullOrWhiteSpace(request.DecisionId)) missingFields.Add("decisionId");
+	if (string.IsNullOrWhiteSpace(request.ActionId)) missingFields.Add("actionId");
+	if (string.IsNullOrWhiteSpace(request.SessionId)) missingFields.Add("sessionId");
+	if (string.IsNullOrWhiteSpace(request.RequestId)) missingFields.Add("requestId");
+	if (string.IsNullOrWhiteSpace(request.ClientRuntimeId)) missingFields.Add("clientRuntimeId");
+	if (string.IsNullOrWhiteSpace(request.ClientRevision)) missingFields.Add("clientRevision");
+	if (string.IsNullOrWhiteSpace(request.Source)) missingFields.Add("source");
+
+	if (missingFields.Count > 0)
 	{
 		logger.LogWarning(
-			"LEGACY_OR_MALFORMED_CHOICE remote={Remote} decision={Decision} action={Action} requestId={RequestId} clientRuntimeId={ClientRuntimeId} clientRevision={ClientRevision} source={Source} session={Session}",
-			httpContext.Connection.RemoteIpAddress,
-			request.DecisionId,
-			request.ActionId,
+			"LEGACY_OR_MALFORMED_CHOICE missingFields={MissingFields} decisionId={DecisionId} actionId={ActionId} sessionId={SessionId} requestId={RequestId} clientRuntimeId={ClientRuntimeId} clientRevision={ClientRevision} source={Source} remote={Remote} bridgeProcessInstanceId={BridgeProcessInstanceId} bridgeRevision={BridgeRevision}",
+			string.Join(',', missingFields),
+			request.DecisionId ?? "(missing)",
+			request.ActionId ?? "(missing)",
+			request.SessionId ?? "(missing)",
 			request.RequestId ?? "(missing)",
 			request.ClientRuntimeId ?? "(missing)",
 			request.ClientRevision ?? "(missing)",
 			request.Source ?? "(missing)",
-			request.SessionId ?? "(missing)");
+			httpContext.Connection.RemoteIpAddress,
+			BridgeProcessIdentity.InstanceId,
+			BridgeProcessIdentity.Revision);
 		return Results.BadRequest(new ErrorResponseDto(
 			ErrorCode: "invalid_request",
-			Message: "sessionId, requestId, clientRuntimeId, clientRevision, and source are required.",
+			Message: "Missing required fields: " + string.Join(", ", missingFields) + ".",
 			DecisionId: request.DecisionId,
 			ReceivedSessionId: request.SessionId,
-			RequestId: request.RequestId));
+			RequestId: request.RequestId,
+			MissingFields: missingFields));
 	}
 
 	var outcome = await adapter.SubmitChoiceAsync(request, cancellationToken);

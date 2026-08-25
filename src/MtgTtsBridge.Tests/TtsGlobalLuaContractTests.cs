@@ -753,6 +753,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeHttp.requestJson(\"POST\", \"/api/v1/choice\"", Script);
         Assert.Contains("CHOICE_POST_BLOCKED reason=retired_runtime", Script);
         Assert.Contains("CHOICE_POST_BLOCKED reason=missing_source", Script);
+        Assert.Contains("CHOICE_NOT_SENT reason=missing_protocol_identity", Script);
+        Assert.Contains("[Bridge] CHOICE_WIRE_BODY", Script);
         Assert.Contains("if transaction.actionId == actionId then", Script);
         Assert.Contains("conflicting action ignored for an already-submitting Forge decision", Script);
         Assert.DoesNotContain("function BridgePostValidatedChoice", Script);
@@ -780,7 +782,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgeRecordChoiceProtocolFailure", Script);
         Assert.Contains("now - failures[1] > 2", Script);
         Assert.Contains("BridgeState.choiceProtocolPaused = true", Script);
-        Assert.Contains("CHOICE PROTOCOL PAUSED", Script);
+        Assert.Contains("FORGEBOT PROTOCOL PAUSED", Script);
         Assert.Contains("choice submission blocked: protocol is paused", Script);
     }
 
