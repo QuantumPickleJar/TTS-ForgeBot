@@ -1,0 +1,1296 @@
+diff --git a/forge-core/src/main/java/forge/CardStorageReader.java b/forge-core/src/main/java/forge/CardStorageReader.java
+index 02efbf84..43d34492 100644
+--- a/forge-core/src/main/java/forge/CardStorageReader.java
++++ b/forge-core/src/main/java/forge/CardStorageReader.java
+@@ -220,6 +220,7 @@ public class CardStorageReader {
+     }
+ 
+     public final Iterable<CardRules> loadCards() {
++        final long loadStartNanos = System.nanoTime();
+         final Localizer localizer = Localizer.getInstance();
+ 
+         progressObserver.setOperationName(localizer.getMessage("splash.loading.examining-cards"), true);
+@@ -234,7 +235,11 @@ public class CardStorageReader {
+             return result;
+         }
+  
++        final long collectStart = System.nanoTime();
+         final List<File> allFiles = collectCardFiles(new ArrayList<>(), this.cardsfolder);
++        final long collectMs = (System.nanoTime() - collectStart) / 1_000_000L;
++        System.out.printf("[Forge profile] CardStorageReader file discovery (%s): %d files in %d ms%n",
++                cardsfolder.getAbsolutePath(), allFiles.size(), collectMs);
+         if (!allFiles.isEmpty()) {
+             int fileParts = zip == null ? NUMBER_OF_PARTS : 1 + NUMBER_OF_PARTS / 3;
+             if (allFiles.size() < fileParts * 100) {
+@@ -248,7 +253,7 @@ public class CardStorageReader {
+             sw.start();
+             executeLoadTask(result, taskFiles, cdlFiles);
+             sw.stop();
+-            final long timeOnParse = sw.getTime(TimeUnit.SECONDS);
++            final long timeOnParse = sw.getTime(TimeUnit.MILLISECONDS);
+             System.out.printf("Read cards: %s files in %d ms (%d parts) %s%n", allFiles.size(), timeOnParse, taskFiles.size(), useThreadPool ? "using thread pool" : "in same thread");
+         }
+ 
+@@ -262,10 +267,13 @@ public class CardStorageReader {
+             sw.start();
+             executeLoadTask(result, taskZip, cdlZip);
+             sw.stop();
+-            final long timeOnParse = sw.getTime(TimeUnit.SECONDS);
++            final long timeOnParse = sw.getTime(TimeUnit.MILLISECONDS);
+             System.out.printf("Read cards: %s archived files in %d ms (%d parts) %s%n", this.zip.size(), timeOnParse, taskZip.size(), useThreadPool ? "using thread pool" : "in same thread");
+         }
+ 
++        final long totalMs = (System.nanoTime() - loadStartNanos) / 1_000_000L;
++        System.out.printf("[Forge profile] CardStorageReader loadCards complete (%s): %d rules in %d ms%n",
++                cardsfolder.getAbsolutePath(), result.size(), totalMs);
+         return result;
+     }
+ 
+diff --git a/forge-core/src/main/java/forge/StaticData.java b/forge-core/src/main/java/forge/StaticData.java
+index 818d355e..812cab74 100644
+--- a/forge-core/src/main/java/forge/StaticData.java
++++ b/forge-core/src/main/java/forge/StaticData.java
+@@ -67,9 +67,20 @@ public class StaticData {
+         this(cardReader, null, customCardReader, null, editionFolder, customEditionsFolder, blockDataFolder, "", cardArtPreference, enableUnknownCards, loadNonLegalCards, false, false);
+     }
+     public StaticData(CardStorageReader cardReader, CardStorageReader tokenReader, CardStorageReader customCardReader, CardStorageReader customTokenReader, String editionFolder, String customEditionsFolder, String blockDataFolder, String setLookupFolder, String cardArtPreference, boolean enableUnknownCards, boolean loadNonLegalCards, boolean allowCustomCardsInDecksConformance, boolean enableSmartCardArtSelection) {
++        final long constructorStart = System.nanoTime();
++        final long[] stageNanos = { constructorStart };
++        final java.util.function.Consumer<String> logStage = stage -> {
++            final long now = System.nanoTime();
++            final long stageMs = (now - stageNanos[0]) / 1_000_000L;
++            final long totalMs = (now - constructorStart) / 1_000_000L;
++            stageNanos[0] = now;
++            System.out.printf("[Forge profile] StaticData %s: +%d ms (total %d ms)%n", stage, stageMs, totalMs);
++        };
++
+         this.cardReader = cardReader;
+         this.tokenReader = tokenReader;
+         this.editions = new CardEdition.Collection(new CardEdition.Reader(new File(editionFolder)));
++        logStage.accept("edition-reader");
+         this.blockDataFolder = blockDataFolder;
+         this.allowCustomCardsInDecksConformance = allowCustomCardsInDecksConformance;
+         this.enableSmartCardArtSelection = enableSmartCardArtSelection;
+@@ -79,6 +90,7 @@ public class StaticData {
+         Set<String> filtered = new HashSet<>();
+ 
+         editions.append(new CardEdition.Collection(new CardEdition.Reader(new File(customEditionsFolder), true)));
++        logStage.accept("custom-editions-append");
+ 
+         {
+             final Map<String, CardRules> regularCards = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+@@ -98,6 +110,7 @@ public class StaticData {
+                 }
+             }
+ 
++            final long loadCardsStart = System.nanoTime();
+             for (CardRules card : cardReader.loadCards()) {
+                 if (null == card) continue;
+ 
+@@ -112,7 +125,10 @@ public class StaticData {
+                     regularCards.put(cardName, card);
+                 }
+             }
++            System.out.printf("[Forge profile] StaticData primary card scripts loaded in %d ms (regular=%d variant=%d)%n",
++                    (System.nanoTime() - loadCardsStart) / 1_000_000L, regularCards.size(), variantsCards.size());
+             if (customCardReader != null) { //Load user's custom cards.
++                final long customLoadStart = System.nanoTime();
+                 for (CardRules card : customCardReader.loadCards()) {
+                     if (null == card) continue;
+ 
+@@ -124,20 +140,35 @@ public class StaticData {
+                         regularCards.put(cardName, card);
+                     }
+                 }
++                System.out.printf("[Forge profile] StaticData custom card scripts loaded in %d ms%n",
++                        (System.nanoTime() - customLoadStart) / 1_000_000L);
+             }
++            logStage.accept("card-script-load");
+ 
++            final long cardDbConstructStart = System.nanoTime();
+             commonCards = new CardDb(regularCards, editions, filtered);
+             variantCards = new CardDb(variantsCards, editions, filtered);
++            System.out.printf("[Forge profile] StaticData CardDb constructors: %d ms%n",
++                    (System.nanoTime() - cardDbConstructStart) / 1_000_000L);
++            logStage.accept("carddb-construct");
+ 
+             commonCards.setCardArtPreference(cardArtPreference);
+             variantCards.setCardArtPreference(cardArtPreference);
+ 
+             //must initialize after establish field values for the sake of card image logic
++            final long commonInitStart = System.nanoTime();
+             commonCards.initialize(false, false, enableUnknownCards);
++            System.out.printf("[Forge profile] StaticData commonCards.initialize: %d ms%n",
++                    (System.nanoTime() - commonInitStart) / 1_000_000L);
++            final long variantInitStart = System.nanoTime();
+             variantCards.initialize(false, false, enableUnknownCards);
++            System.out.printf("[Forge profile] StaticData variantCards.initialize: %d ms%n",
++                    (System.nanoTime() - variantInitStart) / 1_000_000L);
++            logStage.accept("carddb-initialize");
+         }
+ 
+         if (this.tokenReader != null) {
++            final long tokenStart = System.nanoTime();
+             final Map<String, CardRules> tokens = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+ 
+             for (CardRules card : this.tokenReader.loadCards()) {
+@@ -152,6 +183,9 @@ public class StaticData {
+                 }
+             }
+             allTokens = new TokenDb(tokens, editions);
++            System.out.printf("[Forge profile] StaticData token scripts + TokenDb: %d ms%n",
++                    (System.nanoTime() - tokenStart) / 1_000_000L);
++            logStage.accept("token-load");
+         } else {
+             allTokens = null;
+         }
+@@ -164,6 +198,9 @@ public class StaticData {
+                 }
+             }
+         }
++        logStage.accept("set-lookup-load");
++        System.out.printf("[Forge profile] StaticData constructor complete: %d ms%n",
++                (System.nanoTime() - constructorStart) / 1_000_000L);
+     }
+ 
+     public static StaticData instance() {
+diff --git a/forge-core/src/main/java/forge/util/Localizer.java b/forge-core/src/main/java/forge/util/Localizer.java
+index 6b0e01fa..7b8667d4 100644
+--- a/forge-core/src/main/java/forge/util/Localizer.java
++++ b/forge-core/src/main/java/forge/util/Localizer.java
+@@ -159,11 +159,12 @@ public class Localizer {
+             ClassLoader loader = new URLClassLoader(urls);
+ 
+             try {
+-                resourceBundle = ResourceBundle.getBundle(languageRegionID, new Locale(splitLocale[0], splitLocale[1]), loader);
+-                englishBundle = ResourceBundle.getBundle("en-US", new Locale("en", "US"), loader);
++                resourceBundle = ResourceBundle.getBundle(languageRegionID, Locale.ROOT, loader);
++                englishBundle = ResourceBundle.getBundle("en-US", Locale.ROOT, loader);
+             } catch (NullPointerException | MissingResourceException e) {
+                 //If the language can't be loaded, default to US English
+-                resourceBundle = ResourceBundle.getBundle("en-US", new Locale("en_US"), loader);
++                resourceBundle = ResourceBundle.getBundle("en-US", Locale.ROOT, loader);
++                englishBundle = resourceBundle;
+                 e.printStackTrace();
+             }
+ 
+diff --git a/forge-gui/src/main/java/forge/model/FModel.java b/forge-gui/src/main/java/forge/model/FModel.java
+index 922d78e1..7be62274 100644
+--- a/forge-gui/src/main/java/forge/model/FModel.java
++++ b/forge-gui/src/main/java/forge/model/FModel.java
+@@ -144,12 +144,23 @@ public final class FModel {
+     private static final Supplier<ItemPool<PaperCard>> contraptionPool = Suppliers.memoize(() -> ItemPool.createFrom(getMagicDb().getVariantCards().getAllCards(PaperCardPredicates.fromRules(CardRulesPredicates.IS_CONTRAPTION)), PaperCard.class));
+ 
+     public static void initialize(final IProgressBar progressBar, Function<ForgePreferences, Void> adjustPrefs) {
++        final long startupStartNanos = System.nanoTime();
++        final long[] stageNanos = { startupStartNanos };
++        final java.util.function.Consumer<String> logStage = stage -> {
++            final long now = System.nanoTime();
++            final long stageMs = (now - stageNanos[0]) / 1_000_000L;
++            final long totalMs = (now - startupStartNanos) / 1_000_000L;
++            stageNanos[0] = now;
++            System.out.printf("[Forge profile] %s: +%d ms (total %d ms)%n", stage, stageMs, totalMs);
++        };
++
+         ImageKeys.initializeDirs(
+             ForgeConstants.CACHE_CARD_PICS_DIR, ForgeConstants.CACHE_CARD_PICS_SUBDIR,
+             ForgeConstants.CACHE_TOKEN_PICS_DIR, ForgeConstants.CACHE_ICON_PICS_DIR,
+             ForgeConstants.CACHE_BOOSTER_PICS_DIR, ForgeConstants.CACHE_FATPACK_PICS_DIR,
+             ForgeConstants.CACHE_BOOSTERBOX_PICS_DIR, ForgeConstants.CACHE_PRECON_PICS_DIR,
+             ForgeConstants.CACHE_TOURNAMENTPACK_PICS_DIR);
++        logStage.accept("image-directories");
+ 
+         // Instantiate preferences: quest and regular
+         // Preferences are initialized first so that the splash screen can be translated.
+@@ -168,6 +179,7 @@ public final class FModel {
+ 
+         Lang.createInstance(getPreferences().getPref(FPref.UI_LANGUAGE));
+         Localizer.getInstance().initialize(getPreferences().getPref(FPref.UI_LANGUAGE), ForgeConstants.LANG_DIR);
++        logStage.accept("preferences-and-localizer");
+ 
+         final ProgressObserver progressBarBridge = (progressBar == null) ?
+                 ProgressObserver.emptyObserver : new ProgressObserver() {
+@@ -191,28 +203,32 @@ public final class FModel {
+         // if (new AutoUpdater(true).attemptToUpdate()) {}
+         // Load types before loading cards
+         loadDynamicGamedata();
++        logStage.accept("dynamic-gamedata");
+ 
+         // Load card database
+-        // Lazy loading currently disabled
++        final boolean loadCardsLazily = getPreferences().getPrefBoolean(FPref.LOAD_CARD_SCRIPTS_LAZILY);
++        System.out.printf("[Forge profile] card-script lazy loading preference: %s%n", loadCardsLazily ? "enabled" : "disabled");
+         reader = new CardStorageReader(ForgeConstants.CARD_DATA_DIR, progressBarBridge,
+-                false);
++                loadCardsLazily);
+         tokenReader = new CardStorageReader(ForgeConstants.TOKEN_DATA_DIR, progressBarBridge,
+-                false);
++                loadCardsLazily);
+ 
+         try {
+-           customReader  = new CardStorageReader(ForgeConstants.USER_CUSTOM_CARDS_DIR, progressBarBridge, false);
++           customReader  = new CardStorageReader(ForgeConstants.USER_CUSTOM_CARDS_DIR, progressBarBridge, loadCardsLazily);
+         } catch (Exception e) {
+             customReader = null;
+         }
+ 
+         try {
+-            customTokenReader  = new CardStorageReader(ForgeConstants.USER_CUSTOM_TOKENS_DIR, progressBarBridge, false);
++            customTokenReader  = new CardStorageReader(ForgeConstants.USER_CUSTOM_TOKENS_DIR, progressBarBridge, loadCardsLazily);
+         } catch (Exception e) {
+             customTokenReader = null;
+         }
++        logStage.accept("card-readers-created");
+ 
+         // Do this first so PaperCards see the real preference
+         CardTranslation.preloadTranslation(getPreferences().getPref(FPref.UI_LANGUAGE), ForgeConstants.LANG_DIR);
++        logStage.accept("card-translation-preload");
+ 
+         // Create profile dirs if they don't already exist
+         for (final String dname : ForgeConstants.PROFILE_DIRS) {
+@@ -225,22 +241,27 @@ public final class FModel {
+                 throw new RuntimeException("cannot create profile directory: " + dname);
+             }
+         }
++        logStage.accept("profile-directories");
+ 
+         ForgePreferences.DEV_MODE = getPreferences().getPrefBoolean(FPref.DEV_MODE_ENABLED);
+ 
+-        getMagicDb().setStandardPredicate(getFormats().getStandard().getFilterRules());
+-        getMagicDb().setPioneerPredicate(getFormats().getPioneer().getFilterRules());
+-        getMagicDb().setModernPredicate(getFormats().getModern().getFilterRules());
+-        getMagicDb().setCommanderPredicate(getFormats().get("Commander").getFilterRules());
+-        getMagicDb().setOathbreakerPredicate(getFormats().get("Oathbreaker").getFilterRules());
+-        getMagicDb().setBrawlPredicate(getFormats().get("Brawl").getFilterRules());
+-
+-        getMagicDb().setFilteredHandsEnabled(getPreferences().getPrefBoolean(FPref.FILTERED_HANDS));
++        final StaticData db = getMagicDb();
++        logStage.accept("static-data-build");
++        db.setStandardPredicate(getFormats().getStandard().getFilterRules());
++        db.setPioneerPredicate(getFormats().getPioneer().getFilterRules());
++        db.setModernPredicate(getFormats().getModern().getFilterRules());
++        db.setCommanderPredicate(getFormats().get("Commander").getFilterRules());
++        db.setOathbreakerPredicate(getFormats().get("Oathbreaker").getFilterRules());
++        db.setBrawlPredicate(getFormats().get("Brawl").getFilterRules());
++        logStage.accept("format-predicates");
++
++        db.setFilteredHandsEnabled(getPreferences().getPrefBoolean(FPref.FILTERED_HANDS));
+         try {
+-            getMagicDb().setMulliganRule(MulliganDefs.MulliganRule.valueOf(getPreferences().getPref(FPref.MULLIGAN_RULE)));
++            db.setMulliganRule(MulliganDefs.MulliganRule.valueOf(getPreferences().getPref(FPref.MULLIGAN_RULE)));
+         } catch(Exception e) {
+-            getMagicDb().setMulliganRule(MulliganDefs.MulliganRule.London);
++            db.setMulliganRule(MulliganDefs.MulliganRule.London);
+         }
++        logStage.accept("mulligan-and-hands");
+ 
+         Spell.setPerformanceMode(getPreferences().getPrefBoolean(FPref.PERFORMANCE_MODE));
+ 
+@@ -251,19 +272,33 @@ public final class FModel {
+         CardPreferences.load();
+         DeckPreferences.load();
+         ItemManagerConfig.load();
++        logStage.accept("preferences-load");
+ 
+         // Preload AI profiles
+         AiProfileUtil.loadAllProfiles(ForgeConstants.AI_PROFILE_DIR);
+         AiProfileUtil.setAiSideboardingMode(AiProfileUtil.AISideboardingMode.normalizedValueOf(getPreferences().getPref(FPref.MATCH_AI_SIDEBOARDING_MODE)));
++        logStage.accept("ai-profile-load");
+ 
+         // Generate Deck Gen matrix
+         if(getPreferences().getPrefBoolean(FPref.DECKGEN_CARDBASED)) {
++            final long deckGenStart = System.nanoTime();
+             boolean commanderDeckGenMatrixLoaded=CardRelationMatrixGenerator.initialize();
++            final long relationMs = (System.nanoTime() - deckGenStart) / 1_000_000L;
++            System.out.printf("[Forge profile] deckgen relation matrix initialize: %d ms%n", relationMs);
++            final long ldaStart = System.nanoTime();
+             deckGenMatrixLoaded=CardArchetypeLDAGenerator.initialize();
++            final long ldaMs = (System.nanoTime() - ldaStart) / 1_000_000L;
++            System.out.printf("[Forge profile] deckgen archetype initialize: %d ms%n", ldaMs);
+             if(!commanderDeckGenMatrixLoaded){
+                 deckGenMatrixLoaded=false;
+             }
++            logStage.accept("deckgen-initialize");
++        } else {
++            System.out.println("[Forge profile] deckgen card-based matrices skipped by preference");
++            logStage.accept("deckgen-skipped");
+         }
++        final long totalMs = (System.nanoTime() - startupStartNanos) / 1_000_000L;
++        System.out.printf("[Forge profile] FModel.initialize complete in %d ms%n", totalMs);
+     }
+ 
+     private static boolean deckGenMatrixLoaded = false;
+diff --git a/forge-headless/src/main/java/forge/headless/HeadlessGuiBase.java b/forge-headless/src/main/java/forge/headless/HeadlessGuiBase.java
+index 44aee4f4..959cd694 100644
+--- a/forge-headless/src/main/java/forge/headless/HeadlessGuiBase.java
++++ b/forge-headless/src/main/java/forge/headless/HeadlessGuiBase.java
+@@ -46,6 +46,26 @@ public class HeadlessGuiBase implements IGuiBase {
+ 
+     @Override
+     public String getAssetsDir() {
++        String configuredAssets = System.getProperty("forge.assets.dir");
++        if (configuredAssets != null && !configuredAssets.isBlank()) {
++            File configured = new File(configuredAssets);
++            if (new File(configured, "res").isDirectory()) {
++                return configured.getPath() + File.separator;
++            }
++        }
++
++        // The assembled Windows JAR is normally launched from
++        // forge-headless/target. Probe the source checkout explicitly instead
++        // of relying on the build-version string to identify a development
++        // build. This leaves packaged release layouts unchanged.
++        String[] developmentAssetDirectories = {"../../forge-gui", "../forge-gui", "forge-gui"};
++        for (String candidate : developmentAssetDirectories) {
++            File directory = new File(candidate);
++            if (new File(directory, "res").isDirectory()) {
++                return directory.getPath() + File.separator;
++            }
++        }
++
+         // For development builds (git or SNAPSHOT), look for resources in the forge-gui module
+         String version = BuildInfo.getVersionString().toLowerCase();
+         if (version.contains("git") || version.contains("snapshot")) {
+diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
+index 0d731bb6..dfa59194 100644
+--- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
++++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
+@@ -4,16 +4,25 @@ import com.google.common.collect.Multimap;
+ import forge.LobbyPlayer;
+ import forge.ai.ComputerUtilMana;
+ import forge.card.MagicColor;
++import forge.card.ColorSet;
++import forge.card.mana.ManaCost;
+ import forge.game.GameEntity;
+ import forge.ai.PlayerControllerAi;
+ import forge.deck.DeckSection;
+ import forge.game.Game;
+ import forge.game.card.Card;
+ import forge.game.card.CardCollection;
++import forge.game.card.CardCollectionView;
+ import forge.game.combat.Combat;
+ import forge.game.combat.CombatUtil;
++import forge.game.cost.CostPartMana;
++import forge.game.cost.CostPartWithList;
++import forge.game.cost.CostPart;
++import forge.game.mana.ManaConversionMatrix;
+ import forge.game.phase.PhaseHandler;
+ import forge.game.player.Player;
++import forge.game.player.PlayerActionConfirmMode;
++import forge.game.spellability.AbilitySub;
+ import forge.game.spellability.SpellAbility;
+ import forge.game.zone.ZoneType;
+ import forge.item.PaperCard;
+@@ -90,6 +99,21 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         return false; // We're a human player
+     }
+ 
++    private void reportInheritedDecision(String kind) {
++        // Machine-readable development telemetry only. It deliberately omits
++        // candidate/card details so inherited behavior cannot leak hidden state.
++        System.out.println("[TUI-INHERITED] kind=" + kind + " turn="
++            + getGame().getPhaseHandler().getTurn() + " phase="
++            + getGame().getPhaseHandler().getPhase().nameForUi);
++    }
++
++    @Override
++    public boolean payManaCost(ManaCost toPay, CostPartMana costPartMana, SpellAbility sa,
++            String prompt, ManaConversionMatrix matrix, boolean effect) {
++        reportInheritedDecision("automatic_mana_payment");
++        return super.payManaCost(toPay, costPartMana, sa, prompt, matrix, effect);
++    }
++
+     @Override
+     public void revealAnte(String message, Multimap<Player, PaperCard> removedAnteCards) {
+         // No-op for TUI - we don't need to show ante cards
+@@ -192,7 +216,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+             return desc;
+         } else if (target instanceof Card) {
+             Card c = (Card) target;
+-            String desc = c.getName();
++            String desc = c.getName() + " [id=" + c.getId() + "]";
+             if (c.isCreature()) {
+                 desc += " (" + c.getNetPower() + "/" + c.getNetToughness() + ")";
+             }
+@@ -272,15 +296,18 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         boolean isEndStep = ph.is(forge.game.phase.PhaseType.END_OF_TURN);
+         boolean stackHasItems = !game.getStack().isEmpty();
+ 
+-        // Get playable actions from hand
+-        List<SpellAbility> landAbilities = getPlayableLands();
++        // The TUI must not invent sorcery-speed timing. Forge's own ability
++        // legality checks remain authoritative, but only the active player in
++        // an empty-stack main phase can even be offered these action families.
++        boolean sorcerySpeedWindow = isMyTurn && isMainPhase && !stackHasItems;
++        List<SpellAbility> landAbilities = sorcerySpeedWindow ? getPlayableLands() : new ArrayList<>();
+         List<SpellAbility> creatureAbilities = new ArrayList<>();
+         List<SpellAbility> artifactAbilities = new ArrayList<>();
+         List<SpellAbility> instantAbilities = new ArrayList<>();
+         List<SpellAbility> sorceryAbilities = new ArrayList<>();
+ 
+-        // In any main phase, check for castable sorcery-speed spells
+-        if (isMainPhase) {
++        // Only the active player may receive sorcery-speed actions.
++        if (sorcerySpeedWindow) {
+             creatureAbilities = getCastableCreaturesAndArtifacts(true);
+             artifactAbilities = getCastableCreaturesAndArtifacts(false);
+             sorceryAbilities = getCastableSorceries();
+@@ -296,6 +323,21 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         int totalActions = landAbilities.size() + creatureAbilities.size() + artifactAbilities.size() +
+                            instantAbilities.size() + sorceryAbilities.size() + activatedAbilities.size();
+ 
++        // Every offered spell ability represents a concrete Forge card or
++        // permanent. Do not collapse same-name copies: the bridge needs the
++        // printed Forge card id to map each physical object exactly.
++        List<SpellAbility> uniqueLands = landAbilities;
++        List<SpellAbility> uniqueCreatures = creatureAbilities;
++        List<SpellAbility> uniqueArtifacts = artifactAbilities;
++        List<SpellAbility> uniqueSorceries = sorceryAbilities;
++        List<SpellAbility> uniqueInstants = instantAbilities;
++        List<SpellAbility> uniqueActivated = activatedAbilities;
++        int uniqueActions = uniqueLands.size() + uniqueCreatures.size() + uniqueArtifacts.size() +
++                           uniqueInstants.size() + uniqueSorceries.size() + uniqueActivated.size();
++
++        emitPriorityDiagnostic(ph, isMyTurn, landAbilities, creatureAbilities, artifactAbilities,
++            sorceryAbilities, instantAbilities, activatedAbilities, totalActions, uniqueActions);
++
+         // Smart auto-passing on opponent's turn
+         if (!isMyTurn) {
+             // Only prompt on opponent's turn if:
+@@ -323,18 +365,6 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+             }
+         }
+ 
+-        // Deduplicate abilities - only show unique actions
+-        List<SpellAbility> uniqueLands = deduplicateByCardName(landAbilities);
+-        List<SpellAbility> uniqueCreatures = deduplicateByCardName(creatureAbilities);
+-        List<SpellAbility> uniqueArtifacts = deduplicateByCardName(artifactAbilities);
+-        List<SpellAbility> uniqueSorceries = deduplicateByCardName(sorceryAbilities);
+-        List<SpellAbility> uniqueInstants = deduplicateByCardName(instantAbilities);
+-        List<SpellAbility> uniqueActivated = deduplicateByDescription(activatedAbilities);
+-
+-        // Recalculate total actions after deduplication
+-        int uniqueActions = uniqueLands.size() + uniqueCreatures.size() + uniqueArtifacts.size() +
+-                           uniqueInstants.size() + uniqueSorceries.size() + uniqueActivated.size();
+-
+         // Show options to user with context-appropriate header
+         if (!isMyTurn) {
+             System.out.println("\n=== OPPONENT'S TURN ===");
+@@ -363,14 +393,14 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         // Show land options
+         for (SpellAbility sa : uniqueLands) {
+             Card land = sa.getHostCard();
+-            System.out.println("  " + optionNum + ". Play land: " + land.getName());
++            System.out.println("  " + optionNum + ". Play land: " + land.getName() + " [id=" + land.getId() + "]");
+             optionNum++;
+         }
+ 
+         // Show creature options
+         for (SpellAbility sa : uniqueCreatures) {
+             Card creature = sa.getHostCard();
+-            System.out.println("  " + optionNum + ". Cast creature: " + creature.getName() +
++            System.out.println("  " + optionNum + ". Cast creature: " + creature.getName() + " [id=" + creature.getId() + "]" +
+                 " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ") - " +
+                 creature.getManaCost());
+             optionNum++;
+@@ -379,7 +409,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         // Show artifact options
+         for (SpellAbility sa : uniqueArtifacts) {
+             Card artifact = sa.getHostCard();
+-            System.out.println("  " + optionNum + ". Cast artifact: " + artifact.getName() +
++            System.out.println("  " + optionNum + ". Cast artifact: " + artifact.getName() + " [id=" + artifact.getId() + "]" +
+                 " - " + artifact.getManaCost());
+             optionNum++;
+         }
+@@ -387,7 +417,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         // Show sorcery options
+         for (SpellAbility sa : uniqueSorceries) {
+             Card sorcery = sa.getHostCard();
+-            System.out.println("  " + optionNum + ". Cast sorcery: " + sorcery.getName() +
++            System.out.println("  " + optionNum + ". Cast sorcery: " + sorcery.getName() + " [id=" + sorcery.getId() + "]" +
+                 " - " + sorcery.getManaCost());
+             optionNum++;
+         }
+@@ -395,7 +425,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         // Show instant options
+         for (SpellAbility sa : uniqueInstants) {
+             Card instant = sa.getHostCard();
+-            System.out.println("  " + optionNum + ". Cast instant: " + instant.getName() +
++            System.out.println("  " + optionNum + ". Cast instant: " + instant.getName() + " [id=" + instant.getId() + "]" +
+                 " - " + instant.getManaCost());
+             optionNum++;
+         }
+@@ -407,7 +437,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+             if (description == null || description.isEmpty()) {
+                 description = "Activate ability";
+             }
+-            System.out.println("  " + optionNum + ". " + source.getName() + ": " + description);
++            System.out.println("  " + optionNum + ". " + source.getName() + " [id=" + source.getId() + "]: " + description);
+             optionNum++;
+         }
+ 
+@@ -459,6 +489,41 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         }
+     }
+ 
++    private void emitPriorityDiagnostic(
++            PhaseHandler ph,
++            boolean isMyTurn,
++            List<SpellAbility> lands,
++            List<SpellAbility> creatures,
++            List<SpellAbility> artifacts,
++            List<SpellAbility> sorceries,
++            List<SpellAbility> instants,
++            List<SpellAbility> activated,
++            int totalActions,
++            int uniqueActions) {
++        Player priority = ph.getPriorityPlayer();
++        System.out.println("[TUI-DIAG priority] turn=" + ph.getTurn()
++            + " phase=" + ph.getPhase().nameForUi
++            + " priority=" + (priority == null ? "none" : priority.getName())
++            + " isMyTurn=" + isMyTurn
++            + " lands=" + describeActions(lands)
++            + " creatures=" + describeActions(creatures)
++            + " artifacts=" + describeActions(artifacts)
++            + " sorceries=" + describeActions(sorceries)
++            + " instants=" + describeActions(instants)
++            + " activated=" + describeActions(activated)
++            + " totalActions=" + totalActions
++            + " uniqueActions=" + uniqueActions);
++    }
++
++    private static String describeActions(List<SpellAbility> abilities) {
++        List<String> names = new ArrayList<>();
++        for (SpellAbility ability : abilities) {
++            Card source = ability.getHostCard();
++            names.add(source.getName() + "#" + source.getId());
++        }
++        return abilities.size() + "[" + String.join(",", names) + "]";
++    }
++
+     /**
+      * Get playable land abilities from the player's hand.
+      */
+@@ -1165,7 +1230,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+                     if (selectedAttackers.contains(creature)) {
+                         status = " [ATTACKING]";
+                     }
+-                    System.out.println("  " + (i + 1) + ". " + creature.getName() +
++                    System.out.println("  " + (i + 1) + ". " + creature.getName() + " [id=" + creature.getId() + "]" +
+                         " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
+                 }
+ 
+@@ -1210,7 +1275,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+             System.out.println("\nAvailable attackers:");
+             for (int i = 0; i < possibleAttackers.size(); i++) {
+                 Card creature = possibleAttackers.get(i);
+-                System.out.println("  " + i + ". " + creature.getName() +
++                System.out.println("  " + i + ". " + creature.getName() + " [id=" + creature.getId() + "]" +
+                     " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" +
+                     (creature.isTapped() ? " (tapped)" : "") +
+                     (creature.isSick() ? " (summoning sickness)" : ""));
+@@ -1346,7 +1411,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+                         if (combat.isBlocking(creature)) {
+                             status = " [BLOCKING]";
+                         }
+-                        System.out.println("  " + (i + 1) + ". " + creature.getName() +
++                        System.out.println("  " + (i + 1) + ". " + creature.getName() + " [id=" + creature.getId() + "]" +
+                             " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
+                     }
+ 
+@@ -1550,37 +1615,299 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         return toDiscard;
+     }
+ 
+-    /**
+-     * Deduplicate spell abilities by card name, keeping first occurrence.
+-     * Used for lands, creatures, artifacts, sorceries, and instants.
+-     */
+-    private List<SpellAbility> deduplicateByCardName(List<SpellAbility> abilities) {
+-        List<SpellAbility> unique = new ArrayList<>();
+-        java.util.Set<String> seenNames = new java.util.HashSet<>();
+-        for (SpellAbility sa : abilities) {
+-            String name = sa.getHostCard().getName();
+-            if (!seenNames.contains(name)) {
+-                unique.add(sa);
+-                seenNames.add(name);
++    private String formatDecisionEntity(GameEntity entity) {
++        if (entity instanceof Card) {
++            Card card = (Card) entity;
++            return card.getName() + " [id=" + card.getId() + "]";
++        }
++        if (entity instanceof Player) {
++            Player choice = (Player) entity;
++            return choice.getName() + " (Life: " + choice.getLife() + ")";
++        }
++        return entity.toString();
++    }
++
++    private <T extends GameEntity> List<T> chooseEntitiesThroughTui(
++            String kind, FCollectionView<T> options, int min, int max, String title, boolean ordered) {
++        List<T> candidates = new ArrayList<>();
++        for (T option : options) candidates.add(option);
++        List<T> selected = new ArrayList<>();
++        int boundedMax = Math.min(max, candidates.size());
++        String effectiveKind = !candidates.isEmpty() && candidates.get(0) instanceof Player
++            ? "player_selection" : kind;
++
++        while (true) {
++            System.out.println("\n=== FORGE CHOICE ===");
++            System.out.println(title == null || title.isBlank() ? "Choose from Forge's legal candidates" : title);
++            System.out.println("[kind=" + effectiveKind + " min=" + min + " max=" + boundedMax
++                + " selected=" + selected.size() + " ordered=" + ordered + "]");
++            System.out.println("  0. Done");
++            for (int i = 0; i < candidates.size(); i++) {
++                T candidate = candidates.get(i);
++                System.out.println("  " + (i + 1) + ". " + formatDecisionEntity(candidate)
++                    + (selected.contains(candidate) ? " [SELECTED]" : ""));
++            }
++            System.out.print("Enter choice (0-" + candidates.size() + "): ");
++            int choice = getIntInput(0, candidates.size());
++            if (choice == 0) {
++                if (selected.size() >= min && selected.size() <= boundedMax) return selected;
++                System.out.println("Selection requires " + min + " to " + boundedMax + " choices.");
++                continue;
++            }
++            T candidate = candidates.get(choice - 1);
++            if (selected.contains(candidate)) {
++                selected.remove(candidate);
++            } else if (selected.size() < boundedMax) {
++                selected.add(candidate);
++            } else {
++                System.out.println("Maximum selections reached; deselect one or choose Done.");
+             }
+         }
+-        return unique;
+     }
+ 
+-    /**
+-     * Deduplicate activated abilities by card name + description.
+-     * Different abilities on the same card will show separately.
+-     */
+-    private List<SpellAbility> deduplicateByDescription(List<SpellAbility> abilities) {
+-        List<SpellAbility> unique = new ArrayList<>();
+-        java.util.Set<String> seenKeys = new java.util.HashSet<>();
+-        for (SpellAbility sa : abilities) {
+-            String key = sa.getHostCard().getName() + ":" + sa.getDescription();
+-            if (!seenKeys.contains(key)) {
+-                unique.add(sa);
+-                seenKeys.add(key);
++    @Override
++    public CardCollectionView choosePermanentsToSacrifice(SpellAbility sa, int min, int max,
++            CardCollectionView validTargets, String message) {
++        CardCollection result = new CardCollection();
++        result.addAll(chooseEntitiesThroughTui("sacrifice", validTargets, min, max, message, false));
++        return result;
++    }
++
++    @Override
++    public CardCollectionView chooseCardsForEffect(CardCollectionView sourceList, SpellAbility sa,
++            String title, int min, int max, boolean isOptional, Map<String, Object> params) {
++        CardCollection result = new CardCollection();
++        result.addAll(chooseEntitiesThroughTui("entity_selection", sourceList,
++            isOptional ? 0 : min, max, title, false));
++        return result;
++    }
++
++    @Override
++    public <T extends GameEntity> T chooseSingleEntityForEffect(FCollectionView<T> optionList,
++            forge.game.player.DelayedReveal delayedReveal, SpellAbility sa, String title,
++            boolean isOptional, Player relatedPlayer, Map<String, Object> params) {
++        if (delayedReveal != null) reveal(delayedReveal);
++        List<T> result = chooseEntitiesThroughTui("entity_selection", optionList,
++            isOptional ? 0 : 1, 1, title, false);
++        return result.isEmpty() ? null : result.get(0);
++    }
++
++    @Override
++    public <T extends GameEntity> List<T> chooseEntitiesForEffect(FCollectionView<T> optionList,
++            int min, int max, forge.game.player.DelayedReveal delayedReveal, SpellAbility sa,
++            String title, Player relatedPlayer, Map<String, Object> params) {
++        if (delayedReveal != null) reveal(delayedReveal);
++        return chooseEntitiesThroughTui("entity_selection", optionList, min, max, title, false);
++    }
++
++    @Override
++    public CardCollection chooseCardsToDiscardFrom(Player playerDiscard, SpellAbility sa,
++            CardCollection validCards, int min, int max, CardCollectionView visibleToChooser) {
++        CardCollection result = new CardCollection();
++        result.addAll(chooseEntitiesThroughTui("discard", validCards, min, max,
++            "Choose cards to discard", false));
++        return result;
++    }
++
++    @Override
++    public CardCollectionView chooseCardsForCost(CardCollectionView optionList, SpellAbility sa,
++            CostPartWithList costPart, int amount, boolean isOptional, String prompt) {
++        CardCollection result = new CardCollection();
++        String kind = costPart.getClass().getSimpleName().toLowerCase().contains("sacrifice")
++            ? "sacrifice" : costPart.getClass().getSimpleName().toLowerCase().contains("discard")
++                ? "discard" : "cost_selection";
++        result.addAll(chooseEntitiesThroughTui(kind, optionList, isOptional ? 0 : amount,
++            amount, prompt, false));
++        return result;
++    }
++
++    @Override
++    public List<AbilitySub> chooseModeForAbility(SpellAbility sa, List<AbilitySub> possible,
++            int min, int num, boolean allowRepeat) {
++        List<AbilitySub> selected = new ArrayList<>();
++        while (true) {
++            System.out.println("\n=== FORGE CHOICE ===");
++            System.out.println("Choose mode for " + sa.getHostCard().getName());
++            System.out.println("[kind=mode_selection min=" + min + " max=" + num
++                + " selected=" + selected.size() + " ordered=true]");
++            System.out.println("  0. Done");
++            for (int i = 0; i < possible.size(); i++) {
++                AbilitySub mode = possible.get(i);
++                System.out.println("  " + (i + 1) + ". " + mode.getDescription()
++                    + (selected.contains(mode) ? " [SELECTED]" : ""));
++            }
++            System.out.print("Enter choice (0-" + possible.size() + "): ");
++            int choice = getIntInput(0, possible.size());
++            if (choice == 0) {
++                if (selected.size() >= min && selected.size() <= num) return selected;
++                System.out.println("Selection requires " + min + " to " + num + " modes.");
++                continue;
++            }
++            AbilitySub mode = possible.get(choice - 1);
++            if (selected.contains(mode) && !allowRepeat) selected.remove(mode);
++            else if (selected.size() < num) selected.add(mode);
++        }
++    }
++
++    @Override
++    public int chooseNumber(SpellAbility sa, String title, int min, int max) {
++        System.out.println("\n=== FORGE CHOICE ===");
++        System.out.println(title);
++        System.out.println("[kind=numeric_selection min=1 max=1 selected=0 ordered=false]");
++        for (int value = min; value <= max; value++) {
++            System.out.println("  " + (value - min) + ". " + value);
++        }
++        System.out.print("Enter choice (0-" + (max - min) + "): ");
++        return min + getIntInput(0, max - min);
++    }
++
++    @Override
++    public int chooseNumber(SpellAbility sa, String title, List<Integer> values, Player relatedPlayer) {
++        System.out.println("\n=== FORGE CHOICE ===");
++        System.out.println(title);
++        System.out.println("[kind=numeric_selection min=1 max=1 selected=0 ordered=false]");
++        for (int i = 0; i < values.size(); i++) System.out.println("  " + i + ". " + values.get(i));
++        System.out.print("Enter choice (0-" + (values.size() - 1) + "): ");
++        return values.get(getIntInput(0, values.size() - 1));
++    }
++
++    @Override
++    public int chooseNumberForCostReduction(SpellAbility sa, int min, int max) {
++        return chooseNumber(sa, "Choose cost reduction", min, max);
++    }
++
++    @Override
++    public int chooseNumberForKeywordCost(SpellAbility sa, forge.game.cost.Cost cost,
++            forge.game.keyword.KeywordInterface keyword, String prompt, int max) {
++        return chooseNumber(sa, prompt, 0, max);
++    }
++
++    @Override
++    public Card chooseSingleCardForZoneChange(ZoneType destination, List<ZoneType> origin,
++            SpellAbility sa, CardCollection fetchList, forge.game.player.DelayedReveal delayedReveal,
++            String selectPrompt, boolean isOptional, Player decider) {
++        if (delayedReveal != null) reveal(delayedReveal);
++        List<Card> result = chooseEntitiesThroughTui("search_selection", fetchList,
++            isOptional ? 0 : 1, 1, selectPrompt, false);
++        return result.isEmpty() ? null : result.get(0);
++    }
++
++    @Override
++    public List<Card> chooseCardsForZoneChange(ZoneType destination, List<ZoneType> origin,
++            SpellAbility sa, CardCollection fetchList, int min, int max,
++            forge.game.player.DelayedReveal delayedReveal, String selectPrompt, Player decider) {
++        if (delayedReveal != null) reveal(delayedReveal);
++        return chooseEntitiesThroughTui("search_selection", fetchList, min, max, selectPrompt, false);
++    }
++
++    private <T> int chooseOneTextOption(String kind, String prompt, List<T> options) {
++        System.out.println("\n=== FORGE CHOICE ===");
++        System.out.println(prompt);
++        System.out.println("[kind=" + kind + " min=1 max=1 selected=0 ordered=false]");
++        for (int i = 0; i < options.size(); i++) {
++            System.out.println("  " + i + ". " + options.get(i));
++        }
++        System.out.print("Enter choice (0-" + (options.size() - 1) + "): ");
++        return getIntInput(0, options.size() - 1);
++    }
++
++    @Override
++    public byte chooseColor(String message, SpellAbility sa, ColorSet colors) {
++        List<Byte> masks = new ArrayList<>();
++        List<String> names = new ArrayList<>();
++        byte[] all = {MagicColor.WHITE, MagicColor.BLUE, MagicColor.BLACK, MagicColor.RED, MagicColor.GREEN};
++        String[] labels = {"White", "Blue", "Black", "Red", "Green"};
++        for (int i = 0; i < all.length; i++) {
++            if (colors.hasAnyColor(all[i])) {
++                masks.add(all[i]);
++                names.add(labels[i]);
++            }
++        }
++        if (masks.isEmpty()) return 0;
++        return masks.get(chooseOneTextOption("mana_color", message, names));
++    }
++
++    @Override
++    public byte chooseColorAllowColorless(String message, Card card, ColorSet colors) {
++        List<Byte> masks = new ArrayList<>();
++        List<String> names = new ArrayList<>();
++        masks.add(MagicColor.COLORLESS);
++        names.add("Colorless");
++        byte[] all = {MagicColor.WHITE, MagicColor.BLUE, MagicColor.BLACK, MagicColor.RED, MagicColor.GREEN};
++        String[] labels = {"White", "Blue", "Black", "Red", "Green"};
++        for (int i = 0; i < all.length; i++) {
++            if (colors.hasAnyColor(all[i])) {
++                masks.add(all[i]);
++                names.add(labels[i]);
++            }
++        }
++        return masks.get(chooseOneTextOption("mana_color", message, names));
++    }
++
++    @Override
++    public forge.game.replacement.ReplacementEffect chooseSingleReplacementEffect(
++            List<forge.game.replacement.ReplacementEffect> options) {
++        return options.get(chooseOneTextOption("replacement_choice", "Choose replacement effect", options));
++    }
++
++    @Override
++    public forge.game.staticability.StaticAbility chooseSingleStaticAbility(
++            List<forge.game.staticability.StaticAbility> options) {
++        return options.get(chooseOneTextOption("replacement_choice", "Choose static effect", options));
++    }
++
++    @Override
++    public String chooseProtectionType(SpellAbility sa, List<String> choices) {
++        return choices.get(chooseOneTextOption("mode_selection", "Choose protection", choices));
++    }
++
++    @Override
++    public List<forge.game.spellability.OptionalCostValue> chooseOptionalCosts(
++            SpellAbility chosen, List<forge.game.spellability.OptionalCostValue> options) {
++        List<forge.game.spellability.OptionalCostValue> selected = new ArrayList<>();
++        while (true) {
++            System.out.println("\n=== FORGE CHOICE ===");
++            System.out.println("Choose optional costs for " + chosen.getHostCard().getName());
++            System.out.println("[kind=payment_option min=0 max=" + options.size()
++                + " selected=" + selected.size() + " ordered=false]");
++            System.out.println("  0. Done");
++            for (int i = 0; i < options.size(); i++) {
++                forge.game.spellability.OptionalCostValue option = options.get(i);
++                System.out.println("  " + (i + 1) + ". " + option
++                    + (selected.contains(option) ? " [SELECTED]" : ""));
+             }
++            System.out.print("Enter choice (0-" + options.size() + "): ");
++            int choice = getIntInput(0, options.size());
++            if (choice == 0) return selected;
++            forge.game.spellability.OptionalCostValue option = options.get(choice - 1);
++            if (selected.contains(option)) selected.remove(option); else selected.add(option);
+         }
+-        return unique;
+     }
++
++    @Override
++    public boolean chooseBinary(SpellAbility sa, String question, BinaryChoiceType kindOfChoice, Boolean defaultChoice) {
++        return chooseYesNo(question);
++    }
++
++    @Override
++    public boolean confirmAction(SpellAbility sa, PlayerActionConfirmMode mode, String message,
++            List<String> options, Card cardToShow, Map<String, Object> params) {
++        return chooseYesNo(message);
++    }
++
++    @Override
++    public boolean confirmPayment(CostPart costPart, String prompt, SpellAbility sa) {
++        return chooseYesNo(prompt);
++    }
++
++    private boolean chooseYesNo(String prompt) {
++        System.out.println("\n=== FORGE CHOICE ===");
++        System.out.println(prompt);
++        System.out.println("[kind=yes_no min=1 max=1 selected=0 ordered=false]");
++        System.out.println("  0. No");
++        System.out.println("  1. Yes");
++        System.out.print("Enter choice (0-1): ");
++        return getIntInput(0, 1) == 1;
++    }
++
+ }
+diff --git a/forge-headless/src/main/java/forge/headless/TUICommand.java b/forge-headless/src/main/java/forge/headless/TUICommand.java
+index 3626ea89..b0e8729c 100644
+--- a/forge-headless/src/main/java/forge/headless/TUICommand.java
++++ b/forge-headless/src/main/java/forge/headless/TUICommand.java
+@@ -53,6 +53,14 @@ public class TUICommand implements Runnable {
+             description = "Load game state from .pzl file")
+     String startStatePath;
+ 
++    @Option(names = "--deckgen-cardbased",
++            description = "Enable card-based deck-generation matrix startup work (default: ${DEFAULT-VALUE})")
++    boolean deckgenCardBased = false;
++
++    @Option(names = "--lazy-card-scripts",
++            description = "Enable Forge lazy card script loading during startup (default: ${DEFAULT-VALUE})")
++    boolean lazyCardScripts = false;
++
+     // Legacy support
+     @Option(names = "--player2-tui",
+             hidden = true,
+diff --git a/forge-headless/src/main/java/forge/headless/TextUIGame.java b/forge-headless/src/main/java/forge/headless/TextUIGame.java
+index 15b7a60f..75acb012 100644
+--- a/forge-headless/src/main/java/forge/headless/TextUIGame.java
++++ b/forge-headless/src/main/java/forge/headless/TextUIGame.java
+@@ -11,6 +11,7 @@ import forge.game.player.RegisteredPlayer;
+ import forge.game.zone.ZoneType;
+ import forge.item.PaperCard;
+ import forge.localinstance.properties.ForgeConstants;
++import forge.localinstance.properties.ForgePreferences.FPref;
+ import forge.model.FModel;
+ import forge.player.GamePlayerUtil;
+ import forge.util.FileUtil;
+@@ -70,11 +71,21 @@ public class TextUIGame {
+             MyRandom.setRandom(new Random(seed));
+         }
+ 
+-        // NOW load the card database after all arguments have been validated
+-        // Use lazy loading to only load cards from the decks being played
+-        System.out.println("Initializing Forge (lazy card loading enabled)...");
++        // NOW load the card database after all arguments have been validated.
++        System.out.println("Initializing Forge...");
++        System.out.printf(
++                "Headless startup preferences: deckgenCardBased=%s lazyCardScripts=%s%n",
++                cmd.deckgenCardBased,
++                cmd.lazyCardScripts);
+         Thread cardLoadingThread = new Thread(() -> {
+-            FModel.initialize(null, null);
++            FModel.initialize(null, preferences -> {
++                preferences.setPref(FPref.DECKGEN_CARDBASED, cmd.deckgenCardBased);
++                preferences.setPref(FPref.LOAD_CARD_SCRIPTS_LAZILY, cmd.lazyCardScripts);
++                preferences.setPref(FPref.UI_ENABLE_SOUNDS, false);
++                preferences.setPref(FPref.UI_ENABLE_MUSIC, false);
++                preferences.setPref(FPref.UI_ENABLE_ONLINE_IMAGE_FETCHER, false);
++                return null;
++            });
+         }, "CardLoadingThread");
+         cardLoadingThread.start();
+ 
+@@ -185,26 +196,23 @@ public class TextUIGame {
+         // Set the current game for log monitoring
+         TUIGuiBase.setCurrentGame(game);
+ 
+-        // Load game state from .pzl file if provided
+-        if (startStatePath != null) {
+-            System.out.println("Loading game state from: " + startStatePath);
+-            if (!loadGameState(game, startStatePath)) {
+-                System.err.println("Failed to load game state. Exiting.");
+-                return;
+-            }
+-        }
++        // Bridge-internal machine-readable state. This observer only reads the
++        // authoritative game model and emits framed snapshots after mutations.
++        game.subscribeToEvents(new BridgeStateFeed(game));
+ 
+         // Start the game
+         System.out.println("Game starting...");
+         System.out.println("=".repeat(60));
+ 
+         if (startStatePath != null) {
+-            // Game state was loaded, so the game is already set up
+-            // Just run the game loop
+-            game.getAction().invoke(() -> {
+-                game.getPhaseHandler().devModeSet(game.getPhaseHandler().getPhase(),
+-                                                   game.getPhaseHandler().getPlayerTurn(),
+-                                                   game.getPhaseHandler().getTurn());
++            // Enter Forge's normal game lifecycle first, then apply the test-only
++            // state in the start hook immediately before priority begins.
++            final String scenarioPath = startStatePath;
++            match.startGame(game, () -> {
++                System.out.println("Loading game state from: " + scenarioPath);
++                if (!loadGameState(game, scenarioPath)) {
++                    throw new IllegalStateException("Failed to load game state: " + scenarioPath);
++                }
+             });
+         } else {
+             // Normal game start
+diff --git a/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
+new file mode 100644
+index 00000000..bde8b667
+--- /dev/null
++++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
+@@ -0,0 +1,269 @@
++package forge.headless;
++
++import com.google.common.collect.Multiset;
++import com.google.common.eventbus.Subscribe;
++import forge.card.MagicColor;
++import forge.game.Game;
++import forge.game.card.Card;
++import forge.game.card.CounterType;
++import forge.game.event.GameEvent;
++import forge.game.event.GameEventCardChangeZone;
++import forge.game.event.GameEventCardCounters;
++import forge.game.event.GameEventCardStatsChanged;
++import forge.game.event.GameEventCardTapped;
++import forge.game.event.GameEventGameStarted;
++import forge.game.event.GameEventMulligan;
++import forge.game.event.GameEventManaPool;
++import forge.game.event.GameEventPlayerCounters;
++import forge.game.event.GameEventPlayerLivesChanged;
++import forge.game.event.GameEventPlayerPoisoned;
++import forge.game.event.GameEventShuffle;
++import forge.game.event.GameEventSnapshotRestored;
++import forge.game.event.GameEventTurnBegan;
++import forge.game.keyword.KeywordInterface;
++import forge.game.player.Player;
++import forge.game.zone.ZoneType;
++import forge.util.ThreadUtil;
++
++import java.util.IdentityHashMap;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++import java.util.ConcurrentModificationException;
++import java.util.concurrent.atomic.AtomicBoolean;
++
++/**
++ * Emits bridge-internal authoritative snapshots without changing game behavior.
++ * The sentinel lets the child-process adapter remove these records before the
++ * human TUI parser sees them.
++ */
++final class BridgeStateFeed {
++    static final String SENTINEL = "@@FORGE_BRIDGE_STATE@@";
++    private static final List<ZoneType> PLAYER_ZONES = List.of(
++            ZoneType.Library,
++            ZoneType.Hand,
++            ZoneType.Battlefield,
++            ZoneType.Graveyard,
++            ZoneType.Exile);
++
++    private final Game game;
++    private final Map<Player, String> seats = new IdentityHashMap<>();
++    private final AtomicBoolean snapshotScheduled = new AtomicBoolean();
++    private long sequence;
++
++    BridgeStateFeed(final Game game) {
++        this.game = game;
++        int index = 1;
++        for (Player player : game.getPlayers()) {
++            seats.put(player, "forge-player-" + index++);
++        }
++    }
++
++    @Subscribe
++    public void receive(final GameEvent event) {
++        if (event instanceof GameEventCardChangeZone
++                || event instanceof GameEventCardTapped
++                || event instanceof GameEventCardCounters
++                || event instanceof GameEventCardStatsChanged
++                || event instanceof GameEventPlayerLivesChanged
++                || event instanceof GameEventPlayerCounters
++                || event instanceof GameEventPlayerPoisoned
++                || event instanceof GameEventManaPool
++                || event instanceof GameEventShuffle
++                || event instanceof GameEventGameStarted
++                || event instanceof GameEventMulligan
++                || event instanceof GameEventTurnBegan
++                || event instanceof GameEventSnapshotRestored) {
++            scheduleSnapshot(event.getClass().getSimpleName());
++        }
++    }
++
++    /**
++     * Game events fire while Forge is mutating zone collections. Reading all
++     * zones re-entrantly from the event bus caused ConcurrentModificationException
++     * during opening-hand setup. Coalesce events and snapshot shortly after the
++     * mutation batch on the bridge's read-only observer path instead.
++     */
++    private void scheduleSnapshot(final String reason) {
++        if (!snapshotScheduled.compareAndSet(false, true)) {
++            return;
++        }
++        ThreadUtil.delay(25, () -> emitWhenStable(reason));
++    }
++
++    private void emitWhenStable(final String reason) {
++        try {
++            emitSnapshot(reason);
++            snapshotScheduled.set(false);
++        } catch (ConcurrentModificationException ignored) {
++            ThreadUtil.delay(25, () -> emitWhenStable(reason));
++        } catch (RuntimeException exception) {
++            // A diagnostics feed must never change or terminate Forge gameplay.
++            snapshotScheduled.set(false);
++            System.err.println("Forge bridge state snapshot skipped: " + exception.getClass().getSimpleName());
++        }
++    }
++
++    private void emitSnapshot(final String reason) {
++        final StringBuilder json = new StringBuilder(32768);
++        json.append('{');
++        property(json, "version", 1).append(',');
++        property(json, "type", "snapshot").append(',');
++        property(json, "sequence", ++sequence).append(',');
++        property(json, "reason", reason).append(',');
++        json.append("\"players\":[");
++
++        boolean firstPlayer = true;
++        for (Player player : game.getPlayers()) {
++            if (!firstPlayer) json.append(',');
++            firstPlayer = false;
++            appendPlayer(json, player);
++        }
++
++        json.append("],\"stack\":[");
++        boolean firstCard = true;
++        int position = 0;
++        for (Card card : game.getStackZone().getCards()) {
++            if (!firstCard) json.append(',');
++            firstCard = false;
++            appendCard(json, card, "stack", position++);
++        }
++        json.append("]}");
++
++        synchronized (System.out) {
++            System.out.println(SENTINEL + json);
++        }
++    }
++
++    private void appendPlayer(final StringBuilder json, final Player player) {
++        json.append('{');
++        property(json, "seatId", seatOf(player)).append(',');
++        property(json, "forgePlayerId", player.getId()).append(',');
++        property(json, "displayName", player.getName()).append(',');
++        property(json, "life", player.getLife()).append(',');
++        property(json, "poison", player.getPoisonCounters()).append(',');
++        json.append("\"counters\":");
++        appendCounters(json, player.getCounters());
++        json.append(",\"manaPool\":");
++        appendManaPool(json, player);
++        json.append(",\"zones\":[");
++
++        boolean firstZone = true;
++        for (ZoneType zoneType : PLAYER_ZONES) {
++            if (!firstZone) json.append(',');
++            firstZone = false;
++            json.append('{');
++            property(json, "name", zoneName(zoneType)).append(',');
++            json.append("\"cards\":[");
++            boolean firstCard = true;
++            int position = 0;
++            for (Card card : player.getZone(zoneType).getCards(false)) {
++                if (!firstCard) json.append(',');
++                firstCard = false;
++                appendCard(json, card, zoneName(zoneType), position++);
++            }
++            json.append("]}");
++        }
++        json.append("]}");
++    }
++
++    private void appendCard(final StringBuilder json, final Card card, final String zone, final int position) {
++        final String canonicalName = card.getPaperCard() == null ? card.getName() : card.getPaperCard().getName();
++        json.append('{');
++        property(json, "forgeCardId", card.getId()).append(',');
++        property(json, "cardName", canonicalName).append(',');
++        property(json, "currentCardName", card.getName()).append(',');
++        property(json, "zone", zone).append(',');
++        property(json, "zonePosition", position).append(',');
++        property(json, "ownerSeatId", seatOf(card.getOwner())).append(',');
++        property(json, "controllerSeatId", seatOf(card.getController())).append(',');
++        property(json, "tapped", card.isTapped()).append(',');
++        property(json, "faceDown", card.isFaceDown()).append(',');
++        property(json, "phasedOut", card.isPhasedOut()).append(',');
++        property(json, "netPower", card.isCreature() ? card.getNetPower() : 0).append(',');
++        property(json, "netToughness", card.isCreature() ? card.getNetToughness() : 0).append(',');
++        json.append("\"counters\":");
++        appendCounters(json, card.getCounters());
++        json.append(",\"keywords\":[");
++
++        final Set<String> keywords = new LinkedHashSet<>();
++        for (KeywordInterface keyword : card.getKeywords()) {
++            final String name = keyword.getKeyword().toString();
++            if (!name.isEmpty()) keywords.add(name);
++        }
++        boolean firstKeyword = true;
++        for (String keyword : keywords) {
++            if (!firstKeyword) json.append(',');
++            firstKeyword = false;
++            string(json, keyword);
++        }
++        json.append("]}");
++    }
++
++    private static void appendCounters(final StringBuilder json, final Multiset<CounterType> counters) {
++        json.append('{');
++        boolean first = true;
++        for (Multiset.Entry<CounterType> entry : counters.entrySet()) {
++            if (!first) json.append(',');
++            first = false;
++            string(json, entry.getElement().getName());
++            json.append(':').append(entry.getCount());
++        }
++        json.append('}');
++    }
++
++    private static void appendManaPool(final StringBuilder json, final Player player) {
++        json.append('{');
++        property(json, "W", player.getManaPool().getAmountOfColor(MagicColor.WHITE)).append(',');
++        property(json, "U", player.getManaPool().getAmountOfColor(MagicColor.BLUE)).append(',');
++        property(json, "B", player.getManaPool().getAmountOfColor(MagicColor.BLACK)).append(',');
++        property(json, "R", player.getManaPool().getAmountOfColor(MagicColor.RED)).append(',');
++        property(json, "G", player.getManaPool().getAmountOfColor(MagicColor.GREEN)).append(',');
++        property(json, "C", player.getManaPool().getAmountOfColor(MagicColor.COLORLESS));
++        json.append('}');
++    }
++
++    private String seatOf(final Player player) {
++        return player == null ? null : seats.get(player);
++    }
++
++    private static String zoneName(final ZoneType zoneType) {
++        return zoneType.name().toLowerCase(java.util.Locale.ROOT);
++    }
++
++    private static StringBuilder property(final StringBuilder json, final String name, final String value) {
++        string(json, name).append(':');
++        if (value == null) return json.append("null");
++        return string(json, value);
++    }
++
++    private static StringBuilder property(final StringBuilder json, final String name, final long value) {
++        return string(json, name).append(':').append(value);
++    }
++
++    private static StringBuilder property(final StringBuilder json, final String name, final boolean value) {
++        return string(json, name).append(':').append(value);
++    }
++
++    private static StringBuilder string(final StringBuilder json, final String value) {
++        json.append('"');
++        for (int i = 0; i < value.length(); i++) {
++            final char ch = value.charAt(i);
++            switch (ch) {
++                case '"' -> json.append("\\\"");
++                case '\\' -> json.append("\\\\");
++                case '\b' -> json.append("\\b");
++                case '\f' -> json.append("\\f");
++                case '\n' -> json.append("\\n");
++                case '\r' -> json.append("\\r");
++                case '\t' -> json.append("\\t");
++                default -> {
++                    if (ch < 0x20) json.append(String.format("\\u%04x", (int) ch));
++                    else json.append(ch);
++                }
++            }
++        }
++        return json.append('"');
++    }
++}

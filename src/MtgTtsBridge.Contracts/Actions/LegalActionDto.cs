@@ -9,4 +9,5 @@ public sealed record LegalActionDto(
     string? ObjectIdentity,
     string? TargetKind = null,
     string? TargetSeatId = null,
-    string? CardInstanceId = null);
+    string? CardInstanceId = null,
+    bool IsSelected = false);

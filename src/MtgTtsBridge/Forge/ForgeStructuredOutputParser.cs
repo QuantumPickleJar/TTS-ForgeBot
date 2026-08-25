@@ -112,7 +112,9 @@ public sealed record ForgeStructuredCard(
     bool FaceDown,
     bool PhasedOut,
     IReadOnlyDictionary<string, int> Counters,
-    IReadOnlyList<string> Keywords);
+    IReadOnlyList<string> Keywords,
+    int? NetPower = null,
+    int? NetToughness = null);
 
 public sealed class ForgeStructuredFrameException : InvalidOperationException
 {

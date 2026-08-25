@@ -757,6 +757,46 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void ExactResolvedSpellAlreadyInGraveyard_IsIdempotent()
+    {
+        Assert.Contains("idempotent spell resolution event=", Script);
+        Assert.Contains("mappedZone == \"graveyard\"", Script);
+        Assert.Contains("inverseInstanceId ~= event.cardInstanceId", Script);
+        Assert.Contains("BridgeState.pendingCastBySeatId[event.seatId] = nil", Script);
+    }
+
+    [Fact]
+    public void SnapshotBattlefieldRepair_PreservesForgeRowKindAndTapDoesNotReflow()
+    {
+        Assert.Contains("battlefieldKind = card.battlefieldKind", Script);
+        Assert.Contains("local row = event.battlefieldKind == \"land\" and \"land\" or \"creature\"", Script);
+        var tapStart = Script.IndexOf("if event.kind == \"tap_changed\" then", StringComparison.Ordinal);
+        var tapEnd = Script.IndexOf("if event.kind == \"counter_changed\" then", tapStart, StringComparison.Ordinal);
+        var tapBlock = Script[tapStart..tapEnd];
+        Assert.Contains("BridgeSetPhysicalTapped", tapBlock);
+        Assert.DoesNotContain("BridgeMoveToBattlefield", tapBlock);
+    }
+
+    [Fact]
+    public void AcceptedCombatChoice_RemainsDistinctUntilCombatPresentationClears()
+    {
+        Assert.Contains("combatSelectedByGuid", Script);
+        Assert.Contains("or action.isSelected == true", Script);
+        Assert.Contains("object.highlightOn(selected and selectedCombatColor or highlightColor)", Script);
+        Assert.Contains("BridgeState.combatSelectedByGuid[intent.guid] = true", Script);
+        Assert.Contains("BridgeState.combatSelectedByGuid[guid] = nil", Script);
+    }
+
+    [Fact]
+    public void GenericForgeTransaction_ShowsPhysicalDoneCountAndAllowsSelectedEntityToggle()
+    {
+        Assert.Contains("DONE / CONFIRM\\nSelected %d / %d", Script);
+        Assert.Contains("decision.confirmRequired == true", Script);
+        Assert.Contains("local combatSelected = selected and", Script);
+        Assert.Contains("if not combatSelected then", Script);
+    }
+
+    [Fact]
     public void SnapshotReconcile_DefersPublicMovementUntilItsBridgeEventCursorIsApplied()
     {
         Assert.Contains("EventCursor = _latestEventSequence", File.ReadAllText(

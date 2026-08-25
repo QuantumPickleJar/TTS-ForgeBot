@@ -457,7 +457,9 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             TurnNumber: rawEvent.TurnNumber,
             ForgeSequence: rawEvent.ForgeSequence,
             ActiveSeatId: rawEvent.ActiveSeatId,
-            PrioritySeatId: rawEvent.PrioritySeatId);
+            PrioritySeatId: rawEvent.PrioritySeatId,
+            NetPower: rawEvent.NetPower,
+            NetToughness: rawEvent.NetToughness);
         if (authoritativeEvent.Kind == "turn_changed")
         {
             _latestObservedTurnNumber = authoritativeEvent.TurnNumber ?? _latestObservedTurnNumber;

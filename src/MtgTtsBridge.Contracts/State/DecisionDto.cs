@@ -20,4 +20,7 @@ public sealed record DecisionDto(
     public string? ActiveSeatId { get; init; }
     public string? PrioritySeatId { get; init; }
     public string? PhaseName { get; init; }
+    public bool CanChooseZero => MinSelections == 0;
+    public int SelectedCount { get; init; }
+    public bool ConfirmRequired { get; init; }
 }

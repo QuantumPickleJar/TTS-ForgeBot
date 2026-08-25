@@ -24,7 +24,9 @@ public sealed record AuthoritativeEventDto(
     int? TurnNumber = null,
     long? ForgeSequence = null,
     string? ActiveSeatId = null,
-    string? PrioritySeatId = null);
+    string? PrioritySeatId = null,
+    int? NetPower = null,
+    int? NetToughness = null);
 
 public sealed record EventBatchDto(
     long RequestedAfterSequence,

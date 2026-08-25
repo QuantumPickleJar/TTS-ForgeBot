@@ -49,7 +49,10 @@ public sealed partial class ForgeTuiParser
                 match.Groups["label"].Value.Trim()))
             .ToArray();
 
-        var promptKind = definition?.Definition.Kind ?? inferredKind;
+        var selectionMetadata = SelectionMetadataRegex().Match(promptContext);
+        var promptKind = selectionMetadata.Success
+            ? selectionMetadata.Groups["kind"].Value
+            : definition?.Definition.Kind ?? inferredKind;
         if (actions.Length == 0 && promptKind is "blocker_selection" or "attacker_selection"
             && prompt.Value.Contains("done", StringComparison.OrdinalIgnoreCase))
         {
@@ -87,7 +90,14 @@ public sealed partial class ForgeTuiParser
         var kind = promptKind ?? "generic_numeric_selection";
         var decisionId = $"forge-tui-{_decisionNumber}";
         var bridgeActions = actions.Select(option => BuildAction(option, decisionId, kind)).ToArray();
-        var shape = GetSelectionShape(kind, bridgeActions);
+        var shape = selectionMetadata.Success
+            ? (
+                Min: int.Parse(selectionMetadata.Groups["min"].Value, CultureInfo.InvariantCulture),
+                Max: int.Parse(selectionMetadata.Groups["max"].Value, CultureInfo.InvariantCulture),
+                RequiresConfirmation: false,
+                AllowsCancel: true,
+                IsOrdered: string.Equals(selectionMetadata.Groups["ordered"].Value, "true", StringComparison.OrdinalIgnoreCase))
+            : GetSelectionShape(kind, bridgeActions);
 
         return ForgeTuiParserResult.Decision(new ForgeTuiDecision(
             new DecisionDto(
@@ -99,7 +109,13 @@ public sealed partial class ForgeTuiParser
                 MaxSelections: shape.Max,
                 RequiresConfirmation: shape.RequiresConfirmation,
                 AllowsCancel: shape.AllowsCancel,
-                IsOrdered: shape.IsOrdered),
+                IsOrdered: shape.IsOrdered)
+            {
+                SelectedCount = selectionMetadata.Success
+                    ? int.Parse(selectionMetadata.Groups["selected"].Value, CultureInfo.InvariantCulture)
+                    : bridgeActions.Count(action => action.IsSelected),
+                ConfirmRequired = selectionMetadata.Success,
+            },
             actions.ToDictionary(
                 option => $"{decisionId}-choice-{option.Number}",
                 option => GetInputValue(option, kind, prompt.Value),
@@ -129,7 +145,7 @@ public sealed partial class ForgeTuiParser
         var label = ForgeCardIdRegex().Replace(option.Label, string.Empty).Trim();
         string? targetKind = null;
         string? targetSeatId = null;
-        if (kind is "target_selection" or "defender_selection")
+        if (kind is "target_selection" or "defender_selection" or "player_selection")
         {
             var player = PlayerTargetRegex().Match(label);
             if (player.Success && _playerSeats.TryGetValue(player.Groups["player"].Value.Trim(), out var seatId))
@@ -145,14 +161,17 @@ public sealed partial class ForgeTuiParser
 
         return new LegalActionDto(
             ActionId: $"{decisionId}-choice-{option.Number}",
-            Type: kind == "target_selection" ? "choose_target" : GetActionType(label, kind),
+            Type: kind is "target_selection" or "player_selection" ? "choose_target" : GetActionType(label, kind),
             DisplayName: label,
             RequiresFollowup: false,
             CardIdentity: GetCardIdentity(label, kind),
             ObjectIdentity: null,
             TargetKind: targetKind,
             TargetSeatId: targetSeatId,
-            CardInstanceId: forgeCardId.Success ? $"forge-object:{forgeCardId.Groups["id"].Value}" : null);
+            CardInstanceId: forgeCardId.Success ? $"forge-object:{forgeCardId.Groups["id"].Value}" : null,
+            IsSelected: label.Contains("[SELECTED]", StringComparison.OrdinalIgnoreCase)
+                || (kind == "attacker_selection" && label.Contains("[ATTACKING]", StringComparison.OrdinalIgnoreCase))
+                || (kind is "blocker_selection" or "blocker_assignment" && label.Contains("[BLOCKING]", StringComparison.OrdinalIgnoreCase)));
     }
 
     private static (ForgeTuiPromptDefinition Definition, int Index)? FindPromptDefinition(string text)
@@ -196,6 +215,12 @@ public sealed partial class ForgeTuiParser
         ("attacker_selection", var value) when value.Equals("done", StringComparison.OrdinalIgnoreCase) => "finish_attacking",
         ("attacker_selection", var value) when value.StartsWith("No further attackers", StringComparison.OrdinalIgnoreCase) => "finish_attacking",
         ("attacker_selection", _) => "choose_attacker",
+        (_, var value) when value.Equals("Done", StringComparison.OrdinalIgnoreCase) => "choose_none",
+        ("sacrifice", _) => "sacrifice",
+        ("discard", _) => "discard_card",
+        ("mode_selection", _) => "choose_mode",
+        ("numeric_selection", _) => "choose_number",
+        ("yes_no", _) => "choose_option",
         ("defender_selection", _) => "choose_target",
         ("card_selection", _) => "discard_card",
         (_, var value) when value.StartsWith("Pass priority", StringComparison.OrdinalIgnoreCase) => "pass_priority",
@@ -209,6 +234,7 @@ public sealed partial class ForgeTuiParser
     // the card's rules; this extracts only the name Forge printed in the real menu.
     private static string? GetCardIdentity(string label, string kind)
     {
+        if (label.Equals("Done", StringComparison.OrdinalIgnoreCase)) return null;
         var land = PlayLandRegex().Match(label);
         if (land.Success) return land.Groups["name"].Value.Trim();
 
@@ -218,7 +244,7 @@ public sealed partial class ForgeTuiParser
         var mana = ManaAbilityRegex().Match(label);
         if (mana.Success) return mana.Groups["name"].Value.Trim();
 
-        if (kind is not ("target_selection" or "defender_selection" or "blocker_selection" or "attacker_selection" or "card_selection" or "generic_numeric_selection")) return null;
+        if (kind is not ("target_selection" or "defender_selection" or "blocker_selection" or "attacker_selection" or "card_selection" or "generic_numeric_selection" or "sacrifice" or "discard" or "entity_selection" or "cost_selection" or "search_selection")) return null;
         if (label.StartsWith("No ", StringComparison.OrdinalIgnoreCase) ||
             PlayerTargetRegex().IsMatch(label) ||
             label.StartsWith("Spell:", StringComparison.OrdinalIgnoreCase)) return null;
@@ -282,6 +308,9 @@ public sealed partial class ForgeTuiParser
     [GeneratedRegex(@"\s+\[id=(?<id>\d+)\]", RegexOptions.CultureInvariant)]
     private static partial Regex ForgeCardIdRegex();
 
+    [GeneratedRegex(@"\[kind=(?<kind>[a-z_]+)\s+min=(?<min>\d+)\s+max=(?<max>\d+)\s+selected=(?<selected>\d+)\s+ordered=(?<ordered>true|false)\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex SelectionMetadataRegex();
+
     [GeneratedRegex("\\x1B\\[[0-?]*[ -/]*[@-~]", RegexOptions.CultureInvariant)]
     private static partial Regex AnsiEscapeRegex();
 
@@ -301,6 +330,7 @@ public sealed partial class ForgeTuiParser
         new("Choose blockers one at a time", "blocker_selection"),
         new("Choose defender for ", "defender_selection"),
         new(" to discard:", "card_selection"),
+        new("=== FORGE CHOICE ===", "generic_numeric_selection"),
     ];
 }
 

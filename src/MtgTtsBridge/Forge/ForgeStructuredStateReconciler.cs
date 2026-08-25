@@ -58,7 +58,9 @@ public sealed class ForgeStructuredStateReconciler
                 .Select(NormalizeKeyword)
                 .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray());
+                .ToArray(),
+            NetPower: card.NetPower,
+            NetToughness: card.NetToughness);
 
         var seats = source.Players.Select(player => new GameSeatSnapshotDto(
             player.SeatId,
@@ -139,6 +141,18 @@ public sealed class ForgeStructuredStateReconciler
                     "tap_changed", seatId, card.CardName, card.ForgeCardId,
                     card.Zone, card.Zone, $"Authoritative tap state is {card.Tapped}.",
                     Tapped: card.Tapped));
+            }
+
+            if (oldCard is not null
+                && (oldCard.NetPower != card.NetPower || oldCard.NetToughness != card.NetToughness)
+                && (card.NetPower is not null || card.NetToughness is not null))
+            {
+                events.Add(new ForgeTuiRawEvent(
+                    "stats_changed", seatId, card.CardName, card.ForgeCardId,
+                    card.Zone, card.Zone,
+                    $"Authoritative characteristics are {card.NetPower}/{card.NetToughness}.",
+                    NetPower: card.NetPower,
+                    NetToughness: card.NetToughness));
             }
 
             var enteringBattlefield = oldCard is not null

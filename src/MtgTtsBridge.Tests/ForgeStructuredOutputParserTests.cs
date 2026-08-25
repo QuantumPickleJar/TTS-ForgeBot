@@ -134,6 +134,27 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void ProwessStats_AreObservedFromForgeAndReturnAtEndOfDuration()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        reconciler.Apply("session-a", Parse(parser, Frame(1, Player(
+            battlefield: [Card(19, "Emberheart Challenger", "battlefield", 0, netPower: 2, netToughness: 2)]))));
+
+        var triggered = reconciler.Apply("session-a", Parse(parser, Frame(2, Player(
+            battlefield: [Card(19, "Emberheart Challenger", "battlefield", 0, netPower: 3, netToughness: 3)]))));
+        var gain = Assert.Single(triggered, item => item.Kind == "stats_changed");
+        Assert.Equal(3, gain.NetPower);
+        Assert.Equal(3, gain.NetToughness);
+
+        var expired = reconciler.Apply("session-a", Parse(parser, Frame(3, Player(
+            battlefield: [Card(19, "Emberheart Challenger", "battlefield", 0, netPower: 2, netToughness: 2)]))));
+        var reset = Assert.Single(expired, item => item.Kind == "stats_changed");
+        Assert.Equal(2, reset.NetPower);
+        Assert.Equal(2, reset.NetToughness);
+    }
+
+    [Fact]
     public void ManaPoolChanges_AreAbsoluteAndIncludeAllDisplayColors()
     {
         var parser = new ForgeStructuredOutputParser();
@@ -194,6 +215,8 @@ public sealed class ForgeStructuredOutputParserTests
         int position,
         bool tapped = false,
         string counters = "{}",
-        string keywords = "[]") =>
-        $$"""{"forgeCardId":{{id}},"cardName":"{{name}}","currentCardName":"{{name}}","zone":"{{zone}}","zonePosition":{{position}},"ownerSeatId":"forge-player-1","controllerSeatId":"forge-player-1","tapped":{{tapped.ToString().ToLowerInvariant()}},"faceDown":false,"phasedOut":false,"counters":{{counters}},"keywords":{{keywords}}}""";
+        string keywords = "[]",
+        int? netPower = null,
+        int? netToughness = null) =>
+        $$"""{"forgeCardId":{{id}},"cardName":"{{name}}","currentCardName":"{{name}}","zone":"{{zone}}","zonePosition":{{position}},"ownerSeatId":"forge-player-1","controllerSeatId":"forge-player-1","tapped":{{tapped.ToString().ToLowerInvariant()}},"faceDown":false,"phasedOut":false,"netPower":{{(netPower?.ToString() ?? "null")}},"netToughness":{{(netToughness?.ToString() ?? "null")}},"counters":{{counters}},"keywords":{{keywords}}}""";
 }

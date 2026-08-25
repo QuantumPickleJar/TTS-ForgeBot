@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $forgeDirectory = Join-Path $RepositoryRoot '.deps\forge'
+$bridgePatch = Join-Path $PSScriptRoot 'bridge-headless.patch'
 
 function Require-Command([string]$name) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
@@ -42,10 +43,36 @@ Push-Location $forgeDirectory
 try {
     & git fetch origin $Ref
     if ($LASTEXITCODE -ne 0) { throw "Failed to fetch Forge ref '$Ref'." }
-    & git checkout --detach FETCH_HEAD
-    if ($LASTEXITCODE -ne 0) { throw "Failed to checkout Forge ref '$Ref'." }
+    $currentCommit = (& git rev-parse HEAD).Trim()
+    $requestedCommit = (& git rev-parse FETCH_HEAD).Trim()
+    $hasLocalChanges = -not [string]::IsNullOrWhiteSpace((& git status --porcelain) -join '')
+    if ($hasLocalChanges) {
+        if ($currentCommit -ne $requestedCommit) {
+            throw "Forge has local changes at $currentCommit but '$Ref' resolves to $requestedCommit. Refusing to switch commits."
+        }
+        Write-Host 'Forge checkout has local bridge changes; preserving them.'
+    }
+    else {
+        & git checkout --detach FETCH_HEAD
+        if ($LASTEXITCODE -ne 0) { throw "Failed to checkout Forge ref '$Ref'." }
+    }
     $commit = (& git rev-parse HEAD).Trim()
     Write-Host "Forge ref $Ref resolved to $commit"
+
+    if (-not (Test-Path -LiteralPath $bridgePatch)) {
+        throw "Required Forge bridge patch is missing: $bridgePatch"
+    }
+    & git apply --reverse --check $bridgePatch 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host 'Forge bridge patch is already applied.'
+    }
+    else {
+        & git apply --check $bridgePatch
+        if ($LASTEXITCODE -ne 0) { throw 'Forge bridge patch does not apply cleanly to the requested ref.' }
+        & git apply $bridgePatch
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to apply the Forge bridge patch.' }
+        Write-Host 'Applied Forge bridge patch.'
+    }
 
     if ($Build) {
         & mvn -pl forge-headless -am package -DskipTests

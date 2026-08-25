@@ -278,6 +278,74 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void ChainedCombatMenu_ReportsAlreadyDeclaredAttackerAsSelected()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("=== SELECT ATTACKERS ===\n  0. No further attackers\n  1. Hired Claw [id=91] (1/2) [ATTACKING]\n  2. Emberheart Challenger [id=92] (2/2)\nEnter choice (0-2): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        var selected = Assert.Single(decision.Actions, action => action.CardIdentity == "Hired Claw");
+        Assert.True(selected.IsSelected);
+        Assert.Equal(1, decision.SelectedCount);
+        Assert.False(Assert.Single(decision.Actions, action => action.CardIdentity == "Emberheart Challenger").IsSelected);
+    }
+
+    [Fact]
+    public void GenericSacrificeChoice_PreservesCardinalityZeroDoneAndExactDuplicateIds()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("=== FORGE CHOICE ===\nChoose permanents to sacrifice\n[kind=sacrifice min=0 max=2 selected=1 ordered=false]\n  0. Done\n  1. Mountain [id=41] [SELECTED]\n  2. Mountain [id=72]\nEnter choice (0-2): ");
+
+        var parsed = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
+        var decision = parsed.Decision;
+        Assert.Equal("sacrifice", decision.Kind);
+        Assert.Equal(0, decision.MinSelections);
+        Assert.Equal(2, decision.MaxSelections);
+        Assert.True(decision.CanChooseZero);
+        Assert.True(decision.ConfirmRequired);
+        Assert.Equal(1, decision.SelectedCount);
+        Assert.False(decision.RequiresConfirmation);
+        Assert.Equal("0", parsed.Inputs[Assert.Single(decision.Actions, action => action.Type == "choose_none").ActionId]);
+        var mountains = decision.Actions.Where(action => action.Type == "sacrifice").ToArray();
+        Assert.Equal(["forge-object:41", "forge-object:72"], mountains.Select(action => action.CardInstanceId));
+        Assert.True(mountains[0].IsSelected);
+        Assert.False(mountains[1].IsSelected);
+    }
+
+    [Theory]
+    [InlineData("mode_selection", "choose_mode")]
+    [InlineData("numeric_selection", "choose_number")]
+    [InlineData("yes_no", "choose_option")]
+    public void GenericTextDecisions_ProduceTypedOptionActions(string kind, string expectedType)
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append($"=== FORGE CHOICE ===\nA Forge prompt\n[kind={kind} min=1 max=1 selected=0 ordered=false]\n  0. First option\n  1. Second option\nEnter choice (0-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal(kind, decision.Kind);
+        Assert.All(decision.Actions, action => Assert.Equal(expectedType, action.Type));
+    }
+
+    [Fact]
+    public void GenericPlayerSelection_MapsSeatWithoutTreatingTtsColorAsRulesIdentity()
+    {
+        var parser = new ForgeTuiParser(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Player 1"] = "forge-player-1",
+            ["AI-monored"] = "forge-player-2",
+        });
+        var result = parser.Append("=== FORGE CHOICE ===\nChoose a player\n[kind=player_selection min=1 max=1 selected=0 ordered=false]\n  0. Player 1 (Life: 20)\n  1. AI-monored (Life: 18)\nEnter choice (0-1): ");
+
+        var actions = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions;
+        Assert.Equal(["forge-player-1", "forge-player-2"], actions.Select(action => action.TargetSeatId));
+        Assert.All(actions, action =>
+        {
+            Assert.Equal("choose_target", action.Type);
+            Assert.Equal("player", action.TargetKind);
+        });
+    }
+
+    [Fact]
     public void OneAtATimeAttackerPrompt_ParsesDoneWithoutMenuOptions()
     {
         var parser = new ForgeTuiParser();

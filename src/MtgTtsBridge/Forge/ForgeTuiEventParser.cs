@@ -247,4 +247,6 @@ public sealed record ForgeTuiRawEvent(
     int? TurnNumber = null,
     long? ForgeSequence = null,
     string? ActiveSeatId = null,
-    string? PrioritySeatId = null);
+    string? PrioritySeatId = null,
+    int? NetPower = null,
+    int? NetToughness = null);

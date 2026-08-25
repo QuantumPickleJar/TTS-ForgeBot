@@ -92,6 +92,7 @@ BridgeState = {
     optionControlDecisionId = nil,
     attackOriginByGuid = {},
     attackLaneGuidBySeatId = {},
+    combatSelectedByGuid = {},
     manaCounterGuidBySeatId = {},
     submitting = false,
     pendingIntent = nil,
@@ -1015,6 +1016,8 @@ function BridgeSubmitChoice(decisionId, actionId)
             print("[Bridge] committed: " .. tostring(body.committedEvent.summary))
         end
 
+        BridgeCommitPendingIntent()
+
         if body ~= nil and body.currentDecision ~= nil then
             BridgeStopDecisionPolling()
             BridgeState.lastDecision = body.currentDecision
@@ -1028,8 +1031,6 @@ function BridgeSubmitChoice(decisionId, actionId)
             print("[Bridge] no pending decision.")
             BridgeStartDecisionPolling()
         end
-
-        BridgeCommitPendingIntent()
     end)
 end
 
@@ -1212,7 +1213,8 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                             cardName = card.cardName,
                             sourceZone = nil,
                             destinationZone = zoneName,
-                            faceDown = card.faceDown
+                            faceDown = card.faceDown,
+                            battlefieldKind = card.battlefieldKind
                         }
                         local moved, moveError = BridgeApplyStructuredCardMove(evt)
                         if moved then
@@ -2308,7 +2310,11 @@ function BridgeClearOptionControls()
     BridgeState.optionControlDecisionId = nil
 end
 
-function BridgeDecisionOptionLabel(action, index)
+function BridgeDecisionOptionLabel(action, index, decision)
+    if action.type == "choose_none" and decision ~= nil and decision.confirmRequired == true then
+        return string.format("DONE / CONFIRM\nSelected %d / %d",
+            tonumber(decision.selectedCount or 0), tonumber(decision.maxSelections or 0))
+    end
     local text = tostring(action.displayName or action.type or ("Option " .. tostring(index)))
     if #text > 34 then text = text:sub(1, 31) .. "..." end
     return "CHOOSE\n" .. text
@@ -2364,7 +2370,7 @@ function BridgeEnsureDecisionOptionControls(decision, representedActionIds)
                 object.createButton({
                     click_function = "BridgeChooseDecisionOption",
                     function_owner = Global,
-                    label = BridgeDecisionOptionLabel(action, index),
+                    label = BridgeDecisionOptionLabel(action, index, decision),
                     position = {0, 0.6, 0},
                     width = 1320,
                     height = 460,
@@ -2808,6 +2814,7 @@ function BridgeRenderDecision(decision)
     end
 
     local highlightColor = {0.53, 0.81, 0.98}
+    local selectedCombatColor = {0.2, 1.0, 0.35}
     if decision.kind == "target_selection" or decision.kind == "defender_selection" or decision.kind == "blocker_selection" or decision.kind == "blocker_assignment" then
         highlightColor = {1.0, 0.55, 0.0}
     end
@@ -2913,8 +2920,15 @@ function BridgeRenderDecision(decision)
             for _, object in ipairs(matches) do
                 local guid = object.getGUID()
                 local selected = BridgeState.selectedActionIds[action.actionId] == true
-                object.highlightOn(selected and {0.2, 1.0, 0.35} or highlightColor)
-                BridgeState.actionByGuid[guid] = action
+                    or BridgeState.combatSelectedByGuid[guid] == true
+                    or action.isSelected == true
+                object.highlightOn(selected and selectedCombatColor or highlightColor)
+                local combatSelected = selected and (action.type == "choose_attacker" or action.type == "choose_blocker")
+                if not combatSelected then
+                    BridgeState.actionByGuid[guid] = action
+                else
+                    BridgeState.combatSelectedByGuid[guid] = true
+                end
                 representedActionIds[action.actionId] = true
                 table.insert(BridgeState.highlightedGuids, guid)
             end
@@ -3059,7 +3073,11 @@ function BridgeCommitPendingIntent()
         -- Keep the physical preview in its combat lane. Forge's subsequent
         -- authoritative attack/block event will confirm or correct it.
         local object = getObjectFromGUID(intent.guid)
-        if object ~= nil then object.use_hands = false end
+        if object ~= nil then
+            object.use_hands = false
+            BridgeState.combatSelectedByGuid[intent.guid] = true
+            object.highlightOn({0.2, 1.0, 0.35})
+        end
     elseif intent.action.type ~= "play_land" and intent.action.type ~= "cast_spell" then
         local object = getObjectFromGUID(intent.guid)
         if object ~= nil then
@@ -4019,6 +4037,28 @@ function BridgeApplyAuthoritativeEvent(event)
     -- for stack -> graveyard. The resolved card identity is still Forge's;
     -- this only gives its already-authoritative result a physical location.
     if event.kind == "spell_resolved" and event.destinationZone == "graveyard" then
+        if event.cardInstanceId ~= nil then
+            local mappedGuid = BridgeState.physicalByInstanceId[event.cardInstanceId]
+            local mappedObject = BridgeGetLiveObjectByGuid(mappedGuid)
+            local mappedSeat = mappedGuid and BridgeState.physicalSeatByGuid[mappedGuid] or nil
+            local mappedZone = mappedGuid and BridgeState.physicalZoneByGuid[mappedGuid] or nil
+            local inverseInstanceId = mappedGuid and BridgeState.physicalInstanceIdByGuid[mappedGuid] or nil
+            if mappedObject ~= nil and mappedObject.tag == "Card" and mappedZone == "graveyard" then
+                if mappedSeat ~= event.seatId then
+                    return false, 0, BridgePhysicalMappingError(event, "graveyard", 0,
+                        "exact resolved spell destination belongs to a different seat", {mappedGuid = mappedGuid})
+                end
+                if inverseInstanceId ~= event.cardInstanceId then
+                    return false, 0, BridgePhysicalMappingError(event, "graveyard", 0,
+                        "resolved spell destination GUID belongs to a different Forge instance", {mappedGuid = mappedGuid})
+                end
+                BridgeState.pendingCastBySeatId[event.seatId] = nil
+                print(string.format(
+                    "[Bridge] idempotent spell resolution event=%s instance=%s already at graveyard",
+                    tostring(event.sequence), tostring(event.cardInstanceId)))
+                return true, 0.1
+            end
+        end
         local object, resolveError = BridgeResolveResolvedSpellObject(event)
         if object == nil then
             return false, 0, resolveError
@@ -4069,6 +4109,16 @@ function BridgeApplyAuthoritativeEvent(event)
         if not applied then
             print("[Bridge] optional physical keyword decoration skipped: " .. tostring(keywordError))
         end
+        return true, 0.1, nil
+    end
+
+    if event.kind == "stats_changed" then
+        -- Net power/toughness is observed directly from Forge. It is diagnostic
+        -- presentation evidence (including temporary Prowess changes), never a
+        -- locally calculated rules result.
+        print(string.format(
+            "[Bridge] authoritative stats instance=%s power=%s toughness=%s",
+            tostring(event.cardInstanceId), tostring(event.netPower), tostring(event.netToughness)))
         return true, 0.1, nil
     end
 
@@ -4445,7 +4495,8 @@ function BridgeApplyStructuredCardMove(event)
     elseif event.destinationZone == "battlefield" then
         object.use_hands = false
         if event.sourceZone ~= "hand" then
-            local moved, moveError = BridgeMoveToBattlefield(event, object, "creature")
+            local row = event.battlefieldKind == "land" and "land" or "creature"
+            local moved, moveError = BridgeMoveToBattlefield(event, object, row)
             if not moved then return false, moveError end
         end
     elseif event.destinationZone == "stack" then
@@ -4926,6 +4977,12 @@ function BridgeReturnAttackPresentation(seatId)
             if BridgeState.attackLaneGuidBySeatId[objectSeat] ~= nil then
                 BridgeState.attackLaneGuidBySeatId[objectSeat][guid] = nil
             end
+            BridgeState.combatSelectedByGuid[guid] = nil
+        end
+    end
+    for guid, _ in pairs(BridgeState.combatSelectedByGuid or {}) do
+        if seatId == nil or BridgeState.physicalSeatByGuid[guid] == seatId then
+            BridgeState.combatSelectedByGuid[guid] = nil
         end
     end
 end

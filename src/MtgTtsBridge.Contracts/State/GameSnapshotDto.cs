@@ -41,7 +41,9 @@ public sealed record GameCardSnapshotDto(
     bool FaceDown,
     bool PhasedOut,
     IReadOnlyDictionary<string, int> Counters,
-    IReadOnlyList<string> Keywords)
+    IReadOnlyList<string> Keywords,
+    int? NetPower = null,
+    int? NetToughness = null)
 {
     /// <summary>Forge-event-derived physical row hint; never inferred from card text.</summary>
     public string? BattlefieldKind { get; init; }
