@@ -5609,13 +5609,30 @@ function BridgeSetOwnerController(object, ownerSeatId, controllerSeatId)
 end
 
 function BridgeSetPhasedState(object, phased)
-    local encoder, encoderError = BridgeEnsureEncoderProperty(object, BRIDGE_PHASE_PROPERTY)
+    -- On this table the Phasing property has visible behavior merely by being
+    -- enabled.  It must not be activated as a generic false-state container.
+    local encoder, encoderError = BridgeEnsureTableEncoded(object)
     if encoder == nil then return false, encoderError end
     local ok, applyError = pcall(function()
-        local data = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
-        if data == nil then error("card lacks Phasing metadata") end
-        data.mtg_phased = phased == true
-        encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY, data = data})
+        local enabled = encoder.call("APIobjIsPropEnabled", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
+        if phased == true then
+            if enabled ~= true then
+                encoder.call("APIobjEnableProp", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
+            end
+            local data = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
+            if data == nil then error("card lacks Phasing metadata") end
+            data.mtg_phased = true
+            encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY, data = data})
+        elseif enabled == true then
+            -- Clear stale module data before hiding the property so a later,
+            -- genuine phasing event cannot resurrect an old visual state.
+            local data = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
+            if data ~= nil then
+                data.mtg_phased = false
+                encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY, data = data})
+            end
+            encoder.call("APIobjDisableProp", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
+        end
         encoder.call("APIrebuildButtons", {obj = object})
     end)
     if not ok then return false, tostring(applyError) end

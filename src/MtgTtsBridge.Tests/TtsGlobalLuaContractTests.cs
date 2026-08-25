@@ -351,7 +351,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgeSetOwnerController(object, ownerSeatId, controllerSeatId)", Script);
         Assert.Contains("unified.displayOwnership", Script);
         Assert.Contains("function BridgeSetPhasedState(object, phased)", Script);
-        Assert.Contains("data.mtg_phased = phased == true", Script);
+        Assert.Contains("if phased == true then", Script);
+        Assert.Contains("APIobjDisableProp", Script);
+        Assert.Contains("data.mtg_phased = false", Script);
         Assert.Contains("function BridgeSetFaceState(object, forgeState, seatId)", Script);
         Assert.Contains("Do not infer Morph/Manifest or", Script);
         Assert.Contains("function BridgeSetCardCounters(object, absoluteCounters)", Script);
