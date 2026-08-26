@@ -62,9 +62,13 @@ try {
     if (-not (Test-Path -LiteralPath $bridgePatch)) {
         throw "Required Forge bridge patch is missing: $bridgePatch"
     }
-    & git apply --reverse --check $bridgePatch 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host 'Forge bridge patch is already applied.'
+    if ($hasLocalChanges) {
+        # This checkout already contains the bridge implementation. Applying
+        # the patch again is not an idempotent operation and produces normal
+        # hunk failures, which PowerShell promotes to terminating errors under
+        # ErrorActionPreference=Stop. Preserve the checked-out bridge sources;
+        # the build stamp records their exact hashes below.
+        Write-Host 'Skipping patch application because Forge has local bridge changes.'
     }
     else {
         & git apply --check $bridgePatch
@@ -80,7 +84,30 @@ try {
         $jar = Get-ChildItem 'forge-headless\target\forge-headless-*-SNAPSHOT-jar-with-dependencies.jar' |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if (-not $jar) { throw 'Forge headless build completed without the assembled JAR.' }
+        $patchedSources = [ordered]@{}
+        foreach ($line in (Get-Content -LiteralPath $bridgePatch)) {
+            if ($line -match '^\+\+\+ b/(.+)$') {
+                $relative = $Matches[1]
+                $source = Join-Path $forgeDirectory $relative
+                if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                    throw "Patched Forge source is missing after build: $relative"
+                }
+                $patchedSources[$relative] = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash
+            }
+        }
+        $stamp = [ordered]@{
+            schemaVersion = 2
+            upstreamForgeCommit = $commit
+            bridgePatchSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $bridgePatch).Hash
+            patchedSourceSha256 = $patchedSources
+            jarFileName = $jar.Name
+            jarSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $jar.FullName).Hash
+            builtAtUtc = [DateTime]::UtcNow.ToString('o')
+        }
+        $stampPath = Join-Path $jar.DirectoryName 'forge-headless-bridge-build.json'
+        $stamp | ConvertTo-Json | Set-Content -LiteralPath $stampPath -Encoding UTF8
         Write-Host "Built headless JAR: $($jar.FullName)"
+        Write-Host "Wrote build stamp: $stampPath"
     }
 }
 finally {

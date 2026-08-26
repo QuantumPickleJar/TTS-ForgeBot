@@ -737,7 +737,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-25-f2b-v12\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-25-f2b-v13-stabilization\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -936,7 +936,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgeUnifiedPrintedFace(unified)", Script);
         Assert.Contains("faces[1] or faces[0] or faces.front", Script);
         Assert.Contains("BridgeState.presentedStatsByGuid", Script);
-        Assert.Contains("or event.kind == \"stats_changed\"", Script);
+        Assert.Contains("if event.kind == \"stats_changed\" then", Script);
         Assert.Contains("function BridgeRenderKeywordDecals(object, enabled, encoder)", Script);
         Assert.Contains("layout == \"above\"", Script);
         Assert.Contains("BridgeRenderKeywordDecals(object, enabled, encoder)", Script);
@@ -1219,6 +1219,30 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("{humanDeck}", launcher);
         Assert.DoesNotContain("SynthesizeCombatActions", adapter);
         Assert.DoesNotContain("SynthesizeBlockerAssignments", adapter);
+    }
+
+    [Fact]
+    public void StructuredCharacteristicEvents_DoNotRequestASecondFullSnapshot()
+    {
+        var start = Script.IndexOf("function BridgeShouldReconcileAfterEvent", StringComparison.Ordinal);
+        var finish = Script.IndexOf("function BridgeResumeChoiceProtocol", start, StringComparison.Ordinal);
+        var policy = Script[start..finish];
+        Assert.DoesNotContain("stats_changed", policy);
+        Assert.DoesNotContain("characteristic_changed", policy);
+        Assert.DoesNotContain("keyword_added", policy);
+        Assert.DoesNotContain("keyword_removed", policy);
+    }
+
+    [Fact]
+    public void PresentationCaches_MakeAnIdenticalSnapshotAPhysicalNoOp()
+    {
+        Assert.Contains("presentedKeywordSignatureByGuid", Script);
+        Assert.Contains("presentedCounterSignatureByGuid", Script);
+        Assert.Contains("presentedOwnerControllerByGuid", Script);
+        Assert.Contains("if guid ~= nil and BridgeState.presentedKeywordSignatureByGuid[guid] == signature then return true, nil end", Script);
+        Assert.Contains("if guid ~= nil and BridgeState.presentedCounterSignatureByGuid[guid] == signature then return true, nil end", Script);
+        Assert.Contains("presentationMetrics = {encoderRebuildCount", Script);
+        Assert.Contains("BridgePresentationMetric(\"encoderRebuildCount\")", Script);
     }
 
     [Fact]

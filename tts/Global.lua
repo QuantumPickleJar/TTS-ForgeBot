@@ -11,7 +11,7 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
-BRIDGE_SCRIPT_REVISION = "2026-08-25-f2b-v12"
+BRIDGE_SCRIPT_REVISION = "2026-08-25-f2b-v13-stabilization"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -34,6 +34,19 @@ end
 -- the scripting console; explicit broadcastToAll calls remain user-facing.
 function BridgeLog(message)
     log(tostring(message))
+end
+
+function BridgePresentationMetric(name)
+    BridgeState.presentationMetrics[name] = (BridgeState.presentationMetrics[name] or 0) + 1
+end
+
+function BridgeLogPresentationMetrics(label)
+    local metrics = BridgeState.presentationMetrics or {}
+    BridgeLog(string.format(
+        "[Bridge] presentation-metrics label=%s encoderRebuilds=%d keywordWrites=%d decalWrites=%d snapshotReconciles=%d",
+        tostring(label or "manual"), tonumber(metrics.encoderRebuildCount or 0),
+        tonumber(metrics.keywordPropWriteCount or 0), tonumber(metrics.decalWriteCount or 0),
+        tonumber(metrics.fullSnapshotReconcileCount or 0)))
 end
 
 function BridgeWaitTime(callback, delay)
@@ -193,6 +206,12 @@ BridgeState = {
     canonicalCardNameByGuid = {},
     encoderIdentityLoggedGuids = {},
     presentedStatsByGuid = {},
+    presentedOwnerControllerByGuid = {},
+    presentedPhasedByGuid = {},
+    presentedCounterSignatureByGuid = {},
+    presentedKeywordSignatureByGuid = {},
+    unsupportedKeywordLogged = {},
+    presentationMetrics = {encoderRebuildCount = 0, keywordPropWriteCount = 0, decalWriteCount = 0, fullSnapshotReconcileCount = 0},
     physicalSeatByGuid = {},
     physicalZoneByGuid = {},
     -- Table helpers are never candidates for Forge CardInstanceId mapping.
@@ -1612,13 +1631,6 @@ function BridgeShouldReconcileAfterEvent(event)
     return event.kind == "spell_resolved"
         or event.kind == "land_played"
         or event.kind == "card_moved"
-        -- A continuous effect can change every creature while Forge's event
-        -- stream identifies only one initiating permanent. Re-read Forge's
-        -- authoritative battlefield rather than trying to propagate effects.
-        or event.kind == "stats_changed"
-        or event.kind == "characteristic_changed"
-        or event.kind == "keyword_added"
-        or event.kind == "keyword_removed"
 end
 
 function BridgeResumeChoiceProtocol(reason)
@@ -1664,6 +1676,7 @@ end
 
 function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     local movedCount = 0
+    BridgePresentationMetric("fullSnapshotReconcileCount")
     BridgeSetMonarchSeat(snapshot and snapshot.monarchSeatId or nil)
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
         BridgeApplySeatSnapshotVisualState(seatSnapshot)
@@ -4729,6 +4742,12 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.canonicalCardNameByGuid = {}
     BridgeState.encoderIdentityLoggedGuids = {}
     BridgeState.presentedStatsByGuid = {}
+    BridgeState.presentedOwnerControllerByGuid = {}
+    BridgeState.presentedPhasedByGuid = {}
+    BridgeState.presentedCounterSignatureByGuid = {}
+    BridgeState.presentedKeywordSignatureByGuid = {}
+    BridgeState.unsupportedKeywordLogged = {}
+    BridgeState.presentationMetrics = {encoderRebuildCount = 0, keywordPropWriteCount = 0, decalWriteCount = 0, fullSnapshotReconcileCount = 0}
     BridgeState.physicalSeatByGuid = {}
     BridgeState.physicalZoneByGuid = {}
     BridgeState.battlefieldCounts = {}
@@ -5844,8 +5863,10 @@ function BridgeMutateUnifiedState(object, mutate)
         if encoded == nil or encoded.tyrantUnified == nil then error("card lacks Easy Modules Unified metadata") end
         mutate(encoded.tyrantUnified)
         encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_UNIFIED_PROPERTY, data = encoded})
+        BridgePresentationMetric("unifiedPropWriteCount")
         -- Rebuild through Encoder: direct card buttons do not survive this call.
         encoder.call("APIrebuildButtons", {obj = object})
+        BridgePresentationMetric("encoderRebuildCount")
     end)
     if not ok then return false, tostring(applyError) end
     return true, nil
@@ -5909,8 +5930,12 @@ local function BridgeApplyOwnerControllerToUnified(unified, ownerSeatId, control
 end
 
 function BridgeSetOwnerController(object, ownerSeatId, controllerSeatId)
+    local guid = BridgeSafeObjectGuid(object)
+    local signature = tostring(ownerSeatId or "") .. "|" .. tostring(controllerSeatId or "")
+    if guid ~= nil and BridgeState.presentedOwnerControllerByGuid[guid] == signature then return true, nil end
     return BridgeMutateUnifiedState(object, function(unified)
         BridgeApplyOwnerControllerToUnified(unified, ownerSeatId, controllerSeatId)
+        if guid ~= nil then BridgeState.presentedOwnerControllerByGuid[guid] = signature end
     end)
 end
 
@@ -5919,6 +5944,8 @@ function BridgeSetPhasedState(object, phased)
     -- enabled.  It must not be activated as a generic false-state container.
     local encoder, encoderError = BridgeEnsureTableEncoded(object)
     if encoder == nil then return false, encoderError end
+    local guid = BridgeSafeObjectGuid(object)
+    if guid ~= nil and BridgeState.presentedPhasedByGuid[guid] == (phased == true) then return true, nil end
     local ok, applyError = pcall(function()
         local enabled = encoder.call("APIobjIsPropEnabled", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
         if phased == true then
@@ -5940,6 +5967,8 @@ function BridgeSetPhasedState(object, phased)
             encoder.call("APIobjDisableProp", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
         end
         encoder.call("APIrebuildButtons", {obj = object})
+        BridgePresentationMetric("encoderRebuildCount")
+        if guid ~= nil then BridgeState.presentedPhasedByGuid[guid] = phased == true end
     end)
     if not ok then return false, tostring(applyError) end
     return true, nil
@@ -5962,10 +5991,25 @@ end
 function BridgeApplyCardPresentationSnapshot(object, cardSnapshot)
     if object == nil or cardSnapshot == nil then return false, "missing card presentation input" end
     BridgeSetFaceState(object, cardSnapshot)
-    local statsApplied, statsError = BridgeSetDerivedStats(object, cardSnapshot.currentPower, cardSnapshot.currentToughness)
-    if not statsApplied then return false, statsError end
-    local ownerApplied, ownerError = BridgeSetOwnerController(object, cardSnapshot.ownerSeatId, cardSnapshot.controllerSeatId)
-    if not ownerApplied then return false, ownerError end
+    local guid = BridgeSafeObjectGuid(object)
+    local stats = {power = cardSnapshot.currentPower, toughness = cardSnapshot.currentToughness}
+    local ownerSignature = tostring(cardSnapshot.ownerSeatId or "") .. "|" .. tostring(cardSnapshot.controllerSeatId or "")
+    local statsChanged = guid == nil
+        or BridgeState.presentedStatsByGuid[guid] == nil
+        or BridgeState.presentedStatsByGuid[guid].power ~= stats.power
+        or BridgeState.presentedStatsByGuid[guid].toughness ~= stats.toughness
+    local ownershipChanged = guid == nil or BridgeState.presentedOwnerControllerByGuid[guid] ~= ownerSignature
+    if statsChanged or ownershipChanged then
+        local applied, applyError = BridgeMutateUnifiedState(object, function(unified)
+            if statsChanged then BridgeApplyDerivedStatsToUnified(unified, stats.power, stats.toughness) end
+            if ownershipChanged then BridgeApplyOwnerControllerToUnified(unified, cardSnapshot.ownerSeatId, cardSnapshot.controllerSeatId) end
+            if guid ~= nil then
+                BridgeState.presentedStatsByGuid[guid] = stats
+                BridgeState.presentedOwnerControllerByGuid[guid] = ownerSignature
+            end
+        end)
+        if not applied then return false, applyError end
+    end
     local phased, phaseError = BridgeSetPhasedState(object, cardSnapshot.phasedOut == true)
     if not phased then BridgeLog("[Bridge] optional phasing presentation skipped: " .. tostring(phaseError)) end
     return true, nil
@@ -6001,6 +6045,11 @@ function BridgeSetCardCounters(object, absoluteCounters)
         end
     end
     table.sort(named, function(left, right) return left.counterType < right.counterType end)
+    local signatureParts = {"+1/+1=" .. tostring(plusOne), "stun=" .. tostring(counters.stun or 0)}
+    for _, entry in ipairs(named) do table.insert(signatureParts, entry.counterType .. "=" .. tostring(entry.counterValue)) end
+    local signature = table.concat(signatureParts, "|")
+    local guid = BridgeSafeObjectGuid(object)
+    if guid ~= nil and BridgeState.presentedCounterSignatureByGuid[guid] == signature then return true, nil end
 
     local applied, applyError = BridgeMutateUnifiedState(object, function(unified)
         unified.plusOneCounters = plusOne
@@ -6014,6 +6063,7 @@ function BridgeSetCardCounters(object, absoluteCounters)
             unified.namedCounters = 0
             unified.displayCounters = false
         end
+        if guid ~= nil then BridgeState.presentedCounterSignatureByGuid[guid] = signature end
     end)
     if not applied then return false, applyError end
 
@@ -6107,6 +6157,7 @@ function BridgeRenderKeywordDecals(object, enabled, encoder)
         table.insert(retained, {name = definition.name, url = definition.url, position = position, rotation = {180 - flip * 90, 90 + flip * 90, 0}, scale = scale})
     end
     object.setDecals(retained)
+    BridgePresentationMetric("decalWriteCount")
 end
 
 function BridgeNormalizeKeywordName(keyword)
@@ -6142,7 +6193,9 @@ function BridgeSetCardKeywordState(object, keyword, enabled)
         if enabled and found == nil then table.insert(data.activeIcons, property) end
         if not enabled and found ~= nil then table.remove(data.activeIcons, found) end
         encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY, data = data})
+        BridgePresentationMetric("keywordPropWriteCount")
         encoder.call("APIrebuildButtons", {obj = object})
+        BridgePresentationMetric("encoderRebuildCount")
         BridgeRenderKeywordDecals(object, enabled, encoder)
     end)
     if not ok then return false, tostring(applyError) end
@@ -6151,12 +6204,27 @@ end
 
 function BridgeSetCardKeywords(object, absoluteKeywords)
     local enabled = {}
+    local unsupported = {}
     for _, keyword in ipairs(absoluteKeywords or {}) do
         local normalized = BridgeNormalizeKeywordName(keyword)
         if BRIDGE_KEYWORD_PROPERTIES[normalized] ~= nil then
             enabled[normalized] = true
         elseif normalized ~= "" then
-            BridgeLog("[Bridge] optional keyword decoration skipped: unsupported existing-table keyword " .. tostring(keyword))
+            table.insert(unsupported, normalized)
+        end
+    end
+    local supported = {}
+    for keyword, isEnabled in pairs(enabled) do if isEnabled then table.insert(supported, keyword) end end
+    table.sort(supported)
+    table.sort(unsupported)
+    local guid = BridgeSafeObjectGuid(object)
+    local signature = table.concat(supported, "|")
+    if guid ~= nil and BridgeState.presentedKeywordSignatureByGuid[guid] == signature then return true, nil end
+    for _, keyword in ipairs(unsupported) do
+        local logKey = tostring(guid or "unknown") .. "|" .. keyword
+        if BridgeState.unsupportedKeywordLogged[logKey] ~= true then
+            BridgeState.unsupportedKeywordLogged[logKey] = true
+            BridgeLog("[Bridge] presentation capability gap: unsupported native keyword icon " .. tostring(keyword))
         end
     end
     local encoder, encoderError = BridgeEnsureEncoderProperty(object, BRIDGE_KEYWORDS_PROPERTY)
@@ -6171,7 +6239,11 @@ function BridgeSetCardKeywords(object, absoluteKeywords)
             if isEnabled then table.insert(data.activeIcons, property) end
         end
         encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY, data = data})
+        BridgePresentationMetric("keywordPropWriteCount")
         encoder.call("APIrebuildButtons", {obj = object})
+        BridgePresentationMetric("encoderRebuildCount")
+        BridgeRenderKeywordDecals(object, enabled, encoder)
+        if guid ~= nil then BridgeState.presentedKeywordSignatureByGuid[guid] = signature end
     end)
     if not ok then return false, tostring(applyError) end
     return true, nil
@@ -6216,6 +6288,7 @@ function BridgeSetForgeBotCounterFallback(object, namedCounters)
             encoder.call("APIobjDisableProp", {obj = object, propID = BRIDGE_COUNTER_FALLBACK_PROPERTY})
         end
         encoder.call("APIrebuildButtons", {obj = object})
+        BridgePresentationMetric("encoderRebuildCount")
     end)
     if not ok then return false, tostring(applyError) end
     return true, nil

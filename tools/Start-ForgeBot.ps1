@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [int]$Seed = 8675309
+    [int]$Seed = 8675309,
+    [switch]$TraceBridgeState
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,6 +12,8 @@ $workingDirectory = $forgeRoot
 $assetsDirectory = Join-Path $forgeRoot 'forge-gui'
 $jar = Get-ChildItem -Path $jarDirectory -Filter 'forge-headless-*-jar-with-dependencies.jar' |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$bridgePatch = Join-Path $repoRoot 'tools\forge\bridge-headless.patch'
+$buildStampPath = Join-Path $jarDirectory 'forge-headless-bridge-build.json'
 
 if ($null -eq $jar) {
     throw "Forge headless JAR was not found. Run .\tools\forge\bootstrap.ps1 -Build first."
@@ -22,6 +25,31 @@ if (-not (Test-Path (Join-Path $assetsDirectory 'res\languages\en-US.properties'
 $java = Get-Command java -ErrorAction SilentlyContinue
 if ($null -eq $java) {
     throw 'Java 17+ was not found on PATH. Install Java 17+ and rerun tools\forge\bootstrap.ps1 -Build.'
+}
+if (-not (Test-Path -LiteralPath $bridgePatch)) {
+    throw "Forge bridge patch is missing: $bridgePatch"
+}
+if (-not (Test-Path -LiteralPath $buildStampPath)) {
+    throw 'Forge JAR has no reproducible build stamp. Run .\tools\forge\bootstrap.ps1 -Build first.'
+}
+$buildStamp = Get-Content -Raw -LiteralPath $buildStampPath | ConvertFrom-Json
+$currentForgeCommit = (& git -C $forgeRoot rev-parse HEAD).Trim()
+$currentPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bridgePatch).Hash
+$currentJarHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $jar.FullName).Hash
+if ($buildStamp.schemaVersion -ne 2 `
+    -or $buildStamp.upstreamForgeCommit -ne $currentForgeCommit `
+    -or $buildStamp.bridgePatchSha256 -ne $currentPatchHash `
+    -or $buildStamp.jarFileName -ne $jar.Name `
+    -or $buildStamp.jarSha256 -ne $currentJarHash `
+    -or $null -eq $buildStamp.patchedSourceSha256) {
+    throw 'Forge JAR build stamp does not match the current Forge checkout, bridge patch, or assembled JAR. Run .\tools\forge\bootstrap.ps1 -Build first.'
+}
+foreach ($sourceProperty in $buildStamp.patchedSourceSha256.PSObject.Properties) {
+    $sourcePath = Join-Path $forgeRoot $sourceProperty.Name
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf) `
+        -or (Get-FileHash -Algorithm SHA256 -LiteralPath $sourcePath).Hash -ne $sourceProperty.Value) {
+        throw "Forge patched source differs from the stamped build: $($sourceProperty.Name). Run .\tools\forge\bootstrap.ps1 -Build first."
+    }
 }
 $jarTool = Get-Command jar -ErrorAction SilentlyContinue
 if ($null -eq $jarTool) {
@@ -65,13 +93,19 @@ $tuiSource = Join-Path $forgeRoot 'forge-headless\src\main\java\forge\headless\P
 if ((Test-Path $tuiSource) -and ((Get-Item $tuiSource).LastWriteTimeUtc -gt $jar.LastWriteTimeUtc)) {
     throw 'Forge TUI source is newer than the assembled JAR. Rebuild forge-headless before launching.'
 }
+$bridgeStateFeedSource = Join-Path $forgeRoot 'forge-headless\src\main\java\forge\headless\BridgeStateFeed.java'
+if ((Test-Path $bridgeStateFeedSource) -and ((Get-Item $bridgeStateFeedSource).LastWriteTimeUtc -gt $jar.LastWriteTimeUtc)) {
+    throw 'BridgeStateFeed source is newer than the assembled JAR. Rebuild forge-headless before launching.'
+}
 
-$forgeArguments = "-Dforge.assets.dir=`"$assetsDirectory`" -jar `"$($jar.FullName)`" tui `"{humanDeck}`" `"{aiDeck}`" --p1 tui --p2 ai --numeric-choices --seed $Seed"
+$bridgeStateTraceOption = if ($TraceBridgeState) { '-Dforge.bridge.trace=true ' } else { '' }
+$forgeArguments = "$($bridgeStateTraceOption)-Dforge.assets.dir=`"$assetsDirectory`" -jar `"$($jar.FullName)`" tui `"{humanDeck}`" `"{aiDeck}`" --p1 tui --p2 ai --numeric-choices --seed $Seed"
 Write-Host 'Starting ForgeBot at http://127.0.0.1:43110'
 Write-Host 'Health endpoint: http://127.0.0.1:43110/health'
 Write-Host "Forge JAR: $($jar.FullName)"
 Write-Host "Java: $($java.Source)"
 Write-Host 'Decks: loaded from the two TTS library piles when NEW MATCH is pressed (Legacy assumption).'
+if ($TraceBridgeState) { Write-Host 'BridgeStateFeed trace: enabled (public battlefield summaries only).' }
 
 Push-Location $repoRoot
 try {

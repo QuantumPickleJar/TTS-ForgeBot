@@ -170,6 +170,38 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void ContinuousCharacteristicSnapshot_UpdatesEveryAffectedPermanentAndRevertsWithoutCombat()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        reconciler.Apply("session-a", Parse(parser, Frame(1, Player(
+            battlefield: [Card(1, "Baseline Creature", "battlefield", 0,
+                netPower: 1, netToughness: 1, currentTypes: "[\"creature\"]")]))));
+
+        var lordEntered = reconciler.Apply("session-a", Parse(parser, Frame(2, Player(
+            battlefield: [
+                Card(1, "Baseline Creature", "battlefield", 0,
+                    netPower: 2, netToughness: 2, currentTypes: "[\"creature\"]"),
+                Card(2, "Continuous Effect Source", "battlefield", 1,
+                    netPower: 2, netToughness: 2, currentTypes: "[\"creature\"]")
+            ]))));
+
+        var buff = Assert.Single(lordEntered, item => item.Kind == "stats_changed" && item.ForgeObjectId == 1);
+        Assert.Equal(2, buff.CurrentPower);
+        Assert.Equal(2, buff.CurrentToughness);
+
+        var lordLeft = reconciler.Apply("session-a", Parse(parser, Frame(3, Player(
+            battlefield: [Card(1, "Baseline Creature", "battlefield", 0,
+                netPower: 1, netToughness: 1, currentTypes: "[\"creature\"]")],
+            graveyard: [Card(2, "Continuous Effect Source", "graveyard", 0,
+                netPower: 0, netToughness: 0, currentTypes: "[\"creature\"]")]))));
+
+        var revert = Assert.Single(lordLeft, item => item.Kind == "stats_changed" && item.ForgeObjectId == 1);
+        Assert.Equal(1, revert.CurrentPower);
+        Assert.Equal(1, revert.CurrentToughness);
+    }
+
+    [Fact]
     public void ManaPoolChanges_AreAbsoluteAndIncludeAllDisplayColors()
     {
         var parser = new ForgeStructuredOutputParser();

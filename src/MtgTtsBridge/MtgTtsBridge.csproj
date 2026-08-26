@@ -12,4 +12,10 @@
     <UseWPF>false</UseWPF>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Compile Remove=".dev\**\*.cs" />
+    <EmbeddedResource Remove=".dev\**\*" />
+    <None Remove=".dev\**\*" />
+  </ItemGroup>
+
 </Project>
