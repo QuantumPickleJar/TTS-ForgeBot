@@ -471,4 +471,27 @@ public sealed class ForgeTuiParserTests
         Assert.Equal("forge-tui-1", first.ParsedDecision!.Decision.DecisionId);
         Assert.Equal("forge-tui-1", second.ParsedDecision!.Decision.DecisionId);
     }
+
+    [Fact]
+    public void CreatureTypePrompt_UsesEnumeratedForgeActionsWithoutRestrictingTheChoices()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "Choose creature\n" +
+            "[kind=creature_type_selection min=1 max=1 selected=0 ordered=false]\n" +
+            "  0. Elf\n" +
+            "  1. Rat\n" +
+            "  2. Completely New Creature Type\n" +
+            "Enter choice (0-2): ");
+
+        var parsed = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
+        Assert.Equal("creature_type_selection", parsed.Decision.Kind);
+        Assert.Equal(3, parsed.Decision.Actions.Count);
+        Assert.Equal("Elf", parsed.Decision.Actions[0].DisplayName);
+        Assert.Equal("choose_creature_type", parsed.Decision.Actions[0].Type);
+        Assert.Equal("Rat", parsed.Decision.Actions[1].DisplayName);
+        Assert.Equal("Completely New Creature Type", parsed.Decision.Actions[2].DisplayName);
+        Assert.Equal("2", parsed.Inputs[parsed.Decision.Actions[2].ActionId]);
+    }
 }

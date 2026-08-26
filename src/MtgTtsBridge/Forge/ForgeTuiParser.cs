@@ -243,6 +243,7 @@ public sealed partial class ForgeTuiParser
         ("sacrifice", _) => "sacrifice",
         ("discard", _) => "discard_card",
         ("mode_selection", _) => "choose_mode",
+        ("creature_type_selection", _) => "choose_creature_type",
         ("numeric_selection", _) => "choose_number",
         ("yes_no", _) => "choose_option",
         ("defender_selection", _) => "choose_target",
@@ -302,7 +303,7 @@ public sealed partial class ForgeTuiParser
 
     private static string StripAnsi(string text) => AnsiEscapeRegex().Replace(text, string.Empty);
 
-    [GeneratedRegex(@"(?im)^(?:.*?(?:Enter|Select|Choose|Pick|Type|Press)\s+(?:an?\s+)?(?:[A-Za-z]+\s+)?(?:choice|selection|option|number|answer|decision|assignment)\b.*?(?:\:|\?)|.*?(?:Choose|Select|Pick)\s+(?:one|(?:an?\s+)?(?:option|choice|selection|number|assignment))\s*[:\-])\s*$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?im)^(?:.*?(?:Enter|Select|Choose|Pick|Type|Press)[ \t]+(?:an?[ \t]+)?(?:[A-Za-z]+[ \t]+)?(?:choice|selection|option|number|answer|decision|assignment)\b.*?(?:\:|\?)|.*?(?:Choose|Select|Pick|Type)[ \t]+(?:one|(?:an?[ \t]+)?(?:option|choice|selection|number|assignment))[ \t]*[:\-])[ \t]*\r?$", RegexOptions.CultureInvariant)]
     private static partial Regex InputPromptRegex();
 
     [GeneratedRegex(@"(?i)\b(?:Enter|Type|Press)\b.*\b(?:choice|selection|option|target|number|answer|decision|assignment)\b|\bSelect\b.*\b(?:option|choice|number)\b", RegexOptions.CultureInvariant)]

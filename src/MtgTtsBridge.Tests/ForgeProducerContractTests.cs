@@ -56,6 +56,15 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void TrackedTuiProducer_ExposesEnumeratedCreatureTypeChoices()
+    {
+        Assert.Contains("chooseSomeType(String kindOfType", Patch);
+        Assert.Contains("creature_type_selection", Patch);
+        Assert.Contains("new ArrayList<>(validTypes)", Patch);
+        Assert.Contains("if (isOptional) types.add(0, \"None\")", Patch);
+    }
+
+    [Fact]
     public void ForgeBuildStamp_BindsJarToPatchAndUpstreamCommit()
     {
         Assert.Contains("forge-headless-bridge-build.json", Bootstrap);

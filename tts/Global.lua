@@ -11,7 +11,7 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
-BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-combat-land-ordering-fix"
+BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-creature-type-dropdown"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -257,6 +257,7 @@ BridgeState = {
         manaMode = "AUTO", autoAdvanceMode = "SMART", fastPlaytest = false, gameLogVisible = true,
         gameLog = {},
         diagnosticsVisible = false, reportPanelVisible = false, reportCategoryIndex = 1,
+        creatureTypeDecisionId = nil, creatureTypeDraftActionId = nil, creatureTypeOptions = {},
         reportStatus = "", reportCaptureInFlight = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
         actionPanelRenderCount = 0, candidatePanelRenderCount = 0, ephemeralPhysicalControlSpawnCount = 0},
 }
@@ -1115,6 +1116,81 @@ function BridgeUiActionLabel(action)
     return tostring(label)
 end
 
+function BridgeCreatureTypeClearDraft(reason)
+    local ui = BridgeState.ui
+    if ui == nil then return end
+    ui.creatureTypeDecisionId = nil
+    ui.creatureTypeDraftActionId = nil
+    ui.creatureTypeOptions = {}
+    BridgeLog("[Bridge] creature-type draft cleared reason=" .. tostring(reason or "unspecified"))
+    BridgeUiMarkDirty("creature-type-clear")
+end
+
+function BridgeCreatureTypePrepare(decision)
+    local ui = BridgeState.ui
+    if ui == nil then return end
+    if decision == nil or decision.kind ~= "creature_type_selection" then
+        if ui.creatureTypeDecisionId ~= nil then BridgeCreatureTypeClearDraft("decision-kind-changed") end
+        return
+    end
+    if ui.creatureTypeDecisionId ~= decision.decisionId then
+        ui.creatureTypeDecisionId = decision.decisionId
+        ui.creatureTypeDraftActionId = nil
+        ui.creatureTypeOptions = {}
+        for _, action in ipairs(decision.actions or {}) do
+            table.insert(ui.creatureTypeOptions, {
+                label = tostring(action.displayName or action.shortLabel or action.actionId),
+                actionId = action.actionId
+            })
+        end
+    end
+end
+
+function BridgeHudCreatureTypeChanged(player, value, id)
+    local decision = BridgeState.lastDecision
+    local ui = BridgeState.ui
+    if decision == nil or decision.kind ~= "creature_type_selection"
+        or ui == nil or ui.creatureTypeDecisionId ~= decision.decisionId
+        or BridgeState.retiredChoiceDecisionIds[decision.decisionId] == true then
+        return
+    end
+    local selected = tostring(value or "")
+    for _, option in ipairs(ui.creatureTypeOptions or {}) do
+        if option.label == selected then
+            ui.creatureTypeDraftActionId = option.actionId
+            BridgeLog("[Bridge] creature-type draft selected decision=" .. tostring(decision.decisionId)
+                .. " action=" .. tostring(option.actionId))
+            BridgeUiMarkDirty("creature-type-draft")
+            return
+        end
+    end
+    BridgeLog("[Bridge] ignored creature-type dropdown value not in Forge actions: " .. selected)
+end
+
+function BridgeHudCreatureTypeConfirm(player, value, id)
+    local decision = BridgeState.lastDecision
+    local ui = BridgeState.ui
+    if decision == nil or decision.kind ~= "creature_type_selection"
+        or ui == nil or ui.creatureTypeDecisionId ~= decision.decisionId
+        or ui.creatureTypeDraftActionId == nil
+        or not BridgeDecisionHasAction(decision, ui.creatureTypeDraftActionId) then
+        BridgeShowError("creature type selection is stale or incomplete")
+        return
+    end
+    BridgeClaimHumanTtsColor(decision.seatId, player)
+    local actionId = ui.creatureTypeDraftActionId
+    BridgeCreatureTypeClearDraft("confirmed")
+    BridgeSubmitChoice(decision.decisionId, actionId, "creature_type_confirm")
+end
+
+function BridgeHudCreatureTypeCancel(player, value, id)
+    local decision = BridgeState.lastDecision
+    local ui = BridgeState.ui
+    if decision == nil or decision.kind ~= "creature_type_selection"
+        or ui == nil or ui.creatureTypeDecisionId ~= decision.decisionId then return end
+    BridgeCreatureTypeClearDraft("cancelled")
+end
+
 function BridgeUiTerminalLabel(terminal)
     if terminal == nil then return "" end
     if #(terminal.winnerSeatIds or {}) == 0 then return "DRAW" end
@@ -1153,6 +1229,8 @@ function BridgeUiFlush()
             or "MANUAL: use PASS for each Forge priority window.")
     BridgeUiSet("BridgeHudHelp", "text", help)
     local actions = terminal and {} or (decision and decision.actions or {})
+    BridgeCreatureTypePrepare(decision)
+    if decision ~= nil and decision.kind == "creature_type_selection" then actions = {} end
     if ui.contextInstanceId ~= nil and decision ~= nil then
         local contextual = {}
         for _, action in ipairs(actions) do
@@ -2979,12 +3057,19 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         -- A delayed GET/render callback must never make a consumed decision
         -- actionable again. The next distinct Forge decision will retire the
         -- old transaction and render normally.
+        if BridgeState.ui ~= nil and BridgeState.ui.creatureTypeDecisionId == decision.decisionId then
+            BridgeCreatureTypeClearDraft("decision-retired")
+        end
         if BridgeState.lastDecision == nil or BridgeState.lastDecision.decisionId == decision.decisionId then
             BridgeState.lastDecision = nil
             BridgeClearHighlights()
             BridgeHideMainPriorityControls()
         end
         return
+    end
+
+    if BridgeState.lastDecision == nil or BridgeState.lastDecision.decisionId ~= decision.decisionId then
+        BridgeCreatureTypeClearDraft("decision-replaced")
     end
 
     BridgeRetireChoiceTransactionsForDecision(decision.decisionId)
@@ -3052,6 +3137,8 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         BridgeSetStatus("CHOOSE TARGET", BridgeTurnLabel() .. " - " .. tostring(actor) .. " priority")
     elseif decision.kind == "generic_numeric_selection" then
         BridgeSetStatus("CHOOSE OPTION", BridgeTurnLabel() .. " - " .. tostring(actor) .. " priority")
+    elseif decision.kind == "creature_type_selection" then
+        BridgeSetStatus("CHOOSE CREATURE TYPE", BridgeTurnLabel() .. " - " .. tostring(actor) .. " priority")
     else
         BridgeSetStatus("YOUR PRIORITY", BridgeTurnLabel() .. " - " .. tostring(actor) .. " - " .. tostring(BridgeState.currentPhase or "Forge decision"))
     end
@@ -5032,6 +5119,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.lastAppliedEventSequence = 0
     BridgeState.eventQueue = {}
     BridgeState.animationRunning = false
+    BridgeCreatureTypeClearDraft("session-replaced")
     BridgeState.physicalByInstanceId = {}
     BridgeState.physicalInstanceIdByGuid = {}
     BridgeState.cardNameByInstanceId = {}
@@ -7150,7 +7238,7 @@ end
 BRIDGE_DEV_UI_ENABLED = true
 BRIDGE_DEV_ANNOTATIONS_ENABLED = true
 BRIDGE_PHYSICAL_PRIORITY_CONTROLS_ENABLED = true
-BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-combat-land-ordering-fix"
+BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-creature-type-dropdown"
 
 BRIDGE_HUD_COLORS = {
     active = "#6DB5FF",
@@ -7339,7 +7427,8 @@ function BridgeUiFlush()
     local decision = BridgeState.lastDecision
     local terminal = BridgeState.gameEnded
     local requiresConfirm = decision ~= nil and decision.requiresConfirmation == true
-    BridgeUiSet("BridgeHudGameControls", "active", (terminal == nil and not requiresConfirm) and "true" or "false")
+    local creatureTypeDecision = decision ~= nil and decision.kind == "creature_type_selection"
+    BridgeUiSet("BridgeHudGameControls", "active", (terminal == nil and not requiresConfirm and not creatureTypeDecision) and "true" or "false")
     BridgeUiSet("BridgeHudDecisionControls", "active", (terminal == nil and requiresConfirm) and "true" or "false")
 
     -- Keep the fixed 24-row action transport intact.  The tray itself is now
@@ -7351,7 +7440,21 @@ function BridgeUiFlush()
             break
         end
     end
-    BridgeUiSet("BridgeHudChoiceTray", "active", hasTextChoices and "true" or "false")
+    BridgeUiSet("BridgeHudChoiceTray", "active", hasTextChoices and not creatureTypeDecision and "true" or "false")
+    local creatureTypeLabels = {}
+    local creatureTypeSelectedLabel = ""
+    for _, option in ipairs(ui.creatureTypeOptions or {}) do
+        table.insert(creatureTypeLabels, option.label)
+        if option.actionId == ui.creatureTypeDraftActionId then creatureTypeSelectedLabel = option.label end
+    end
+    BridgeUiSet("BridgeHudCreatureTypePanel", "active", creatureTypeDecision and "true" or "false")
+    BridgeUiSet("BridgeHudCreatureTypeDropdown", "options", table.concat(creatureTypeLabels, "|"))
+    BridgeUiSet("BridgeHudCreatureTypeDropdown", "value", creatureTypeSelectedLabel)
+    BridgeUiSet("BridgeHudCreatureTypeConfirm", "active", creatureTypeDecision
+        and ui.creatureTypeDraftActionId ~= nil and "true" or "false")
+    BridgeUiSet("BridgeHudCreatureTypeStatus", "text", creatureTypeDecision
+        and (ui.creatureTypeDraftActionId and "Draft selected — press CONFIRM to submit to Forge"
+            or "Choose a creature type, then press CONFIRM") or "")
 
     local connectionText, connectionColor = BridgeHudConnectionPresentation()
     BridgeUiSet("BridgeHudConnection", "text", connectionText)

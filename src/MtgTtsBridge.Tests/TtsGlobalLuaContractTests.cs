@@ -763,6 +763,31 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void CreatureTypeDecision_UsesDecisionScopedDropdownAndExplicitConfirm()
+    {
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+        Assert.Contains("BridgeHudCreatureTypePanel", xml);
+        Assert.Contains("id=\"BridgeHudCreatureTypePanel\" active=\"false\"", xml);
+        Assert.Contains("Dropdown id=\"BridgeHudCreatureTypeDropdown\"", xml);
+        Assert.Contains("onValueChanged=\"BridgeHudCreatureTypeChanged\"", xml);
+        Assert.Contains("BridgeHudCreatureTypeConfirm", xml);
+        Assert.Contains("BridgeHudCreatureTypeCancel", xml);
+        Assert.Contains("function BridgeCreatureTypePrepare", Script);
+        Assert.Contains("function BridgeHudCreatureTypeChanged", Script);
+        Assert.Contains("function BridgeHudCreatureTypeConfirm", Script);
+        Assert.Contains("BridgeSubmitChoice(decision.decisionId, actionId, \"creature_type_confirm\")", Script);
+        Assert.Contains("if decision ~= nil and decision.kind == \"creature_type_selection\" then actions = {} end", Script);
+        Assert.Contains("not requiresConfirm and not creatureTypeDecision", Script);
+        var changedStart = Script.IndexOf("function BridgeHudCreatureTypeChanged", StringComparison.Ordinal);
+        var confirmStart = Script.IndexOf("function BridgeHudCreatureTypeConfirm", StringComparison.Ordinal);
+        Assert.True(changedStart >= 0 && confirmStart > changedStart);
+        Assert.DoesNotContain("BridgeSubmitChoice(", Script[changedStart..confirmStart]);
+        Assert.Contains("BridgeCreatureTypeClearDraft(\"decision-replaced\")", Script);
+        Assert.Contains("BridgeCreatureTypeClearDraft(\"decision-retired\")", Script);
+        Assert.Contains("BridgeCreatureTypeClearDraft(\"session-replaced\")", Script);
+    }
+
+    [Fact]
     public void KeywordLayout_UsesNativeEncoderValueAndCachesAbovePreference()
     {
         Assert.Contains("function BridgeEnsureKeywordIconLayout(object, encoder)", Script);
@@ -804,7 +829,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-26-f2c-v5-combat-land-ordering-fix\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-26-f2c-v5-creature-type-dropdown\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);

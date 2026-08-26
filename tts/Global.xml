@@ -3,7 +3,7 @@
        rectAlignment="UpperRight"
        offsetXY="-20 -70"
        width="700"
-       height="570"
+       height="630"
        color="#00000000">
   <VerticalLayout width="100%" height="100%" rectAlignment="UpperCenter" spacing="6" padding="0 0 0 0" childForceExpandHeight="false" childForceExpandWidth="true">
 
@@ -79,6 +79,17 @@
           <Button id="BridgeHudAction24" active="false" onClick="BridgeHudAction" text="" fontSize="13" minHeight="26" preferredHeight="26" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
         </VerticalLayout>
       </VerticalScrollView>
+    </VerticalLayout>
+
+    <!-- Creature-type choices are kept out of the bounded generic action tray. -->
+    <VerticalLayout id="BridgeHudCreatureTypePanel" active="false" minHeight="92" preferredHeight="92" flexibleHeight="0" spacing="5" padding="8 8 8 8" childForceExpandHeight="false" childForceExpandWidth="true" color="#0D1825EE">
+      <Text id="BridgeHudCreatureTypePrompt" text="CHOOSE CREATURE TYPE" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="12" color="#F8FAFC" alignment="MiddleLeft" />
+      <Dropdown id="BridgeHudCreatureTypeDropdown" options="" value="" onValueChanged="BridgeHudCreatureTypeChanged" minHeight="30" preferredHeight="30" flexibleHeight="0" fontSize="13" color="#26364AEE" textColor="#F8FAFC" />
+      <HorizontalLayout minHeight="28" preferredHeight="28" flexibleHeight="0" spacing="6" childForceExpandWidth="false" childForceExpandHeight="true">
+        <Button id="BridgeHudCreatureTypeConfirm" active="false" onClick="BridgeHudCreatureTypeConfirm" text="CONFIRM TYPE" tooltip="Submit the selected Forge creature type. Changing the dropdown alone does not submit." minWidth="170" preferredWidth="170" flexibleWidth="0" fontSize="12" color="#166534EE" textColor="#FFFFFF" />
+        <Button id="BridgeHudCreatureTypeCancel" active="true" onClick="BridgeHudCreatureTypeCancel" text="CANCEL" tooltip="Clear the local creature-type draft without submitting a Forge choice." minWidth="120" preferredWidth="120" flexibleWidth="0" fontSize="12" color="#334155EE" textColor="#FFFFFF" />
+        <Text id="BridgeHudCreatureTypeStatus" text="" minWidth="340" preferredWidth="340" flexibleWidth="0" fontSize="10" color="#D6DFEA" alignment="MiddleLeft" />
+      </HorizontalLayout>
     </VerticalLayout>
 
     <!-- Host/Admin developer drawer. -->

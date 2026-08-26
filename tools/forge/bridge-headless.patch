@@ -1091,7 +1091,7 @@ index 0d731bb6..e32d896b 100644
                              " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
                      }
  
-@@ -1550,37 +1619,306 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1550,37 +1619,324 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          return toDiscard;
      }
  
@@ -1372,6 +1372,24 @@ index 0d731bb6..e32d896b 100644
 +    @Override
 +    public String chooseProtectionType(SpellAbility sa, List<String> choices) {
 +        return choices.get(chooseOneTextOption("mode_selection", "Choose protection", choices));
++    }
++
++    @Override
++    public String chooseSomeType(String kindOfType, SpellAbility sa, java.util.Collection<String> validTypes,
++            boolean isOptional) {
++        if (kindOfType == null || !kindOfType.toLowerCase(java.util.Locale.ROOT).contains("creature")) {
++            return super.chooseSomeType(kindOfType, sa, validTypes, isOptional);
++        }
++        // Forge supplies the complete legal set. Deck contents may inform a
++        // future UI sort, but must never filter this authority-owned list.
++        List<String> types = new ArrayList<>(validTypes);
++        if (isOptional) types.add(0, "None");
++        if (types.size() == 1) return types.get(0);
++        if (types.isEmpty()) return null;
++
++        int choice = chooseOneTextOption("creature_type_selection", "Choose " + kindOfType.toLowerCase(java.util.Locale.ROOT), types);
++        if (isOptional && choice == 0) return null;
++        return types.get(isOptional ? choice - 1 : choice);
 +    }
 +
 +    @Override
