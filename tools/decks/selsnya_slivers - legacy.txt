@@ -1,0 +1,20 @@
+4 Cavern of Souls (lci) 345
+3 Forest (sld) 419
+4 Muscle Sliver (sld) 653
+3 Plains (sld) 415
+2 Plated Sliver (lgn) 19
+4 Predatory Sliver (sld) 654
+2 Quick Sliver (cmm) 907
+2 Reflex Sliver (tsr) 226
+4 Savannah (30a) 276
+3 Sentinel Sliver (cmm) 835
+4 Sidewinder Sliver (sld) 615
+4 Sinew Sliver (cmm) 837
+2 Spinneret Sliver (tsr) 230
+4 Swords to Plowshares (pip) 173
+2 Talon Sliver (tmp) 50
+2 Tempered Sliver (sld) 657
+4 Temple Garden (trk) 301
+2 Victual Sliver (tpr) 215
+1 Ward Sliver (sld) 617
+4 Windswept Heath (mh3) 466

@@ -507,10 +507,15 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         lock (_sync)
         {
             if (_currentDecision is null && _state == "starting") _startupTracker.MarkFirstDecision();
-            var actions = decision.Decision.Actions.Select(action =>
-                action.CardInstanceId is not null && action.CardInstanceId.StartsWith("forge-object:", StringComparison.Ordinal)
-                    ? action with { CardInstanceId = $"forge:{_sessionId}:{action.CardInstanceId["forge-object:".Length..]}" }
-                    : action).ToArray();
+            string? NormalizeInstanceId(string? value) =>
+                value is not null && value.StartsWith("forge-object:", StringComparison.Ordinal)
+                    ? $"forge:{_sessionId}:{value["forge-object:".Length..]}"
+                    : value;
+            var actions = decision.Decision.Actions.Select(action => action with
+            {
+                CardInstanceId = NormalizeInstanceId(action.CardInstanceId),
+                SourceCardInstanceId = NormalizeInstanceId(action.SourceCardInstanceId)
+            }).ToArray();
 
             var inputs = decision.Inputs.ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.Ordinal);
 

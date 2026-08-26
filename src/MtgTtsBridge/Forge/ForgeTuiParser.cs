@@ -161,19 +161,27 @@ public sealed partial class ForgeTuiParser
             }
         }
 
+        var actionType = kind is "target_selection" or "player_selection" ? "choose_target" : GetActionType(label, kind);
+        var sourceInstanceId = forgeCardId.Success ? $"forge-object:{forgeCardId.Groups["id"].Value}" : null;
+        var sourceName = GetCardIdentity(label, kind);
         return new LegalActionDto(
             ActionId: $"{decisionId}-choice-{option.Number}",
-            Type: kind is "target_selection" or "player_selection" ? "choose_target" : GetActionType(label, kind),
+            Type: actionType,
             DisplayName: label,
             RequiresFollowup: false,
-            CardIdentity: GetCardIdentity(label, kind),
+            CardIdentity: sourceName,
             ObjectIdentity: null,
             TargetKind: targetKind,
             TargetSeatId: targetSeatId,
-            CardInstanceId: forgeCardId.Success ? $"forge-object:{forgeCardId.Groups["id"].Value}" : null,
+            CardInstanceId: sourceInstanceId,
             IsSelected: label.Contains("[SELECTED]", StringComparison.OrdinalIgnoreCase)
                 || (kind == "attacker_selection" && label.Contains("[ATTACKING]", StringComparison.OrdinalIgnoreCase))
-                || (kind is "blocker_selection" or "blocker_assignment" && label.Contains("[BLOCKING]", StringComparison.OrdinalIgnoreCase)));
+                || (kind is "blocker_selection" or "blocker_assignment" && label.Contains("[BLOCKING]", StringComparison.OrdinalIgnoreCase)),
+            ActionKind: actionType,
+            SourceCardInstanceId: sourceInstanceId,
+            SourceCardName: sourceName,
+            ShortLabel: label.Length <= 72 ? label : label[..69] + "...",
+            RequiresSelection: kind is "target_selection" or "player_selection" or "card_selection" or "attacker_selection" or "blocker_selection" or "blocker_assignment");
     }
 
     private bool TryResolveSeat(string playerName, out string seatId)

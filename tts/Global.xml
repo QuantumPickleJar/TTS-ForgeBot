@@ -1,0 +1,49 @@
+<Panel id="BridgeHudRoot" active="true" rectAlignment="UpperCenter" offsetXY="0 -155" width="520" height="235" color="#0B1220C8">
+  <VerticalLayout spacing="3" padding="7 7 7 7">
+    <Text id="BridgeHudTop" text="FORGEBOT" fontSize="18" color="#F8FAFC" alignment="MiddleCenter" />
+    <Text id="BridgeHudStatus" text="" fontSize="15" color="#F8FAFC" alignment="MiddleCenter" />
+    <Text id="BridgeHudPrompt" text="" fontSize="15" color="#F8FAFC" alignment="MiddleCenter" />
+    <HorizontalLayout spacing="6">
+      <Button id="BridgeHudPass" onClick="BridgeHudPass" text="PASS" tooltip="Pass this one Forge priority window.&#10;Does not enable ongoing autopass." width="82" height="28" />
+      <Button id="BridgeHudYield" onClick="BridgeHudYield" text="YIELD" tooltip="Keep passing priority for this turn.&#10;Stops when Forge presents a meaningful decision." width="82" height="28" />
+      <Button id="BridgeHudMode" onClick="BridgeHudMode" text="SMART" tooltip="SMART: advance only without a meaningful choice.&#10;Click to cycle SMART, YIELD, and MANUAL." width="82" height="28" />
+      <Button id="BridgeHudFast" onClick="BridgeHudFast" text="FAST: OFF" tooltip="Fast Playtest shortens cosmetic movement and UI delays. It never skips Forge decisions or rules events." width="82" height="28" />
+      <Button id="BridgeHudMana" onClick="BridgeHudMana" text="MANA: AUTO" tooltip="AUTO lets Forge choose payment sources. Manual source choices require launching ForgeBot with -ManualMana." width="105" height="28" />
+      <Button id="BridgeHudLog" onClick="BridgeHudLog" text="LOG: ON" tooltip="Show or hide the latest player-facing Forge event message." width="65" height="28" />
+    </HorizontalLayout>
+    <Text id="BridgeHudHelp" text="SMART: auto-advance only when Forge has no meaningful choice." fontSize="13" color="#E2E8F0" alignment="MiddleCenter" />
+    <HorizontalLayout spacing="6">
+      <Button id="BridgeHudConfirm" active="false" onClick="BridgeHudConfirm" text="CONFIRM" tooltip="Submit the staged Forge selection when its required count is satisfied." width="150" height="27" />
+      <Button id="BridgeHudCancel" active="false" onClick="BridgeHudCancel" text="UNDO" tooltip="Clear the local staged selection without sending a Forge choice." width="150" height="27" />
+      <Button id="BridgeHudNewMatch" active="false" onClick="BridgeHudNewMatch" text="NEW MATCH" tooltip="Replace the completed Forge match. A second click confirms the destructive reset." width="150" height="27" />
+    </HorizontalLayout>
+    <Text id="BridgeHudSelection" text="" fontSize="15" color="#F8FAFC" alignment="MiddleCenter" />
+    <ScrollView id="BridgeHudScroll" height="108" verticalScrollbarVisibility="AutoHideAndExpandViewport"><VerticalLayout spacing="1">
+      <Button id="BridgeHudAction1" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction2" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction3" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction4" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction5" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction6" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction7" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction8" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction9" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction10" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction11" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction12" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction13" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction14" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction15" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction16" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction17" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction18" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction19" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction20" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction21" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction22" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction23" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+      <Button id="BridgeHudAction24" active="false" onClick="BridgeHudAction" text="" fontSize="14" height="24" />
+    </VerticalLayout></ScrollView>
+    <Text id="BridgeHudFooter" text="" fontSize="13" color="#E2E8F0" alignment="MiddleCenter" />
+  </VerticalLayout>
+</Panel>

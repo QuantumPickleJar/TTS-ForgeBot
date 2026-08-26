@@ -173,6 +173,24 @@ public sealed partial class ForgeTuiEventParser
             return result;
         }
 
+        match = BlockerRegex().Match(line);
+        if (match.Success)
+        {
+            var blockerName = match.Groups["blocker"].Value.Trim();
+            // The TUI records the selected blocker by name.  Recover its exact
+            // instance only when the observed transcript identifies one
+            // unambiguously; a duplicate name must remain presentation-only
+            // rather than risking an incorrect physical movement.
+            var candidates = _knownInstances
+                .Where(pair => string.Equals(pair.Value.CardName, blockerName, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (candidates.Length != 1) return [];
+            var candidate = candidates[0];
+            return [new ForgeTuiRawEvent(
+                "block_declared", candidate.Value.SeatId, blockerName, candidate.Key,
+                "battlefield", "battlefield", line)];
+        }
+
         return [];
     }
 
@@ -225,6 +243,9 @@ public sealed partial class ForgeTuiEventParser
 
     [GeneratedRegex(@"(?<card>.+?) \((?<id>\d+)\)(?: and |, |$)", RegexOptions.CultureInvariant)]
     private static partial Regex AttackerRegex();
+
+    [GeneratedRegex(@"^>> (?<blocker>.+?) blocks .+$", RegexOptions.CultureInvariant)]
+    private static partial Regex BlockerRegex();
 
     [GeneratedRegex(@"^>>> \[YOU\] (?<player>\S(?:.*\S)?)\s*$", RegexOptions.CultureInvariant)]
     private static partial Regex HumanSnapshotHeaderRegex();

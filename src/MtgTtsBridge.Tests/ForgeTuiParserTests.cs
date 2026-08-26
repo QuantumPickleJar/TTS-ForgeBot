@@ -19,6 +19,9 @@ public sealed class ForgeTuiParserTests
         Assert.Equal("Mountain", action.CardIdentity);
         Assert.Equal("forge-object:42", action.CardInstanceId);
         Assert.DoesNotContain("[id=", action.DisplayName);
+        Assert.Equal("play_land", action.ActionKind);
+        Assert.Equal("forge-object:42", action.SourceCardInstanceId);
+        Assert.Equal("Mountain", action.SourceCardName);
     }
 
     [Fact]
@@ -39,6 +42,7 @@ public sealed class ForgeTuiParserTests
         Assert.NotEqual(mountains[0].ActionId, mountains[1].ActionId);
         Assert.Equal("1", result.ParsedDecision.Inputs[mountains[0].ActionId]);
         Assert.Equal("2", result.ParsedDecision.Inputs[mountains[1].ActionId]);
+        Assert.NotEqual(mountains[0].SourceCardInstanceId, mountains[1].SourceCardInstanceId);
     }
 
     [Fact]

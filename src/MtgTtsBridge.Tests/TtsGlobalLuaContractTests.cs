@@ -516,7 +516,7 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgeBattlefieldPositionOccupied", Script);
         Assert.Contains("if not BridgeBattlefieldPositionOccupied(candidate) then", Script);
-        Assert.Contains("dx * dx + dz * dz < 1.5", Script);
+        Assert.Contains("dx * dx + dz * dz < 3.0", Script);
         Assert.Contains("card.battlefieldKind == \"land\"", Script);
         Assert.Contains("function BridgeAnnotateSnapshotBattlefieldKinds", Script);
         Assert.Contains("event.kind == \"land_played\"", Script);
@@ -723,6 +723,48 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void F2cHud_IsMountedOnceAndRoutesChoicesThroughHardenedChoiceSubmission()
+    {
+        Assert.Contains("function BridgeUiMount()", Script);
+        Assert.DoesNotContain("UI.setXml(", Script);
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+        Assert.Contains("BridgeHudRoot", xml);
+        Assert.Contains("BridgeHudAction24", xml);
+        Assert.Contains("function BridgeUiFlush()", Script);
+        Assert.Contains("UI.setAttribute", Script);
+        Assert.Contains("BridgeSubmitChoice(decision.decisionId, action.actionId, \"hud_action\")", Script);
+        Assert.Contains("BridgeState.retiredChoiceDecisionIds[decision.decisionId] == true", Script);
+        Assert.Contains("BridgeDecisionHasAction(decision, action.actionId)", Script);
+    }
+
+    [Fact]
+    public void F2cHud_UsesBoundedRowsAndSuppressesNormalPathPhysicalOptionSpawns()
+    {
+        Assert.Contains("for i = 1, 24 do", Script);
+        Assert.Contains("BridgeState.ui.uiFullRebuildCount", Script);
+        Assert.Contains("if BridgeState.ui ~= nil and BridgeState.ui.mounted then", Script);
+        Assert.Contains("function BridgeOpenCardContext(cardInstanceId)", Script);
+        Assert.Contains("action.sourceCardInstanceId or action.cardInstanceId", Script);
+    }
+
+    [Fact]
+    public void KeywordLayout_UsesNativeEncoderValueAndCachesAbovePreference()
+    {
+        Assert.Contains("function BridgeEnsureKeywordIconLayout(object, encoder)", Script);
+        Assert.Contains("valueID = \"iconLayout\"", Script);
+        Assert.Contains("data = {iconLayout = \"above\"}", Script);
+        Assert.Contains("BridgeState.presentedIconLayoutByGuid", Script);
+    }
+
+    [Fact]
+    public void Launcher_CanStartForgeWithAuthoritativeManualManaChoices()
+    {
+        var launcher = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tools", "Start-ForgeBot.ps1"));
+        Assert.Contains("[switch]$ManualMana", launcher);
+        Assert.Contains("--askmana", launcher);
+    }
+
+    [Fact]
     public void TerminalGameEvent_StopsGameplayPollingAndKeepsNewMatchPathAvailable()
     {
         Assert.Contains("if event.kind == \"game_ended\" then", Script);
@@ -747,7 +789,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-25-f2b-v13-stabilization\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-26-f2c-v3-presentation\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -1249,7 +1291,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("presentedKeywordSignatureByGuid", Script);
         Assert.Contains("presentedCounterSignatureByGuid", Script);
         Assert.Contains("presentedOwnerControllerByGuid", Script);
-        Assert.Contains("if guid ~= nil and BridgeState.presentedKeywordSignatureByGuid[guid] == signature then return true, nil end", Script);
+        Assert.Contains("BridgeState.presentedKeywordSignatureByGuid[guid] == signature", Script);
         Assert.Contains("if guid ~= nil and BridgeState.presentedCounterSignatureByGuid[guid] == signature then return true, nil end", Script);
         Assert.Contains("presentationMetrics = {encoderRebuildCount", Script);
         Assert.Contains("BridgePresentationMetric(\"encoderRebuildCount\")", Script);

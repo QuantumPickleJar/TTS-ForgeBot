@@ -10,4 +10,12 @@ public sealed record LegalActionDto(
     string? TargetKind = null,
     string? TargetSeatId = null,
     string? CardInstanceId = null,
-    bool IsSelected = false);
+    bool IsSelected = false,
+    // Presentation-only metadata. ActionId remains the sole legal identity.
+    string? ActionKind = null,
+    string? SourceCardInstanceId = null,
+    string? SourceCardName = null,
+    string? ShortLabel = null,
+    bool RequiresSelection = false,
+    int? MinSelections = null,
+    int? MaxSelections = null);

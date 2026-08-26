@@ -94,4 +94,30 @@ public sealed class ForgeTuiEventParserTests
 
         Assert.Empty(events);
     }
+
+    [Fact]
+    public void ExplicitBlockerDeclaration_UsesKnownExactInstance()
+    {
+        var parser = new ForgeTuiEventParser(Seats);
+        parser.Append("+++ Land: AI-monored played Mountain (128)\n");
+        parser.Append("+++ Add To Stack: AI-monored cast Hired Claw\n+++ Resolve Stack: Hired Claw (92) - Creature 1 / 2\n");
+
+        var events = parser.Append(">> Hired Claw blocks Llanowar Elves\n");
+
+        var blocker = Assert.Single(events);
+        Assert.Equal("block_declared", blocker.Kind);
+        Assert.Equal("forge-player-2", blocker.SeatId);
+        Assert.Equal(92, blocker.ForgeObjectId);
+        Assert.Equal("Hired Claw", blocker.CardName);
+    }
+
+    [Fact]
+    public void AmbiguousBlockerName_IsNotMappedByName()
+    {
+        var parser = new ForgeTuiEventParser(Seats);
+        parser.Append("+++ Add To Stack: AI-monored cast Bear Cub\n+++ Resolve Stack: Bear Cub (1) - Creature 2 / 2\n");
+        parser.Append("+++ Add To Stack: AI-monored cast Bear Cub\n+++ Resolve Stack: Bear Cub (2) - Creature 2 / 2\n");
+
+        Assert.Empty(parser.Append(">> Bear Cub blocks Llanowar Elves\n"));
+    }
 }
