@@ -11,7 +11,7 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
-BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-unscoped-combat-fix"
+BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-combat-land-ordering-fix"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -256,7 +256,8 @@ BridgeState = {
     ui = {mounted = false, dirty = false, flushScheduled = false, actionRows = {}, contextInstanceId = nil,
         manaMode = "AUTO", autoAdvanceMode = "SMART", fastPlaytest = false, gameLogVisible = true,
         gameLog = {},
-        diagnosticsVisible = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
+        diagnosticsVisible = false, reportPanelVisible = false, reportCategoryIndex = 1,
+        reportStatus = "", reportCaptureInFlight = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
         actionPanelRenderCount = 0, candidatePanelRenderCount = 0, ephemeralPhysicalControlSpawnCount = 0},
 }
 
@@ -5661,7 +5662,17 @@ function BridgeApplyAuthoritativeEvent(event)
                 BridgeScheduleSnapshotReconcile("unmapped semantic land " .. tostring(event.cardInstanceId))
                 return true, 0.1
             end
-            return false, 0, resolveError
+            -- This is a redundant human-readable event.  The exact
+            -- structured card_moved event may already have taken the card out
+            -- of its source zone, leaving a live mapped Card in a different
+            -- tracked zone.  Never turn that normal ordering race into a
+            -- hard synchronization stop; the authoritative snapshot repairs
+            -- any genuinely missing destination.
+            BridgeLog(string.format(
+                "[Bridge] semantic land presentation deferred event=%s instance=%s mappedGuid=%s reason=%s",
+                tostring(event.sequence), tostring(event.cardInstanceId), tostring(mappedGuid), tostring(resolveError)))
+            BridgeScheduleSnapshotReconcile("semantic land source already changed " .. tostring(event.cardInstanceId))
+            return true, 0.1
         end
         
         -- If it's a deck object (from library), draw the top card
@@ -7139,7 +7150,7 @@ end
 BRIDGE_DEV_UI_ENABLED = true
 BRIDGE_DEV_ANNOTATIONS_ENABLED = true
 BRIDGE_PHYSICAL_PRIORITY_CONTROLS_ENABLED = true
-BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-unscoped-combat-fix"
+BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-combat-land-ordering-fix"
 
 BRIDGE_HUD_COLORS = {
     active = "#6DB5FF",
@@ -7153,6 +7164,89 @@ function BridgeHudToggleDev(player, value, id)
     if BRIDGE_DEV_UI_ENABLED ~= true or BridgeState.ui == nil then return end
     BridgeState.ui.diagnosticsVisible = not (BridgeState.ui.diagnosticsVisible == true)
     BridgeUiMarkDirty("dev-drawer-toggle")
+end
+
+BRIDGE_REPORT_CATEGORIES = {
+    "Gameplay sync", "Combat", "Card movement", "Presentation/UI", "Decision/prompt",
+    "Mana/payment", "Performance", "Crash/error", "Other"
+}
+
+function BridgeHudReportOpen(player, value, id)
+    if BRIDGE_DEV_UI_ENABLED ~= true or BridgeState.ui == nil then return end
+    BridgeState.ui.reportPanelVisible = true
+    BridgeState.ui.reportStatus = "Ready to capture local diagnostic ZIP."
+    BridgeUiMarkDirty("report-open")
+end
+
+function BridgeHudReportCancel(player, value, id)
+    if BridgeState.ui == nil or BridgeState.ui.reportCaptureInFlight then return end
+    BridgeState.ui.reportPanelVisible = false
+    BridgeState.ui.reportStatus = ""
+    BridgeUiMarkDirty("report-cancel")
+end
+
+function BridgeHudReportCategory(player, value, id)
+    if BridgeState.ui == nil or BridgeState.ui.reportCaptureInFlight then return end
+    local index = tonumber(BridgeState.ui.reportCategoryIndex or 1) or 1
+    index = index + 1
+    if index > #BRIDGE_REPORT_CATEGORIES then index = 1 end
+    BridgeState.ui.reportCategoryIndex = index
+    BridgeUiMarkDirty("report-category")
+end
+
+function BridgeHudReportMappedCardInstanceIds()
+    local ids = {}
+    for cardInstanceId, _ in pairs(BridgeState.physicalByInstanceId or {}) do
+        table.insert(ids, cardInstanceId)
+    end
+    table.sort(ids)
+    return ids
+end
+
+function BridgeHudReportSummaryText()
+    local ok, value = pcall(function() return UI.getAttribute("BridgeHudReportSummary", "text") end)
+    if not ok or value == nil then return nil end
+    value = tostring(value)
+    return value ~= "" and value or nil
+end
+
+function BridgeHudReportCapture(player, value, id)
+    local ui = BridgeState.ui
+    if ui == nil or ui.reportCaptureInFlight then return end
+    ui.reportCaptureInFlight = true
+    ui.reportStatus = "Capturing..."
+    BridgeUiMarkDirty("report-capture-start")
+
+    local categoryIndex = tonumber(ui.reportCategoryIndex or 1) or 1
+    local request = {
+        summary = BridgeHudReportSummaryText(),
+        category = BRIDGE_REPORT_CATEGORIES[categoryIndex] or "Other",
+        sessionId = BridgeState.eventSessionId,
+        decisionId = BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+        clientRuntimeId = BRIDGE_CLIENT_RUNTIME_ID,
+        clientRevision = BRIDGE_SCRIPT_REVISION,
+        lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
+        turn = BridgeState.tableTurnCount,
+        phase = BridgeState.currentPhase,
+        activePlayer = BridgeState.currentTurnSeatId,
+        priorityPlayer = BridgeState.prioritySeatId,
+        mappedCardInstanceIds = BridgeHudReportMappedCardInstanceIds(),
+        status = BridgeState.statusHeadline
+    }
+    BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
+        ui.reportCaptureInFlight = false
+        if ok and body ~= nil and body.success == true then
+            local reportId = tostring(body.reportId or "unknown")
+            local reportPath = tostring(body.reportPath or "BugReports")
+            ui.reportStatus = "CAPTURED • " .. reportId .. "\n" .. reportPath
+            BridgeLog("[Bridge] diagnostic report captured id=" .. reportId .. " path=" .. reportPath)
+        else
+            local detail = BridgeHttpFailureDetail(body, err or "capture failed")
+            ui.reportStatus = "ERROR • " .. detail
+            BridgeLog("[Bridge] diagnostic report failed: " .. detail)
+        end
+        BridgeUiMarkDirty("report-capture-result")
+    end)
 end
 
 function BridgeHudPhaseElementId(phase)
@@ -7231,6 +7325,16 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudDevToggle", "active", devEnabled and "true" or "false")
     BridgeUiSet("BridgeHudDevRoot", "active", devExpanded and "true" or "false")
     BridgeUiSet("BridgeHudDevToggle", "text", devExpanded and "DEV ▲" or "DEV ▼")
+    local reportVisible = devExpanded and ui.reportPanelVisible == true
+    local reportCategoryIndex = tonumber(ui.reportCategoryIndex or 1) or 1
+    BridgeUiSet("BridgeHudReportPanel", "active", reportVisible and "true" or "false")
+    BridgeUiSet("BridgeHudReportOpen", "active", devEnabled and "true" or "false")
+    BridgeUiSet("BridgeHudReportCategory", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
+    BridgeUiSet("BridgeHudReportCategory", "text", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex] or "Other")
+    BridgeUiSet("BridgeHudReportCapture", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
+    BridgeUiSet("BridgeHudReportCancel", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
+    BridgeUiSet("BridgeHudReportStatus", "text", ui.reportStatus or "")
+    BridgeUiSet("BridgeHudReportStatus", "color", string.find(string.upper(tostring(ui.reportStatus or "")), "ERROR", 1, true) and BRIDGE_HUD_COLORS.danger or BRIDGE_HUD_COLORS.success)
 
     local decision = BridgeState.lastDecision
     local terminal = BridgeState.gameEnded

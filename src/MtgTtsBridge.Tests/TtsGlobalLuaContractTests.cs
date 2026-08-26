@@ -804,7 +804,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-26-f2c-v5-unscoped-combat-fix\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-26-f2c-v5-combat-land-ordering-fix\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -1299,6 +1299,19 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void RedundantLandEventWithAlreadyMovedMapping_DefersInsteadOfStopping()
+    {
+        var start = Script.IndexOf("if event.kind == \"land_played\" then", StringComparison.Ordinal);
+        var end = Script.IndexOf("if event.kind == \"spell_resolved\" and event.destinationZone == \"battlefield\" then", start, StringComparison.Ordinal);
+        var handler = Script[start..end];
+
+        Assert.Contains("semantic land source already changed", handler);
+        Assert.Contains("BridgeScheduleSnapshotReconcile(\"semantic land source already changed \"", handler);
+        Assert.Contains("return true, 0.1", handler);
+        Assert.DoesNotContain("return false, 0, resolveError", handler);
+    }
+
+    [Fact]
     public void DefaultForgeLaunchUsesNumericCombatChoicesAndNeverSynthesizesCardIdCombatInputs()
     {
         var launcher = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tools", "Start-ForgeBot.ps1"));
@@ -1368,5 +1381,31 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeState.latencyProbe = {", Script);
         Assert.Contains("BridgeRecordLatencyProbeDecisionReady", Script);
         Assert.Contains("[Bridge latency] action=", Script);
+    }
+
+    [Fact]
+    public void DevHud_ReportBugControlsSendPresentationContextAndKeepCaptureOutOfLua()
+    {
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+        Assert.Contains("BridgeHudReportOpen", xml);
+        Assert.Contains("BridgeHudReportSummary", xml);
+        Assert.Contains("BridgeHudReportCapture", xml);
+        Assert.Contains("BridgeHudReportCancel", xml);
+        Assert.Contains("BridgeHudReportCategory", xml);
+        Assert.Contains("function BridgeHudReportCapture", Script);
+        Assert.Contains("/api/v1/diagnostics/report", Script);
+        Assert.Contains("mappedCardInstanceIds", Script);
+        Assert.Contains("lastAppliedEventSequence", Script);
+        Assert.DoesNotContain("ZipFile", Script);
+        Assert.DoesNotContain("screenshot.png", Script);
+    }
+
+    [Fact]
+    public void DevHud_ReportResultIsVisibleAndUsesStableCallbacks()
+    {
+        Assert.Contains("CAPTURED • ", Script);
+        Assert.Contains("diagnostic report failed", Script);
+        Assert.Contains("BridgeState.ui.reportStatus", Script);
+        Assert.Contains("BridgeHudReportStatus", File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml")));
     }
 }

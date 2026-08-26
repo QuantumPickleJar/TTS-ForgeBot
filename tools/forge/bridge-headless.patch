@@ -357,7 +357,7 @@ new file mode 100644
 index 00000000..040b0b2f
 --- /dev/null
 +++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,439 @@
 +package forge.headless;
 +
 +import com.google.common.collect.Multiset;

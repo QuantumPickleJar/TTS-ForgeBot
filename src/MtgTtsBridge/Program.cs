@@ -2,7 +2,9 @@ using System.Drawing;
 using System.Windows.Forms;
 using MtgTtsBridge;
 using MtgTtsBridge.Contracts.Actions;
+using MtgTtsBridge.Contracts.Diagnostics;
 using MtgTtsBridge.Contracts.State;
+using MtgTtsBridge.Diagnostics;
 using MtgTtsBridge.Forge;
 
 var trayIcon = new BridgeTrayIcon();
@@ -11,6 +13,14 @@ var builder = WebApplication.CreateBuilder(args);
 
 var processIdentity = new BridgeProcessIdentity();
 builder.Services.AddSingleton(processIdentity);
+var diagnosticTelemetry = new DiagnosticTelemetryBuffer();
+builder.Services.AddSingleton(diagnosticTelemetry);
+builder.Services.Configure<DiagnosticOptions>(builder.Configuration.GetSection("Diagnostics"));
+builder.Services.AddSingleton(serviceProvider => serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<DiagnosticOptions>>().Value);
+builder.Services.AddSingleton<DiagnosticSelfTestRunner>();
+builder.Services.AddSingleton<DiagnosticBundleWriter>();
+builder.Services.AddSingleton<DiagnosticReportCollector>();
+builder.Logging.AddProvider(new DiagnosticLoggerProvider(diagnosticTelemetry));
 
 var listenUrl = builder.Configuration["Bridge:ListenUrl"] ?? "http://127.0.0.1:43110";
 builder.WebHost.UseUrls(listenUrl);
@@ -103,8 +113,9 @@ app.MapPost("/api/v1/session/reset", async (IForgeAdapter adapter, CancellationT
 	}
 });
 
-app.MapGet("/api/v1/decision", async (IForgeAdapter adapter, CancellationToken cancellationToken) =>
+app.MapGet("/api/v1/decision", async (IForgeAdapter adapter, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
 {
+	telemetry.RecordProtocol("tts_to_bridge", "/api/v1/decision");
 	var state = await adapter.GetStateAsync(cancellationToken);
 
 	if (state.CurrentDecision is null)
@@ -115,10 +126,24 @@ app.MapGet("/api/v1/decision", async (IForgeAdapter adapter, CancellationToken c
 			DecisionId: null));
 	}
 
+	telemetry.RecordProtocol("bridge_to_tts", "/api/v1/decision", 200, state.SessionId, state.CurrentDecision.DecisionId, payload: state.CurrentDecision);
 	return Results.Ok(state.CurrentDecision);
 });
 
-app.MapGet("/api/v1/events", async (long? after, IForgeAdapter adapter, CancellationToken cancellationToken) =>
+app.MapPost("/api/v1/diagnostics/report", async (DiagnosticReportRequestDto request, DiagnosticReportCollector collector, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
+{
+	telemetry.RecordProtocol("tts_to_bridge", "/api/v1/diagnostics/report", sessionId: request.SessionId, decisionId: request.DecisionId, clientRuntimeId: request.ClientRuntimeId, clientRevision: request.ClientRevision, payload: request);
+	var result = await collector.CaptureAsync(request, cancellationToken);
+	if (!result.Success)
+	{
+		telemetry.RecordProtocol("bridge_to_tts", "/api/v1/diagnostics/report", 500, request.SessionId, request.DecisionId, clientRuntimeId: request.ClientRuntimeId, clientRevision: request.ClientRevision, payload: result.Message);
+		return Results.Json(new DiagnosticReportFailureDto("diagnostic_capture_failed", result.Message, result.ReportId), statusCode: StatusCodes.Status500InternalServerError);
+	}
+	telemetry.RecordProtocol("bridge_to_tts", "/api/v1/diagnostics/report", 200, request.SessionId, request.DecisionId, clientRuntimeId: request.ClientRuntimeId, clientRevision: request.ClientRevision, payload: new { result.ReportId, result.ReportPath });
+	return Results.Ok(new DiagnosticReportResponseDto(true, result.ReportId, result.ReportPath!, result.Message));
+});
+
+app.MapGet("/api/v1/events", async (long? after, IForgeAdapter adapter, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
 {
 	var afterSequence = after ?? 0;
 	if (afterSequence < 0)
@@ -129,7 +154,9 @@ app.MapGet("/api/v1/events", async (long? after, IForgeAdapter adapter, Cancella
 			DecisionId: null));
 	}
 
+	telemetry.RecordProtocol("tts_to_bridge", "/api/v1/events", sessionId: null, payload: new { after = afterSequence });
 	var batch = await adapter.GetEventsAsync(afterSequence, cancellationToken);
+	telemetry.RecordProtocol("bridge_to_tts", "/api/v1/events", batch.HasGap ? 409 : 200, payload: new { batch.LatestSequence, batch.OldestAvailableSequence, batch.HasGap, eventCount = batch.Events.Count });
 	if (batch.HasGap)
 	{
 		return Results.Conflict(new ErrorResponseDto(
@@ -141,9 +168,11 @@ app.MapGet("/api/v1/events", async (long? after, IForgeAdapter adapter, Cancella
 	return Results.Ok(batch);
 });
 
-app.MapGet("/api/v1/embodiment/snapshot", async (IForgeAdapter adapter, CancellationToken cancellationToken) =>
+app.MapGet("/api/v1/embodiment/snapshot", async (IForgeAdapter adapter, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
 {
+	telemetry.RecordProtocol("tts_to_bridge", "/api/v1/embodiment/snapshot");
 	var snapshot = await adapter.GetSnapshotAsync(cancellationToken);
+	telemetry.RecordProtocol("bridge_to_tts", "/api/v1/embodiment/snapshot", snapshot is null ? 404 : 200, sessionId: snapshot?.SessionId, payload: snapshot is null ? "unavailable" : new { snapshot.EventCursor, snapshot.ForgeSequence });
 	return snapshot is null
 		? Results.NotFound(new ErrorResponseDto(
 			ErrorCode: "snapshot_unavailable",
@@ -152,8 +181,9 @@ app.MapGet("/api/v1/embodiment/snapshot", async (IForgeAdapter adapter, Cancella
 		: Results.Ok(snapshot);
 });
 
-app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter adapter, HttpContext httpContext, ILogger<Program> logger, CancellationToken cancellationToken) =>
+app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter adapter, HttpContext httpContext, ILogger<Program> logger, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
 {
+	telemetry.RecordProtocol("tts_to_bridge", "/api/v1/choice", sessionId: request.SessionId, decisionId: request.DecisionId, requestId: request.RequestId, clientRuntimeId: request.ClientRuntimeId, clientRevision: request.ClientRevision, payload: request);
 	var missingFields = new List<string>();
 	if (string.IsNullOrWhiteSpace(request.DecisionId)) missingFields.Add("decisionId");
 	if (string.IsNullOrWhiteSpace(request.ActionId)) missingFields.Add("actionId");
@@ -188,6 +218,7 @@ app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter ada
 	}
 
 	var outcome = await adapter.SubmitChoiceAsync(request, cancellationToken);
+	telemetry.RecordChoice(request, outcome.Accepted ? "accepted" : "rejected", outcome.ErrorCode, outcome.ErrorMessage);
 
 	if (!outcome.Accepted)
 	{
@@ -199,6 +230,7 @@ app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter ada
 			ReceivedSessionId: outcome.ReceivedSessionId,
 			RequestId: request.RequestId);
 
+		telemetry.RecordProtocol("bridge_to_tts", "/api/v1/choice", 409, request.SessionId, request.DecisionId, request.RequestId, request.ClientRuntimeId, request.ClientRevision, errorResponse);
 		return outcome.ErrorCode switch
 		{
 			"stale_decision_id" => Results.Conflict(errorResponse),
@@ -211,12 +243,14 @@ app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter ada
 		};
 	}
 
-	return Results.Ok(new ChoiceResponseDto(
+	var response = new ChoiceResponseDto(
 		Accepted: true,
 		ErrorCode: null,
 		ErrorMessage: null,
 		CurrentDecision: outcome.State.CurrentDecision,
-		CommittedEvent: outcome.State.LastCommittedEvent));
+		CommittedEvent: outcome.State.LastCommittedEvent);
+	telemetry.RecordProtocol("bridge_to_tts", "/api/v1/choice", 200, request.SessionId, request.DecisionId, request.RequestId, request.ClientRuntimeId, request.ClientRevision, response);
+	return Results.Ok(response);
 });
 
 app.Logger.LogInformation("BRIDGE_PROCESS_STARTED revision={Revision} instance={Instance} pid={Pid} startUtc={StartUtc} listenUrl={ListenUrl}", BridgeProcessIdentity.Revision, processIdentity.ProcessInstanceId, processIdentity.ProcessId, processIdentity.ProcessStartUtc, listenUrl);

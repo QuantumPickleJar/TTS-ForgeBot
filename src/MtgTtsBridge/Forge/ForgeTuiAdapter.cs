@@ -5,6 +5,7 @@ using MtgTtsBridge;
 using MtgTtsBridge.Contracts.Actions;
 using MtgTtsBridge.Contracts.Events;
 using MtgTtsBridge.Contracts.State;
+using MtgTtsBridge.Diagnostics;
 
 namespace MtgTtsBridge.Forge;
 
@@ -21,6 +22,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private readonly ForgeStructuredOutputParser _structuredParser;
     private readonly ForgeStructuredStateReconciler _structuredState;
     private readonly ForgeStartupTracker _startupTracker;
+    private readonly DiagnosticTelemetryBuffer? _telemetry;
     private readonly SemaphoreSlim _sessionStartGate = new(1, 1);
     // A TUI decision is a one-shot transaction. Keep the winning action after
     // it is consumed so duplicate HTTP delivery can be acknowledged without a
@@ -57,10 +59,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private const int EventHistoryLimit = 512;
     private const int DecisionHistoryLimit = 128;
 
-    public ForgeTuiAdapter(IOptions<ForgeTuiOptions> options, ILogger<ForgeTuiAdapter> logger)
+    public ForgeTuiAdapter(IOptions<ForgeTuiOptions> options, ILogger<ForgeTuiAdapter> logger, DiagnosticTelemetryBuffer? telemetry = null)
     {
         _options = options.Value;
         _logger = logger;
+        _telemetry = telemetry;
         _startupTracker = new ForgeStartupTracker(logger);
         _opponentSeatId = _options.PlayerSeats.Values.FirstOrDefault(seatId => !string.Equals(seatId, _options.HumanSeatId, StringComparison.Ordinal));
         _parser = new ForgeTuiParser(_options.PlayerSeats, _opponentSeatId ?? "forge-player-2");
@@ -417,8 +420,18 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 var chunk = new string(buffer, 0, count);
                 if (isError)
                 {
+                    foreach (var line in chunk.Split('\n'))
+                    {
+                        var normalized = line.TrimEnd('\r');
+                        if (normalized.Length > 0) _telemetry?.RecordForgeOutput("stderr", normalized, _sessionId);
+                    }
                     _logger.LogDebug("Forge TUI stderr: {ForgeOutput}", chunk);
                     continue;
+                }
+                foreach (var line in chunk.Split('\n'))
+                {
+                    var normalized = line.TrimEnd('\r');
+                    if (normalized.Length > 0) _telemetry?.RecordForgeOutput("stdout", normalized, _sessionId);
                 }
                 ForgeTuiParserResult result;
                 lock (_sync)
@@ -676,6 +689,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
         _events.Add(authoritativeEvent);
         if (_events.Count > EventHistoryLimit) _events.RemoveAt(0);
+        _telemetry?.RecordForgeEvent(authoritativeEvent, _sessionId);
         if (authoritativeEvent.ContainsHiddenIdentity)
         {
             _logger.LogTrace(
