@@ -11,7 +11,7 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
-BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v4-library-combat"
+BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-cast-zones"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -5898,6 +5898,12 @@ function BridgeApplyStructuredCardMove(event)
             object = idempotent
         end
     end
+    -- A cast is physically previewed on the stack, while Forge may report the
+    -- authoritative transition as hand -> battlefield. Resolve that exact
+    -- mapped instance from stack before falling back to a hard mapping error.
+    if object == nil and event.destinationZone == "battlefield" then
+        object = tryResolveFromZone("stack")
+    end
 
     if event.sourceZone == "library" and event.destinationZone == "hand" and (object == nil or object.tag == "Deck") then
         local deck = object
@@ -5972,13 +5978,11 @@ function BridgeApplyStructuredCardMove(event)
         object.setPositionSmooth(hand.position, false, true)
     elseif event.destinationZone == "battlefield" then
         object.use_hands = false
-        if event.sourceZone ~= "hand" then
-            local row = event.battlefieldKind
-                or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]
-                or "creature"
-            local moved, moveError = BridgeMoveToBattlefield(event, object, row)
-            if not moved then return false, moveError end
-        end
+        local row = event.battlefieldKind
+            or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]
+            or "creature"
+        local moved, moveError = BridgeMoveToBattlefield(event, object, row)
+        if not moved then return false, moveError end
     elseif event.destinationZone == "stack" then
         object.use_hands = false
         BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)

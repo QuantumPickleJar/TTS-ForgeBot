@@ -526,7 +526,8 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void DirectHandToBattlefieldMove_WaitsForSemanticLandPlacement()
     {
-        Assert.Contains("if event.sourceZone ~= \"hand\" then", Script);
+        Assert.Contains("event.destinationZone == \"battlefield\"", Script);
+        Assert.Contains("object = tryResolveFromZone(\"stack\")", Script);
         Assert.Contains("BridgeMoveToBattlefield(event, object, \"land\")", Script);
     }
 
@@ -789,7 +790,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-26-f2c-v4-library-combat\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-26-f2c-v5-cast-zones\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);

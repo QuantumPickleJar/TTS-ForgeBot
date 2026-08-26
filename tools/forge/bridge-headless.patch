@@ -357,7 +357,7 @@ new file mode 100644
 index 00000000..040b0b2f
 --- /dev/null
 +++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,445 @@
 +package forge.headless;
 +
 +import com.google.common.collect.Multiset;
@@ -365,7 +365,9 @@ index 00000000..040b0b2f
 +import forge.card.MagicColor;
 +import forge.card.CardTypeView;
 +import forge.game.Game;
++import forge.game.GameEntity;
 +import forge.game.card.Card;
++import forge.game.combat.Combat;
 +import forge.game.card.CounterType;
 +import forge.game.event.GameEvent;
 +import forge.game.event.GameEventCardChangeZone;
@@ -549,7 +551,8 @@ index 00000000..040b0b2f
 +            firstCard = false;
 +            appendCard(json, card, "stack", position++);
 +        }
-+        json.append("]");
++        json.append("],\"combat\":");
++        appendCombat(json);
 +        if (game.isGameOver()) {
 +            json.append(",\"gameEnded\":");
 +            appendGameEnded(json);
@@ -633,6 +636,30 @@ index 00000000..040b0b2f
 +            if (!firstKeyword) json.append(',');
 +            firstKeyword = false;
 +            string(json, keyword);
++        }
++        json.append("]}");
++    }
++
++    private void appendCombat(final StringBuilder json) {
++        final Combat combat = game.getCombat();
++        json.append("{\"attacks\":[");
++        boolean first = true;
++        for (Card attacker : combat.getAttackers()) {
++            if (!first) json.append(',');
++            first = false;
++            final GameEntity defender = combat.getDefenderByAttacker(attacker);
++            json.append('{');
++            property(json, "attackerForgeObjectId", attacker.getId()).append(',');
++            property(json, "defenderSeatId", defender instanceof Player player ? seatOf(player) : null).append(',');
++            if (defender instanceof Card card) {
++                property(json, "defenderForgeObjectId", (long) card.getId()).append(',');
++            } else {
++                property(json, "defenderForgeObjectId", (String) null).append(',');
++            }
++            json.append("\"blockerForgeObjectIds\":[");
++            boolean firstBlocker = true;
++            for (Card blocker : combat.getBlockers(attacker)) { if (!firstBlocker) json.append(','); firstBlocker = false; json.append(blocker.getId()); }
++            json.append("]}");
 +        }
 +        json.append("]}");
 +    }
