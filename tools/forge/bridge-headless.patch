@@ -357,7 +357,7 @@ new file mode 100644
 index 00000000..040b0b2f
 --- /dev/null
 +++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
-@@ -0,0 +1,397 @@
+@@ -0,0 +1,416 @@
 +package forge.headless;
 +
 +import com.google.common.collect.Multiset;
@@ -372,6 +372,7 @@ index 00000000..040b0b2f
 +import forge.game.event.GameEventCardCounters;
 +import forge.game.event.GameEventCardStatsChanged;
 +import forge.game.event.GameEventCardTapped;
++import forge.game.event.GameEventBlockersDeclared;
 +import forge.game.event.GameEventGameStarted;
 +import forge.game.event.GameEventGameOutcome;
 +import forge.game.event.GameEventMulligan;
@@ -435,6 +436,11 @@ index 00000000..040b0b2f
 +            emitTerminalSnapshot();
 +            return;
 +        }
++        if (event instanceof GameEventBlockersDeclared blockersDeclared) {
++            emitBlockerDeclarations(blockersDeclared);
++            scheduleSnapshot(event.getClass().getSimpleName());
++            return;
++        }
 +        if (event instanceof GameEventCardChangeZone
 +                || event instanceof GameEventCardTapped
 +                || event instanceof GameEventCardCounters
@@ -450,6 +456,19 @@ index 00000000..040b0b2f
 +                || event instanceof GameEventTurnBegan
 +                || event instanceof GameEventSnapshotRestored) {
 +            scheduleSnapshot(event.getClass().getSimpleName());
++        }
++    }
++
++    /**
++     * A blocker is public combat state. Emit its exact Forge card id so the
++     * bridge can embody Forge's AI (or human TUI) decision without inferring a
++     * same-name physical card or duplicating combat rules.
++     */
++    private void emitBlockerDeclarations(final GameEventBlockersDeclared event) {
++        synchronized (System.out) {
++            event.blockers().values().forEach(assignments -> assignments.values().forEach(blocker ->
++                    System.out.println("+++ Block: " + event.defendingPlayer().getName()
++                            + " " + blocker.getName() + " (" + blocker.getId() + ")")));
 +        }
 +    }
 +

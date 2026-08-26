@@ -173,6 +173,16 @@ public sealed partial class ForgeTuiEventParser
             return result;
         }
 
+        match = StructuredBlockerRegex().Match(line);
+        if (match.Success)
+        {
+            var player = match.Groups["player"].Value;
+            var card = match.Groups["card"].Value.Trim();
+            var id = int.Parse(match.Groups["id"].Value, System.Globalization.CultureInfo.InvariantCulture);
+            _knownInstances[id] = (ResolveSeat(player), card);
+            return [Create("block_declared", player, card, id, "battlefield", "battlefield", line)];
+        }
+
         match = BlockerRegex().Match(line);
         if (match.Success)
         {
@@ -246,6 +256,9 @@ public sealed partial class ForgeTuiEventParser
 
     [GeneratedRegex(@"^>> (?<blocker>.+?) blocks .+$", RegexOptions.CultureInvariant)]
     private static partial Regex BlockerRegex();
+
+    [GeneratedRegex(@"^\+\+\+ Block: (?<player>.+?) (?<card>.+?) \((?<id>\d+)\)$", RegexOptions.CultureInvariant)]
+    private static partial Regex StructuredBlockerRegex();
 
     [GeneratedRegex(@"^>>> \[YOU\] (?<player>\S(?:.*\S)?)\s*$", RegexOptions.CultureInvariant)]
     private static partial Regex HumanSnapshotHeaderRegex();

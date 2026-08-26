@@ -36,6 +36,15 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void TrackedBridgeStateFeed_EmitsExactPublicBlockerIdentities()
+    {
+        Assert.Contains("GameEventBlockersDeclared", Patch);
+        Assert.Contains("emitBlockerDeclarations(blockersDeclared)", Patch);
+        Assert.Contains("+++ Block: ", Patch);
+        Assert.Contains("blocker.getId()", Patch);
+    }
+
+    [Fact]
     public void ForgeBuildStamp_BindsJarToPatchAndUpstreamCommit()
     {
         Assert.Contains("forge-headless-bridge-build.json", Bootstrap);

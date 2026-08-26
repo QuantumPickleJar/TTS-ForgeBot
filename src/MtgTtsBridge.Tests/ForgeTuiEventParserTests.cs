@@ -120,4 +120,18 @@ public sealed class ForgeTuiEventParserTests
 
         Assert.Empty(parser.Append(">> Bear Cub blocks Llanowar Elves\n"));
     }
+
+    [Fact]
+    public void ForgeAiBlockerDeclaration_UsesPublicExactForgeIdentity()
+    {
+        var parser = new ForgeTuiEventParser(Seats);
+
+        var blocker = Assert.Single(parser.Append("+++ Block: AI-monored Hired Claw (92)\n"));
+
+        Assert.Equal("block_declared", blocker.Kind);
+        Assert.Equal("forge-player-2", blocker.SeatId);
+        Assert.Equal("Hired Claw", blocker.CardName);
+        Assert.Equal(92, blocker.ForgeObjectId);
+        Assert.Equal("battlefield", blocker.SourceZone);
+    }
 }

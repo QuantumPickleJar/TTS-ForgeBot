@@ -789,7 +789,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-26-f2c-v3-presentation\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-26-f2c-v4-library-combat\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -1054,7 +1054,8 @@ public sealed class TtsGlobalLuaContractTests
     public void SnapshotBattlefieldRepair_PreservesForgeRowKindAndTapDoesNotReflow()
     {
         Assert.Contains("battlefieldKind = card.battlefieldKind", Script);
-        Assert.Contains("local row = event.battlefieldKind == \"land\" and \"land\" or \"creature\"", Script);
+        Assert.Contains("local row = event.battlefieldKind", Script);
+        Assert.Contains("or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]", Script);
         var tapStart = Script.IndexOf("if event.kind == \"tap_changed\" then", StringComparison.Ordinal);
         var tapEnd = Script.IndexOf("if event.kind == \"counter_changed\" then", tapStart, StringComparison.Ordinal);
         var tapBlock = Script[tapStart..tapEnd];
@@ -1224,6 +1225,16 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("pendingTransition.destinationZone == \"battlefield\"", Script);
         Assert.Contains("semantic land presentation deferred event=%s instance=%s after structured move=%s", Script);
         Assert.Contains("This does not suppress unrelated or wrong-instance moves", Script);
+    }
+
+    [Fact]
+    public void DrawAndImmediateLandPlay_WaitsForExactStructuredLibraryTransition()
+    {
+        Assert.Contains("battlefieldKindByInstanceId", Script);
+        Assert.Contains("awaiting exact structured transition", Script);
+        Assert.Contains("function moveFromLibraryDeckToBattlefield(deck)", Script);
+        Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"battlefield\"", Script);
+        Assert.Contains("BridgeTakeCardFromDeckByIdentity(deck, expectedName", Script);
     }
 
     [Fact]
