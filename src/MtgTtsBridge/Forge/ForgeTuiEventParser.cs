@@ -162,6 +162,11 @@ public sealed partial class ForgeTuiEventParser
         {
             var player = match.Groups["player"].Value;
             var seatId = ResolveSeat(player);
+            // Text combat logs use a mutable Forge display name.  Do not send
+            // an unscoped presentation event to TTS when that name cannot be
+            // tied to a configured seat; the complete structured combat
+            // snapshot is the safe, exact-identity repair path.
+            if (seatId is null) return [];
             var result = new List<ForgeTuiRawEvent>();
             foreach (Match attacker in AttackerRegex().Matches(match.Groups["attackers"].Value))
             {

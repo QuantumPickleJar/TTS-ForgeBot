@@ -189,6 +189,25 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void StartupSnapshot_WithNoCombatObject_IsAnAuthoritativeEmptyCombatState()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        var frame = ForgeStructuredOutputParser.Sentinel
+            + "{\"version\":1,\"type\":\"snapshot\",\"sequence\":1,\"reason\":\"GameEventGameStarted\",\"players\":["
+            + Player()
+            + "],\"stack\":[],\"combat\":{\"attacks\":[]}}";
+
+        var snapshot = Parse(parser, frame);
+        Assert.NotNull(snapshot.Combat);
+        Assert.Empty(snapshot.Combat!.Attacks);
+        Assert.Empty(reconciler.Apply("session-a", snapshot));
+        Assert.NotNull(reconciler.Current);
+        Assert.NotNull(reconciler.Current!.Combat);
+        Assert.Empty(reconciler.Current.Combat!.Attacks);
+    }
+
+    [Fact]
     public void ContinuousCharacteristicSnapshot_UpdatesEveryAffectedPermanentAndRevertsWithoutCombat()
     {
         var parser = new ForgeStructuredOutputParser();

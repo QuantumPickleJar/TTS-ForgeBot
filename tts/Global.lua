@@ -11,7 +11,7 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
-BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-cast-zones"
+BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-unscoped-combat-fix"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -3530,10 +3530,33 @@ end
 
 function BridgeClaimHumanTtsColor(seatId, playerColor)
     local seat = BRIDGE_SEATS[seatId]
-    if seat ~= nil and seat.animateAuthoritativeEvents == false and playerColor ~= nil then
-        if seat.ttsColor ~= playerColor then
-            BridgeLog("[Bridge] bound human seat " .. tostring(seatId) .. " to TTS color " .. tostring(playerColor))
-        end
+    if seat == nil or seat.animateAuthoritativeEvents ~= false or playerColor == nil then return end
+
+    -- Screen-space XML callbacks use LuaPlayer rather than a real TTS player
+    -- color. It is not a valid Player[...] key and must never replace the
+    -- configured physical-seat binding used for hands and card embodiment.
+    if playerColor == "LuaPlayer" then
+        BridgeLog("[Bridge] ignoring synthetic UI callback color for seat " .. tostring(seatId))
+        return
+    end
+
+    local playerOk, player = pcall(function() return Player[playerColor] end)
+    if not playerOk or player == nil then
+        BridgeLog("[Bridge] ignoring unavailable TTS player color " .. tostring(playerColor)
+            .. " for seat " .. tostring(seatId))
+        return
+    end
+
+    -- A started match has already mapped hands and physical objects to its
+    -- configured table seat. Do not let a later callback reassign that seat.
+    if BridgeState.eventSessionId ~= nil and seat.ttsColor ~= playerColor then
+        BridgeLog("[Bridge] ignoring attempted active-match seat-color rebind for " .. tostring(seatId)
+            .. ": " .. tostring(seat.ttsColor) .. " -> " .. tostring(playerColor))
+        return
+    end
+
+    if seat.ttsColor ~= playerColor then
+        BridgeLog("[Bridge] bound human seat " .. tostring(seatId) .. " to TTS color " .. tostring(playerColor))
         seat.ttsColor = playerColor
     end
 end
@@ -5244,6 +5267,15 @@ function BridgeApplyAuthoritativeEvent(event)
 
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then
+        -- Combat layout is cosmetic and an exact structured combat snapshot
+        -- can repair it.  Never guess a physical owner from an unscoped text
+        -- event, but also never stop a live match before that snapshot arrives.
+        if event.kind == "attack_declared" or event.kind == "block_declared" then
+            BridgeLog("[Bridge] ignored unscoped combat presentation event=" .. tostring(event.sequence)
+                .. " kind=" .. tostring(event.kind) .. "; awaiting structured combat snapshot")
+            BridgeScheduleSnapshotReconcile("unscoped combat event " .. tostring(event.sequence))
+            return true, 0
+        end
         return false, 0, "event " .. tostring(event.sequence) .. " has no configured seat " .. tostring(event.seatId)
     end
 
@@ -7094,4 +7126,258 @@ function BridgeDumpSyncState()
     BridgeLog("[Bridge] physicalByInstanceId=" .. JSON.encode(BridgeState.physicalByInstanceId))
     BridgeLog("[Bridge] physicalSeatByGuid=" .. JSON.encode(BridgeState.physicalSeatByGuid))
     BridgeLog("[Bridge] physicalZoneByGuid=" .. JSON.encode(BridgeState.physicalZoneByGuid))
+end
+
+-- ============================================================
+-- F2D GAME HUD / DEV PRESENTATION OVERRIDES
+--
+-- This block intentionally sits at the end of Global.lua so the HUD polish
+-- remains easy to remove or split into a generated module later.  It only
+-- overrides presentation helpers; Forge remains authoritative for game state.
+-- ============================================================
+
+BRIDGE_DEV_UI_ENABLED = true
+BRIDGE_DEV_ANNOTATIONS_ENABLED = true
+BRIDGE_PHYSICAL_PRIORITY_CONTROLS_ENABLED = true
+BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-unscoped-combat-fix"
+
+BRIDGE_HUD_COLORS = {
+    active = "#6DB5FF",
+    inactive = "#718096",
+    success = "#7BD88F",
+    warning = "#F4C76B",
+    danger = "#F27D7D"
+}
+
+function BridgeHudToggleDev(player, value, id)
+    if BRIDGE_DEV_UI_ENABLED ~= true or BridgeState.ui == nil then return end
+    BridgeState.ui.diagnosticsVisible = not (BridgeState.ui.diagnosticsVisible == true)
+    BridgeUiMarkDirty("dev-drawer-toggle")
+end
+
+function BridgeHudPhaseElementId(phase)
+    local value = string.upper(tostring(phase or ""))
+    if string.find(value, "UNTAP", 1, true) then return "BridgePhaseUntap" end
+    if string.find(value, "UPKEEP", 1, true) then return "BridgePhaseUpkeep" end
+    if string.find(value, "DRAW", 1, true) then return "BridgePhaseDraw" end
+    if string.find(value, "COMBAT", 1, true)
+        or string.find(value, "ATTACK", 1, true)
+        or string.find(value, "BLOCK", 1, true)
+        or string.find(value, "DAMAGE", 1, true) then
+        return "BridgePhaseCombat"
+    end
+    if string.find(value, "MAIN", 1, true) then
+        if string.find(value, "2", 1, true)
+            or string.find(value, "SECOND", 1, true)
+            or string.find(value, "POST", 1, true) then
+            return "BridgePhaseMain2"
+        end
+        return "BridgePhaseMain1"
+    end
+    if string.find(value, "END", 1, true) or string.find(value, "CLEANUP", 1, true) then
+        return "BridgePhaseEnd"
+    end
+    return nil
+end
+
+function BridgeHudRefreshPhaseRibbon()
+    local phaseIds = {
+        "BridgePhaseUntap",
+        "BridgePhaseUpkeep",
+        "BridgePhaseDraw",
+        "BridgePhaseMain1",
+        "BridgePhaseCombat",
+        "BridgePhaseMain2",
+        "BridgePhaseEnd"
+    }
+    local activeId = BridgeHudPhaseElementId(BridgeState.currentPhase)
+    for _, phaseId in ipairs(phaseIds) do
+        BridgeUiSet(
+            phaseId,
+            "color",
+            phaseId == activeId and BRIDGE_HUD_COLORS.active or BRIDGE_HUD_COLORS.inactive
+        )
+    end
+end
+
+function BridgeHudConnectionPresentation()
+    local headline = string.upper(tostring(BridgeState.statusHeadline or ""))
+    if BridgeState.choiceProtocolPaused == true then
+        return "● PAUSED", BRIDGE_HUD_COLORS.danger
+    end
+    if string.find(headline, "OFFLINE", 1, true) then
+        return "● OFFLINE", BRIDGE_HUD_COLORS.danger
+    end
+    if BridgeState.eventSessionId ~= nil then
+        return "● MATCH", BRIDGE_HUD_COLORS.success
+    end
+    if string.find(headline, "ERROR", 1, true) then
+        return "● ERROR", BRIDGE_HUD_COLORS.danger
+    end
+    return "○ SETUP", BRIDGE_HUD_COLORS.warning
+end
+
+-- Preserve the existing HUD renderer and layer game-HUD presentation over it.
+-- Existing IDs, action rows, exact Forge choices, FAST/MANA/LOG behavior, and
+-- footer semantics remain owned by the original renderer above.
+local BridgeUiFlushBase = BridgeUiFlush
+function BridgeUiFlush()
+    BridgeUiFlushBase()
+    local ui = BridgeState.ui
+    if ui == nil or not ui.mounted then return end
+
+    local devEnabled = BRIDGE_DEV_UI_ENABLED == true
+    local devExpanded = devEnabled and ui.diagnosticsVisible == true
+    BridgeUiSet("BridgeHudDevToggle", "active", devEnabled and "true" or "false")
+    BridgeUiSet("BridgeHudDevRoot", "active", devExpanded and "true" or "false")
+    BridgeUiSet("BridgeHudDevToggle", "text", devExpanded and "DEV ▲" or "DEV ▼")
+
+    local decision = BridgeState.lastDecision
+    local terminal = BridgeState.gameEnded
+    local requiresConfirm = decision ~= nil and decision.requiresConfirmation == true
+    BridgeUiSet("BridgeHudGameControls", "active", (terminal == nil and not requiresConfirm) and "true" or "false")
+    BridgeUiSet("BridgeHudDecisionControls", "active", (terminal == nil and requiresConfirm) and "true" or "false")
+
+    -- Keep the fixed 24-row action transport intact.  The tray itself is now
+    -- contextual and disappears when PASS/YIELD are the only available choice.
+    local hasTextChoices = false
+    for _, action in ipairs(ui.actionRows or {}) do
+        if action.type ~= "pass_priority" then
+            hasTextChoices = true
+            break
+        end
+    end
+    BridgeUiSet("BridgeHudChoiceTray", "active", hasTextChoices and "true" or "false")
+
+    local connectionText, connectionColor = BridgeHudConnectionPresentation()
+    BridgeUiSet("BridgeHudConnection", "text", connectionText)
+    BridgeUiSet("BridgeHudConnection", "color", connectionColor)
+
+    local stack = BridgeState.stackSummary or {}
+    BridgeUiSet("BridgeHudStack", "text", #stack > 0 and ("STACK " .. tostring(#stack)) or "")
+    BridgeHudRefreshPhaseRibbon()
+
+    if BRIDGE_DEV_ANNOTATIONS_ENABLED == true then
+        local diagnostic = string.format(
+            "session=%s  decision=%s  events=%s/%s  queue=%d  forgeSeq=%s",
+            tostring(BridgeState.eventSessionId or "none"),
+            tostring(decision and decision.decisionId or "none"),
+            tostring(BridgeState.lastAppliedEventSequence or 0),
+            tostring(BridgeState.lastReceivedEventSequence or 0),
+            #(BridgeState.eventQueue or {}),
+            tostring(BridgeState.snapshotForgeSequence or 0)
+        )
+        BridgeUiSet("BridgeHudDevDiagnostic", "text", diagnostic)
+    else
+        BridgeUiSet("BridgeHudDevDiagnostic", "text", "")
+    end
+end
+
+-- Dedicated physical priority controls can survive Save & Play while their
+-- scripted createButton overlay does not.  Always rehydrate that overlay when
+-- an existing control is rediscovered, instead of leaving a blank colored slab.
+function BridgeConfigureEndTurnObject(object, seat)
+    if object == nil or seat == nil or not BridgeObjectIsUsable(object) then return end
+    BridgeSafeObjectCall(object, function(o)
+        o.setName("Forge End Turn")
+        o.setLock(true)
+        o.setColorTint({0.12, 0.3, 0.62})
+        o.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0})
+        if o.clearButtons ~= nil then o.clearButtons() end
+        o.createButton({
+            click_function = "BridgePressEndTurn",
+            function_owner = Global,
+            label = "END TURN\n(YIELD)",
+            position = {0, 0.6, 0},
+            width = 1100,
+            height = 520,
+            font_size = 170,
+            color = {0.15, 0.35, 0.65, 1.0},
+            font_color = {1.0, 1.0, 1.0, 1.0},
+            tooltip = "Yield Forge priority for the rest of this turn"
+        })
+    end)
+end
+
+function BridgeConfigurePassObject(object, seat)
+    if object == nil or seat == nil or not BridgeObjectIsUsable(object) then return end
+    BridgeSafeObjectCall(object, function(o)
+        o.setName("Forge Pass Priority")
+        o.setLock(true)
+        o.setColorTint({0.22, 0.5, 0.56})
+        o.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0})
+        if o.clearButtons ~= nil then o.clearButtons() end
+        o.createButton({
+            click_function = "BridgePressPass",
+            function_owner = Global,
+            label = "PASS /\nCONTINUE",
+            position = {0, 0.6, 0},
+            width = 1000,
+            height = 520,
+            font_size = 160,
+            color = {0.22, 0.5, 0.56, 1.0},
+            font_color = {1, 1, 1, 1},
+            tooltip = "Pass exactly this Forge priority decision"
+        })
+    end)
+end
+
+function BridgeEnsureEndTurnButton(seatId)
+    if BRIDGE_PHYSICAL_PRIORITY_CONTROLS_ENABLED ~= true then return end
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil then return end
+    local targetPosition = {-11.0, 1.6, seat.tableSideZ * 4.2}
+    local existing = BridgeGetLiveObjectByGuid(BridgeState.endTurnObjectGuidBySeatId[seatId])
+    if existing == nil then
+        existing = BridgeFindNamedObject("Forge End Turn")
+        if existing ~= nil then
+            BridgeState.endTurnObjectGuidBySeatId[seatId] = existing.getGUID()
+        end
+    end
+    if existing ~= nil then
+        BridgeConfigureEndTurnObject(existing, seat)
+        BridgeSafeObjectCall(existing, function(o) o.setPositionSmooth(targetPosition, false, true) end)
+        return
+    end
+    spawnObject({
+        type = "BlockSquare",
+        position = targetPosition,
+        scale = {3.2, 0.35, 1.6},
+        callback_function = function(object)
+            BridgeConfigureEndTurnObject(object, seat)
+            if BridgeObjectIsUsable(object) then
+                BridgeState.endTurnObjectGuidBySeatId[seatId] = object.getGUID()
+            end
+        end
+    })
+end
+
+function BridgeEnsurePassButton(seatId)
+    if BRIDGE_PHYSICAL_PRIORITY_CONTROLS_ENABLED ~= true then return end
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil then return end
+    local targetPosition = {-6.8, 1.6, seat.tableSideZ * 4.2}
+    local existing = BridgeGetLiveObjectByGuid(BridgeState.passObjectGuidBySeatId[seatId])
+    if existing == nil then
+        existing = BridgeFindNamedObject("Forge Pass Priority")
+        if existing ~= nil then
+            BridgeState.passObjectGuidBySeatId[seatId] = existing.getGUID()
+        end
+    end
+    if existing ~= nil then
+        BridgeConfigurePassObject(existing, seat)
+        BridgeSafeObjectCall(existing, function(o) o.setPositionSmooth(targetPosition, false, true) end)
+        return
+    end
+    spawnObject({
+        type = "BlockSquare",
+        position = targetPosition,
+        scale = {2.7, 0.35, 1.6},
+        callback_function = function(object)
+            BridgeConfigurePassObject(object, seat)
+            if BridgeObjectIsUsable(object) then
+                BridgeState.passObjectGuidBySeatId[seatId] = object.getGUID()
+            end
+        end
+    })
 end

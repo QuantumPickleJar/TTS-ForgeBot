@@ -96,6 +96,20 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void SyntheticHudCallbackColor_CannotRebindTheConfiguredHumanSeat()
+    {
+        var claim = Script.IndexOf("function BridgeClaimHumanTtsColor", StringComparison.Ordinal);
+        Assert.True(claim >= 0);
+        var nextFunction = Script.IndexOf("function BridgeSelectPlayerTarget", claim, StringComparison.Ordinal);
+        var body = Script[claim..nextFunction];
+
+        Assert.Contains("if playerColor == \"LuaPlayer\" then", body);
+        Assert.Contains("ignoring synthetic UI callback color", body);
+        Assert.Contains("if BridgeState.eventSessionId ~= nil and seat.ttsColor ~= playerColor then", body);
+        Assert.Contains("ignoring attempted active-match seat-color rebind", body);
+    }
+
+    [Fact]
     public void ConfirmedSelection_StagesExactActionsWithoutPreemptiveZoneMutation()
     {
         Assert.Contains("selectedActionIds", Script);
@@ -790,7 +804,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-26-f2c-v5-cast-zones\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-26-f2c-v5-unscoped-combat-fix\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -1270,6 +1284,18 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("attack presentation deferred", attackHandler);
         Assert.Contains("BridgeScheduleSnapshotReconcile", attackHandler);
         Assert.Contains("repaired untracked attack presentation mapping", Script);
+    }
+
+    [Fact]
+    public void UnscopedCombatPresentationWaitsForStructuredSnapshotRatherThanStoppingTheMatch()
+    {
+        var applyStart = Script.IndexOf("function BridgeApplyAuthoritativeEvent(event)", StringComparison.Ordinal);
+        var turnStart = Script.IndexOf("if event.kind == \"turn_changed\" then", applyStart, StringComparison.Ordinal);
+        var applyPrelude = Script[applyStart..turnStart];
+
+        Assert.Contains("ignored unscoped combat presentation event=", applyPrelude);
+        Assert.Contains("BridgeScheduleSnapshotReconcile(\"unscoped combat event \"", applyPrelude);
+        Assert.Contains("event.kind == \"attack_declared\" or event.kind == \"block_declared\"", applyPrelude);
     }
 
     [Fact]

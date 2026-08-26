@@ -444,6 +444,18 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                         _startupTracker.Observe(tuiText);
                         foreach (var rawEvent in _eventParser.Append(tuiText))
                         {
+                            // A TUI display name is not a seat identity.  A
+                            // no-seat text event cannot safely move a TTS
+                            // object, and structured snapshots carry the
+                            // authoritative exact card/controller mapping.
+                            if (rawEvent.SeatId is null)
+                            {
+                                _logger.LogWarning(
+                                    "Dropped unscoped Forge TUI event {Kind}; waiting for structured state. Summary={Summary}",
+                                    rawEvent.Kind,
+                                    rawEvent.Summary);
+                                continue;
+                            }
                             if (_structuredState.Current is not null
                                 && rawEvent.Kind is "player_state" or "card_moved" or "turn_changed" or "phase_changed") continue;
                             EnqueueEvent(rawEvent);

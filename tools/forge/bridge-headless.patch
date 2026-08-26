@@ -357,7 +357,7 @@ new file mode 100644
 index 00000000..040b0b2f
 --- /dev/null
 +++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
-@@ -0,0 +1,445 @@
+@@ -0,0 +1,441 @@
 +package forge.headless;
 +
 +import com.google.common.collect.Multiset;
@@ -438,8 +438,11 @@ index 00000000..040b0b2f
 +            emitTerminalSnapshot();
 +            return;
 +        }
-+        if (event instanceof GameEventBlockersDeclared blockersDeclared) {
-+            emitBlockerDeclarations(blockersDeclared);
++        if (event instanceof GameEventBlockersDeclared) {
++            // GameEventBlockersDeclared uses the attacker itself as a sentinel
++            // value for an unblocked attacker. Its event payload is therefore
++            // not an exact blocker identity. The following complete combat
++            // snapshot is the sole authoritative source for presentation.
 +            scheduleSnapshot(event.getClass().getSimpleName());
 +            return;
 +        }
@@ -458,19 +461,6 @@ index 00000000..040b0b2f
 +                || event instanceof GameEventTurnBegan
 +                || event instanceof GameEventSnapshotRestored) {
 +            scheduleSnapshot(event.getClass().getSimpleName());
-+        }
-+    }
-+
-+    /**
-+     * A blocker is public combat state. Emit its exact Forge card id so the
-+     * bridge can embody Forge's AI (or human TUI) decision without inferring a
-+     * same-name physical card or duplicating combat rules.
-+     */
-+    private void emitBlockerDeclarations(final GameEventBlockersDeclared event) {
-+        synchronized (System.out) {
-+            event.blockers().values().forEach(assignments -> assignments.values().forEach(blocker ->
-+                    System.out.println("+++ Block: " + event.defendingPlayer().getName()
-+                            + " " + blocker.getName() + " (" + blocker.getId() + ")")));
 +        }
 +    }
 +
@@ -643,6 +633,12 @@ index 00000000..040b0b2f
 +    private void appendCombat(final StringBuilder json) {
 +        final Combat combat = game.getCombat();
 +        json.append("{\"attacks\":[");
++        // A game has no Combat object during startup and between combat phases.
++        // Snapshot emission must remain total: the empty combat state is authoritative.
++        if (combat == null) {
++            json.append("]}");
++            return;
++        }
 +        boolean first = true;
 +        for (Card attacker : combat.getAttackers()) {
 +            if (!first) json.append(',');

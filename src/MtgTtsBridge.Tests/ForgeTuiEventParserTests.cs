@@ -134,4 +134,14 @@ public sealed class ForgeTuiEventParserTests
         Assert.Equal(92, blocker.ForgeObjectId);
         Assert.Equal("battlefield", blocker.SourceZone);
     }
+
+    [Fact]
+    public void CombatLineWithAnUnmappedDisplayName_IsNotDeliveredWithoutASafeSeat()
+    {
+        var parser = new ForgeTuiEventParser(Seats);
+
+        var events = parser.Append("+++ Combat: Forge temporary display name assigned Baleful Strix (74) to attack Player 1.\n");
+
+        Assert.Empty(events);
+    }
 }

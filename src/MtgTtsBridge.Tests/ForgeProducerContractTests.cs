@@ -36,12 +36,23 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
-    public void TrackedBridgeStateFeed_EmitsExactPublicBlockerIdentities()
+    public void TrackedBridgeStateFeed_UsesOnlyTheCompleteCombatSnapshotForBlockers()
     {
         Assert.Contains("GameEventBlockersDeclared", Patch);
-        Assert.Contains("emitBlockerDeclarations(blockersDeclared)", Patch);
-        Assert.Contains("+++ Block: ", Patch);
-        Assert.Contains("blocker.getId()", Patch);
+        Assert.Contains("not an exact blocker identity", Patch);
+        Assert.Contains("sole authoritative source for presentation", Patch);
+        Assert.Contains("\\\"blockerForgeObjectIds\\\"", Patch);
+        Assert.Contains("combat.getBlockers(attacker)", Patch);
+        Assert.DoesNotContain("emitBlockerDeclarations", Patch);
+        Assert.DoesNotContain("+++ Block: ", Patch);
+    }
+
+    [Fact]
+    public void TrackedBridgeStateFeed_EmitsEmptyCombatDuringNewMatchStartup()
+    {
+        Assert.Contains("json.append(\"],\\\"combat\\\":\");", Patch);
+        Assert.Contains("if (combat == null)", Patch);
+        Assert.Contains("json.append(\"]}\");", Patch);
     }
 
     [Fact]
