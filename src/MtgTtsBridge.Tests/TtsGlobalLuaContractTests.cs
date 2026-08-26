@@ -723,6 +723,16 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void TerminalGameEvent_StopsGameplayPollingAndKeepsNewMatchPathAvailable()
+    {
+        Assert.Contains("if event.kind == \"game_ended\" then", Script);
+        Assert.Contains("BridgeStopDecisionPolling()", Script);
+        Assert.Contains("BridgeStopEventPolling()", Script);
+        Assert.Contains("BridgeScheduleSnapshotReconcile(\"game_ended final state\")", Script);
+        Assert.Contains("BridgeState.gameEnded", Script);
+    }
+
+    [Fact]
     public void ChoiceRejection_UsesStructuredErrorCodesRatherThanTreatingEvery409AsStale()
     {
         Assert.Contains("function BridgeIsStaleChoiceRejection", Script);

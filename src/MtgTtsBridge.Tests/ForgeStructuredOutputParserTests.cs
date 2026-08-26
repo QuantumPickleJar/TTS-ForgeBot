@@ -170,6 +170,25 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void Reconciliation_EmitsTerminalEventFromForgeOutcome_NotFromLifeInference()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        reconciler.Apply("session-a", Parse(parser, Frame(1, Player())));
+
+        var terminal = ForgeStructuredOutputParser.Sentinel
+            + "{\"version\":1,\"type\":\"snapshot\",\"sequence\":2,\"reason\":\"game_ended\",\"players\":["
+            + Player() + "],\"stack\":[],\"gameEnded\":{\"winnerSeatIds\":[\"forge-player-2\"],\"loserSeatIds\":[\"forge-player-1\"],\"reason\":\"AllOpposingTeamsLost\"}}";
+        var events = reconciler.Apply("session-a", Parse(parser, terminal));
+
+        var ended = Assert.Single(events, item => item.Kind == "game_ended");
+        Assert.Equal(["forge-player-2"], ended.WinnerSeatIds);
+        Assert.Equal(["forge-player-1"], ended.LoserSeatIds);
+        Assert.Equal("AllOpposingTeamsLost", ended.GameEndReason);
+        Assert.NotNull(reconciler.Current!.Result);
+    }
+
+    [Fact]
     public void ContinuousCharacteristicSnapshot_UpdatesEveryAffectedPermanentAndRevertsWithoutCombat()
     {
         var parser = new ForgeStructuredOutputParser();

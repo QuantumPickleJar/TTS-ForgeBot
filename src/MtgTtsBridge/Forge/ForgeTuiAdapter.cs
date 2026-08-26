@@ -8,6 +8,8 @@ using MtgTtsBridge.Contracts.State;
 
 namespace MtgTtsBridge.Forge;
 
+internal sealed class ForgeGameEndedException : Exception;
+
 /// <summary>Supervises a locally configured Forge TUI process. Forge remains authoritative for every game decision.</summary>
 public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 {
@@ -28,6 +30,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private readonly Queue<string> _seenDecisionOrder = new();
     private Process? _process;
     private CancellationTokenSource? _processCancellation;
+    private Task? _stdoutReaderTask;
     private TaskCompletionSource<ForgeTuiDecision>? _nextDecision;
     private DecisionDto? _currentDecision;
     private IReadOnlyDictionary<string, string>? _currentInputs;
@@ -235,7 +238,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             initialDecision = NewDecisionWaiter();
         }
 
-        process.Exited += (_, _) => HandleProcessExit(process, process.ExitCode);
+        process.Exited += (_, _) => _ = HandleProcessExitAsync(process, process.ExitCode);
         if (!process.Start())
         {
             throw new InvalidOperationException("Forge TUI process could not be started.");
@@ -244,7 +247,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         lock (_sync) _startupTracker.MarkProcessLaunched();
 
         _logger.LogInformation("Started Forge TUI process {ProcessId}: {Executable} (TTS library decks, Legacy assumption)", process.Id, _options.Executable);
-        _ = ReadOutputAsync(process.StandardOutput, isError: false, cancellation.Token);
+        lock (_sync) _stdoutReaderTask = ReadOutputAsync(process.StandardOutput, isError: false, cancellation.Token);
         _ = ReadOutputAsync(process.StandardError, isError: true, cancellation.Token);
 
         try
@@ -379,6 +382,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             }
             return new ForgeChoiceResult(true, CreateState(), null, null);
         }
+        catch (ForgeGameEndedException)
+        {
+            return new ForgeChoiceResult(true, CreateState(), null, null);
+        }
         catch (ForgeUnsupportedPromptException ex)
         {
             return Reject("unsupported_decision", ex.Message);
@@ -421,6 +428,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     {
                         _latestObservedForgeSequence = snapshot.Sequence;
                         foreach (var rawEvent in _structuredState.Apply(_sessionId, snapshot)) EnqueueEvent(rawEvent);
+                        if (_structuredState.Current?.Result is not null) MarkGameEnded(_structuredState.Current.Result);
                         _logger.LogTrace(
                             "Forge structured snapshot {ForgeSequence} ({Reason}); hidden payload redacted",
                             snapshot.Sequence,
@@ -632,7 +640,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             PhasedOut: rawEvent.PhasedOut,
             Speed: rawEvent.Speed,
             Designations: rawEvent.Designations,
-            MonarchSeatId: rawEvent.MonarchSeatId);
+            MonarchSeatId: rawEvent.MonarchSeatId,
+            WinnerSeatIds: rawEvent.WinnerSeatIds,
+            LoserSeatIds: rawEvent.LoserSeatIds,
+            GameEndReason: rawEvent.GameEndReason);
         if (authoritativeEvent.Kind == "turn_changed")
         {
             _latestObservedTurnNumber = authoritativeEvent.TurnNumber ?? _latestObservedTurnNumber;
@@ -746,17 +757,37 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         while (_recentControllerDiagnostics.Count > limit) _recentControllerDiagnostics.Dequeue();
     }
 
+    private void MarkGameEnded(GameResultDto result)
+    {
+        if (string.Equals(_state, "game_ended", StringComparison.Ordinal)) return;
+        _logger.LogInformation("Forge game ended winners={Winners} losers={Losers} reason={Reason}",
+            string.Join(',', result.WinnerSeatIds), string.Join(',', result.LoserSeatIds), result.Reason ?? "(unspecified)");
+        _state = "game_ended";
+        _currentDecision = null;
+        _currentInputs = null;
+        _nextDecision?.TrySetException(new ForgeGameEndedException());
+    }
+
     private static readonly Regex PriorityDiagnosticRegex = new(
         @"^\[TUI-DIAG priority\]\s+turn=(?<turn>\d+)\s+phase=(?<phase>.+?)\s+priority=(?<priority>.+?)\s+isMyTurn=(?<isMyTurn>true|false)\b",
         RegexOptions.CultureInvariant);
 
-    private void HandleProcessExit(Process process, int exitCode)
+    private async Task HandleProcessExitAsync(Process process, int exitCode)
     {
+        Task? stdoutReader;
         lock (_sync)
         {
             if (!ReferenceEquals(_process, process)) return;
+            stdoutReader = _stdoutReaderTask;
         }
 
+        if (stdoutReader is not null)
+            await Task.WhenAny(stdoutReader, Task.Delay(TimeSpan.FromSeconds(1))).ConfigureAwait(false);
+
+        lock (_sync)
+        {
+            if (string.Equals(_state, "game_ended", StringComparison.Ordinal)) return;
+        }
         Fail("forge_process_exited", $"Forge TUI process exited with code {exitCode}.");
     }
 
@@ -792,7 +823,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 _startupTracker.Snapshot(),
                 new Dictionary<string, int>(_inheritedHumanDecisionKinds, StringComparer.Ordinal),
                 _recentControllerDiagnostics.ToArray());
-            return new AdapterStateDto(_sessionId, _state, _currentDecision, null, diagnostic);
+            return new AdapterStateDto(_sessionId, _state, _currentDecision, null, diagnostic, _structuredState.Current?.Result);
         }
     }
 

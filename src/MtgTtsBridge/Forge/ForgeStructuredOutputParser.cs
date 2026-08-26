@@ -87,7 +87,13 @@ public sealed record ForgeStructuredSnapshot(
     string Reason,
     IReadOnlyList<ForgeStructuredPlayer> Players,
     IReadOnlyList<ForgeStructuredCard> Stack,
-    string? MonarchSeatId = null);
+    string? MonarchSeatId = null,
+    ForgeStructuredGameEnded? GameEnded = null);
+
+public sealed record ForgeStructuredGameEnded(
+    IReadOnlyList<string> WinnerSeatIds,
+    IReadOnlyList<string> LoserSeatIds,
+    string? Reason);
 
 public sealed record ForgeStructuredPlayer(
     string SeatId,

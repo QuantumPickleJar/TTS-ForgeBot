@@ -105,12 +105,25 @@ public sealed class ForgeStructuredStateReconciler
             source.Reason,
             seats,
             source.Stack.Select(ConvertCard).ToArray(),
-            MonarchSeatId: source.MonarchSeatId);
+            MonarchSeatId: source.MonarchSeatId,
+            Result: source.GameEnded is null ? null : new GameResultDto(
+                source.GameEnded.WinnerSeatIds,
+                source.GameEnded.LoserSeatIds,
+                source.GameEnded.Reason));
     }
 
     private static IReadOnlyList<ForgeTuiRawEvent> Diff(GameSnapshotDto previous, GameSnapshotDto next)
     {
         var events = new List<ForgeTuiRawEvent>();
+        if (previous.Result is null && next.Result is not null)
+        {
+            events.Add(new ForgeTuiRawEvent(
+                "game_ended", null, null, null, null, null,
+                "Forge declared the game over.",
+                WinnerSeatIds: next.Result.WinnerSeatIds,
+                LoserSeatIds: next.Result.LoserSeatIds,
+                GameEndReason: next.Result.Reason));
+        }
         var beforeSeats = previous.Seats.ToDictionary(seat => seat.SeatId, StringComparer.Ordinal);
         foreach (var seat in next.Seats)
         {

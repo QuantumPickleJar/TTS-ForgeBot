@@ -11,7 +11,7 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
-BRIDGE_SCRIPT_REVISION = "2026-08-25-f2b-v13-stabilization"
+BRIDGE_SCRIPT_REVISION = "2026-08-26-f2b-v14-terminal-lifecycle"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -243,6 +243,7 @@ BridgeState = {
     sessionRecoveryInFlight = false,
     choiceProtocolPaused = false,
     choiceProtocolFailureTimes = {},
+    gameEnded = nil,
 }
 
 BridgeHttp = {}
@@ -1165,6 +1166,7 @@ function BridgeRecordLatencyProbeDecisionReady(decision)
 end
 
 function BridgeScheduleDecisionPoll(delay, generation, attempt)
+    if BridgeState.gameEnded ~= nil then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
     if BridgeState.lastDecision ~= nil or BridgeState.submitting then return end
     if BridgeState.decisionPollInFlight or BridgeState.decisionPollScheduled then return end
@@ -1178,6 +1180,7 @@ function BridgeScheduleDecisionPoll(delay, generation, attempt)
 end
 
 function BridgePollForNextDecision(generation, attempt)
+    if BridgeState.gameEnded ~= nil then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
     if BridgeState.lastDecision ~= nil or BridgeState.submitting then return end
     if BridgeState.decisionPollInFlight then return end
@@ -1223,6 +1226,7 @@ function BridgePollForNextDecision(generation, attempt)
 end
 
 function BridgeStartDecisionPolling()
+    if BridgeState.gameEnded ~= nil then return end
     BridgeStopDecisionPolling()
     BridgeScheduleDecisionPoll(BridgeTransitionExpected() and 0.1 or 0.25, BridgeState.decisionPollGeneration, 1)
 end
@@ -4762,6 +4766,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.deferredSnapshotReconcile = nil
     BridgeState.zoneAnchorGuidBySeatAndZone = {}
     BridgeState.yieldSeatId = nil
+    BridgeState.gameEnded = nil
     BridgeState.transitionExpectedUntil = 0
     BridgeState.latencyProbe = nil
     BridgeState.choiceTransactions = {}
@@ -4929,6 +4934,37 @@ function BridgeApplyAuthoritativeEvent(event)
             tostring(event.sourceZone),
             tostring(event.destinationZone),
             tostring(event.cardName)))
+    end
+
+    if event.kind == "game_ended" then
+        BridgeState.gameEnded = {
+            winnerSeatIds = event.winnerSeatIds or {},
+            loserSeatIds = event.loserSeatIds or {},
+            reason = event.gameEndReason
+        }
+        BridgeState.yieldSeatId = nil
+        BridgeState.pendingDecision = nil
+        BridgeState.lastDecision = nil
+        BridgeState.submitting = false
+        BridgeClearHighlights()
+        BridgeRollbackPendingIntent()
+        BridgeResetSelectionState()
+        BridgeHideMainPriorityControls()
+        BridgeStopDecisionPolling()
+        BridgeStopEventPolling()
+        BridgeScheduleSnapshotReconcile("game_ended final state")
+        local humanWon = false
+        for _, seatId in ipairs(BridgeState.gameEnded.winnerSeatIds) do
+            if seatId == "forge-player-1" then humanWon = true end
+        end
+        local label = #BridgeState.gameEnded.winnerSeatIds == 0 and "DRAW"
+            or (humanWon and "VICTORY" or "DEFEAT")
+        BridgeSetStatus(label, "GAME OVER" .. (event.gameEndReason and (": " .. tostring(event.gameEndReason)) or ""))
+        broadcastToAll("[Bridge] " .. label .. " — game over", humanWon and {0.2, 0.9, 0.3} or {0.95, 0.3, 0.3})
+        BridgeLog("[Bridge] GAME_ENDED winners=" .. table.concat(BridgeState.gameEnded.winnerSeatIds, ",")
+            .. " losers=" .. table.concat(BridgeState.gameEnded.loserSeatIds, ",")
+            .. " reason=" .. tostring(event.gameEndReason))
+        return true, 0
     end
 
     local seat = BRIDGE_SEATS[event.seatId]

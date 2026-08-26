@@ -37,7 +37,10 @@ public sealed record AuthoritativeEventDto(
     bool? PhasedOut = null,
     int? Speed = null,
     IReadOnlyList<string>? Designations = null,
-    string? MonarchSeatId = null);
+    string? MonarchSeatId = null,
+    IReadOnlyList<string>? WinnerSeatIds = null,
+    IReadOnlyList<string>? LoserSeatIds = null,
+    string? GameEndReason = null);
 
 public sealed record EventBatchDto(
     long RequestedAfterSequence,

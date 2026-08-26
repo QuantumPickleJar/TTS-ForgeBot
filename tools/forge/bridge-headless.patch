@@ -1,7 +1,25 @@
 diff --git a/forge-core/src/main/java/forge/CardStorageReader.java b/forge-core/src/main/java/forge/CardStorageReader.java
-index 02efbf84..43d34492 100644
+index 02efbf84..8880bea6 100644
 --- a/forge-core/src/main/java/forge/CardStorageReader.java
 +++ b/forge-core/src/main/java/forge/CardStorageReader.java
+@@ -153,7 +153,7 @@ public class CardStorageReader {
+         }
+         return new String(chars, 0, charIndex);
+     }
+-    
++
+     private ZipEntry findZipEntryForCard(String transformedName) {
+         if (zip == null) {
+             return null;
+@@ -180,7 +180,7 @@ public class CardStorageReader {
+         }
+         return entry;
+     }
+-    
++
+     private File findFileForCard(String transformedName) {
+         String folder = cardsfolder.getAbsolutePath() + "/" + transformedName.charAt(0);
+         File file = new File(folder + "/" + transformedName + CardStorageReader.CARD_FILE_DOT_EXTENSION);
 @@ -220,6 +220,7 @@ public class CardStorageReader {
      }
  
@@ -10,10 +28,12 @@ index 02efbf84..43d34492 100644
          final Localizer localizer = Localizer.getInstance();
  
          progressObserver.setOperationName(localizer.getMessage("splash.loading.examining-cards"), true);
-@@ -234,7 +235,11 @@ public class CardStorageReader {
+@@ -233,8 +234,12 @@ public class CardStorageReader {
+         if (loadCardsLazily) {
              return result;
          }
-  
+- 
++
 +        final long collectStart = System.nanoTime();
          final List<File> allFiles = collectCardFiles(new ArrayList<>(), this.cardsfolder);
 +        final long collectMs = (System.nanoTime() - collectStart) / 1_000_000L;
@@ -175,7 +195,7 @@ index 6b0e01fa..7b8667d4 100644
              }
  
 diff --git a/forge-gui/src/main/java/forge/model/FModel.java b/forge-gui/src/main/java/forge/model/FModel.java
-index 922d78e1..7be62274 100644
+index 922d78e1..386e7beb 100644
 --- a/forge-gui/src/main/java/forge/model/FModel.java
 +++ b/forge-gui/src/main/java/forge/model/FModel.java
 @@ -144,12 +144,23 @@ public final class FModel {
@@ -320,12 +340,24 @@ index 922d78e1..7be62274 100644
      }
  
      private static boolean deckGenMatrixLoaded = false;
+@@ -335,9 +370,9 @@ public final class FModel {
+      */
+     public static void loadDynamicGamedata() {
+         if (!CardType.Constant.LOADED.isSet()) {
+-            
++
+             final Map<String, List<String>> contents = FileSection.parseSections(FileUtil.readFile(ForgeConstants.TYPE_LIST_FILE));
+-            
++
+             for (String sectionName: contents.keySet()) {
+                 CardType.Helper.parseTypes(sectionName, contents.get(sectionName));
+             }
 diff --git a/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
 new file mode 100644
-index 00000000..8fb66106
+index 00000000..040b0b2f
 --- /dev/null
 +++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,397 @@
 +package forge.headless;
 +
 +import com.google.common.collect.Multiset;
@@ -341,6 +373,7 @@ index 00000000..8fb66106
 +import forge.game.event.GameEventCardStatsChanged;
 +import forge.game.event.GameEventCardTapped;
 +import forge.game.event.GameEventGameStarted;
++import forge.game.event.GameEventGameOutcome;
 +import forge.game.event.GameEventMulligan;
 +import forge.game.event.GameEventManaPool;
 +import forge.game.event.GameEventPlayerCounters;
@@ -385,6 +418,7 @@ index 00000000..8fb66106
 +    private final AtomicBoolean snapshotScheduled = new AtomicBoolean();
 +    private final AtomicLong mutationGeneration = new AtomicLong();
 +    private final AtomicReference<String> latestReason = new AtomicReference<>("initial");
++    private final AtomicBoolean terminalSnapshotEmitted = new AtomicBoolean();
 +    private long sequence;
 +
 +    BridgeStateFeed(final Game game) {
@@ -397,6 +431,10 @@ index 00000000..8fb66106
 +
 +    @Subscribe
 +    public void receive(final GameEvent event) {
++        if (event instanceof GameEventGameOutcome) {
++            emitTerminalSnapshot();
++            return;
++        }
 +        if (event instanceof GameEventCardChangeZone
 +                || event instanceof GameEventCardTapped
 +                || event instanceof GameEventCardCounters
@@ -429,6 +467,11 @@ index 00000000..8fb66106
 +            return;
 +        }
 +        ThreadUtil.delay(25, this::emitWhenStable);
++    }
++
++    void emitTerminalSnapshot() {
++        if (!game.isGameOver() || !terminalSnapshotEmitted.compareAndSet(false, true)) return;
++        emitSnapshot("game_ended", mutationGeneration.get());
 +    }
 +
 +    /**
@@ -487,7 +530,12 @@ index 00000000..8fb66106
 +            firstCard = false;
 +            appendCard(json, card, "stack", position++);
 +        }
-+        json.append("]}");
++        json.append("]");
++        if (game.isGameOver()) {
++            json.append(",\"gameEnded\":");
++            appendGameEnded(json);
++        }
++        json.append('}');
 +
 +        synchronized (System.out) {
 +            System.out.println(SENTINEL + json);
@@ -591,6 +639,28 @@ index 00000000..8fb66106
 +        property(json, "G", player.getManaPool().getAmountOfColor(MagicColor.GREEN)).append(',');
 +        property(json, "C", player.getManaPool().getAmountOfColor(MagicColor.COLORLESS));
 +        json.append('}');
++    }
++
++    private void appendGameEnded(final StringBuilder json) {
++        json.append('{');
++        property(json, "reason", game.getOutcome() == null ? null : game.getOutcome().getWinCondition().name()).append(',');
++        json.append("\"winnerSeatIds\":[");
++        boolean first = true;
++        for (Player player : game.getPlayers()) {
++            if (!player.hasWon()) continue;
++            if (!first) json.append(',');
++            first = false;
++            string(json, seatOf(player));
++        }
++        json.append("],\"loserSeatIds\":[");
++        first = true;
++        for (Player player : game.getPlayers()) {
++            if (!player.hasLost()) continue;
++            if (!first) json.append(',');
++            first = false;
++            string(json, seatOf(player));
++        }
++        json.append("]}");
 +    }
 +
 +    private void appendDesignations(final StringBuilder json, final Player player) {
@@ -1332,7 +1402,7 @@ index 3626ea89..b0e8729c 100644
      @Option(names = "--player2-tui",
              hidden = true,
 diff --git a/forge-headless/src/main/java/forge/headless/TextUIGame.java b/forge-headless/src/main/java/forge/headless/TextUIGame.java
-index 15b7a60f..75acb012 100644
+index 15b7a60f..0381e5b1 100644
 --- a/forge-headless/src/main/java/forge/headless/TextUIGame.java
 +++ b/forge-headless/src/main/java/forge/headless/TextUIGame.java
 @@ -11,6 +11,7 @@ import forge.game.player.RegisteredPlayer;
@@ -1369,7 +1439,7 @@ index 15b7a60f..75acb012 100644
          }, "CardLoadingThread");
          cardLoadingThread.start();
  
-@@ -185,26 +196,23 @@ public class TextUIGame {
+@@ -185,32 +196,35 @@ public class TextUIGame {
          // Set the current game for log monitoring
          TUIGuiBase.setCurrentGame(game);
  
@@ -1383,7 +1453,8 @@ index 15b7a60f..75acb012 100644
 -        }
 +        // Bridge-internal machine-readable state. This observer only reads the
 +        // authoritative game model and emits framed snapshots after mutations.
-+        game.subscribeToEvents(new BridgeStateFeed(game));
++        final BridgeStateFeed bridgeStateFeed = new BridgeStateFeed(game);
++        game.subscribeToEvents(bridgeStateFeed);
  
          // Start the game
          System.out.println("Game starting...");
@@ -1407,3 +1478,14 @@ index 15b7a60f..75acb012 100644
              });
          } else {
              // Normal game start
+             match.startGame(game);
+         }
+ 
++        // The outcome event normally emits this frame. Keep this explicit
++        // terminal boundary as a fallback for any Forge path that ends the
++        // match without delivering an observer event.
++        bridgeStateFeed.emitTerminalSnapshot();
++
+         // Game is over
+         System.out.println();
+         System.out.println("=".repeat(60));

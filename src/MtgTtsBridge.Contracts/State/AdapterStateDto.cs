@@ -7,4 +7,5 @@ public sealed record AdapterStateDto(
     string State,
     DecisionDto? CurrentDecision,
     CommittedEventDto? LastCommittedEvent,
-    AdapterDiagnosticDto? Diagnostic = null);
+    AdapterDiagnosticDto? Diagnostic = null,
+    GameResultDto? Result = null);
