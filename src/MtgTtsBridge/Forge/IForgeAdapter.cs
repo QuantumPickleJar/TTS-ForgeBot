@@ -10,6 +10,8 @@ public interface IForgeAdapter
 
     Task<AdapterStateDto> GetStateAsync(CancellationToken cancellationToken);
 
+    Task ConfigureDecksAsync(DeckLoadRequestDto request, CancellationToken cancellationToken);
+
     Task<AdapterStateDto> StartSessionAsync(CancellationToken cancellationToken);
 
     Task<AdapterStateDto> ResetSessionAsync(CancellationToken cancellationToken);

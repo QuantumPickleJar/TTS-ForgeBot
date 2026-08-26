@@ -4,7 +4,7 @@ namespace MtgTtsBridge;
 
 public sealed class BridgeProcessIdentity
 {
-    public const string Revision = "2026-08-25-f2b-v3";
+    public const string Revision = "2026-08-25-f2b-v6";
 
     public BridgeProcessIdentity()
     {

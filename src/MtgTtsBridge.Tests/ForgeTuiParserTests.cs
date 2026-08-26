@@ -346,6 +346,19 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void GenericPlayerSelection_MapsDeckNamedAiWithoutADeckSpecificConfigurationEntry()
+    {
+        var parser = new ForgeTuiParser(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Player 1"] = "forge-player-1",
+        });
+        var result = parser.Append("=== FORGE CHOICE ===\nChoose a player\n[kind=player_selection min=1 max=1 selected=0 ordered=false]\n  0. Player 1 (Life: 20)\n  1. AI-Legacy-Burn (Life: 20)\nEnter choice (0-1): ");
+
+        var actions = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions;
+        Assert.Equal(["forge-player-1", "forge-player-2"], actions.Select(action => action.TargetSeatId));
+    }
+
+    [Fact]
     public void OneAtATimeAttackerPrompt_ParsesDoneWithoutMenuOptions()
     {
         var parser = new ForgeTuiParser();

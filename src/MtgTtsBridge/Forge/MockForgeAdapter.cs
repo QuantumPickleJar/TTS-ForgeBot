@@ -22,6 +22,12 @@ public sealed class MockForgeAdapter : IForgeAdapter
 
     public string Name => "MockForgeAdapter";
 
+    public Task ConfigureDecksAsync(DeckLoadRequestDto request, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.CompletedTask;
+    }
+
     public Task<AdapterStateDto> GetStateAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();

@@ -58,20 +58,49 @@ app.MapGet("/health", async (IForgeAdapter adapter, BridgeProcessIdentity identi
 
 app.MapPost("/api/v1/session/start", async (IForgeAdapter adapter, CancellationToken cancellationToken) =>
 {
-	var state = await adapter.StartSessionAsync(cancellationToken);
-	trayIcon.Update(state);
-	return Results.Ok(new SessionStartResponseDto(
-		SessionId: state.SessionId,
-		CurrentDecision: state.CurrentDecision));
+	try
+	{
+		var state = await adapter.StartSessionAsync(cancellationToken);
+		trayIcon.Update(state);
+		return Results.Ok(new SessionStartResponseDto(state.SessionId, state.CurrentDecision));
+	}
+	catch (InvalidOperationException exception)
+	{
+		return Results.BadRequest(new ErrorResponseDto("deck_inventory_required", exception.Message, null));
+	}
+});
+
+app.MapPost("/api/v1/decks", async (DeckLoadRequestDto request, IForgeAdapter adapter, CancellationToken cancellationToken) =>
+{
+	if (request.Seats.Count != 2 || request.Seats.Any(seat => string.IsNullOrWhiteSpace(seat.SeatId) || seat.Cards.Count == 0)
+		|| request.Seats.Select(seat => seat.SeatId).Distinct(StringComparer.Ordinal).Count() != 2
+		|| request.Seats.SelectMany(seat => seat.Cards).Any(card => string.IsNullOrWhiteSpace(card.CardName) || card.Count <= 0))
+	{
+		return Results.BadRequest(new ErrorResponseDto("invalid_deck_inventory", "Provide two non-empty seat deck inventories with positive card counts.", null));
+	}
+	try
+	{
+		await adapter.ConfigureDecksAsync(request, cancellationToken);
+		return Results.NoContent();
+	}
+	catch (InvalidOperationException exception)
+	{
+		return Results.BadRequest(new ErrorResponseDto("invalid_deck_inventory", exception.Message, null));
+	}
 });
 
 app.MapPost("/api/v1/session/reset", async (IForgeAdapter adapter, CancellationToken cancellationToken) =>
 {
-	var state = await adapter.ResetSessionAsync(cancellationToken);
-	trayIcon.Update(state);
-	return Results.Ok(new SessionStartResponseDto(
-		SessionId: state.SessionId,
-		CurrentDecision: state.CurrentDecision));
+	try
+	{
+		var state = await adapter.ResetSessionAsync(cancellationToken);
+		trayIcon.Update(state);
+		return Results.Ok(new SessionStartResponseDto(state.SessionId, state.CurrentDecision));
+	}
+	catch (InvalidOperationException exception)
+	{
+		return Results.BadRequest(new ErrorResponseDto("deck_inventory_required", exception.Message, null));
+	}
 });
 
 app.MapGet("/api/v1/decision", async (IForgeAdapter adapter, CancellationToken cancellationToken) =>

@@ -29,6 +29,21 @@ public sealed class BridgeApiTests
     }
 
     [Fact]
+    public async Task TtsLibraryDeckInventory_IsAcceptedWithoutDeckPathsOrCardWhitelist()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/v1/decks", new DeckLoadRequestDto(
+        [
+            new DeckSeatLoadDto("forge-player-1", [new DeckCardLoadDto("Brainstorm", 4), new DeckCardLoadDto("Underground Sea", 4)]),
+            new DeckSeatLoadDto("forge-player-2", [new DeckCardLoadDto("Lightning Bolt", 4), new DeckCardLoadDto("Mountain", 20)]),
+        ]));
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Fact]
     public async Task InitialDecision_IsDeterministic()
     {
         using var factory = new TestWebApplicationFactory();

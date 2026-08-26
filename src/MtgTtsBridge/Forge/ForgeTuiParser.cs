@@ -14,11 +14,13 @@ public sealed partial class ForgeTuiParser
 {
     private readonly StringBuilder _buffer = new();
     private readonly IReadOnlyDictionary<string, string> _playerSeats;
+    private readonly string _opponentSeatId;
     private int _decisionNumber;
 
-    public ForgeTuiParser(IReadOnlyDictionary<string, string>? playerSeats = null)
+    public ForgeTuiParser(IReadOnlyDictionary<string, string>? playerSeats = null, string opponentSeatId = "forge-player-2")
     {
         _playerSeats = playerSeats ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        _opponentSeatId = opponentSeatId;
     }
 
     public void Reset()
@@ -148,7 +150,7 @@ public sealed partial class ForgeTuiParser
         if (kind is "target_selection" or "defender_selection" or "player_selection")
         {
             var player = PlayerTargetRegex().Match(label);
-            if (player.Success && _playerSeats.TryGetValue(player.Groups["player"].Value.Trim(), out var seatId))
+            if (player.Success && TryResolveSeat(player.Groups["player"].Value.Trim(), out var seatId))
             {
                 targetKind = "player";
                 targetSeatId = seatId;
@@ -172,6 +174,20 @@ public sealed partial class ForgeTuiParser
             IsSelected: label.Contains("[SELECTED]", StringComparison.OrdinalIgnoreCase)
                 || (kind == "attacker_selection" && label.Contains("[ATTACKING]", StringComparison.OrdinalIgnoreCase))
                 || (kind is "blocker_selection" or "blocker_assignment" && label.Contains("[BLOCKING]", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private bool TryResolveSeat(string playerName, out string seatId)
+    {
+        if (_playerSeats.TryGetValue(playerName, out seatId!)) return true;
+        // Forge names the AI after the supplied deck file (for example
+        // AI-mono-red or AI-legacy).  That is presentation, never identity.
+        if (playerName.StartsWith("AI-", StringComparison.OrdinalIgnoreCase))
+        {
+            seatId = _opponentSeatId;
+            return true;
+        }
+        seatId = string.Empty;
+        return false;
     }
 
     private static (ForgeTuiPromptDefinition Definition, int Index)? FindPromptDefinition(string text)

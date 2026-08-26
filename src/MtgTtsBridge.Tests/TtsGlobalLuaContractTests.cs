@@ -689,7 +689,10 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void SnapshotBootstrap_MultiplicityMismatchIncludesSeatAndCountDiagnostics()
     {
-        Assert.Contains("library reconciliation failed: seat=%s card=%s forgeExpected=%d physicalContained=%d physicalLoose=%d unmappedForgeInstances=%d unassignedContained=%d", Script);
+        Assert.Contains("forgeExpectedTotal=%d containedPhysicalTotal=%d loosePhysicalTotal=%d physicalTotal=%d deficit=%d", Script);
+        Assert.Contains("function BridgeLogLibraryMismatchInventory(seatSnapshot, failedName, displayName)", Script);
+        Assert.Contains("LIBRARY MISMATCH INVENTORY", Script);
+        Assert.Contains("containedAssigned=%d looseAssigned=%d containedRemaining=%d looseRemaining=%d", Script);
         Assert.Contains("BridgeLog(\"[Bridge] \" .. detail)", Script);
     }
 
@@ -697,9 +700,26 @@ public sealed class TtsGlobalLuaContractTests
     public void SnapshotBootstrap_InsertsLooseCardsIntoTheResolvedDeckBeforeReadingTheLibraryLedger()
     {
         Assert.Contains("local deck = BridgeResolveSeatLibraryDeck(seatId)", Script);
+        Assert.Contains("refused to stage a library deck into itself", Script);
         Assert.Contains("deck.putObject(o)", Script);
         Assert.Contains("START-13 library-settle", Script);
         Assert.Contains("Wait.frames(function()", Script);
+    }
+
+    [Fact]
+    public void NewMatch_ReturnsTrackedPreviousGameCardsBeforeReadingDeckInventory()
+    {
+        Assert.Contains("function BridgeReturnPreviousGameCardsToLibraries", Script);
+        Assert.Contains("BridgeState.physicalSeatByGuid[guid]", Script);
+        Assert.Contains("BridgeState.physicalZoneByGuid[guid]", Script);
+        Assert.Contains("BridgeStagePhysicalCardForBootstrap(candidate.object, candidate.seatId, stagedBySeat)", Script);
+        Assert.Contains("TTS Deck-on-Deck operations", Script);
+        Assert.Contains("if object.tag ~= \"Card\" then return false end", Script);
+        Assert.Contains("object.tag ~= \"Card\" then return end", Script);
+        var reset = Script.Substring(Script.IndexOf("function BridgeResetSession()", StringComparison.Ordinal));
+        Assert.Contains("BridgeReturnPreviousGameCardsToLibraries(function", reset);
+        Assert.True(reset.IndexOf("BridgeReturnPreviousGameCardsToLibraries", StringComparison.Ordinal)
+            < reset.IndexOf("BridgeConfigureDecks", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -717,7 +737,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-25-f2b-v3\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-25-f2b-v12\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -867,8 +887,59 @@ public sealed class TtsGlobalLuaContractTests
     public void LibraryIdentityRegressionD_MultiplicityMismatchHardFailsWithExpectedDiagnostics()
     {
         Assert.Contains("if physicalCount < expectedCount then", Script);
-        Assert.Contains("library reconciliation failed: seat=%s card=%s forgeExpected=%d physicalContained=%d physicalLoose=%d unmappedForgeInstances=%d unassignedContained=%d", Script);
-        Assert.Contains("see host log for multiplicity diagnostics", Script);
+        Assert.Contains("local deficit = expectedCount - physicalCount", Script);
+        Assert.Contains("return false, BridgeLibraryMismatchMessage", Script);
+        Assert.Contains("BridgeSetStatus(\"LIBRARY MISMATCH\", diagnostic)", Script);
+    }
+
+    [Fact]
+    public void BootstrapInventory_AccountsForHandsAndCommandZoneWithoutCrossSeatNameClaims()
+    {
+        var candidateStart = Script.IndexOf("function IsGameCardCandidate", StringComparison.Ordinal);
+        var candidateEnd = Script.IndexOf("function BridgeDeckContainsCardName", candidateStart, StringComparison.Ordinal);
+        var candidate = Script[candidateStart..candidateEnd];
+
+        Assert.Contains("A card in a TTS hand", candidate);
+        Assert.Contains("if seatHandGuids ~= nil and seatHandGuids[guid] == true then return true end", candidate);
+        Assert.True(candidate.IndexOf("if seatHandGuids", StringComparison.Ordinal)
+            < candidate.IndexOf("if not BridgeObjectIsOnSeatSide", StringComparison.Ordinal));
+        Assert.Contains("if not BridgeObjectIsOnSeatSide(object, seat) then return false end", candidate);
+        Assert.DoesNotContain("and BridgeObjectIsOnSeatSide(object, seat)", Script[Script.IndexOf("function BridgeCollectSeatAssets", StringComparison.Ordinal)..Script.IndexOf("function BridgeBuildSeatLibraryLedger", StringComparison.Ordinal)]);
+        Assert.Contains("elseif zone.name == \"command\" then", Script);
+        Assert.Contains("BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, \"command\")", Script);
+    }
+
+    [Fact]
+    public void BootstrapIdentity_UsesCanonicalImportedNameRatherThanMutableFacePresentation()
+    {
+        Assert.Contains("function BridgePhysicalCanonicalCardName(object)", Script);
+        Assert.Contains("canonical = data.Nickname or data.nickname", Script);
+        Assert.Contains("BridgeState.canonicalCardNameByGuid", Script);
+        Assert.Contains("local cardName = BridgePhysicalCanonicalCardName(object)", Script);
+        Assert.Contains("Forge's cardName is likewise the", Script);
+        Assert.Contains("stable identity; currentCardName is only for post-mapping presentation", Script);
+    }
+
+    [Fact]
+    public void BootstrapInventory_ExcludesOnlyPresentationObjectsAndKeepsHardSafetyBoundary()
+    {
+        Assert.Contains("presentationOnlyGuids = { [\"946716\"]", Script);
+        Assert.Contains("if BridgeIsPresentationOnlyObject(object) then return false end", Script);
+        Assert.Contains("presentation_only:", Script);
+        Assert.Contains("mappedForgeInstance=%s trackedZone=%s handSeat=%s containedCount=%d reason=%s", Script);
+        Assert.Contains("if physicalCount < expectedCount then", Script);
+    }
+
+    [Fact]
+    public void ForgePresentation_UsesStablePrintedStatsAndRendersKeywordsInAlternateLayout()
+    {
+        Assert.Contains("function BridgeUnifiedPrintedFace(unified)", Script);
+        Assert.Contains("faces[1] or faces[0] or faces.front", Script);
+        Assert.Contains("BridgeState.presentedStatsByGuid", Script);
+        Assert.Contains("or event.kind == \"stats_changed\"", Script);
+        Assert.Contains("function BridgeRenderKeywordDecals(object, enabled, encoder)", Script);
+        Assert.Contains("layout == \"above\"", Script);
+        Assert.Contains("BridgeRenderKeywordDecals(object, enabled, encoder)", Script);
     }
 
     [Fact]
@@ -1145,9 +1216,25 @@ public sealed class TtsGlobalLuaContractTests
         var adapter = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "MtgTtsBridge", "Forge", "ForgeTuiAdapter.cs"));
 
         Assert.Contains("--numeric-choices", launcher);
-        Assert.Contains("--numeric-choices", settings);
+        Assert.Contains("{humanDeck}", launcher);
         Assert.DoesNotContain("SynthesizeCombatActions", adapter);
         Assert.DoesNotContain("SynthesizeBlockerAssignments", adapter);
+    }
+
+    [Fact]
+    public void ForgeLauncher_LoadsTtsLibraryDecksInsteadOfUsingTheMonoredFixture()
+    {
+        var launcher = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tools", "Start-ForgeBot.ps1"));
+        var settings = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "MtgTtsBridge", "appsettings.json"));
+        var adapter = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "MtgTtsBridge", "Forge", "ForgeTuiAdapter.cs"));
+
+        Assert.Contains("{humanDeck}", launcher);
+        Assert.Contains("{aiDeck}", launcher);
+        Assert.DoesNotContain("test_decks\\monored.dck", launcher);
+        Assert.DoesNotContain("test_decks\\monored.dck", settings);
+        Assert.Contains("TTS library decks have not been loaded", adapter);
+        Assert.Contains("[metadata]", adapter);
+        Assert.Contains("[Main]", adapter);
     }
 
     [Fact]

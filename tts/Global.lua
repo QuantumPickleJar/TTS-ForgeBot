@@ -11,7 +11,7 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
-BRIDGE_SCRIPT_REVISION = "2026-08-25-f2b-v3"
+BRIDGE_SCRIPT_REVISION = "2026-08-25-f2b-v12"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -190,6 +190,9 @@ BridgeState = {
     physicalByInstanceId = {},
     physicalInstanceIdByGuid = {},
     cardNameByInstanceId = {},
+    canonicalCardNameByGuid = {},
+    encoderIdentityLoggedGuids = {},
+    presentedStatsByGuid = {},
     physicalSeatByGuid = {},
     physicalZoneByGuid = {},
     -- Table helpers are never candidates for Forge CardInstanceId mapping.
@@ -264,6 +267,26 @@ function BridgeSafeObjectName(object)
     local ok, name = pcall(function() return object.getName() end)
     if not ok then return nil end
     return tostring(name or "")
+end
+
+-- A card's visible name is presentation and may change when an Encoder module
+-- displays a transformed face.  Bootstrap identity is the imported/card-data
+-- name, captured once per physical object.  Forge's cardName is likewise the
+-- stable identity; currentCardName is only for post-mapping presentation.
+function BridgePhysicalCanonicalCardName(object)
+    local guid = BridgeSafeObjectGuid(object)
+    if guid ~= nil and BridgeState.canonicalCardNameByGuid[guid] ~= nil then
+        return BridgeState.canonicalCardNameByGuid[guid]
+    end
+    local canonical = nil
+    local ok, data = pcall(function() return object.getData() end)
+    if ok and data ~= nil then
+        canonical = data.Nickname or data.nickname
+    end
+    if canonical == nil or tostring(canonical) == "" then canonical = BridgeSafeObjectName(object) end
+    canonical = tostring(canonical or "")
+    if guid ~= nil and canonical ~= "" then BridgeState.canonicalCardNameByGuid[guid] = canonical end
+    return canonical
 end
 
 function BridgeSafeObjectCall(object, action)
@@ -469,25 +492,25 @@ function IsGameCardCandidate(object, seatId, context)
         return true
     end
 
-    local expectedBySeat = context and context.expectedCardNamesBySeat or nil
-    local expectedNames = expectedBySeat and expectedBySeat[seatId] or nil
-    if expectedNames ~= nil and next(expectedNames) ~= nil then
-        local normalized = BridgeNormalizeCardName(BridgeSafeObjectName(object))
-        return expectedNames[normalized] == true
-    end
-
+    -- A card in a TTS hand does not reliably have a position on its owner's
+    -- half of the table.  Establish hand ownership before spatial filtering.
     local handGuidsBySeat = context and context.handGuidsBySeat or nil
     local seatHandGuids = handGuidsBySeat and handGuidsBySeat[seatId] or nil
     if seatHandGuids == nil then
         seatHandGuids = BridgeBuildSeatHandGuidSet(seatId)
         if handGuidsBySeat ~= nil then handGuidsBySeat[seatId] = seatHandGuids end
     end
-    if seatHandGuids ~= nil and seatHandGuids[guid] == true then
-        return true
-    end
+    if seatHandGuids ~= nil and seatHandGuids[guid] == true then return true end
 
-    if not BridgeObjectIsOnSeatSide(object, seat) then
-        return false
+    -- Never use a matching name alone to claim a card from the other seat.
+    -- This check follows hand membership so hand objects remain discoverable.
+    if not BridgeObjectIsOnSeatSide(object, seat) then return false end
+
+    local expectedBySeat = context and context.expectedCardNamesBySeat or nil
+    local expectedNames = expectedBySeat and expectedBySeat[seatId] or nil
+    if expectedNames ~= nil and next(expectedNames) ~= nil then
+        local normalized = BridgeNormalizeCardName(BridgePhysicalCanonicalCardName(object))
+        return expectedNames[normalized] == true
     end
     if BridgeCardMetadataLooksLikeMtg(object) then
         return true
@@ -736,6 +759,9 @@ end
 
 function BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat)
     if not BridgeObjectIsUsable(object) then return false end
+    -- This helper is intentionally Card-only. TTS Deck-on-Deck operations
+    -- are not a safe reset primitive and can corrupt the physical pile.
+    if object.tag ~= "Card" then return false end
     local seat = seatId and BRIDGE_SEATS[seatId] or nil
     if seat == nil then return false end
 
@@ -747,6 +773,13 @@ function BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat)
     -- assign any Forge identity; the later ledger remains authoritative.
     local deck = BridgeResolveSeatLibraryDeck(seatId)
     if deck ~= nil then
+        local objectGuid = BridgeSafeObjectGuid(object)
+        local deckGuid = BridgeSafeObjectGuid(deck)
+        if objectGuid ~= nil and objectGuid == deckGuid then
+            BridgeLog("[Bridge] refused to stage a library deck into itself guid=" .. tostring(objectGuid)
+                .. " seat=" .. tostring(seatId))
+            return false
+        end
         local inserted = BridgeSafeObjectCall(object, function(o)
             o.use_hands = false
             BridgeSetPhysicalFaceDown(o, seat, true)
@@ -905,6 +938,72 @@ function BridgeStageSeatCardsForBootstrap(snapshot)
     return true, nil
 end
 
+-- A destructive New Match must not leave the previous game's embodied cards
+-- on the battlefield (or in hand/graveyard/exile/command).  Mappings are the
+-- identity-safe source of truth here: only cards already associated with a
+-- Forge seat are returned, so presentation helpers and unrelated table
+-- objects are never swept into a player's library. Stacked Deck objects are
+-- deliberately not moved: TTS can corrupt a pile when decks are merged.
+-- Do this before reading
+-- the imported deck inventory; otherwise the physical deck is under-counted
+-- and the old cards remain visible after reset.
+function BridgeReturnPreviousGameCardsToLibraries(callback)
+    local candidates = {}
+    local seen = {}
+    local function addCandidate(object)
+        if not BridgeObjectIsUsable(object) or object.tag ~= "Card" then return end
+        local guid = BridgeSafeObjectGuid(object)
+        if guid == nil or seen[guid] then return end
+        local seatId = BridgeState.physicalSeatByGuid[guid]
+        local zoneName = BridgeState.physicalZoneByGuid[guid]
+        if zoneName == "library" then return end
+        -- Older event paths can leave a legitimate battlefield card without
+        -- a mapping (for example after a tolerated move error). During the
+        -- destructive reset, recover such cards by their physical seat side;
+        -- presentation-only objects remain excluded by the candidate check.
+        if seatId == nil then
+            for candidateSeatId, seat in pairs(BRIDGE_SEATS) do
+                if BridgeObjectIsOnSeatSide(object, seat)
+                    and IsGameCardCandidate(object, candidateSeatId, {handGuidsBySeat = {}}) then
+                    seatId = candidateSeatId
+                    zoneName = "battlefield"
+                    break
+                end
+            end
+        end
+        if seatId == nil or BRIDGE_SEATS[seatId] == nil then return end
+        seen[guid] = true
+        table.insert(candidates, {object = object, seatId = seatId, guid = guid, zone = zoneName})
+    end
+
+    -- getAllObjects includes most loose cards, but hand APIs are retained as
+    -- an explicit fallback because TTS can omit hand contents from that list.
+    for seatId, _ in pairs(BRIDGE_SEATS) do
+        local handObjects = BridgeTryGetSeatHandObjects(seatId)
+        for _, object in ipairs(handObjects or {}) do addCandidate(object) end
+    end
+    for _, object in ipairs(getAllObjects()) do addCandidate(object) end
+
+    local stagedBySeat = {}
+    for _, candidate in ipairs(candidates) do
+        if not BridgeStagePhysicalCardForBootstrap(candidate.object, candidate.seatId, stagedBySeat) then
+            BridgeLog("[Bridge] previous-game card return failed guid=" .. tostring(candidate.guid)
+                .. " seat=" .. tostring(candidate.seatId) .. " zone=" .. tostring(candidate.zone))
+            if callback then callback(false, "could not return previous-game card " .. tostring(candidate.guid) .. " to library") end
+            return
+        end
+    end
+
+    if #candidates > 0 then
+        BridgeLog("[Bridge] returned " .. tostring(#candidates) .. " previous-game card(s) to libraries before reset")
+    end
+    -- Allow putObject physics/state propagation to settle before ConfigureDecks
+    -- snapshots the library contents.
+    BridgeWaitFrames(function()
+        if callback then callback(true, nil) end
+    end, 3)
+end
+
 function BridgeHttp.handleResponse(request, callback)
     if request.is_error then
         callback(false, nil, "Request failed: " .. tostring(request.error), request)
@@ -953,6 +1052,40 @@ end
 
 function BridgeResetSessionRequest(callback)
     BridgeHttp.requestJson("POST", "/api/v1/session/reset", nil, callback)
+end
+
+-- TTS's imported library piles are the deck chooser.  We send only printed
+-- identities and counts; Forge decides whether the Legacy-assumed deck is legal.
+function BridgeConfigureDecks(callback)
+    local seats = {}
+    for _, seatId in ipairs({"forge-player-1", "forge-player-2"}) do
+        local deck, _, deckError = BridgeResolveSeatLibraryDeck(seatId)
+        if deck == nil then callback(false, nil, "cannot load TTS library for " .. tostring(seatId) .. ": " .. tostring(deckError)); return end
+        local counts = {}
+        for _, contained in ipairs(deck.getObjects() or {}) do
+            local name = BridgeImportedCardName(contained.nickname or contained.name or "")
+            if BridgeNormalizeCardName(name) ~= "" then counts[name] = (counts[name] or 0) + 1 end
+        end
+        local cards = {}
+        for name, count in pairs(counts) do table.insert(cards, {cardName = name, count = count}) end
+        if #cards == 0 then callback(false, nil, "TTS library is empty for " .. tostring(seatId)); return end
+        BridgeLog(string.format("[Bridge] TTS deck inventory seat=%s uniqueNames=%d totalCards=%d revision=%s",
+            tostring(seatId), #cards, #(deck.getObjects() or {}), tostring(BRIDGE_SCRIPT_REVISION)))
+        table.insert(seats, {seatId = seatId, cards = cards})
+    end
+    BridgeLog("[Bridge] posting TTS deck inventory to /api/v1/decks")
+    BridgeHttp.requestJson("POST", "/api/v1/decks", {seats = seats}, function(ok, body, err, request)
+        if ok then BridgeLog("[Bridge] TTS deck inventory accepted by bridge")
+        else BridgeLog("[Bridge] TTS deck inventory rejected: " .. tostring(err) .. " body=" .. tostring(body and JSON.encode(body) or "(empty)")) end
+        callback(ok, body, err, request)
+    end)
+end
+
+function BridgeHttpFailureDetail(body, fallback)
+    if body ~= nil and body.message ~= nil and tostring(body.message) ~= "" then
+        return tostring(body.message)
+    end
+    return tostring(fallback or "request failed")
 end
 
 function BridgeGetDecision(callback)
@@ -1479,6 +1612,13 @@ function BridgeShouldReconcileAfterEvent(event)
     return event.kind == "spell_resolved"
         or event.kind == "land_played"
         or event.kind == "card_moved"
+        -- A continuous effect can change every creature while Forge's event
+        -- stream identifies only one initiating permanent. Re-read Forge's
+        -- authoritative battlefield rather than trying to propagate effects.
+        or event.kind == "stats_changed"
+        or event.kind == "characteristic_changed"
+        or event.kind == "keyword_added"
+        or event.kind == "keyword_removed"
 end
 
 function BridgeResumeChoiceProtocol(reason)
@@ -2457,13 +2597,20 @@ function BridgeStartSessionIfNone(done)
     BridgeClearHighlights()
     BridgeState.lastDecision = nil
 
-    BridgeTraceStart("START-07 session-start-request")
-    BridgeStartSession(function(ok, body, err)
+    BridgeTraceStart("START-07 TTS-library-deck-load")
+    BridgeConfigureDecks(function(deckOk, _, deckError)
+        if not deckOk then
+            if done then done() end
+            BridgeShowError("TTS library load failed: " .. BridgeHttpFailureDetail(_, deckError))
+            return
+        end
+        BridgeTraceStart("START-07 session-start-request")
+        BridgeStartSession(function(ok, body, err)
         BridgeRunTraced("START-08 session-start-response", function()
             BridgeTraceStart("START-08 session-start-response", ok and tostring(body and body.sessionId or "ok") or tostring(err))
             if not ok then
                 if done then done() end
-                BridgeShowError("session start failed: " .. tostring(err))
+            BridgeShowError("session start failed: " .. BridgeHttpFailureDetail(body, err))
                 return
             end
 
@@ -2486,6 +2633,7 @@ function BridgeStartSessionIfNone(done)
                 end)
             end)
         end)
+        end)
     end)
 end
 
@@ -2494,10 +2642,22 @@ function BridgeResetSession()
     BridgeClearHighlights()
     BridgeState.lastDecision = nil
 
-    BridgeResetSessionRequest(function(ok, body, err)
+    BridgeReturnPreviousGameCardsToLibraries(function(returnOk, returnError)
+        if not returnOk then
+            BridgeSetSetupBusy(false)
+            BridgeShowError("previous game cleanup failed: " .. tostring(returnError))
+            return
+        end
+        BridgeConfigureDecks(function(deckOk, _, deckError)
+            if not deckOk then
+                BridgeSetSetupBusy(false)
+                BridgeShowError("TTS library load failed: " .. BridgeHttpFailureDetail(_, deckError))
+                return
+            end
+            BridgeResetSessionRequest(function(ok, body, err)
         if not ok then
             BridgeSetSetupBusy(false)
-            BridgeShowError("explicit session reset failed: " .. tostring(err))
+            BridgeShowError("explicit session reset failed: " .. BridgeHttpFailureDetail(body, err))
             return
         end
 
@@ -2513,7 +2673,9 @@ function BridgeResetSession()
                 BridgeRefreshDecision()
             end
             BridgeSetSetupBusy(false)
+            end)
         end)
+    end)
     end)
 end
 
@@ -3793,7 +3955,7 @@ end
 function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback)
     BridgeCollectSeatAssets(seatSnapshot.seatId, seatSnapshot, function(ok, assets, collectError)
         if not ok then callback(false, collectError); return end
-        local reconciled, reconcileError = BridgeReconcileSeatSnapshot(seatSnapshot, assets)
+        local reconciled, reconcileError = BridgeReconcileSeatSnapshot(seatSnapshot, assets, attempt >= 4)
         if not reconciled then
             if attempt < 4 then
                 local authoritativeCount = 0
@@ -3834,10 +3996,9 @@ function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
     for _, object in ipairs(getAllObjects()) do
         if BridgeObjectIsUsable(object)
             and object.tag == "Card"
-            and BridgeObjectIsOnSeatSide(object, seat)
             and IsGameCardCandidate(object, seatId, context) then
             local guid = BridgeSafeObjectGuid(object)
-            local cardName = BridgeSafeObjectName(object)
+            local cardName = BridgePhysicalCanonicalCardName(object)
             if guid ~= nil then
                 table.insert(assets, {
                     guid = guid,
@@ -3931,7 +4092,95 @@ function BridgeObjectIsOnSeatSide(object, seat)
     return position.z > 0.25
 end
 
-function BridgeReconcileSeatSnapshot(seatSnapshot, assets)
+function BridgeLibraryMismatchMessage(seatId, cardName, expected, contained, loose)
+    return string.format("LIBRARY MISMATCH\nseat=%s\ncard=%s\nexpected=%d\ndeck=%d\nloose=%d",
+        tostring(seatId), tostring(cardName), expected, contained, loose)
+end
+
+-- Importers commonly put set/collector metadata below the printed card name.
+-- Forge deck input needs only the stable front/imported identity.
+function BridgeImportedCardName(name)
+    local imported = tostring(name or "")
+    imported = string.gsub(imported, "\r", "\n")
+    local lineBreak = string.find(imported, "\n", 1, true)
+    if lineBreak ~= nil then imported = string.sub(imported, 1, lineBreak - 1) end
+    local separator = string.find(imported, " // ", 1, true)
+    if separator ~= nil then imported = string.sub(imported, 1, separator - 1) end
+    imported = string.gsub(imported, "^%s+", "")
+    imported = string.gsub(imported, "%s+$", "")
+    return imported
+end
+
+function BridgeInventoryRejectionReason(object, seatId, context)
+    if BridgeIsPresentationOnlyObject(object) then
+        local metadata = BridgeState.presentationOnlyGuids[BridgeSafeObjectGuid(object)] or {}
+        return "presentation_only:" .. tostring(metadata.kind or "presentation")
+    end
+    if object.tag ~= "Card" and object.tag ~= "Deck" then return "not_card_or_deck" end
+    local guid = BridgeSafeObjectGuid(object)
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil then return "unknown_seat" end
+    if seat.excludeCardGuids and seat.excludeCardGuids[guid] then return "seat_excluded" end
+    if seat.includeCardGuids and seat.includeCardGuids[guid] then return "seat_included" end
+    if BridgeState.physicalSeatByGuid[guid] == seatId then return "tracked_for_seat" end
+    local hands = context and context.handGuidsBySeat or {}
+    for configuredSeatId, handGuids in pairs(hands or {}) do
+        if handGuids and handGuids[guid] then
+            return configuredSeatId == seatId and "seat_hand" or "other_seat_hand:" .. tostring(configuredSeatId)
+        end
+    end
+    if not BridgeObjectIsOnSeatSide(object, seat) then return "outside_seat_side" end
+    if object.tag == "Deck" then return "seat_side_deck" end
+    local expected = context and context.expectedCardNamesBySeat and context.expectedCardNamesBySeat[seatId] or nil
+    if expected and expected[BridgeNormalizeCardName(BridgePhysicalCanonicalCardName(object))] then return "expected_name" end
+    if BridgeCardMetadataLooksLikeMtg(object) then return "mtg_metadata" end
+    if BridgeCardFootprintLooksLikeMtg(object) then return "mtg_footprint" end
+    return "not_mtg_candidate"
+end
+
+function BridgeLogLibraryMismatchInventory(seatSnapshot, failedName, displayName)
+    local seatId = seatSnapshot.seatId
+    local context = BridgeBuildGameCardContext({seats = {seatSnapshot}})
+    context.handGuidsBySeat[seatId] = BridgeBuildSeatHandGuidSet(seatId)
+    -- Include all seats' hands solely to explain why an object was rejected.
+    for configuredSeatId, _ in pairs(BRIDGE_SEATS) do
+        context.handGuidsBySeat[configuredSeatId] = BridgeBuildSeatHandGuidSet(configuredSeatId)
+    end
+    BridgeLog("[Bridge] LIBRARY MISMATCH INVENTORY seat=" .. tostring(seatId) .. " card=" .. tostring(displayName or failedName))
+    for _, object in ipairs(getAllObjects()) do
+        if BridgeObjectIsUsable(object) and (object.tag == "Card" or object.tag == "Deck") then
+            local canonical = BridgePhysicalCanonicalCardName(object)
+            local containedCount = 0
+            if object.tag == "Deck" then
+                local ok, contained = pcall(function() return object.getObjects() or {} end)
+                if ok then
+                    for _, entry in ipairs(contained) do
+                        if BridgeNormalizeCardName(entry.nickname or entry.name or "") == failedName then containedCount = containedCount + 1 end
+                    end
+                end
+            end
+            if BridgeNormalizeCardName(canonical) == failedName or containedCount > 0 then
+                local guid = BridgeSafeObjectGuid(object)
+                local position = object.getPosition()
+                local nearest = BridgeNearestSeatIdForPosition(position, {"forge-player-1", "forge-player-2"})
+                local handSeat = nil
+                for configuredSeatId, handGuids in pairs(context.handGuidsBySeat) do
+                    if handGuids and handGuids[guid] then handSeat = configuredSeatId end
+                end
+                BridgeLog(string.format(
+                    "[Bridge] inventory guid=%s tag=%s name=%s canonical=%s pos=(%.2f,%.2f,%.2f) nearestSeat=%s presentationOnly=%s candidate=%s mappedForgeInstance=%s trackedZone=%s handSeat=%s containedCount=%d reason=%s",
+                    tostring(guid), tostring(object.tag), tostring(BridgeSafeObjectName(object)), tostring(canonical),
+                    tonumber(position.x) or 0, tonumber(position.y) or 0, tonumber(position.z) or 0,
+                    tostring(nearest), tostring(BridgeIsPresentationOnlyObject(object)),
+                    tostring(IsGameCardCandidate(object, seatId, context)),
+                    tostring(BridgeState.physicalInstanceIdByGuid[guid]), tostring(BridgeState.physicalZoneByGuid[guid]),
+                    tostring(handSeat), containedCount, BridgeInventoryRejectionReason(object, seatId, context)))
+            end
+        end
+    end
+end
+
+function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagnostic)
     local byName = {}
     local looseCountByName = {}
     local mappings = {}
@@ -3949,11 +4198,13 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets)
 
     local authoritativeCards = {}
     local authoritativeCountByName = {}
+    local authoritativeDisplayNameByName = {}
     for _, zone in ipairs(seatSnapshot.zones or {}) do
         for _, card in ipairs(zone.cards or {}) do
             table.insert(authoritativeCards, {zoneName = zone.name, card = card})
             local normalized = BridgeNormalizeCardName(card.cardName)
             authoritativeCountByName[normalized] = (authoritativeCountByName[normalized] or 0) + 1
+            authoritativeDisplayNameByName[normalized] = authoritativeDisplayNameByName[normalized] or card.cardName
         end
     end
 
@@ -3962,13 +4213,15 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets)
         local containedCount = ledger.countByName[normalizedName] or 0
         local physicalCount = looseCount + containedCount
         if physicalCount < expectedCount then
+            local deficit = expectedCount - physicalCount
+            local displayName = authoritativeDisplayNameByName[normalizedName] or normalizedName
             local detail = string.format(
-                "library reconciliation failed: seat=%s card=%s forgeExpected=%d physicalContained=%d physicalLoose=%d unmappedForgeInstances=%d unassignedContained=%d",
-                tostring(seatSnapshot.seatId), tostring(normalizedName), expectedCount, containedCount, looseCount,
-                expectedCount - physicalCount, math.max(containedCount, 0))
+                "library reconciliation failed: seat=%s card=%s forgeExpectedTotal=%d containedPhysicalTotal=%d loosePhysicalTotal=%d physicalTotal=%d deficit=%d unmappedForgeInstances=%d",
+                tostring(seatSnapshot.seatId), tostring(displayName), expectedCount, containedCount, looseCount,
+                physicalCount, deficit, deficit)
             BridgeLog("[Bridge] " .. detail)
-            return false, "library reconciliation failed for seat " .. tostring(seatSnapshot.seatId)
-                .. "; see host log for multiplicity diagnostics"
+            if includeInventoryDiagnostic then BridgeLogLibraryMismatchInventory(seatSnapshot, normalizedName, displayName) end
+            return false, BridgeLibraryMismatchMessage(seatSnapshot.seatId, displayName, expectedCount, containedCount, looseCount)
         end
     end
 
@@ -4008,18 +4261,22 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets)
 
         if assigned == nil then
             local expectedCount = authoritativeCountByName[normalized] or 0
+            local displayName = authoritativeDisplayNameByName[normalized] or card.cardName or normalized
             local containedCount = ledger.countByName[normalized] or 0
             local looseCount = looseCountByName[normalized] or 0
             local alreadyAssigned = assignedByName[normalized] or 0
             local unmappedForgeInstances = math.max(expectedCount - alreadyAssigned, 1)
-            local unassignedContained = math.max(containedCount - (assignedContainedByName[normalized] or 0), 0)
+            local containedAssigned = assignedContainedByName[normalized] or 0
+            local looseAssigned = alreadyAssigned - containedAssigned
+            local containedRemaining = math.max(containedCount - containedAssigned, 0)
+            local looseRemaining = math.max(looseCount - looseAssigned, 0)
             local detail = string.format(
-                "library reconciliation failed: seat=%s card=%s forgeExpected=%d physicalContained=%d physicalLoose=%d unmappedForgeInstances=%d unassignedContained=%d",
-                tostring(seatSnapshot.seatId), tostring(normalized), expectedCount, containedCount, looseCount,
-                unmappedForgeInstances, unassignedContained)
+                "library reconciliation assignment failed: seat=%s card=%s forgeExpectedTotal=%d containedPhysicalTotal=%d loosePhysicalTotal=%d containedAssigned=%d looseAssigned=%d containedRemaining=%d looseRemaining=%d unmappedForgeInstances=%d",
+                tostring(seatSnapshot.seatId), tostring(displayName), expectedCount, containedCount, looseCount,
+                containedAssigned, looseAssigned, containedRemaining, looseRemaining, unmappedForgeInstances)
             BridgeLog("[Bridge] " .. detail)
-            return false, "library reconciliation failed for seat " .. tostring(seatSnapshot.seatId)
-                .. "; see host log for multiplicity diagnostics"
+            if includeInventoryDiagnostic then BridgeLogLibraryMismatchInventory(seatSnapshot, normalized, displayName) end
+            return false, BridgeLibraryMismatchMessage(seatSnapshot.seatId, displayName, expectedCount, containedCount, looseCount)
         end
 
         assignedByName[normalized] = (assignedByName[normalized] or 0) + 1
@@ -4469,6 +4726,9 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.physicalByInstanceId = {}
     BridgeState.physicalInstanceIdByGuid = {}
     BridgeState.cardNameByInstanceId = {}
+    BridgeState.canonicalCardNameByGuid = {}
+    BridgeState.encoderIdentityLoggedGuids = {}
+    BridgeState.presentedStatsByGuid = {}
     BridgeState.physicalSeatByGuid = {}
     BridgeState.physicalZoneByGuid = {}
     BridgeState.battlefieldCounts = {}
@@ -5531,6 +5791,12 @@ function BridgeEnsureTableEncoded(object)
     local encoder = Global.getVar("Encoder")
     if encoder == nil then return nil, "Easy Modules Encoder is unavailable" end
 
+    local guid = BridgeSafeObjectGuid(object)
+    local beforeName = BridgeSafeObjectName(object)
+    local beforeDescription = object.getDescription()
+    local beforeData = object.getData() or {}
+    local beforeNickname = beforeData.Nickname or beforeData.nickname
+
     local ok, encodedOrError = pcall(function()
         return encoder.call("APIobjectExists", {obj = object})
     end)
@@ -5540,6 +5806,16 @@ function BridgeEnsureTableEncoded(object)
             encoder.call("APIencodeObject", {obj = object})
         end)
         if not encoded then return nil, "could not encode card: " .. tostring(encodeError) end
+    end
+    if guid ~= nil and BridgeState.encoderIdentityLoggedGuids[guid] ~= true then
+        local afterData = object.getData() or {}
+        BridgeState.encoderIdentityLoggedGuids[guid] = true
+        BridgeLog(string.format(
+            "[Bridge] table-encoding identity guid=%s beforeName=%s afterName=%s beforeDescription=%s afterDescription=%s beforeDataNickname=%s afterDataNickname=%s canonical=%s encoderMetadata=%s",
+            tostring(guid), tostring(beforeName), tostring(BridgeSafeObjectName(object)),
+            tostring(beforeDescription), tostring(object.getDescription()), tostring(beforeNickname),
+            tostring(afterData.Nickname or afterData.nickname), tostring(BridgePhysicalCanonicalCardName(object)),
+            encodedOrError == true and "existing" or "encoded"))
     end
     return encoder, nil
 end
@@ -5584,13 +5860,29 @@ function BridgeSetUnifiedState(object, patch)
     end)
 end
 
+local function BridgeUnifiedPrintedFace(unified)
+    local faces = unified and unified.cardFaces or nil
+    if type(faces) ~= "table" then return nil end
+    local activeFace = unified.activeFace
+    local face = activeFace ~= nil and faces[activeFace] or nil
+    -- Easy Modules alternate layouts do not consistently populate activeFace.
+    -- The imported front is still the correct printed base unless Forge later
+    -- supplies a verified face change.
+    if face == nil then face = faces[1] or faces[0] or faces.front end
+    if face == nil then
+        for _, candidate in pairs(faces) do
+            if type(candidate) == "table" then face = candidate; break end
+        end
+    end
+    return face
+end
+
 local function BridgeApplyDerivedStatsToUnified(unified, power, toughness)
     if power == nil and toughness == nil then
         unified.displayPowTou = false
         return
     end
-    local activeFace = unified.activeFace
-    local cardFace = unified.cardFaces and unified.cardFaces[activeFace] or nil
+    local cardFace = BridgeUnifiedPrintedFace(unified)
     local basePower = cardFace and tonumber(cardFace.basePower) or nil
     local baseToughness = cardFace and tonumber(cardFace.baseToughness) or nil
     if power ~= nil then unified.power = basePower and (tonumber(power) - basePower) or tonumber(power) end
@@ -5599,8 +5891,12 @@ local function BridgeApplyDerivedStatsToUnified(unified, power, toughness)
 end
 
 function BridgeSetDerivedStats(object, power, toughness)
+    local guid = BridgeSafeObjectGuid(object)
+    local previous = guid and BridgeState.presentedStatsByGuid[guid] or nil
+    if previous ~= nil and previous.power == power and previous.toughness == toughness then return true, nil end
     return BridgeMutateUnifiedState(object, function(unified)
         BridgeApplyDerivedStatsToUnified(unified, power, toughness)
+        if guid ~= nil then BridgeState.presentedStatsByGuid[guid] = {power = power, toughness = toughness} end
     end)
 end
 
@@ -5666,11 +5962,10 @@ end
 function BridgeApplyCardPresentationSnapshot(object, cardSnapshot)
     if object == nil or cardSnapshot == nil then return false, "missing card presentation input" end
     BridgeSetFaceState(object, cardSnapshot)
-    local applied, applyError = BridgeMutateUnifiedState(object, function(unified)
-        BridgeApplyDerivedStatsToUnified(unified, cardSnapshot.currentPower, cardSnapshot.currentToughness)
-        BridgeApplyOwnerControllerToUnified(unified, cardSnapshot.ownerSeatId, cardSnapshot.controllerSeatId)
-    end)
-    if not applied then return false, applyError end
+    local statsApplied, statsError = BridgeSetDerivedStats(object, cardSnapshot.currentPower, cardSnapshot.currentToughness)
+    if not statsApplied then return false, statsError end
+    local ownerApplied, ownerError = BridgeSetOwnerController(object, cardSnapshot.ownerSeatId, cardSnapshot.controllerSeatId)
+    if not ownerApplied then return false, ownerError end
     local phased, phaseError = BridgeSetPhasedState(object, cardSnapshot.phasedOut == true)
     if not phased then BridgeLog("[Bridge] optional phasing presentation skipped: " .. tostring(phaseError)) end
     return true, nil
@@ -5762,6 +6057,58 @@ local BRIDGE_KEYWORD_PROPERTIES = {
     vigilance = "mtg_vigilancecounter", stun = "mtg_stuncounter"
 }
 
+-- πKeywords only creates decals when its own UI toggle marks a global redraw.
+-- Forge updates property data directly, so mirror the module's visible decal
+-- output for both `art` and alternate `above` layouts without changing rules.
+local BRIDGE_KEYWORD_DECALS = {
+    flying = {name="Flying", url="http://cloud-3.steamusercontent.com/ugc/1647720820459775349/912974BD1EAE7E35274F2228F0275C08473F73C2/"},
+    haste = {name="Haste", url="http://cloud-3.steamusercontent.com/ugc/1647720820459776460/2384D15814E736DCED6F3D755E9C7750DE844CF1/"},
+    deathtouch = {name="Deathtouch", url="http://cloud-3.steamusercontent.com/ugc/1647720820459770551/8ED7C2CF930BB048D5D0F281CEE139681D9FC132/"},
+    defender = {name="Defender", url="http://cloud-3.steamusercontent.com/ugc/1647720820459771131/766BD64F624C102D6B7824B3D2065DEF1F15BD65/"},
+    ["double strike"] = {name="Double Strike", url="http://cloud-3.steamusercontent.com/ugc/1647720820459771597/06334C3958CF7B3C50A76A4F2F22ACD6389D2169/"},
+    ["first strike"] = {name="First Strike", url="http://cloud-3.steamusercontent.com/ugc/1647720820459774469/9FB16BFF1B02B2455C3D844127EC39A141534F33/"},
+    hexproof = {name="Hexproof", url="http://cloud-3.steamusercontent.com/ugc/1647720820459777186/41A7105B5FBBFE116EBFD950C5809724CCD508B1/"},
+    indestructible = {name="Indestructible", url="http://cloud-3.steamusercontent.com/ugc/1647721275620396729/06E0D42899D763E8C179326CB8A904543C1F25DA/"},
+    lifelink = {name="Lifelink", url="http://cloud-3.steamusercontent.com/ugc/1647720820459778541/EC0A9AE3F2A92ED0070E0050A3AB451046D79A35/"},
+    menace = {name="Menace", url="http://cloud-3.steamusercontent.com/ugc/1647720820459779239/1C65FC6264E001EB3DCBC88A8473B0EABE33834A/"},
+    reach = {name="Reach", url="http://cloud-3.steamusercontent.com/ugc/1647720820459781368/2390550F830E8BF214F9FF9CD971976A35C95230/"},
+    trample = {name="Trample", url="http://cloud-3.steamusercontent.com/ugc/1647720820459785398/41B89DCAC842C5C2624AC5EFA9428492C2841515/"},
+    vigilance = {name="Vigilance", url="http://cloud-3.steamusercontent.com/ugc/1647720820459786000/AF931371F2426EF81E336C0BD668EA983AE843D9/"}
+}
+
+function BridgeRenderKeywordDecals(object, enabled, encoder)
+    local active = {}
+    for keyword, isEnabled in pairs(enabled or {}) do if isEnabled and BRIDGE_KEYWORD_DECALS[keyword] ~= nil then table.insert(active, keyword) end end
+    table.sort(active)
+    local removable = {}
+    for _, definition in pairs(BRIDGE_KEYWORD_DECALS) do removable[definition.name] = true end
+    local decals = object.getDecals() or {}
+    local retained = {}
+    for _, decal in ipairs(decals) do if not removable[decal.name] then table.insert(retained, decal) end end
+    local layout = "art"
+    local ok, layoutData = pcall(function() return encoder.call("APIobjGetValueData", {obj = object, valueID = "iconLayout"}) end)
+    if ok and layoutData ~= nil and layoutData.iconLayout ~= nil then layout = layoutData.iconLayout end
+    local flip = 1
+    local flipOk, flipValue = pcall(function() return encoder.call("APIgetFlip", {obj = object}) end)
+    if flipOk and tonumber(flipValue) ~= nil then flip = tonumber(flipValue) end
+    for index, keyword in ipairs(active) do
+        local position = nil
+        local scale = nil
+        if layout == "above" then
+            local column = (index - 1) % 5
+            local row = math.floor((index - 1) / 5)
+            position = {(-1) * (1 - 1 / 5 - column * (2 / 5)) * flip, 0.3 * flip, -1.55 - 1 / 5 - row * 2 / 5}
+            scale = {0.8, 0.8, 0.8}
+        else
+            position = {0, 0.3 * flip, -0.5 + (index - 1) * 0.45}
+            scale = {0.55, 0.55, 0.55}
+        end
+        local definition = BRIDGE_KEYWORD_DECALS[keyword]
+        table.insert(retained, {name = definition.name, url = definition.url, position = position, rotation = {180 - flip * 90, 90 + flip * 90, 0}, scale = scale})
+    end
+    object.setDecals(retained)
+end
+
 function BridgeNormalizeKeywordName(keyword)
     local normalized = string.lower(tostring(keyword or ""))
     normalized = string.gsub(normalized, "^%s+", "")
@@ -5796,6 +6143,7 @@ function BridgeSetCardKeywordState(object, keyword, enabled)
         if not enabled and found ~= nil then table.remove(data.activeIcons, found) end
         encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY, data = data})
         encoder.call("APIrebuildButtons", {obj = object})
+        BridgeRenderKeywordDecals(object, enabled, encoder)
     end)
     if not ok then return false, tostring(applyError) end
     return true, nil
@@ -6187,7 +6535,16 @@ function BridgeStopOnDesync(message)
     BridgeClearHighlights()
     BridgeResetSelectionState()
     BridgeHideMainPriorityControls()
-    BridgeShowError("synchronization stopped: " .. tostring(message))
+    local diagnostic = tostring(message or "")
+    if string.sub(diagnostic, 1, 16) == "LIBRARY MISMATCH" then
+        -- Bootstrap mismatch has already emitted its complete, read-only
+        -- inventory to the scripting log.  Keep the table-facing signal to
+        -- one concise status diagnostic rather than broadcasting retries.
+        BridgeLog("[Bridge] synchronization stopped: " .. diagnostic)
+        BridgeSetStatus("LIBRARY MISMATCH", diagnostic)
+        return
+    end
+    BridgeShowError("synchronization stopped: " .. diagnostic)
 end
 
 function BridgePrintEventSyncStatus()

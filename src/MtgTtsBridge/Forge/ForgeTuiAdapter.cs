@@ -41,6 +41,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private readonly Dictionary<string, int> _inheritedHumanDecisionKinds = new(StringComparer.Ordinal);
     private readonly Queue<string> _recentControllerDiagnostics = new();
     private readonly string? _opponentSeatId;
+    private string? _humanDeckPath;
+    private string? _aiDeckPath;
     private long _latestEventSequence;
     private string _lastObservedTuiText = string.Empty;
     private int? _latestObservedTurnNumber;
@@ -57,14 +59,38 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         _options = options.Value;
         _logger = logger;
         _startupTracker = new ForgeStartupTracker(logger);
-        _parser = new ForgeTuiParser(_options.PlayerSeats);
-        _eventParser = new ForgeTuiEventParser(_options.PlayerSeats);
+        _opponentSeatId = _options.PlayerSeats.Values.FirstOrDefault(seatId => !string.Equals(seatId, _options.HumanSeatId, StringComparison.Ordinal));
+        _parser = new ForgeTuiParser(_options.PlayerSeats, _opponentSeatId ?? "forge-player-2");
+        _eventParser = new ForgeTuiEventParser(_options.PlayerSeats, _opponentSeatId ?? "forge-player-2");
         _structuredParser = new ForgeStructuredOutputParser();
         _structuredState = new ForgeStructuredStateReconciler();
-        _opponentSeatId = _options.PlayerSeats.Values.FirstOrDefault(seatId => !string.Equals(seatId, _options.HumanSeatId, StringComparison.Ordinal));
     }
 
     public string Name => "ForgeTuiAdapter";
+
+    public async Task ConfigureDecksAsync(DeckLoadRequestDto request, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var human = request.Seats.SingleOrDefault(seat => seat.SeatId == _options.HumanSeatId)
+            ?? throw new InvalidOperationException($"Deck inventory has no {_options.HumanSeatId} seat.");
+        var aiSeatId = _opponentSeatId ?? "forge-player-2";
+        var ai = request.Seats.SingleOrDefault(seat => seat.SeatId == aiSeatId)
+            ?? throw new InvalidOperationException($"Deck inventory has no {aiSeatId} seat.");
+
+        var directory = Path.Combine(Path.GetTempPath(), "MtgTtsBridge", "decks");
+        Directory.CreateDirectory(directory);
+        var humanPath = Path.Combine(directory, "tts-human.dck");
+        var aiPath = Path.Combine(directory, "tts-ai.dck");
+        await WriteDeckAsync(humanPath, human.Cards, cancellationToken).ConfigureAwait(false);
+        await WriteDeckAsync(aiPath, ai.Cards, cancellationToken).ConfigureAwait(false);
+        lock (_sync)
+        {
+            _humanDeckPath = humanPath;
+            _aiDeckPath = aiPath;
+        }
+        _logger.LogInformation("Accepted TTS library deck inventories: humanCards={HumanCards} aiCards={AiCards}",
+            human.Cards.Sum(card => card.Count), ai.Cards.Sum(card => card.Count));
+    }
 
     public Task<AdapterStateDto> GetStateAsync(CancellationToken cancellationToken)
     {
@@ -164,7 +190,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         var startInfo = new ProcessStartInfo
         {
             FileName = _options.Executable,
-            Arguments = _options.Arguments,
+            Arguments = RenderArguments(),
             WorkingDirectory = _options.WorkingDirectory,
             UseShellExecute = false,
             RedirectStandardInput = true,
@@ -217,7 +243,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
         lock (_sync) _startupTracker.MarkProcessLaunched();
 
-        _logger.LogInformation("Started Forge TUI process {ProcessId}: {Executable} {Arguments}", process.Id, _options.Executable, _options.Arguments);
+        _logger.LogInformation("Started Forge TUI process {ProcessId}: {Executable} (TTS library decks, Legacy assumption)", process.Id, _options.Executable);
         _ = ReadOutputAsync(process.StandardOutput, isError: false, cancellation.Token);
         _ = ReadOutputAsync(process.StandardError, isError: true, cancellation.Token);
 
@@ -781,10 +807,59 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     {
         if (string.IsNullOrWhiteSpace(_options.Executable) || string.IsNullOrWhiteSpace(_options.WorkingDirectory))
             throw new InvalidOperationException("Forge:Executable and Forge:WorkingDirectory must be configured when Bridge:Adapter is ForgeTui.");
+        if (string.IsNullOrWhiteSpace(_options.Arguments))
+            throw new InvalidOperationException("Forge:Arguments must be configured.");
+        var usesTtsDeckTemplate = _options.Arguments.Contains("{humanDeck}", StringComparison.Ordinal)
+            || _options.Arguments.Contains("{aiDeck}", StringComparison.Ordinal);
+        if (usesTtsDeckTemplate && (!_options.Arguments.Contains("{humanDeck}", StringComparison.Ordinal) || !_options.Arguments.Contains("{aiDeck}", StringComparison.Ordinal)))
+            throw new InvalidOperationException("Forge:Arguments must contain both {humanDeck} and {aiDeck} placeholders.");
+        if (usesTtsDeckTemplate) lock (_sync)
+        {
+            if (string.IsNullOrWhiteSpace(_humanDeckPath) || string.IsNullOrWhiteSpace(_aiDeckPath))
+                throw new InvalidOperationException("TTS library decks have not been loaded. Import both decks on the table before NEW MATCH.");
+        }
         if (!CanResolveExecutable(_options.Executable))
             throw new FileNotFoundException("Configured Forge executable was not found.", _options.Executable);
         if (!Directory.Exists(_options.WorkingDirectory))
             throw new DirectoryNotFoundException($"Configured Forge working directory was not found: {_options.WorkingDirectory}");
+    }
+
+    private string RenderArguments()
+    {
+        if (!_options.Arguments.Contains("{humanDeck}", StringComparison.Ordinal)) return _options.Arguments;
+        lock (_sync)
+        {
+            return _options.Arguments
+                .Replace("{humanDeck}", _humanDeckPath!, StringComparison.Ordinal)
+                .Replace("{aiDeck}", _aiDeckPath!, StringComparison.Ordinal);
+        }
+    }
+
+    private static async Task WriteDeckAsync(string path, IReadOnlyList<DeckCardLoadDto> cards, CancellationToken cancellationToken)
+    {
+        var mainCards = cards
+            .Select(card => new { CardName = ImportedCardName(card.CardName), card.Count })
+            .Where(card => !string.IsNullOrWhiteSpace(card.CardName))
+            .GroupBy(card => card.CardName, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(group => $"{group.Sum(card => card.Count)} {group.First().CardName}")
+            .ToArray();
+        if (mainCards.Length == 0) throw new InvalidOperationException("TTS library did not contain any importable card names.");
+        var lines = new[] { "[metadata]", $"Name={Path.GetFileNameWithoutExtension(path)}", "[Main]" }
+            .Concat(mainCards);
+        var temporary = path + ".tmp";
+        await File.WriteAllLinesAsync(temporary, lines, cancellationToken).ConfigureAwait(false);
+        File.Move(temporary, path, overwrite: true);
+    }
+
+    private static string ImportedCardName(string name)
+    {
+        var imported = (name ?? string.Empty).Replace("\r", "\n", StringComparison.Ordinal);
+        var lineBreak = imported.IndexOf('\n');
+        if (lineBreak >= 0) imported = imported[..lineBreak];
+        var splitFace = imported.IndexOf(" // ", StringComparison.Ordinal);
+        if (splitFace >= 0) imported = imported[..splitFace];
+        return imported.Trim();
     }
 
     private static bool CanResolveExecutable(string executable)

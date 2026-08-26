@@ -1,7 +1,5 @@
 [CmdletBinding()]
 param(
-    [string]$HumanDeck,
-    [string]$AiDeck,
     [int]$Seed = 8675309
 )
 
@@ -27,10 +25,25 @@ if ($null -eq $java) {
 }
 $jarTool = Get-Command jar -ErrorAction SilentlyContinue
 if ($null -eq $jarTool) {
-    throw 'The Java JDK jar tool was not found on PATH. Install a Java 17+ JDK (not only a JRE) and rerun tools\forge\bootstrap.ps1 -Build.'
+    $jarBesideJava = Join-Path (Split-Path -Parent $java.Source) 'jar.exe'
+    if (Test-Path -LiteralPath $jarBesideJava -PathType Leaf) {
+        $jarTool = [PSCustomObject]@{ Source = $jarBesideJava }
+    }
+    else {
+        $jdkJar = Get-ChildItem 'C:\Program Files\Microsoft\jdk-*\bin\jar.exe' -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+        if ($null -eq $jdkJar) {
+            throw 'The Java JDK jar tool was not found. Install a Java 17+ JDK and rerun tools\forge\bootstrap.ps1 -Build.'
+        }
+        $jarTool = [PSCustomObject]@{ Source = $jdkJar.FullName }
+        $java = [PSCustomObject]@{ Source = (Join-Path $jdkJar.DirectoryName 'java.exe') }
+    }
 }
 
-$javaVersion = (& cmd.exe /d /c 'java -version 2>&1')
+$priorErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$javaVersion = (& $java.Source -version 2>&1)
+$ErrorActionPreference = $priorErrorActionPreference
 if ($LASTEXITCODE -ne 0) { throw "Java version probe failed with exit code $LASTEXITCODE.`n$($javaVersion -join [Environment]::NewLine)" }
 if (($javaVersion | Select-Object -First 1) -notmatch '(?:17|18|19|20|21|22|23|24|25)') {
     throw "Forge requires Java 17+. Detected: $($javaVersion | Select-Object -First 1)"
@@ -53,16 +66,12 @@ if ((Test-Path $tuiSource) -and ((Get-Item $tuiSource).LastWriteTimeUtc -gt $jar
     throw 'Forge TUI source is newer than the assembled JAR. Rebuild forge-headless before launching.'
 }
 
-if ([string]::IsNullOrWhiteSpace($HumanDeck)) { $HumanDeck = Join-Path $forgeRoot 'forge-headless\test_decks\monored.dck' }
-if ([string]::IsNullOrWhiteSpace($AiDeck)) { $AiDeck = Join-Path $forgeRoot 'forge-headless\test_decks\monored.dck' }
-$HumanDeck = (Resolve-Path $HumanDeck).Path
-$AiDeck = (Resolve-Path $AiDeck).Path
-
-$forgeArguments = "-Dforge.assets.dir=`"$assetsDirectory`" -jar `"$($jar.FullName)`" tui `"$HumanDeck`" `"$AiDeck`" --p1 tui --p2 ai --numeric-choices --seed $Seed"
+$forgeArguments = "-Dforge.assets.dir=`"$assetsDirectory`" -jar `"$($jar.FullName)`" tui `"{humanDeck}`" `"{aiDeck}`" --p1 tui --p2 ai --numeric-choices --seed $Seed"
 Write-Host 'Starting ForgeBot at http://127.0.0.1:43110'
 Write-Host 'Health endpoint: http://127.0.0.1:43110/health'
 Write-Host "Forge JAR: $($jar.FullName)"
 Write-Host "Java: $($java.Source)"
+Write-Host 'Decks: loaded from the two TTS library piles when NEW MATCH is pressed (Legacy assumption).'
 
 Push-Location $repoRoot
 try {

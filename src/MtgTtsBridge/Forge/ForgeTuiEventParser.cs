@@ -8,12 +8,17 @@ public sealed partial class ForgeTuiEventParser
 {
     private readonly StringBuilder _lineBuffer = new();
     private readonly IReadOnlyDictionary<string, string> _playerSeats;
+    private readonly string _opponentSeatId;
     private readonly Dictionary<int, (string? SeatId, string CardName)> _knownInstances = [];
     private readonly List<(string? SeatId, string CardName)> _pendingCasts = [];
     private readonly Dictionary<string, int> _lastLifeBySeat = new(StringComparer.Ordinal);
     private string? _snapshotPlayerName;
 
-    public ForgeTuiEventParser(IReadOnlyDictionary<string, string> playerSeats) => _playerSeats = playerSeats;
+    public ForgeTuiEventParser(IReadOnlyDictionary<string, string> playerSeats, string opponentSeatId = "forge-player-2")
+    {
+        _playerSeats = playerSeats;
+        _opponentSeatId = opponentSeatId;
+    }
 
     public void Reset()
     {
@@ -181,8 +186,12 @@ public sealed partial class ForgeTuiEventParser
         string summary) =>
         new(kind, ResolveSeat(playerName), cardName, forgeObjectId, sourceZone, destinationZone, summary);
 
-    private string? ResolveSeat(string playerName) =>
-        _playerSeats.TryGetValue(playerName, out var seatId) ? seatId : null;
+    private string? ResolveSeat(string playerName)
+    {
+        if (_playerSeats.TryGetValue(playerName, out var seatId)) return seatId;
+        // See ForgeTuiParser: the AI display name follows the chosen deck file.
+        return playerName.StartsWith("AI-", StringComparison.OrdinalIgnoreCase) ? _opponentSeatId : null;
+    }
 
     [GeneratedRegex(@"^\+\+\+ Turn: Turn \d+ \((?<player>.+)\)$", RegexOptions.CultureInvariant)]
     private static partial Regex TurnRegex();
