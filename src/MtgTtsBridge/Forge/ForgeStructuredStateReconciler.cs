@@ -99,6 +99,9 @@ public sealed class ForgeStructuredStateReconciler
                 .OrderBy(designation => designation, StringComparer.Ordinal)
                 .ToArray())).ToArray();
 
+        var combat = source.Combat is null ? null : new GameCombatSnapshotDto(source.Combat.Attacks.Select(attack => new GameCombatAttackSnapshotDto(
+            $"forge:{sessionId}:{attack.AttackerForgeObjectId}", attack.DefenderSeatId, attack.DefenderForgeObjectId,
+            attack.BlockerForgeObjectIds.Select(id => $"forge:{sessionId}:{id}").ToArray())).ToArray());
         return new GameSnapshotDto(
             sessionId,
             source.Sequence,
@@ -106,6 +109,7 @@ public sealed class ForgeStructuredStateReconciler
             seats,
             source.Stack.Select(ConvertCard).ToArray(),
             MonarchSeatId: source.MonarchSeatId,
+            Combat: combat,
             Result: source.GameEnded is null ? null : new GameResultDto(
                 source.GameEnded.WinnerSeatIds,
                 source.GameEnded.LoserSeatIds,
@@ -115,6 +119,19 @@ public sealed class ForgeStructuredStateReconciler
     private static IReadOnlyList<ForgeTuiRawEvent> Diff(GameSnapshotDto previous, GameSnapshotDto next)
     {
         var events = new List<ForgeTuiRawEvent>();
+        if (!CombatEqual(previous.Combat, next.Combat))
+        {
+            foreach (var attack in next.Combat?.Attacks ?? [])
+            {
+                var attacker = Flatten(next).GetValueOrDefault(attack.AttackerCardInstanceId);
+                if (attacker is not null) events.Add(new ForgeTuiRawEvent("attack_declared", attacker.ControllerSeatId ?? attacker.OwnerSeatId, attacker.CardName, attacker.ForgeCardId, "battlefield", "battlefield", "Authoritative combat assignment."));
+                foreach (var blockerId in attack.BlockerCardInstanceIds)
+                {
+                    var blocker = Flatten(next).GetValueOrDefault(blockerId);
+                    if (blocker is not null) events.Add(new ForgeTuiRawEvent("block_declared", blocker.ControllerSeatId ?? blocker.OwnerSeatId, blocker.CardName, blocker.ForgeCardId, "battlefield", "battlefield", "Authoritative combat assignment."));
+                }
+            }
+        }
         if (previous.Result is null && next.Result is not null)
         {
             events.Add(new ForgeTuiRawEvent(
@@ -320,6 +337,10 @@ public sealed class ForgeStructuredStateReconciler
     private static bool SetEqual(IReadOnlyList<string>? first, IReadOnlyList<string>? second) =>
         new HashSet<string>(first ?? [], StringComparer.OrdinalIgnoreCase)
             .SetEquals(second ?? []);
+
+    private static bool CombatEqual(GameCombatSnapshotDto? first, GameCombatSnapshotDto? second) =>
+        string.Join(";", first?.Attacks.Select(a => $"{a.AttackerCardInstanceId}|{a.DefenderSeatId}|{a.DefenderForgeObjectId}|{string.Join(',', a.BlockerCardInstanceIds)}") ?? []) ==
+        string.Join(";", second?.Attacks.Select(a => $"{a.AttackerCardInstanceId}|{a.DefenderSeatId}|{a.DefenderForgeObjectId}|{string.Join(',', a.BlockerCardInstanceIds)}") ?? []);
 
     private static IEnumerable<string> UnionKeys(
         IReadOnlyDictionary<string, int>? first,

@@ -240,6 +240,7 @@ BridgeState = {
     -- transition. Preserve only its presentation row; the later exact
     -- CardInstanceId event still owns physical identity and movement.
     battlefieldKindByInstanceId = {},
+    presentedCombatSignature = nil,
     zoneAnchorGuidBySeatAndZone = {},
     bootstrapping = false,
     setupBusy = false,
@@ -1905,6 +1906,26 @@ function BridgeSnapshotMayMutatePublicZones(snapshot)
     return snapshotCursor <= tonumber(BridgeState.lastAppliedEventSequence or 0)
 end
 
+function BridgeApplyCombatSnapshot(combat)
+    local parts = {}
+    for _, attack in ipairs((combat and combat.attacks) or {}) do table.insert(parts, tostring(attack.attackerCardInstanceId) .. "|" .. table.concat(attack.blockerCardInstanceIds or {}, ",")) end
+    table.sort(parts)
+    local signature = table.concat(parts, ";")
+    if BridgeState.presentedCombatSignature == signature then return end
+    BridgeState.presentedCombatSignature = signature
+    BridgeReturnAttackPresentation(nil)
+    for _, attack in ipairs((combat and combat.attacks) or {}) do
+        local attackerGuid = BridgeState.physicalByInstanceId[attack.attackerCardInstanceId]
+        local attacker = attackerGuid and BridgeGetLiveObjectByGuid(attackerGuid) or nil
+        if attacker ~= nil then BridgeMoveToAttackLane(BridgeState.physicalSeatByGuid[attackerGuid], attacker) end
+        for _, blockerId in ipairs(attack.blockerCardInstanceIds or {}) do
+            local blockerGuid = BridgeState.physicalByInstanceId[blockerId]
+            local blocker = blockerGuid and BridgeGetLiveObjectByGuid(blockerGuid) or nil
+            if blocker ~= nil then BridgeMoveToBlockerLane(BridgeState.physicalSeatByGuid[blockerGuid], blocker) end
+        end
+    end
+end
+
 function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     local movedCount = 0
     BridgePresentationMetric("fullSnapshotReconcileCount")
@@ -1956,6 +1977,7 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
             end
         end
     end
+    BridgeApplyCombatSnapshot(snapshot.combat)
     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
     BridgeLogSnapshotOrdering("applied", snapshot, reason)
     if movedCount > 0 then

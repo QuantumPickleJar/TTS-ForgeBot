@@ -16,7 +16,11 @@ public sealed record GameSnapshotDto(
     // Player-level designation identity is Forge truth. This supports a
     // table-native Monarch helper without implementing Monarch in Lua.
     string? MonarchSeatId = null,
+    GameCombatSnapshotDto? Combat = null,
     GameResultDto? Result = null);
+
+public sealed record GameCombatSnapshotDto(IReadOnlyList<GameCombatAttackSnapshotDto> Attacks);
+public sealed record GameCombatAttackSnapshotDto(string AttackerCardInstanceId, string? DefenderSeatId, int? DefenderForgeObjectId, IReadOnlyList<string> BlockerCardInstanceIds);
 
 public sealed record GameResultDto(
     IReadOnlyList<string> WinnerSeatIds,
