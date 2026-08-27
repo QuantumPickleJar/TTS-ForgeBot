@@ -71,9 +71,9 @@ try {
         Write-Host 'Skipping patch application because Forge has local bridge changes.'
     }
     else {
-        & git apply --check $bridgePatch
+        & git apply --recount --check $bridgePatch
         if ($LASTEXITCODE -ne 0) { throw 'Forge bridge patch does not apply cleanly to the requested ref.' }
-        & git apply $bridgePatch
+        & git apply --recount $bridgePatch
         if ($LASTEXITCODE -ne 0) { throw 'Failed to apply the Forge bridge patch.' }
         Write-Host 'Applied Forge bridge patch.'
     }

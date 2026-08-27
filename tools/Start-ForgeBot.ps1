@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [int]$Seed = 8675309,
+    [Nullable[int]]$Seed,
     [switch]$TraceBridgeState,
     [switch]$ManualMana
 )
@@ -101,11 +101,13 @@ if ((Test-Path $bridgeStateFeedSource) -and ((Get-Item $bridgeStateFeedSource).L
 
 $bridgeStateTraceOption = if ($TraceBridgeState) { '-Dforge.bridge.trace=true ' } else { '' }
 $manualManaOption = if ($ManualMana) { ' --askmana' } else { '' }
-$forgeArguments = "$($bridgeStateTraceOption)-Dforge.assets.dir=`"$assetsDirectory`" -jar `"$($jar.FullName)`" tui `"{humanDeck}`" `"{aiDeck}`" --p1 tui --p2 ai --numeric-choices$manualManaOption --seed $Seed"
+$seedOption = if ($null -ne $Seed) { " --seed $Seed" } else { ' --seed {seed}' }
+$forgeArguments = "$($bridgeStateTraceOption)-Dforge.assets.dir=`"$assetsDirectory`" -jar `"$($jar.FullName)`" tui `"{humanDeck}`" `"{aiDeck}`" --p1 tui --p2 ai --numeric-choices$manualManaOption$seedOption"
 Write-Host 'Starting ForgeBot at http://127.0.0.1:43110'
 Write-Host 'Health endpoint: http://127.0.0.1:43110/health'
 Write-Host "Forge JAR: $($jar.FullName)"
 Write-Host "Java: $($java.Source)"
+if ($null -ne $Seed) { Write-Host "Forge seed: $Seed (explicit)" } else { Write-Host 'Forge seed: random for each NEW MATCH' }
 Write-Host 'Decks: loaded from the two TTS library piles when NEW MATCH is pressed (Legacy assumption).'
 if ($TraceBridgeState) { Write-Host 'BridgeStateFeed trace: enabled (public battlefield summaries only).' }
 if ($ManualMana) { Write-Host 'Mana payment: manual human Forge source choices enabled.' }

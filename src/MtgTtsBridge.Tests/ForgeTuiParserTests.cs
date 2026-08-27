@@ -567,6 +567,54 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void DelveDecision_UsesTypedCostMetadataAndExactGraveyardCards()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "Choose graveyard cards to exile for Delve\n" +
+            "[kind=cost_selection costKind=delve sourceZone=graveyard min=0 max=4 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Consider [id=41]\n  2. Consider [id=42]\nEnter choice (0-2): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("cost_selection", decision.Kind);
+        Assert.Equal("delve", decision.CostKind);
+        Assert.Equal("graveyard", decision.CandidateSourceZone);
+        Assert.Equal(0, decision.MinSelections);
+        Assert.Equal(4, decision.MaxSelections);
+        Assert.Equal("forge-object:41", decision.Actions[1].CardInstanceId);
+        Assert.Equal("forge-object:42", decision.Actions[2].CardInstanceId);
+    }
+
+    [Fact]
+    public void MulliganDecisions_KeepNativeStagesAndExactBottomCardIdentity()
+    {
+        var parser = new ForgeTuiParser();
+        var keep = parser.Append(
+            "=== FORGE CHOICE ===\nOpening hand\n" +
+            "[kind=mulligan mulliganStage=keep_or_mulligan min=1 max=1 selected=0 ordered=false]\n" +
+            "  0. Keep\n  1. Mulligan\nEnter choice (0-1): ");
+
+        var keepDecision = Assert.IsType<ForgeTuiDecision>(keep.ParsedDecision).Decision;
+        Assert.Equal("mulligan", keepDecision.Kind);
+        Assert.Equal("keep_or_mulligan", keepDecision.MulliganStage);
+        var keepParsed = Assert.IsType<ForgeTuiDecision>(keep.ParsedDecision);
+        Assert.Equal("0", keepParsed.Inputs[keepDecision.Actions[0].ActionId]);
+        Assert.Equal("1", keepParsed.Inputs[keepDecision.Actions[1].ActionId]);
+
+        var bottom = parser.Append(
+            "=== FORGE CHOICE ===\nChoose cards to put on the bottom of your library\n" +
+            "[kind=mulligan mulliganStage=bottom_selection sourceZone=hand min=1 max=1 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Island [id=51]\n  2. Island [id=52]\nEnter choice (0-2): ");
+
+        var bottomDecision = Assert.IsType<ForgeTuiDecision>(bottom.ParsedDecision).Decision;
+        Assert.Equal("bottom_selection", bottomDecision.MulliganStage);
+        Assert.Equal("hand", bottomDecision.CandidateSourceZone);
+        Assert.Equal("forge-object:51", bottomDecision.Actions[1].CardInstanceId);
+        Assert.Equal("forge-object:52", bottomDecision.Actions[2].CardInstanceId);
+    }
+
+    [Fact]
     public void BlockerDecision_UsesProducerSuppliedExactAttackerContext()
     {
         var parser = new ForgeTuiParser();

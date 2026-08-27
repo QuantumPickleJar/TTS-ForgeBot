@@ -90,6 +90,18 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void DelveAndMulliganRemainNativeForgeControllerTransactions()
+    {
+        Assert.Contains("chooseCardsToDelve(int genericAmount, CardCollection grave)", Patch);
+        Assert.Contains("costKind=delve sourceZone=graveyard", Patch);
+        Assert.Contains("mulliganKeepHand(Player firstPlayer, int cardsToReturn)", Patch);
+        Assert.Contains("mulliganStage=keep_or_mulligan", Patch);
+        Assert.Contains("tuckCardsViaMulligan(CardCollectionView hand, int cardsToReturn)", Patch);
+        Assert.Contains("mulliganStage=bottom_selection sourceZone=hand", Patch);
+        Assert.Contains("MulliganService owns the mulligan rule", Patch);
+    }
+
+    [Fact]
     public void NumericBlockerMenusEnumerateOnlyForgeLegalRelationshipsIncludingTokens()
     {
         Assert.Contains("List<Card> legalBlockers = new ArrayList<>()", Patch);

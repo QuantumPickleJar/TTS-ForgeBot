@@ -16,7 +16,7 @@ BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
 -- lands after they enter. STRICT re-applies the persistent land row only on
 -- authoritative layout events or an explicit organize request.
 BRIDGE_LAND_PLACEMENT_MODE = BRIDGE_LAND_PLACEMENT_MODE or "FREEFORM"
-BRIDGE_SCRIPT_REVISION = "2026-08-27-f2c-v6-vehicle-zone-guard"
+BRIDGE_SCRIPT_REVISION = "2026-08-27-f2c-v14-delve-mulligan"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -240,6 +240,10 @@ BridgeState = {
     prioritySeatId = nil,
     stackSummary = {},
     yieldSeatId = nil,
+    -- End Turn is scoped to the current Forge turn. Keeping only a seat ID
+    -- allowed a prior yield to resume when that same player received their
+    -- next turn, silently skipping an entire turn cycle.
+    yieldTurnNumber = nil,
     counterStateByInstanceId = {},
     keywordStateByInstanceId = {},
     untappedRotationByGuid = {},
@@ -253,6 +257,10 @@ BridgeState = {
     -- identity so the second renderer never treats a temporarily unresolved
     -- first renderer as a name-based physical desync.
     pendingStructuredZoneTransitionByInstanceId = {},
+    -- A card returning from a public zone to a hand can be visually
+    -- indistinguishable from another copy already in that hand. Keep the
+    -- authoritative Forge identity pending until it next becomes public.
+    pendingPrivateHandIdentityByInstanceId = {},
     -- A semantic land_played line can precede the coalesced structured zone
     -- transition. Preserve only its presentation row; the later exact
     -- CardInstanceId event still owns physical identity and movement.
@@ -1537,8 +1545,22 @@ function BridgeHudAction(player, value, id)
         or not BridgeDecisionHasAction(decision, action.actionId) then return end
     BridgeClaimHumanTtsColor(decision.seatId, player)
     if BridgeDecisionNeedsConfirmation(decision) then
-        BridgeState.selectedActionIds[action.actionId] = not BridgeState.selectedActionIds[action.actionId]
-        BridgeState.selectionDecisionId = decision.decisionId
+        -- Structured Forge collection menus use a real `Done` action after
+        -- toggling choices. It is a commit, not another local selection.
+        if action.type == "choose_none" then
+            if not BridgeCanSubmitStructuredDone(decision, "hud_collection_done") then return end
+            BridgeResetSelectionState()
+            BridgeSubmitChoice(decision.decisionId, action.actionId, "hud_collection_done")
+            return
+        end
+        if BridgeIsStructuredForgeToggleChoice(decision) then
+            -- Forge has already modeled the selected set. Send the exact
+            -- toggle now so searches and other non-physical option rows do
+            -- not wait for a local confirmation that Forge cannot observe.
+            BridgeSubmitChoice(decision.decisionId, action.actionId, "hud_structured_toggle")
+            return
+        end
+        BridgeToggleSingleSelection(decision, action.actionId, nil)
         BridgeUiMarkDirty("selection-toggle")
         return
     end
@@ -1825,6 +1847,113 @@ function BridgeDecisionNeedsConfirmation(decision)
     return decision.requiresConfirmation == true or decision.confirmRequired == true
 end
 
+function BridgeIsStructuredForgeToggleChoice(decision)
+    if decision == nil or decision.confirmRequired ~= true then return false end
+    local kind = tostring(decision.kind or "")
+    return kind == "discard" or kind == "sacrifice" or kind == "payment_option"
+        or kind == "search_selection" or kind == "entity_selection" or kind == "cost_selection"
+        or (kind == "mulligan" and tostring(decision.mulliganStage or "") == "bottom_selection")
+end
+
+function BridgeCanSubmitStructuredDone(decision, source)
+    if decision == nil or decision.confirmRequired ~= true then return true end
+    local selected = tonumber(decision.selectedCount or 0) or 0
+    local minimum = tonumber(decision.minSelections or 0) or 0
+    local maximum = tonumber(decision.maxSelections or minimum) or minimum
+    if selected < minimum or selected > maximum then
+        BridgeShowError(string.format(
+            "Forge requires %d to %d selections before Done; currently selected %d",
+            minimum, maximum, selected))
+        BridgeLog("[Bridge] blocked invalid structured Done source=" .. tostring(source)
+            .. " decision=" .. tostring(decision.decisionId))
+        return false
+    end
+    return true
+end
+
+-- The controlled Forge TUI exposes collection choices as a toggle menu: a
+-- card choice updates Forge's selected set, then a separate `Done` choice
+-- commits it.  A local confirmation must not pretend the first input is the
+-- final commit.
+function BridgeIsStructuredDiscardChoice(decision)
+    return decision ~= nil and decision.kind == "discard" and decision.confirmRequired == true
+end
+
+function BridgeTryFinishDiscardChoice(decision, source)
+    if not BridgeIsStructuredDiscardChoice(decision) then return end
+    local selected = tonumber(decision.selectedCount or 0) or 0
+    local minimum = tonumber(decision.minSelections or 1) or 1
+    local maximum = tonumber(decision.maxSelections or minimum) or minimum
+    local graveyardDrop = source == "physical_discard_graveyard"
+    -- A fixed-count discard is complete as soon as Forge has accepted the
+    -- last card.  A deliberate graveyard drop is also an explicit request to
+    -- finish at the current legal count, even when a spell permits more.
+    if selected < minimum or selected > maximum or (not graveyardDrop and minimum ~= maximum) then return end
+    for _, action in ipairs(decision.actions or {}) do
+        if action.type == "choose_none" then
+            BridgeLog("[Bridge] completing Forge discard with Done decision=" .. tostring(decision.decisionId)
+                .. " selected=" .. tostring(selected) .. " source=" .. tostring(source))
+            BridgeSubmitChoice(decision.decisionId, action.actionId, "discard_auto_done")
+            return
+        end
+    end
+    BridgeShowError("Forge accepted the discard selection but did not offer Done")
+end
+
+function BridgeTryFinishSingleOptionalPaymentChoice(decision, source)
+    if decision == nil or decision.kind ~= "payment_option" or decision.confirmRequired ~= true then return end
+    local selected = tonumber(decision.selectedCount or 0) or 0
+    local maximum = tonumber(decision.maxSelections or 1) or 1
+    -- Optional enter-untapped style choices are one-of-one. Once Forge accepts
+    -- the selected cost, submit its explicit Done action.
+    if selected ~= 1 or maximum ~= 1 then return end
+    for _, action in ipairs(decision.actions or {}) do
+        if action.type == "choose_none" then
+            BridgeLog("[Bridge] completing single optional payment with Done decision="
+                .. tostring(decision.decisionId) .. " source=" .. tostring(source))
+            BridgeSubmitChoice(decision.decisionId, action.actionId, "payment_option_auto_done")
+            return
+        end
+    end
+end
+
+function BridgeTryFinishFixedSacrificeChoice(decision, source)
+    if decision == nil or decision.kind ~= "sacrifice" or decision.confirmRequired ~= true then return end
+    local selected = tonumber(decision.selectedCount or 0) or 0
+    local minimum = tonumber(decision.minSelections or 1) or 1
+    local maximum = tonumber(decision.maxSelections or minimum) or minimum
+    -- Sacrifice costs such as Windswept Heath's are fixed-count Forge toggle
+    -- menus. A selected legal cost must be followed by its explicit Done input;
+    -- do that transport step instead of waiting for an unrelated next decision.
+    if minimum ~= maximum or selected ~= minimum then return end
+    for _, action in ipairs(decision.actions or {}) do
+        if action.type == "choose_none" then
+            BridgeLog("[Bridge] completing fixed sacrifice with Done decision="
+                .. tostring(decision.decisionId) .. " source=" .. tostring(source))
+            BridgeSubmitChoice(decision.decisionId, action.actionId, "sacrifice_auto_done")
+            return
+        end
+    end
+end
+
+function BridgeTryFinishFixedRequiredSelection(decision, source)
+    if not BridgeIsStructuredForgeToggleChoice(decision) then return end
+    local kind = tostring(decision.kind or "")
+    if kind ~= "search_selection" and kind ~= "entity_selection" and kind ~= "cost_selection" then return end
+    local selected = tonumber(decision.selectedCount or 0) or 0
+    local minimum = tonumber(decision.minSelections or 0) or 0
+    local maximum = tonumber(decision.maxSelections or minimum) or minimum
+    if minimum <= 0 or minimum ~= maximum or selected ~= minimum then return end
+    for _, action in ipairs(decision.actions or {}) do
+        if action.type == "choose_none" and BridgeCanSubmitStructuredDone(decision, "fixed_selection_auto_done") then
+            BridgeLog("[Bridge] completing fixed required " .. kind .. " with Done decision="
+                .. tostring(decision.decisionId) .. " source=" .. tostring(source))
+            BridgeSubmitChoice(decision.decisionId, action.actionId, "fixed_selection_auto_done")
+            return
+        end
+    end
+end
+
 function BridgeIsStaleChoiceRejection(body)
     local errorCode = body and body.errorCode or nil
     return errorCode == "stale_decision_id"
@@ -2030,6 +2159,10 @@ function BridgeSubmitChoice(decisionId, actionId, source)
             BridgeMarkTransitionExpected(0)
             BridgeRecordLatencyProbeDecisionReady(body.currentDecision)
             BridgeAcceptDecision(body.currentDecision, "choice_response", activeTransaction.sessionId, activeTransaction.presentationGeneration)
+            BridgeTryFinishDiscardChoice(body.currentDecision, activeTransaction.source)
+            BridgeTryFinishSingleOptionalPaymentChoice(body.currentDecision, activeTransaction.source)
+            BridgeTryFinishFixedSacrificeChoice(body.currentDecision, activeTransaction.source)
+            BridgeTryFinishFixedRequiredSelection(body.currentDecision, activeTransaction.source)
         else
             BridgeState.lastDecision = nil
             BridgeClearHighlights()
@@ -3639,6 +3772,13 @@ function BridgeChooseDecisionOption(object, playerColor, altClick)
         return
     end
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
+    local action = nil
+    for _, candidate in ipairs(decision.actions or {}) do
+        if candidate.actionId == actionId then action = candidate; break end
+    end
+    if action ~= nil and action.type == "choose_none" and not BridgeCanSubmitStructuredDone(decision, "physical_option_done") then
+        return
+    end
     BridgeClearHighlights()
     BridgeResetSelectionState()
     BridgeSubmitChoice(decisionId, actionId, "generic_option_control")
@@ -3888,6 +4028,7 @@ function BridgePressPass(object, playerColor, altClick)
     end
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
     BridgeState.yieldSeatId = nil
+    BridgeState.yieldTurnNumber = nil
     for _, action in ipairs(decision.actions or {}) do
         if action.type == "pass_priority" then
             BridgeClearHighlights()
@@ -3919,6 +4060,7 @@ function BridgePressEndTurn(object, playerColor, altClick)
     for _, action in ipairs(decision.actions or {}) do
         if action.type == "pass_priority" then
             BridgeState.yieldSeatId = decision.seatId
+            BridgeState.yieldTurnNumber = tonumber(decision.turnNumber or BridgeState.tableTurnCount or 0) or 0
             BridgeClearHighlights()
             BridgeSubmitChoice(decision.decisionId, action.actionId, "yield_button")
             return
@@ -4066,6 +4208,24 @@ function BridgeSelectionCount()
     return count
 end
 
+-- Forge's numeric chooser accepts one card number at a time and then prints a
+-- new authoritative menu. Keep the local draft to one card so CONFIRM always
+-- advances rather than leaving an unsubmitable multi-card selection.
+function BridgeToggleSingleSelection(decision, actionId, guid)
+    if decision == nil or actionId == nil then return false end
+    local selected = BridgeState.selectedActionIds[actionId] == true
+    if not selected and BridgeSelectionCount() >= 1 then
+        BridgeShowError("choose one card, confirm it, then Forge will request any remaining cards")
+        return false
+    end
+    BridgeState.selectedActionIds[actionId] = not selected
+    BridgeState.selectedGuidByActionId[actionId] = selected and nil or guid
+    BridgeState.selectionDecisionId = decision.decisionId
+    BridgeLog("[Bridge] staged Forge selection decision=" .. tostring(decision.decisionId)
+        .. " action=" .. tostring(actionId) .. " selected=" .. tostring(not selected))
+    return true
+end
+
 function BridgeEnsureSelectionControls(decision)
     if BridgeState.ui ~= nil and BridgeState.ui.mounted then return end
     if not BridgeDecisionNeedsConfirmation(decision) or #(BridgeState.selectionControlGuids or {}) > 0 then return end
@@ -4130,10 +4290,6 @@ function BridgeConfirmSelection(object, playerColor, altClick)
         BridgeShowError("Forge permits zero selections but supplied no explicit zero-selection action")
         return
     end
-    if count > 1 then
-        BridgeShowError("this Forge TUI transport cannot atomically submit multiple selections yet")
-        return
-    end
     for actionId, selected in pairs(BridgeState.selectedActionIds) do
         if selected then
             BridgeResetSelectionState()
@@ -4178,8 +4334,12 @@ function BridgeRenderDecision(decision)
     end
 
     if BridgeState.yieldSeatId ~= nil then
-        if decision.seatId ~= BridgeState.yieldSeatId or decision.kind ~= "main_priority" then
+        local yieldTurn = tonumber(BridgeState.yieldTurnNumber or 0) or 0
+        local decisionTurn = tonumber(decision.turnNumber or 0) or 0
+        if decision.seatId ~= BridgeState.yieldSeatId or decision.kind ~= "main_priority"
+            or (yieldTurn > 0 and decisionTurn > 0 and decisionTurn ~= yieldTurn) then
             BridgeState.yieldSeatId = nil
+            BridgeState.yieldTurnNumber = nil
         else
             for _, action in ipairs(decision.actions) do
                 if action.type == "pass_priority" then
@@ -4372,6 +4532,32 @@ function onObjectPickUp(playerColor, object)
 
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
 
+    -- A target is a single Forge choice, not a local collection. Requiring a
+    -- second confirmation after touching a legal instant target left the stack
+    -- waiting while TTS had not actually sent Forge any input.
+    if object.tag == "Card" and action.type == "choose_target" then
+        BridgeClearHighlights()
+        BridgeSubmitChoice(decision.decisionId, action.actionId, "physical_card_target_pickup")
+        return
+    end
+
+    -- Sacrifice costs are Forge's toggle-plus-Done transport. Send the toggle
+    -- immediately; the accepted fixed-count response is completed above.
+    if object.tag == "Card" and action.type == "sacrifice" and decision.confirmRequired == true then
+        BridgeClearHighlights()
+        BridgeSubmitChoice(decision.decisionId, action.actionId, "physical_sacrifice_pickup")
+        return
+    end
+
+    -- Delve and post-mulligan bottom choices use Forge's native sequential
+    -- toggle transaction. A physical pickup submits the exact candidate
+    -- ActionId; the returned Forge decision redraws both physical highlights
+    -- and the HUD from the same staged state. No local zone move is made.
+    if object.tag == "Card" and BridgeIsStructuredForgeToggleChoice(decision) then
+        BridgeSubmitChoice(decision.decisionId, action.actionId, "physical_structured_toggle")
+        return
+    end
+
     BridgeState.pendingIntent = {
         guid = object.getGUID(),
         position = object.getPosition(),
@@ -4385,11 +4571,20 @@ function onObjectPickUp(playerColor, object)
     }
     BridgeClearHighlights()
 
+    -- A graveyard drop is a physical confirmation for a Forge discard menu.
+    -- Keep its intent alive through onObjectDrop instead of immediately
+    -- rolling it back into the hand's local selection staging.
+    if object.tag == "Card" and action.type == "discard_card" and BridgeIsStructuredDiscardChoice(decision) then
+        return
+    end
+
     if object.tag == "Card" and (BridgeDecisionNeedsConfirmation(decision) or action.requiresSelection == true) then
         local actionId = action.actionId
-        local selected = BridgeState.selectedActionIds[actionId] == true
-        BridgeState.selectedActionIds[actionId] = not selected
-        BridgeState.selectedGuidByActionId[actionId] = selected and nil or object.getGUID()
+        if not BridgeToggleSingleSelection(decision, actionId, object.getGUID()) then
+            BridgeRollbackPendingIntent()
+            BridgeRenderDecision(decision)
+            return
+        end
         object.use_hands = BridgeState.pendingIntent.useHands
         object.setPositionSmooth(BridgeState.pendingIntent.position, false, true)
         object.setRotationSmooth(BridgeState.pendingIntent.rotation, false, true)
@@ -5745,8 +5940,13 @@ function BridgeApplyAuthoritativeEvent(event)
         local turnSeat = BRIDGE_SEATS[BridgeState.currentTurnSeatId]
         BridgeSetStatus("CURRENT TURN: " .. tostring(turnSeat and turnSeat.ttsColor or BridgeState.currentTurnSeatId), BridgeTurnLabel() .. " - AI THINKING")
         BridgeLog("[Bridge] authoritative turn changed to seat " .. tostring(BridgeState.currentTurnSeatId) .. " turn=" .. tostring(event.turnNumber))
-        if BridgeState.yieldSeatId ~= nil and BridgeState.yieldSeatId ~= event.seatId then
+        -- End Turn means "the remainder of this turn". A turn transition is
+        -- authoritative proof that scope has ended even when a legacy text
+        -- event lacks a numeric turn value or a reliable seat label.
+        if BridgeState.yieldSeatId ~= nil then
             BridgeState.yieldSeatId = nil
+            BridgeState.yieldTurnNumber = nil
+            BridgeLog("[Bridge] cleared end-turn yield at authoritative turn transition")
         end
         BridgeMarkTransitionExpected(0)
         BridgeUiMarkDirty("turn")
@@ -6311,6 +6511,21 @@ function BridgeResolveResolvedSpellObject(event)
         return pendingObject, nil
     end
 
+    if intent.action.type == "discard_card" and BridgeIsStructuredDiscardChoice(decision) then
+        if BridgeObjectNearSeatZone(object, intent.seatId, "graveyard") then
+            BridgeSubmitChoice(intent.decisionId, intent.action.actionId, "physical_discard_graveyard")
+            return
+        end
+        -- A normal pickup/drop in the hand remains selectable, but deliberately
+        -- requires the existing CONFIRM control.  Only an actual graveyard
+        -- drop bypasses that extra gesture.
+        BridgeRollbackPendingIntent()
+        if BridgeToggleSingleSelection(decision, intent.action.actionId, intent.guid) then
+            BridgeRenderDecision(decision)
+        end
+        return
+    end
+
     if event.cardInstanceId ~= nil then
         local mapped, mappedError = BridgeResolveMappedInstance(event)
         if mapped ~= nil then return mapped, nil end
@@ -6552,6 +6767,24 @@ function BridgeApplyStructuredCardMove(event)
     if object == nil and event.destinationZone == "battlefield"
         and (event.sourceZone == nil or event.sourceZone == "" or event.sourceZone == "token" or event.sourceZone == "tokens") then
         return moveFromTokenFetcherToBattlefield()
+    end
+
+    if object == nil and event.sourceZone == "exile" and event.destinationZone == "hand" then
+        -- Hands deliberately do not expose a stable visible identity for every
+        -- card. With duplicate Plains, selecting either physical card would be
+        -- a lie; Forge has already made the authoritative move. Preserve that
+        -- instance as pending and repair its association only when it later
+        -- becomes public again.
+        BridgeState.pendingPrivateHandIdentityByInstanceId[event.cardInstanceId] = {
+            seatId = event.seatId,
+            cardName = event.cardName,
+            sequence = event.sequence
+        }
+        BridgeLog(string.format(
+            "[Bridge] deferred indistinguishable private-hand mapping seq=%s instance=%s card='%s' reason=%s; Forge move remains authoritative",
+            tostring(event.sequence), tostring(event.cardInstanceId), tostring(event.cardName), tostring(resolveError)))
+        BridgeScheduleSnapshotReconcile("deferred private hand identity " .. tostring(event.sequence))
+        return true, nil
     end
 
     if object == nil then
@@ -6802,6 +7035,23 @@ function BridgeInvokeButtonClick(source, button, seatColor)
     local clickFunction = tostring(button.click_function or "")
     if clickFunction == "" then return false end
 
+    -- TTS invokes a card button as callback(card, playerColor, altClick).
+    -- Card Importer's EmblemsAndTokens handler has exactly that positional
+    -- shape. Object.call instead supplies one table, leaving playerColor nil
+    -- and producing the Easy Modules nil-call failure seen at the table.
+    local globalHandler = _G[clickFunction]
+    if type(globalHandler) == "function" then
+        local ok, callError = pcall(function()
+            globalHandler(source, seatColor, false)
+        end)
+        if ok then
+            BridgeLog("[Bridge] invoked built-in card button positionally function=" .. clickFunction)
+            return true
+        end
+        BridgeLog("[Bridge] positional built-in card button failed function=" .. clickFunction
+            .. " error=" .. tostring(callError))
+    end
+
     local payload = {
         obj = source,
         player_color = seatColor,
@@ -6829,14 +7079,6 @@ function BridgeInvokeButtonClick(source, button, seatColor)
     if source.call ~= nil then
         local ok = pcall(function()
             source.call(clickFunction, payload)
-        end)
-        if ok then return true end
-    end
-
-    local globalHandler = _G[clickFunction]
-    if type(globalHandler) == "function" then
-        local ok = pcall(function()
-            globalHandler(source, seatColor, false)
         end)
         if ok then return true end
     end
@@ -6904,12 +7146,23 @@ function BridgeTrySpawnTokenViaEncodeButton(expectedName, seatId, callback)
     end)
 
     local function findSpawnedToken()
+        local spawned = {}
         for _, object in ipairs(getAllObjects()) do
             if object.tag == "Card" then
                 local guid = BridgeSafeObjectGuid(object)
-                if guid ~= nil and beforeGuids[guid] ~= true and BridgeTokenNameMatches(BridgeSafeObjectName(object), expectedName) then
-                    return object
+                if guid ~= nil and beforeGuids[guid] ~= true then
+                    table.insert(spawned, object)
                 end
+            end
+        end
+        for _, object in ipairs(spawned) do
+            if BridgeTokenNameMatches(BridgeSafeObjectName(object), expectedName) then
+                -- A source-card token button may emit a bundle (for example,
+                -- Blackjack plus Treasure). Keep only the requested result.
+                for _, extra in ipairs(spawned) do
+                    if extra ~= object then pcall(function() extra.destruct() end) end
+                end
+                return object
             end
         end
         return nil
@@ -6994,11 +7247,154 @@ function BridgeSpawnGenericTokenProxy(expectedName, seatId, callback)
                 callback(nil, "generic token proxy setup failed: " .. tostring(setupError))
                 return
             end
-            BridgeLog("[Bridge] token fetcher resolved via generic Forge token proxy for " .. tostring(expectedName))
+            BridgeLog("[Bridge] DEGRADED token presentation: exact art-bearing import unavailable; using generic Forge token proxy for " .. tostring(expectedName))
             BridgeMarkTokenPhysicalObject(object)
             callback(object, nil)
         end
     })
+end
+
+function BridgeIsArtBearingCard(object)
+    if not BridgeObjectIsUsable(object) or object.tag ~= "Card" then return false end
+    local ok, data = pcall(function() return object.getData() end)
+    if not ok or type(data) ~= "table" then return false end
+    local customDeck = data.CustomDeck
+    if type(customDeck) ~= "table" or next(customDeck) == nil then return false end
+    for _, deck in pairs(customDeck) do
+        if type(deck) == "table" and tostring(deck.FaceURL or "") ~= "" then
+            return true
+        end
+    end
+    return false
+end
+
+local BRIDGE_TOKEN_IMPORT_BACK_URL = "https://steamusercontent-a.akamaihd.net/ugc/1647720103762682461/35EF6E87970E2A5D6581E7D96A99F8A575B7A15F/"
+local BRIDGE_TOKEN_IMPORT_PRIMARY_URL = "https://importer.rikrassen.xyz/build"
+local BRIDGE_TOKEN_IMPORT_FALLBACK_URL = "https://importer-m7vpzqazfa-uc.a.run.app/build"
+
+function BridgeExactTokenImportPayload(expectedName)
+    return {
+        url = "",
+        -- This is an exact token request, not a source-card request. The
+        -- Rikrassen backend returns one TTS custom-card JSON object for it.
+        data = "1 " .. tostring(expectedName),
+        backURL = BRIDGE_TOKEN_IMPORT_BACK_URL,
+        useStates = true,
+        hand = {
+            position = {x = 0, y = 0, z = 0},
+            forward = {x = 0, y = 0, z = 1},
+            right = {x = 1, y = 0, z = 0},
+            up = {x = 0, y = 1, z = 0}
+        }
+    }
+end
+
+function BridgeParseExactTokenImportJson(text, expectedName)
+    local candidates = {}
+    for line in tostring(text or ""):gmatch("[^\r\n]+") do
+        local ok, candidate = pcall(function() return JSON.decode(line) end)
+        if ok and type(candidate) == "table" and candidate.error == nil then
+            table.insert(candidates, candidate)
+        end
+    end
+    if #candidates ~= 1 then
+        return nil, "exact token importer returned " .. tostring(#candidates) .. " visual results"
+    end
+    local cardJson = candidates[1]
+    local importedName = BridgeNormalizeCardName(cardJson.Nickname or "")
+    if importedName ~= BridgeNormalizeCardName(expectedName) then
+        return nil, "exact token importer returned " .. tostring(cardJson.Nickname) .. " instead of " .. tostring(expectedName)
+    end
+    local customDeck = cardJson.CustomDeck
+    local hasFace = false
+    for _, deck in pairs(customDeck or {}) do
+        if type(deck) == "table" and tostring(deck.FaceURL or "") ~= "" then hasFace = true; break end
+    end
+    if cardJson.Name ~= "Card" or tonumber(cardJson.CardID or -1) < 0 or not hasFace then
+        return nil, "exact token importer returned a non-art-bearing card JSON"
+    end
+    return cardJson, nil
+end
+
+function BridgeImportExactTokenVisual(expectedName, seatId, callback)
+    if expectedName == nil or tostring(expectedName) == "" then
+        callback(nil, "exact token visual import requires an authoritative card name")
+        return
+    end
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil then
+        callback(nil, "exact token visual import has no configured seat")
+        return
+    end
+
+    local anchor = seat.battlefieldAnchors and seat.battlefieldAnchors.creature or seat.commandAnchor
+    local position = {x = anchor and anchor.x or 0, y = (anchor and anchor.y or 2.0) + 1.5, z = anchor and anchor.z or 0}
+    local rotation = seat.faceUpRotation or {x = 0, y = 0, z = 0}
+    local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    local completed = false
+    local function finish(object, err)
+        if completed then return end
+        completed = true
+        if object ~= nil and not BridgeIsArtBearingCard(object) then
+            callback(nil, "exact token visual importer returned a non-art-bearing card")
+            return
+        end
+        callback(object, err)
+    end
+
+    local function requestVisual(endpoint, allowFallback)
+        WebRequest.custom(endpoint, "POST", true, JSON.encode(BridgeExactTokenImportPayload(expectedName)), {
+            ["Content-Type"] = "application/json",
+            ["User-Agent"] = "Vokerr-TTS-MTG-Card-Importer",
+            ["X-Client-Version"] = "0.9.1"
+        }, function(request)
+            if not BridgeRuntimeIsCurrent(epoch) then return end
+            if request == nil or request.is_error or tonumber(request.response_code or 0) < 200 or tonumber(request.response_code or 0) >= 300 then
+                if allowFallback then
+                    requestVisual(BRIDGE_TOKEN_IMPORT_FALLBACK_URL, false)
+                else
+                    finish(nil, "exact token visual backend failed: " .. tostring(request and (request.error or request.response_code) or "unknown error"))
+                end
+                return
+            end
+            local cardJson, parseError = BridgeParseExactTokenImportJson(request.text, expectedName)
+            if cardJson == nil then
+                finish(nil, parseError)
+                return
+            end
+            local spawnHandled = false
+            local function handleSpawned(object)
+                if spawnHandled then return end
+                spawnHandled = true
+                if not BridgeObjectIsUsable(object) then
+                    finish(nil, "exact token visual spawn returned an unusable object")
+                    return
+                end
+                BridgeWaitFrames(function()
+                    if BridgeIsArtBearingCard(object) then
+                        BridgeMarkTokenPhysicalObject(object)
+                        BridgeLog("[Bridge] token fetcher resolved via exact Rikrassen visual import for " .. tostring(expectedName))
+                        finish(object, nil)
+                    else
+                        finish(nil, "exact token visual spawn produced no CustomDeck/FaceURL")
+                    end
+                end, 2)
+            end
+            local spawnOk, objectOrError = pcall(function()
+                return spawnObjectJSON({
+                    json = JSON.encode(cardJson), position = position, rotation = rotation,
+                    callback_function = handleSpawned
+                })
+            end)
+            if not spawnOk then
+                finish(nil, "exact token visual spawn failed: " .. tostring(objectOrError))
+                return
+            end
+            if BridgeObjectIsUsable(objectOrError) then handleSpawned(objectOrError) end
+        end)
+    end
+
+    requestVisual(BRIDGE_TOKEN_IMPORT_PRIMARY_URL, true)
 end
 
 function BridgeFindDeckWithContainedCardName(expectedName, excludeDeckGuidSet)
@@ -7058,6 +7454,15 @@ function BridgeFindDeckWithContainedCardName(expectedName, excludeDeckGuidSet)
 end
 
 function BridgeTakeCardFromTokenFetcher(expectedName, seatId, callback)
+    local finished = false
+    local function finish(object, err)
+        if finished then
+            BridgeLog("[Bridge] ignored duplicate token visual callback name=" .. tostring(expectedName))
+            return
+        end
+        finished = true
+        callback(object, err)
+    end
     local excludeDeckGuidSet = {}
     for _, configuredSeatId in ipairs({"forge-player-1", "forge-player-2"}) do
         local deck = BridgeFindLibraryDeckForSeat(configuredSeatId)
@@ -7065,26 +7470,40 @@ function BridgeTakeCardFromTokenFetcher(expectedName, seatId, callback)
         if guid ~= nil then excludeDeckGuidSet[guid] = true end
     end
 
-    local deck, entry = BridgeFindDeckWithContainedCardName(expectedName, excludeDeckGuidSet)
-    if deck == nil or entry == nil then
-        -- Prefer a bridge-owned proxy.  It is deterministic and cannot invoke
-        -- arbitrary Easy Modules buttons on ordinary cards.  The explicit
-        -- EMBLEM/TOKEN helper remains a last-resort art-preserving fallback.
-        BridgeSpawnGenericTokenProxy(expectedName, seatId, function(proxy, proxyErr)
-            if proxy ~= nil then
-                callback(proxy, nil)
+    local function fallbackVisualImport(reason)
+        BridgeLog("[Bridge] built-in card token button requested name=" .. tostring(expectedName)
+            .. " reason=" .. tostring(reason or "no art-bearing reusable token"))
+        BridgeTrySpawnTokenViaEncodeButton(expectedName, seatId, function(buttonToken, buttonError)
+            if buttonToken ~= nil and BridgeIsArtBearingCard(buttonToken) then
+                finish(buttonToken, nil)
                 return
             end
-            BridgeTrySpawnTokenViaEncodeButton(expectedName, seatId, function(spawned, spawnErr)
-                if spawned ~= nil then
-                    callback(spawned, nil)
+            BridgeLog("[Bridge] built-in card token button unavailable name=" .. tostring(expectedName)
+                .. " error=" .. tostring(buttonError) .. "; trying exact visual importer")
+            BridgeImportExactTokenVisual(expectedName, seatId, function(imported, importError)
+            if imported ~= nil then
+                finish(imported, nil)
+                return
+            end
+            BridgeSpawnGenericTokenProxy(expectedName, seatId, function(proxy, proxyError)
+                if proxy ~= nil then
+                    BridgeLog("[Bridge] DEGRADED token presentation: built-in card button and exact art importer failed name="
+                        .. tostring(expectedName) .. " buttonError=" .. tostring(buttonError)
+                        .. " importError=" .. tostring(importError))
+                    finish(proxy, nil)
                     return
                 end
-                callback(nil,
-                    "no token fetcher deck entry matched authoritative card name; generic proxy failed: "
-                    .. tostring(proxyErr) .. "; EMBLEM fallback failed: " .. tostring(spawnErr))
+                finish(nil, "built-in card token button failed: " .. tostring(buttonError)
+                    .. "; exact token visual import failed: " .. tostring(importError)
+                    .. "; generic proxy failed: " .. tostring(proxyError))
+            end)
             end)
         end)
+    end
+
+    local deck, entry = BridgeFindDeckWithContainedCardName(expectedName, excludeDeckGuidSet)
+    if deck == nil or entry == nil then
+        fallbackVisualImport("no matching reusable token in table containers")
         return
     end
 
@@ -7096,11 +7515,18 @@ function BridgeTakeCardFromTokenFetcher(expectedName, seatId, callback)
         smooth = false,
         callback_function = function(taken)
             if not BridgeObjectIsUsable(taken) then
-                callback(nil, "token fetcher returned an unusable card")
+                finish(nil, "token fetcher returned an unusable card")
                 return
             end
-            BridgeMarkTokenPhysicalObject(taken)
-            callback(taken, nil)
+            if BridgeIsArtBearingCard(taken) then
+                BridgeMarkTokenPhysicalObject(taken)
+                finish(taken, nil)
+                return
+            end
+            -- Do not leave the unusable blank fetch result beside the exact
+            -- imported token; one Forge identity must yield one physical card.
+            pcall(function() taken.destruct() end)
+            fallbackVisualImport("reusable token container returned a blank card")
         end
     }
     if deck.tag == "Deck" then
@@ -7108,7 +7534,7 @@ function BridgeTakeCardFromTokenFetcher(expectedName, seatId, callback)
     elseif deck.tag == "Bag" then
         options.guid = entry.guid
     else
-        callback(nil, "unsupported token container tag " .. tostring(deck.tag))
+        finish(nil, "unsupported token container tag " .. tostring(deck.tag))
         return
     end
     deck.takeObject(options)
@@ -7732,7 +8158,9 @@ end
 function BridgeSetForgeBotCounterFallback(object, namedCounters)
     local encoder, encoderError = BridgeEnsureForgeBotCounterFallbackProperty()
     if encoder == nil then return false, encoderError end
-    local needsFallback = #(namedCounters or {}) > 1
+    -- Encoder's generic counter presentation is not reliably visible for a
+    -- single named counter, such as lore on a Saga or level on a Class.
+    local needsFallback = #(namedCounters or {}) > 0
     local ok, applyError = pcall(function()
         local encoded = encoder.call("APIobjectExists", {obj = object})
         if encoded ~= true then error("card is not Encoder-managed") end
@@ -7768,7 +8196,7 @@ function createButtons(t)
         end
     end
     table.sort(labels)
-    if #labels < 2 then return end
+    if #labels == 0 then return end
     BridgeSafeObjectCall(object, function(card)
         card.createButton({
             click_function = "BridgeIgnoreCardPresentationClick",
@@ -8181,7 +8609,7 @@ end
 BRIDGE_DEV_UI_ENABLED = true
 BRIDGE_DEV_ANNOTATIONS_ENABLED = true
 BRIDGE_PHYSICAL_PRIORITY_CONTROLS_ENABLED = true
-BRIDGE_SCRIPT_REVISION = "2026-08-27-f2c-v6-vehicle-zone-guard"
+BRIDGE_SCRIPT_REVISION = "2026-08-27-f2c-v14-delve-mulligan"
 
 BRIDGE_HUD_COLORS = {
     active = "#6DB5FF",

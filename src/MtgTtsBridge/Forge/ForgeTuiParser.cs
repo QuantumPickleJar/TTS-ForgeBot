@@ -126,6 +126,9 @@ public sealed partial class ForgeTuiParser
                 SourceCardName = decisionProvenance is { Success: true } ? NullIfBlank(decisionProvenance.Groups["sourceName"].Value) : null,
                 ContextCardInstanceId = decisionContext is { Success: true } ? $"forge-object:{decisionContext.Groups["cardId"].Value}" : null,
                 ContextCardName = decisionContext is { Success: true } ? NullIfBlank(decisionContext.Groups["cardName"].Value) : null,
+                CostKind = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["costKind"].Value) : null,
+                MulliganStage = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["mulliganStage"].Value) : null,
+                CandidateSourceZone = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["sourceZone"].Value) : null,
             },
             actions.ToDictionary(
                 option => $"{decisionId}-choice-{option.Number}",
@@ -199,7 +202,10 @@ public sealed partial class ForgeTuiParser
             SourceCardInstanceId: sourceInstanceId,
             SourceCardName: sourceName,
             ShortLabel: label.Length <= 72 ? label : label[..69] + "...",
-            RequiresSelection: kind is "target_selection" or "player_selection" or "card_selection" or "attacker_selection" or "blocker_selection" or "blocker_assignment",
+            // A target is one exact TUI input. It must be sent as soon as the
+            // highlighted target is selected, not staged behind the collection
+            // confirmation control used for discard/sacrifice menus.
+            RequiresSelection: kind is "card_selection" or "attacker_selection" or "blocker_selection" or "blocker_assignment",
             SourceZone: provenance.Success ? provenance.Groups["sourceZone"].Value : null,
             AbilityKind: provenance.Success ? provenance.Groups["abilityKind"].Value : null,
             CastMode: provenance.Success ? provenance.Groups["castMode"].Value : null,
@@ -291,7 +297,7 @@ public sealed partial class ForgeTuiParser
         var mana = ManaAbilityRegex().Match(label);
         if (mana.Success) return mana.Groups["name"].Value.Trim();
 
-        if (kind is not ("target_selection" or "defender_selection" or "blocker_selection" or "attacker_selection" or "card_selection" or "generic_numeric_selection" or "sacrifice" or "discard" or "entity_selection" or "cost_selection" or "search_selection")) return null;
+        if (kind is not ("target_selection" or "defender_selection" or "blocker_selection" or "attacker_selection" or "card_selection" or "generic_numeric_selection" or "sacrifice" or "discard" or "entity_selection" or "cost_selection" or "search_selection" or "mulligan")) return null;
         if (label.StartsWith("No ", StringComparison.OrdinalIgnoreCase) ||
             PlayerTargetRegex().IsMatch(label) ||
             label.StartsWith("Spell:", StringComparison.OrdinalIgnoreCase)) return null;
@@ -365,7 +371,7 @@ public sealed partial class ForgeTuiParser
     [GeneratedRegex(@"\s+\[id=(?<id>\d+)\]", RegexOptions.CultureInvariant)]
     private static partial Regex ForgeCardIdRegex();
 
-    [GeneratedRegex(@"\[kind=(?<kind>[a-z_]+)\s+min=(?<min>\d+)\s+max=(?<max>\d+)\s+selected=(?<selected>\d+)\s+ordered=(?<ordered>true|false)\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\[kind=(?<kind>[a-z_]+)(?:\s+costKind=(?<costKind>[a-z_]+))?(?:\s+mulliganStage=(?<mulliganStage>[a-z_]+))?(?:\s+sourceZone=(?<sourceZone>[a-z_]+))?\s+min=(?<min>\d+)\s+max=(?<max>\d+)\s+selected=(?<selected>\d+)\s+ordered=(?<ordered>true|false)\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SelectionMetadataRegex();
 
     // This compact record is emitted by the controlled Forge producer, not

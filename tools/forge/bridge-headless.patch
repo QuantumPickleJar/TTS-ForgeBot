@@ -354,7 +354,7 @@ index 922d78e1..386e7beb 100644
              }
 diff --git a/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
 new file mode 100644
-index 00000000..040b0b2f
+index 00000000..f4128ca1
 --- /dev/null
 +++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
 @@ -0,0 +1,439 @@
@@ -829,7 +829,7 @@ index 44aee4f4..959cd694 100644
          String version = BuildInfo.getVersionString().toLowerCase();
          if (version.contains("git") || version.contains("snapshot")) {
 diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-index 0d731bb6..e32d896b 100644
+index 0d731bb6..c156bef7 100644
 --- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 +++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 @@ -4,16 +4,25 @@ import com.google.common.collect.Multimap;
@@ -953,7 +953,7 @@ index 0d731bb6..e32d896b 100644
          // Show options to user with context-appropriate header
          if (!isMyTurn) {
              System.out.println("\n=== OPPONENT'S TURN ===");
-@@ -363,14 +393,15 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -363,40 +393,41 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          // Show land options
          for (SpellAbility sa : uniqueLands) {
              Card land = sa.getHostCard();
@@ -972,37 +972,39 @@ index 0d731bb6..e32d896b 100644
 -                creature.getManaCost());
 +                creature.getManaCost() + bridgeChoiceMetadata(sa, "cast_spell"));
              optionNum++;
-@@ -379,7 +409,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         }
+ 
          // Show artifact options
          for (SpellAbility sa : uniqueArtifacts) {
              Card artifact = sa.getHostCard();
 -            System.out.println("  " + optionNum + ". Cast artifact: " + artifact.getName() +
-+            System.out.println("  " + optionNum + ". Cast artifact: " + artifact.getName() + " [id=" + artifact.getId() + "]" +
 -                " - " + artifact.getManaCost());
++            System.out.println("  " + optionNum + ". Cast artifact: " + artifact.getName() + " [id=" + artifact.getId() + "]" +
 +                " - " + artifact.getManaCost() + bridgeChoiceMetadata(sa, "cast_spell"));
              optionNum++;
          }
-@@ -387,7 +417,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+ 
          // Show sorcery options
          for (SpellAbility sa : uniqueSorceries) {
              Card sorcery = sa.getHostCard();
 -            System.out.println("  " + optionNum + ". Cast sorcery: " + sorcery.getName() +
-+            System.out.println("  " + optionNum + ". Cast sorcery: " + sorcery.getName() + " [id=" + sorcery.getId() + "]" +
 -                " - " + sorcery.getManaCost());
++            System.out.println("  " + optionNum + ". Cast sorcery: " + sorcery.getName() + " [id=" + sorcery.getId() + "]" +
 +                " - " + sorcery.getManaCost() + bridgeChoiceMetadata(sa, "cast_spell"));
              optionNum++;
          }
-@@ -395,7 +425,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+ 
          // Show instant options
          for (SpellAbility sa : uniqueInstants) {
              Card instant = sa.getHostCard();
 -            System.out.println("  " + optionNum + ". Cast instant: " + instant.getName() +
-+            System.out.println("  " + optionNum + ". Cast instant: " + instant.getName() + " [id=" + instant.getId() + "]" +
 -                " - " + instant.getManaCost());
++            System.out.println("  " + optionNum + ". Cast instant: " + instant.getName() + " [id=" + instant.getId() + "]" +
 +                " - " + instant.getManaCost() + bridgeChoiceMetadata(sa, "cast_spell"));
              optionNum++;
          }
-@@ -407,7 +437,8 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+ 
+@@ -407,7 +438,8 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              if (description == null || description.isEmpty()) {
                  description = "Activate ability";
              }
@@ -1012,7 +1014,7 @@ index 0d731bb6..e32d896b 100644
              optionNum++;
          }
  
-@@ -459,6 +489,41 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -459,6 +491,41 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          }
      }
  
@@ -1054,12 +1056,7 @@ index 0d731bb6..e32d896b 100644
      /**
       * Get playable land abilities from the player's hand.
       */
-@@ -502,11 +569,15 @@ public class PlayerControllerTUI extends PlayerControllerAi {
-                     if (ComputerUtilMana.canPayManaCost(sa, player, 0, false)) {
-                         spells.add(sa);
-                     }
-                     break; // Only need the first castable ability
-                 }
+@@ -507,6 +574,10 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              }
          }
  
@@ -1070,19 +1067,21 @@ index 0d731bb6..e32d896b 100644
          return spells;
      }
  
-@@ -537,5 +611,6 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -536,6 +607,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+             }
          }
  
 +        spells.addAll(getCastableSpellsFromZone(ZoneType.Graveyard, "sorcery"));
          return spells;
      }
  
-@@ -566,5 +642,28 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -565,6 +637,29 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+             }
          }
  
 +        spells.addAll(getCastableSpellsFromZone(ZoneType.Graveyard, "instant"));
-         return spells;
-     }
++        return spells;
++    }
 + 
 +    private List<SpellAbility> getCastableSpellsFromZone(ZoneType zone, String category) {
 +        List<SpellAbility> spells = new ArrayList<>();
@@ -1103,10 +1102,10 @@ index 0d731bb6..e32d896b 100644
 +                spells.add(sa);
 +            }
 +        }
-+        return spells;
-+    }
+         return spells;
+     }
  
-@@ -575,7 +673,12 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -575,8 +670,13 @@ public class PlayerControllerTUI extends PlayerControllerAi {
      private List<SpellAbility> getActivatedAbilities() {
          List<SpellAbility> abilities = new ArrayList<>();
  
@@ -1121,7 +1120,8 @@ index 0d731bb6..e32d896b 100644
 +        for (Card c : activationCards) {
              // Get all abilities for this permanent
              for (SpellAbility sa : c.getAllPossibleAbilities(player, true)) {
-@@ -1165,7 +1261,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+                 // We want activated abilities (not spells, not triggered)
+@@ -1165,7 +1265,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
                      if (selectedAttackers.contains(creature)) {
                          status = " [ATTACKING]";
                      }
@@ -1130,7 +1130,7 @@ index 0d731bb6..e32d896b 100644
                          " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
                  }
  
-@@ -1178,9 +1274,13 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1178,9 +1278,13 @@ public class PlayerControllerTUI extends PlayerControllerAi {
  
                  Card selectedAttacker = possibleAttackers.get(choice - 1);
  
@@ -1146,7 +1146,7 @@ index 0d731bb6..e32d896b 100644
                      continue;
                  }
  
-@@ -1210,7 +1310,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1210,7 +1314,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              System.out.println("\nAvailable attackers:");
              for (int i = 0; i < possibleAttackers.size(); i++) {
                  Card creature = possibleAttackers.get(i);
@@ -1155,7 +1155,26 @@ index 0d731bb6..e32d896b 100644
                      " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" +
                      (creature.isTapped() ? " (tapped)" : "") +
                      (creature.isSick() ? " (summoning sickness)" : ""));
-@@ -1346,7 +1446,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1338,32 +1442,35 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+ 
+                 // Show available blockers with 0 = "No further blockers"
+                 while (true) {
++                    // Filter the actual relationship for this attacker before
++                    // presenting numeric options. Forge remains the source of
++                    // truth; tokens are ordinary battlefield creatures here.
++                    System.out.println("[bridge blockerForCardId=" + attacker.getId()
++                        + " blockerForName=" + attacker.getName() + "]");
++                    List<Card> legalBlockers = new ArrayList<>();
++                    for (Card candidate : possibleBlockers) {
++                        if (CombatUtil.canBlock(attacker, candidate, combat)) legalBlockers.add(candidate);
++                    }
+                     System.out.println("Who should block this attacker?");
+                     System.out.println("  0. No further blockers");
+-                    for (int i = 0; i < possibleBlockers.size(); i++) {
+-                        Card creature = possibleBlockers.get(i);
++                    for (int i = 0; i < legalBlockers.size(); i++) {
++                        Card creature = legalBlockers.get(i);
+                         String status = "";
                          if (combat.isBlocking(creature)) {
                              status = " [BLOCKING]";
                          }
@@ -1164,26 +1183,55 @@ index 0d731bb6..e32d896b 100644
                              " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
                      }
  
-@@ -1550,37 +1650,343 @@ public class PlayerControllerTUI extends PlayerControllerAi {
-         return toDiscard;
-     }
+-                    int choice = getIntInput(0, possibleBlockers.size());
++                    int choice = getIntInput(0, legalBlockers.size());
  
--    /**
--     * Deduplicate spell abilities by card name, keeping first occurrence.
--     * Used for lands, creatures, artifacts, sorceries, and instants.
--     */
--    private List<SpellAbility> deduplicateByCardName(List<SpellAbility> abilities) {
--        List<SpellAbility> unique = new ArrayList<>();
--        java.util.Set<String> seenNames = new java.util.HashSet<>();
--        for (SpellAbility sa : abilities) {
--            String name = sa.getHostCard().getName();
--            if (!seenNames.contains(name)) {
--                unique.add(sa);
--                seenNames.add(name);
+                     if (choice == 0) {
+                         // No more blockers for this attacker
+                         break;
+                     }
+ 
+-                    Card blocker = possibleBlockers.get(choice - 1);
+-
+-                    // Check if blocker can block this attacker
+-                    if (!CombatUtil.canBlock(attacker, blocker, combat)) {
+-                        System.out.println(">> " + blocker.getName() + " cannot block " + attacker.getName() + ".");
+-                        continue;
+-                    }
++                    Card blocker = legalBlockers.get(choice - 1);
+ 
+                     // Add the blocker
+                     combat.addBlocker(attacker, blocker);
+@@ -1507,80 +1614,428 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+ 
+     @Override
+     public CardCollection chooseCardsToDiscardToMaximumHandSize(int numDiscard) {
+-        // Print any new game log entries
+-        TUIGuiBase.printNewLogEntries();
+-
+-        System.out.println();
+-        System.out.println("=".repeat(60));
+-        System.out.println("=== DISCARD TO HAND SIZE ===");
+-        System.out.println("=".repeat(60));
+-
+-        // Get cards in hand
+-        List<Card> hand = new ArrayList<>();
++        CardCollection hand = new CardCollection();
+         for (Card c : player.getCardsIn(ZoneType.Hand)) {
+             hand.add(c);
+         }
++        CardCollection result = new CardCollection();
++        emitDiscardDecisionMetadata(null, "cleanup_hand_size");
++        result.addAll(chooseEntitiesThroughTui("discard", hand, numDiscard, numDiscard,
++            "Discard to maximum hand size", false));
++        return result;
++    }
+ 
+-        CardCollection toDiscard = new CardCollection();
 +    private String formatDecisionEntity(GameEntity entity) {
 +        if (entity instanceof Card) {
 +            Card card = (Card) entity;
-+            return card.getName() + " [id=" + card.getId() + "]";
++            return bridgeDisplayCardName(card) + " [id=" + card.getId() + "]";
 +        }
 +        if (entity instanceof Player) {
 +            Player choice = (Player) entity;
@@ -1191,9 +1239,41 @@ index 0d731bb6..e32d896b 100644
 +        }
 +        return entity.toString();
 +    }
+ 
+-        // Let user select cards to discard
+-        for (int discardNum = 1; discardNum <= numDiscard; discardNum++) {
+-            // Show remaining cards with combined prompt
+-            List<Card> remaining = new ArrayList<>();
+-            for (Card c : hand) {
+-                if (!toDiscard.contains(c)) {
+-                    remaining.add(c);
+-                }
+-            }
++    private String bridgeDisplayCardName(Card card) {
++        if (card == null) return "Card";
++        if (card.getPaperCard() != null && card.getPaperCard().getName() != null) {
++            return card.getPaperCard().getName();
++        }
++        return card.getName();
++    }
 +
++    private String bridgeResolveCardNamePlaceholders(String title, SpellAbility sa) {
++        if (title == null || sa == null || sa.getHostCard() == null) return title;
++        String sourceName = bridgeDisplayCardName(sa.getHostCard());
++        return title.replace("CARDNAME", sourceName).replace("NICKNAME", sourceName);
++    }
+ 
+-            System.out.println("Your hand (" + remaining.size() + " cards), select " + discardNum + " of " + numDiscard + " to discard:");
+-            for (int i = 0; i < remaining.size(); i++) {
+-                System.out.println("  " + i + ". " + remaining.get(i).getName());
 +    private <T extends GameEntity> List<T> chooseEntitiesThroughTui(
 +            String kind, FCollectionView<T> options, int min, int max, String title, boolean ordered) {
++        return chooseEntitiesThroughTui(kind, options, min, max, title, ordered, "");
++    }
++
++    private <T extends GameEntity> List<T> chooseEntitiesThroughTui(
++            String kind, FCollectionView<T> options, int min, int max, String title, boolean ordered,
++            String structuredMetadata) {
 +        List<T> candidates = new ArrayList<>();
 +        for (T option : options) candidates.add(option);
 +        List<T> selected = new ArrayList<>();
@@ -1204,7 +1284,9 @@ index 0d731bb6..e32d896b 100644
 +        while (true) {
 +            System.out.println("\n=== FORGE CHOICE ===");
 +            System.out.println(title == null || title.isBlank() ? "Choose from Forge's legal candidates" : title);
-+            System.out.println("[kind=" + effectiveKind + " min=" + min + " max=" + boundedMax
++            String metadata = structuredMetadata == null || structuredMetadata.isBlank()
++                ? "" : " " + structuredMetadata;
++            System.out.println("[kind=" + effectiveKind + metadata + " min=" + min + " max=" + boundedMax
 +                + " selected=" + selected.size() + " ordered=" + ordered + "]");
 +            System.out.println("  0. Done");
 +            for (int i = 0; i < candidates.size(); i++) {
@@ -1218,7 +1300,7 @@ index 0d731bb6..e32d896b 100644
 +                if (selected.size() >= min && selected.size() <= boundedMax) return selected;
 +                System.out.println("Selection requires " + min + " to " + boundedMax + " choices.");
 +                continue;
-+            }
+             }
 +            T candidate = candidates.get(choice - 1);
 +            if (selected.contains(candidate)) {
 +                selected.remove(candidate);
@@ -1226,31 +1308,24 @@ index 0d731bb6..e32d896b 100644
 +                selected.add(candidate);
 +            } else {
 +                System.out.println("Maximum selections reached; deselect one or choose Done.");
-             }
-         }
--        return unique;
-     }
++            }
++        }
++    }
  
--    /**
--     * Deduplicate activated abilities by card name + description.
--     * Different abilities on the same card will show separately.
--     */
--    private List<SpellAbility> deduplicateByDescription(List<SpellAbility> abilities) {
--        List<SpellAbility> unique = new ArrayList<>();
--        java.util.Set<String> seenKeys = new java.util.HashSet<>();
--        for (SpellAbility sa : abilities) {
--            String key = sa.getHostCard().getName() + ":" + sa.getDescription();
--            if (!seenKeys.contains(key)) {
--                unique.add(sa);
--                seenKeys.add(key);
+-            int choice = getIntInput(0, remaining.size() - 1);
+-            Card chosen = remaining.get(choice);
+-            toDiscard.add(chosen);
 +    @Override
 +    public CardCollectionView choosePermanentsToSacrifice(SpellAbility sa, int min, int max,
 +            CardCollectionView validTargets, String message) {
 +        CardCollection result = new CardCollection();
-+        result.addAll(chooseEntitiesThroughTui("sacrifice", validTargets, min, max, message, false));
++        result.addAll(chooseEntitiesThroughTui("sacrifice", validTargets, min, max,
++            bridgeResolveCardNamePlaceholders(message, sa), false));
 +        return result;
 +    }
-+
+ 
+-            System.out.println(">> Will discard: " + chosen.getName());
+-            System.out.println();
 +    @Override
 +    public CardCollectionView chooseCardsForEffect(CardCollectionView sourceList, SpellAbility sa,
 +            String title, int min, int max, boolean isOptional, Map<String, Object> params) {
@@ -1287,7 +1362,7 @@ index 0d731bb6..e32d896b 100644
 +            "Choose cards to discard", false));
 +        return result;
 +    }
-
++
 +    private void emitDiscardDecisionMetadata(SpellAbility sa, String cause) {
 +        Card source = sa == null ? null : sa.getHostCard();
 +        String sourceId = source == null ? "" : " sourceCardId=" + source.getId();
@@ -1306,10 +1381,64 @@ index 0d731bb6..e32d896b 100644
 +            ? "sacrifice" : costPart.getClass().getSimpleName().toLowerCase().contains("discard")
 +                ? "discard" : "cost_selection";
 +        result.addAll(chooseEntitiesThroughTui(kind, optionList, isOptional ? 0 : amount,
-+            amount, prompt, false));
++            amount, bridgeResolveCardNamePlaceholders(prompt, sa), false));
 +        return result;
 +    }
 +
++    @Override
++    public CardCollectionView chooseCardsToDelve(int genericAmount, CardCollection grave) {
++        // CostAdjustment has already applied every Forge cost modifier and
++        // supplies the remaining generic amount. This controller only returns
++        // the exact cards the human selected; Forge performs the reduction and
++        // authoritative graveyard-to-exile moves afterwards.
++        CardCollection result = new CardCollection();
++        result.addAll(chooseEntitiesThroughTui("cost_selection", grave, 0, genericAmount,
++            "Choose graveyard cards to exile for Delve", false,
++            "costKind=delve sourceZone=graveyard"));
++        return result;
++    }
++
++    @Override
++    public boolean mulliganKeepHand(Player firstPlayer, int cardsToReturn) {
++        // MulliganService owns the mulligan rule, redraw, and any later bottom
++        // count. This is solely the native human keep/mulligan decision.
++        while (true) {
++            System.out.println("\n=== FORGE CHOICE ===");
++            System.out.println("Opening hand");
++            System.out.println("[kind=mulligan mulliganStage=keep_or_mulligan min=1 max=1 selected=0 ordered=false]");
++            System.out.println("  0. Keep");
++            System.out.println("  1. Mulligan");
++            System.out.print("Enter choice (0-1): ");
++            int choice = getIntInput(0, 1);
++            if (choice == 0) return true;
++            if (choice == 1) return false;
+         }
++    }
+ 
+-        System.out.println(">> Discarding " + numDiscard + " card(s)...\n");
+-        return toDiscard;
++    @Override
++    public CardCollectionView tuckCardsViaMulligan(CardCollectionView hand, int cardsToReturn) {
++        if (cardsToReturn <= 0) return CardCollection.EMPTY;
++        CardCollection result = new CardCollection();
++        result.addAll(chooseEntitiesThroughTui("mulligan", hand, cardsToReturn, cardsToReturn,
++            "Choose cards to put on the bottom of your library", false,
++            "mulliganStage=bottom_selection sourceZone=hand"));
++        return result;
+     }
+ 
+-    /**
+-     * Deduplicate spell abilities by card name, keeping first occurrence.
+-     * Used for lands, creatures, artifacts, sorceries, and instants.
+-     */
+-    private List<SpellAbility> deduplicateByCardName(List<SpellAbility> abilities) {
+-        List<SpellAbility> unique = new ArrayList<>();
+-        java.util.Set<String> seenNames = new java.util.HashSet<>();
+-        for (SpellAbility sa : abilities) {
+-            String name = sa.getHostCard().getName();
+-            if (!seenNames.contains(name)) {
+-                unique.add(sa);
+-                seenNames.add(name);
 +    @Override
 +    public List<AbilitySub> chooseModeForAbility(SpellAbility sa, List<AbilitySub> possible,
 +            int min, int num, boolean allowRepeat) {
@@ -1324,21 +1453,33 @@ index 0d731bb6..e32d896b 100644
 +                AbilitySub mode = possible.get(i);
 +                System.out.println("  " + (i + 1) + ". " + mode.getDescription()
 +                    + (selected.contains(mode) ? " [SELECTED]" : ""));
-             }
++            }
 +            System.out.print("Enter choice (0-" + possible.size() + "): ");
 +            int choice = getIntInput(0, possible.size());
 +            if (choice == 0) {
 +                if (selected.size() >= min && selected.size() <= num) return selected;
 +                System.out.println("Selection requires " + min + " to " + num + " modes.");
 +                continue;
-+            }
+             }
 +            AbilitySub mode = possible.get(choice - 1);
 +            if (selected.contains(mode) && !allowRepeat) selected.remove(mode);
 +            else if (selected.size() < num) selected.add(mode);
          }
 -        return unique;
      }
-+
+ 
+-    /**
+-     * Deduplicate activated abilities by card name + description.
+-     * Different abilities on the same card will show separately.
+-     */
+-    private List<SpellAbility> deduplicateByDescription(List<SpellAbility> abilities) {
+-        List<SpellAbility> unique = new ArrayList<>();
+-        java.util.Set<String> seenKeys = new java.util.HashSet<>();
+-        for (SpellAbility sa : abilities) {
+-            String key = sa.getHostCard().getName() + ":" + sa.getDescription();
+-            if (!seenKeys.contains(key)) {
+-                unique.add(sa);
+-                seenKeys.add(key);
 +    @Override
 +    public int chooseNumber(SpellAbility sa, String title, int min, int max) {
 +        // Forge asks several setup/internal questions with only one legal value.
@@ -1455,8 +1596,9 @@ index 0d731bb6..e32d896b 100644
 +            if (colors.hasAnyColor(all[i])) {
 +                masks.add(all[i]);
 +                names.add(labels[i]);
-+            }
-+        }
+             }
+         }
+-        return unique;
 +        return masks.get(chooseOneTextOption("mana_color", message, names));
 +    }
 +
@@ -1493,7 +1635,7 @@ index 0d731bb6..e32d896b 100644
 +        int choice = chooseOneTextOption("creature_type_selection", "Choose " + kindOfType.toLowerCase(java.util.Locale.ROOT), types);
 +        if (isOptional && choice == 0) return null;
 +        return types.get(isOptional ? choice - 1 : choice);
-+    }
+     }
 +
 +    @Override
 +    public List<forge.game.spellability.OptionalCostValue> chooseOptionalCosts(
@@ -1652,110 +1794,3 @@ index 15b7a60f..0381e5b1 100644
          // Game is over
          System.out.println();
          System.out.println("=".repeat(60));
-diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-index 0d731bb6..52c586c2 100644
---- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-+++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-@@ -1338,10 +1338,19 @@ public class PlayerControllerTUI extends PlayerControllerAi {
- 
-                 // Show available blockers with 0 = "No further blockers"
-                 while (true) {
-+                    // Filter the actual relationship for this attacker before
-+                    // presenting numeric options. Forge remains the source of
-+                    // truth; tokens are ordinary battlefield creatures here.
-+                    System.out.println("[bridge blockerForCardId=" + attacker.getId()
-+                        + " blockerForName=" + attacker.getName() + "]");
-+                    List<Card> legalBlockers = new ArrayList<>();
-+                    for (Card candidate : possibleBlockers) {
-+                        if (CombatUtil.canBlock(attacker, candidate, combat)) legalBlockers.add(candidate);
-+                    }
-                     System.out.println("Who should block this attacker?");
-                     System.out.println("  0. No further blockers");
--                    for (int i = 0; i < possibleBlockers.size(); i++) {
--                        Card creature = possibleBlockers.get(i);
-+                    for (int i = 0; i < legalBlockers.size(); i++) {
-+                        Card creature = legalBlockers.get(i);
-                         String status = "";
-                         if (combat.isBlocking(creature)) {
-                             status = " [BLOCKING]";
-@@ -1350,20 +1357,14 @@ public class PlayerControllerTUI extends PlayerControllerAi {
-                             " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
-                     }
- 
--                    int choice = getIntInput(0, possibleBlockers.size());
-+                    int choice = getIntInput(0, legalBlockers.size());
- 
-                     if (choice == 0) {
-                         // No more blockers for this attacker
-                         break;
-                     }
- 
--                    Card blocker = possibleBlockers.get(choice - 1);
--
--                    // Check if blocker can block this attacker
--                    if (!CombatUtil.canBlock(attacker, blocker, combat)) {
--                        System.out.println(">> " + blocker.getName() + " cannot block " + attacker.getName() + ".");
--                        continue;
--                    }
-+                    Card blocker = legalBlockers.get(choice - 1);
- 
-                     // Add the blocker
-                     combat.addBlocker(attacker, blocker);
-diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-index 0d731bb6..52c586c2 100644
---- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-+++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-@@ -1507,47 +1508,15 @@ public class PlayerControllerTUI extends PlayerControllerAi {
- 
-     @Override
-     public CardCollection chooseCardsToDiscardToMaximumHandSize(int numDiscard) {
--        // Print any new game log entries
--        TUIGuiBase.printNewLogEntries();
--
--        System.out.println();
--        System.out.println("=".repeat(60));
--        System.out.println("=== DISCARD TO HAND SIZE ===");
--        System.out.println("=".repeat(60));
--
--        // Get cards in hand
--        List<Card> hand = new ArrayList<>();
-+        CardCollection hand = new CardCollection();
-         for (Card c : player.getCardsIn(ZoneType.Hand)) {
-             hand.add(c);
-         }
--
--        CardCollection toDiscard = new CardCollection();
--
--        // Let user select cards to discard
--        for (int discardNum = 1; discardNum <= numDiscard; discardNum++) {
--            // Show remaining cards with combined prompt
--            List<Card> remaining = new ArrayList<>();
--            for (Card c : hand) {
--                if (!toDiscard.contains(c)) {
--                    remaining.add(c);
--                }
--            }
--
--            System.out.println("Your hand (" + remaining.size() + " cards), select " + discardNum + " of " + numDiscard + " to discard:");
--            for (int i = 0; i < remaining.size(); i++) {
--                System.out.println("  " + i + ". " + remaining.get(i).getName());
--            }
--
--            int choice = getIntInput(0, remaining.size() - 1);
--            Card chosen = remaining.get(choice);
--            toDiscard.add(chosen);
--
--            System.out.println(">> Will discard: " + chosen.getName());
--            System.out.println();
--        }
--
--        System.out.println(">> Discarding " + numDiscard + " card(s)...\n");
--        return toDiscard;
-+        CardCollection result = new CardCollection();
-+        emitDiscardDecisionMetadata(null, "cleanup_hand_size");
-+        result.addAll(chooseEntitiesThroughTui("discard", hand, numDiscard, numDiscard,
-+            "Discard to maximum hand size", false));
-+        return result;
-     }
- 
-     /**

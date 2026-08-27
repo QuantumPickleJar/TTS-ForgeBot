@@ -74,6 +74,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("type = \"BlockSquare\"", Script);
         Assert.Contains("object.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0})", Script);
         Assert.Contains("BridgeState.yieldSeatId = decision.seatId", Script);
+        Assert.Contains("yieldTurnNumber = tonumber(decision.turnNumber or BridgeState.tableTurnCount or 0)", Script);
+        Assert.Contains("cleared end-turn yield at authoritative turn transition", Script);
         Assert.Contains("if action.type == \"pass_priority\"", Script);
         Assert.Contains("BridgeState.currentTurnSeatId = event.activeSeatId", Script);
         Assert.Contains("BridgeRecordAuthoritativeTurn(BridgeState.currentTurnSeatId, tonumber(event.turnNumber or 0))", Script);
@@ -118,7 +120,12 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("DONE /\\nCONFIRM", Script);
         Assert.Contains("CANCEL /\\nUNDO", Script);
         Assert.Contains("BridgeDecisionNeedsConfirmation(decision) or action.requiresSelection == true", Script);
-        Assert.Contains("this Forge TUI transport cannot atomically submit multiple selections yet", Script);
+        Assert.Contains("function BridgeToggleSingleSelection(decision, actionId, guid)", Script);
+        Assert.Contains("choose one card, confirm it, then Forge will request any remaining cards", Script);
+        Assert.Contains("staged Forge selection decision=", Script);
+        Assert.Contains("function BridgeTryFinishDiscardChoice(decision, source)", Script);
+        Assert.Contains("physical_discard_graveyard", Script);
+        Assert.Contains("completing Forge discard with Done", Script);
         Assert.DoesNotContain("BridgeState.physicalZoneByGuid[intent.guid] = \"graveyard\"", Script);
     }
 
@@ -852,7 +859,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-27-f2c-v6-vehicle-zone-guard\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-27-f2c-v14-delve-mulligan\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -1005,6 +1012,16 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("local deficit = expectedCount - physicalCount", Script);
         Assert.Contains("return false, BridgeLibraryMismatchMessage", Script);
         Assert.Contains("BridgeSetStatus(\"LIBRARY MISMATCH\", diagnostic)", Script);
+    }
+
+    [Fact]
+    public void PhysicalGraveyardDiscard_SubmitsForgeSelectionThenCompletesItsDoneStep()
+    {
+        Assert.Contains("if object.tag == \"Card\" and action.type == \"discard_card\" and BridgeIsStructuredDiscardChoice(decision) then", Script);
+        Assert.Contains("if BridgeObjectNearSeatZone(object, intent.seatId, \"graveyard\") then", Script);
+        Assert.Contains("BridgeSubmitChoice(intent.decisionId, intent.action.actionId, \"physical_discard_graveyard\")", Script);
+        Assert.Contains("BridgeTryFinishDiscardChoice(body.currentDecision, activeTransaction.source)", Script);
+        Assert.Contains("if selected < minimum or selected > maximum or (not graveyardDrop and minimum ~= maximum) then return end", Script);
     }
 
     [Fact]
@@ -1435,17 +1452,61 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void TokenMaterialization_DoesNotInvokeGenericEncoderButtonsAndHasForgeProxyFallback()
+    public void TokenMaterialization_UsesBuiltInCardButtonBeforeExactVisualImportAndDegradedProxy()
     {
         Assert.Contains("A generic Encoder button is not a token producer", Script);
         Assert.Contains("string.find(text, \"spawn token\", 1, true)", Script);
         Assert.DoesNotContain("string.find(label, \"encode\", 1, true) ~= nil then score", Script);
         Assert.Contains("function BridgeSpawnGenericTokenProxy(expectedName, seatId, callback)", Script);
-        Assert.Contains("BridgeLog(\"[Bridge] token fetcher resolved via generic Forge token proxy for \"", Script);
+        Assert.Contains("DEGRADED token presentation: exact art-bearing import unavailable", Script);
+        Assert.Contains("function BridgeImportExactTokenVisual(expectedName, seatId, callback)", Script);
+        Assert.Contains("function BridgeIsArtBearingCard(object)", Script);
+        Assert.Contains("CustomDeck", Script);
+        Assert.Contains("FaceURL", Script);
         Assert.Contains("tokenPhysicalGuids", Script);
         Assert.Contains("BridgeMarkTokenPhysicalObject(taken)", Script);
         Assert.Contains("object.destruct()", Script);
-        Assert.Contains("BridgeSpawnGenericTokenProxy(expectedName, seatId", Script);
+
+        var fetchStart = Script.IndexOf("function BridgeTakeCardFromTokenFetcher", StringComparison.Ordinal);
+        var fetchEnd = Script.IndexOf("function BridgeSetPhysicalFaceDown", fetchStart, StringComparison.Ordinal);
+        var fetcher = Script[fetchStart..fetchEnd];
+        Assert.True(fetcher.IndexOf("BridgeTrySpawnTokenViaEncodeButton", StringComparison.Ordinal)
+            < fetcher.IndexOf("BridgeImportExactTokenVisual", StringComparison.Ordinal));
+        Assert.True(fetcher.IndexOf("BridgeImportExactTokenVisual", StringComparison.Ordinal)
+            < fetcher.IndexOf("BridgeSpawnGenericTokenProxy", StringComparison.Ordinal));
+        Assert.Contains("built-in card token button requested", fetcher);
+        Assert.Contains("built-in card button and exact art importer failed", fetcher);
+        Assert.Contains("local finished = false", fetcher);
+        Assert.Contains("ignored duplicate token visual callback", fetcher);
+    }
+
+    [Fact]
+    public void TokenMaterialization_InvokesBuiltInButtonWithTtsPositionalCallbackSignature()
+    {
+        var start = Script.IndexOf("function BridgeInvokeButtonClick", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeTrySpawnTokenViaEncodeButton", start, StringComparison.Ordinal);
+        var invoker = Script[start..end];
+        Assert.Contains("globalHandler(source, seatColor, false)", invoker);
+        Assert.Contains("invoked built-in card button positionally", invoker);
+        Assert.True(invoker.IndexOf("globalHandler(source, seatColor, false)", StringComparison.Ordinal)
+            < invoker.IndexOf("owner.call(clickFunction, payload)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TokenMaterialization_ArtBearingContractRejectsBareCardAndUsesSingleShotCallbacks()
+    {
+        var importerStart = Script.IndexOf("function BridgeImportExactTokenVisual", StringComparison.Ordinal);
+        var importerEnd = Script.IndexOf("function BridgeFindDeckWithContainedCardName", importerStart, StringComparison.Ordinal);
+        var importer = Script[importerStart..importerEnd];
+        Assert.Contains("local completed = false", importer);
+        Assert.Contains("if completed then return end", importer);
+        Assert.Contains("not BridgeIsArtBearingCard(object)", importer);
+        Assert.Contains("spawnObjectJSON({", importer);
+        Assert.Contains("json = JSON.encode(cardJson)", importer);
+        Assert.Contains("function BridgeParseExactTokenImportJson(text, expectedName)", Script);
+        Assert.Contains("exact token importer returned a non-art-bearing card JSON", Script);
+        Assert.Contains("BRIDGE_TOKEN_IMPORT_PRIMARY_URL", Script);
+        Assert.Contains("BRIDGE_TOKEN_IMPORT_FALLBACK_URL", Script);
     }
 
     [Fact]
@@ -1459,6 +1520,23 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("token materialization suppressed instance=", Script);
         Assert.Contains("stale token import callback", Script);
         Assert.Contains("BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = \"BOUND\"", Script);
+        Assert.Contains("local finished = false", Script);
+        Assert.Contains("local function finish(object, err)", Script);
+        Assert.Contains("ignored duplicate token visual callback", Script);
+        Assert.DoesNotContain("tokenMaterializationByName", Script);
+    }
+
+    [Fact]
+    public void TokenMaterialization_UsesRequestedNameForRikrassenVisualLookupWithoutSourcePermanentInference()
+    {
+        var importerStart = Script.IndexOf("function BridgeImportExactTokenVisual", StringComparison.Ordinal);
+        var importerEnd = Script.IndexOf("function BridgeFindDeckWithContainedCardName", importerStart, StringComparison.Ordinal);
+        var importer = Script[importerStart..importerEnd];
+        Assert.Contains("data = \"1 \" .. tostring(expectedName)", Script);
+        Assert.Contains("importer.rikrassen.xyz/build", Script);
+        Assert.Contains("BridgeNormalizeCardName(cardJson.Nickname or \"\")", Script);
+        Assert.Contains("#candidates ~= 1", Script);
+        Assert.DoesNotContain("sourceCard", importer);
     }
 
     [Fact]

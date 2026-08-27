@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.Reflection;
 using MtgTtsBridge.Contracts.Actions;
 using MtgTtsBridge.Contracts.State;
 using MtgTtsBridge.Forge;
@@ -8,6 +9,28 @@ namespace MtgTtsBridge.Tests;
 
 public sealed class ForgeTuiAdapterTests
 {
+    [Fact]
+    public async Task SeedTemplate_IsRenderedAsANewConcreteSeedForEachForgeSession()
+    {
+        await using var adapter = new ForgeTuiAdapter(
+            Options.Create(new ForgeTuiOptions
+            {
+                Executable = "unused",
+                Arguments = "tui --seed {seed}",
+                WorkingDirectory = Environment.CurrentDirectory,
+            }),
+            NullLogger<ForgeTuiAdapter>.Instance);
+        var render = typeof(ForgeTuiAdapter).GetMethod("RenderArguments", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(render);
+
+        var first = Assert.IsType<string>(render.Invoke(adapter, null));
+        var second = Assert.IsType<string>(render.Invoke(adapter, null));
+
+        Assert.Matches(@"^tui --seed [1-9]\d*$", first);
+        Assert.Matches(@"^tui --seed [1-9]\d*$", second);
+        Assert.NotEqual(first, second);
+    }
+
     [Fact]
     public async Task HumanControllerDiagnostics_AreBoundedAndCountInheritedKinds()
     {

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
 using MtgTtsBridge;
@@ -890,10 +891,17 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
     private string RenderArguments()
     {
-        if (!_options.Arguments.Contains("{humanDeck}", StringComparison.Ordinal)) return _options.Arguments;
+        var arguments = _options.Arguments;
+        if (arguments.Contains("{seed}", StringComparison.Ordinal))
+        {
+            var seed = RandomNumberGenerator.GetInt32(1, int.MaxValue);
+            arguments = arguments.Replace("{seed}", seed.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
+            _logger.LogInformation("Starting Forge session with generated random seed {Seed}", seed);
+        }
+        if (!arguments.Contains("{humanDeck}", StringComparison.Ordinal)) return arguments;
         lock (_sync)
         {
-            return _options.Arguments
+            return arguments
                 .Replace("{humanDeck}", _humanDeckPath!, StringComparison.Ordinal)
                 .Replace("{aiDeck}", _aiDeckPath!, StringComparison.Ordinal);
         }

@@ -34,4 +34,9 @@ public sealed record DecisionDto(
     // the attacker currently being offered legal blockers).
     public string? ContextCardInstanceId { get; init; }
     public string? ContextCardName { get; init; }
+    // Typed native-choice provenance. These are presentation hints emitted by
+    // Forge at the controller boundary; legal ActionIds remain authoritative.
+    public string? CostKind { get; init; }
+    public string? MulliganStage { get; init; }
+    public string? CandidateSourceZone { get; init; }
 }
