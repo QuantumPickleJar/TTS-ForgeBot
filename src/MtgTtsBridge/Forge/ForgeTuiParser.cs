@@ -118,7 +118,7 @@ public sealed partial class ForgeTuiParser
                 SelectedCount = selectionMetadata.Success
                     ? int.Parse(selectionMetadata.Groups["selected"].Value, CultureInfo.InvariantCulture)
                     : bridgeActions.Count(action => action.IsSelected),
-                ConfirmRequired = selectionMetadata.Success,
+                ConfirmRequired = selectionMetadata.Success || shape.RequiresConfirmation,
                 DecisionCauseKind = decisionProvenance is { Success: true } ? decisionProvenance.Groups["cause"].Value : null,
                 DecisionReason = decisionProvenance is { Success: true } ? NullIfBlank(decisionProvenance.Groups["reason"].Value) : null,
                 SourceCardInstanceId = decisionProvenance is { Success: true } && decisionProvenance.Groups["sourceId"].Success
@@ -314,7 +314,10 @@ public sealed partial class ForgeTuiParser
             "attacker_selection" => (0, 1, false, true, false),
             "blocker_selection" => (0, 1, false, true, false),
             "blocker_assignment" => (0, 1, false, true, false),
-            "card_selection" => (1, 1, false, false, false),
+            // Legacy Forge cleanup prompts do not emit selection metadata, but
+            // they are still staged card choices. Require an explicit confirm
+            // so a physical grab cannot silently become an uncommitted move.
+            "card_selection" => (1, 1, true, true, false),
             "target_selection" => (1, 1, false, true, false),
             "defender_selection" => (1, 1, false, true, false),
             _ => (1, 1, false, false, false),

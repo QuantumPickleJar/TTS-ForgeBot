@@ -117,6 +117,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("decision.maxSelections or 1", Script);
         Assert.Contains("DONE /\\nCONFIRM", Script);
         Assert.Contains("CANCEL /\\nUNDO", Script);
+        Assert.Contains("BridgeDecisionNeedsConfirmation(decision) or action.requiresSelection == true", Script);
         Assert.Contains("this Forge TUI transport cannot atomically submit multiple selections yet", Script);
         Assert.DoesNotContain("BridgeState.physicalZoneByGuid[intent.guid] = \"graveyard\"", Script);
     }

@@ -4385,7 +4385,7 @@ function onObjectPickUp(playerColor, object)
     }
     BridgeClearHighlights()
 
-    if object.tag == "Card" and BridgeDecisionNeedsConfirmation(decision) then
+    if object.tag == "Card" and (BridgeDecisionNeedsConfirmation(decision) or action.requiresSelection == true) then
         local actionId = action.actionId
         local selected = BridgeState.selectedActionIds[actionId] == true
         BridgeState.selectedActionIds[actionId] = not selected

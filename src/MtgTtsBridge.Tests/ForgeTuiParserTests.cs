@@ -316,6 +316,20 @@ public sealed class ForgeTuiParserTests
         Assert.False(mountains[1].IsSelected);
     }
 
+    [Fact]
+    public void LegacyDiscardPromptRequiresExplicitConfirmation()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            " to discard:\n  0. Cloudspire Captain\n  1. Great Gilded Boat\nEnter choice (0-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("card_selection", decision.Kind);
+        Assert.True(decision.RequiresConfirmation);
+        Assert.True(decision.ConfirmRequired);
+        Assert.True(decision.AllowsCancel);
+    }
+
     [Theory]
     [InlineData("mode_selection", "choose_mode")]
     [InlineData("numeric_selection", "choose_number")]
