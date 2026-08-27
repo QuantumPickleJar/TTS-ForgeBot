@@ -1106,6 +1106,21 @@ index 0d731bb6..e32d896b 100644
 +        return spells;
 +    }
  
+@@ -575,7 +673,12 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+     private List<SpellAbility> getActivatedAbilities() {
+         List<SpellAbility> abilities = new ArrayList<>();
+ 
+-        // Check all permanents we control
+-        for (Card c : player.getCardsIn(ZoneType.Battlefield)) {
++        // Forge may expose activated abilities from both permanents and cards
++        // whose authoritative activation zone is the graveyard (for example
++        // a generic alternate-cost ability). Keep the zone on the SpellAbility
++        // source so bridge provenance can distinguish them without text rules.
++        List<Card> activationCards = new ArrayList<>(player.getCardsIn(ZoneType.Battlefield));
++        activationCards.addAll(player.getCardsIn(ZoneType.Graveyard));
++        for (Card c : activationCards) {
+             // Get all abilities for this permanent
+             for (SpellAbility sa : c.getAllPossibleAbilities(player, true)) {
 @@ -1165,7 +1261,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
                      if (selectedAttackers.contains(creature)) {
                          status = " [ATTACKING]";
@@ -1149,7 +1164,7 @@ index 0d731bb6..e32d896b 100644
                              " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
                      }
  
-@@ -1550,37 +1650,341 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1550,37 +1650,343 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          return toDiscard;
      }
  
@@ -1373,8 +1388,10 @@ index 0d731bb6..e32d896b 100644
 +        ZoneType zone = source == null || source.getZone() == null
 +            ? null : source.getZone().getZoneType();
 +        String sourceZone = zone == null ? "unknown" : zone.name().toLowerCase(java.util.Locale.ROOT);
-+        String abilityKind = sa == null ? "unknown"
-+            : sa.getClass().getSimpleName().toLowerCase(java.util.Locale.ROOT);
++        String keywordName = sa != null && sa.getKeyword() != null && sa.getKeyword().getKeyword() != null
++            ? sa.getKeyword().getKeyword().toString().toLowerCase(java.util.Locale.ROOT) : null;
++        String abilityKind = keywordName != null ? keywordName
++            : (sa == null ? "unknown" : sa.getClass().getSimpleName().toLowerCase(java.util.Locale.ROOT));
 +        String castMode = sa != null && sa.getAlternativeCost() != null
 +            ? sa.getAlternativeCost().name().toLowerCase(java.util.Locale.ROOT) : "normal";
 +        String costKind = "normal".equals(castMode) ? "printed" : "alternative";

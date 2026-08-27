@@ -5605,6 +5605,22 @@ function BridgeApplyAuthoritativeEvent(event)
     -- for stack -> graveyard. The resolved card identity is still Forge's;
     -- this only gives its already-authoritative result a physical location.
     if event.kind == "spell_resolved" and event.destinationZone == "graveyard" then
+        -- Some Forge TUI resolution lines omit the numeric object id.  If the
+        -- exact human cast preview is still present, the pending GUID below
+        -- remains safe to use.  Otherwise this is only a semantic duplicate
+        -- (the structured snapshot/card_moved stream owns identity); do not
+        -- guess a same-name card from the battlefield, hand, or stack.
+        if event.cardInstanceId == nil then
+            local pendingCast = BridgeState.pendingCastBySeatId[event.seatId]
+            local pendingObject = pendingCast ~= nil and getObjectFromGUID(pendingCast.guid) or nil
+            if pendingObject == nil or not BridgeCardNameMatches(pendingObject.getName(), event.cardName) then
+                BridgeLog(string.format(
+                    "[Bridge] semantic spell resolution deferred event=%s card=%s: no exact Forge instance; awaiting structured snapshot",
+                    tostring(event.sequence), tostring(event.cardName)))
+                BridgeScheduleSnapshotReconcile("semantic spell resolution without exact instance")
+                return true, 0.1
+            end
+        end
         if event.cardInstanceId ~= nil then
             local structuredMove = BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId]
             if structuredMove ~= nil and structuredMove.applied == true
@@ -5641,7 +5657,16 @@ function BridgeApplyAuthoritativeEvent(event)
         end
         local object, resolveError = BridgeResolveResolvedSpellObject(event)
         if object == nil then
-            return false, 0, resolveError
+            -- A semantic resolution line is not an identity-bearing source of
+            -- truth.  If its exact physical object is not currently visible,
+            -- let the cursor-ordered authoritative snapshot repair the public
+            -- zone.  A genuinely missing card still fails in snapshot
+            -- multiplicity/reconciliation; do not guess by display name here.
+            BridgeLog(string.format(
+                "[Bridge] resolved spell presentation deferred event=%s instance=%s card=%s reason=%s",
+                tostring(event.sequence), tostring(event.cardInstanceId), tostring(event.cardName), tostring(resolveError)))
+            BridgeScheduleSnapshotReconcile("unmapped resolved spell " .. tostring(event.cardInstanceId or event.cardName))
+            return true, 0.1
         end
         local moved, moveError = BridgeMoveToGraveyard(event, object)
         if not moved then return false, 0, moveError end
@@ -7043,6 +7068,23 @@ function BridgeResolvePhysicalCard(event, expectedZone, options)
             else
                 if existing.tag == "Card" then
                     local mappedZone = BridgeState.physicalZoneByGuid[existingGuid]
+                    if expectedZone == "hand" and mappedZone ~= "hand" then
+                        -- A land-play event can race the physical hand-zone
+                        -- bookkeeping. The exact Forge-instance mapping is
+                        -- still authoritative, but only trust it here when
+                        -- TTS confirms that this same GUID is actually in the
+                        -- configured seat hand.
+                        local handObjects = BridgeTryGetSeatHandObjects(event.seatId)
+                        for _, handObject in ipairs(handObjects or {}) do
+                            if BridgeSafeObjectGuid(handObject) == existingGuid then
+                                BridgeRecordLooseCardIdentity(event.cardInstanceId, existingGuid, event.seatId, "hand")
+                                BridgeLog(string.format(
+                                    "[Bridge] repaired stale hand mapping event=%s instance=%s guid=%s previousZone=%s",
+                                    tostring(event.sequence), tostring(event.cardInstanceId), tostring(existingGuid), tostring(mappedZone)))
+                                return existing, nil
+                            end
+                        end
+                    end
                     if options.allowMappedZoneMismatch == true or expectedZone == nil or mappedZone == nil or mappedZone == expectedZone then
                         return existing, nil
                     end

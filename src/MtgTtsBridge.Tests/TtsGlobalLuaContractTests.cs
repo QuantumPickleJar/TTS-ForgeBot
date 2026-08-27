@@ -1113,6 +1113,20 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void ResolvedSpellWithoutExactInstance_DefersToStructuredSnapshotInsteadOfGuessing()
+    {
+        var start = Script.IndexOf("if event.kind == \"spell_resolved\" and event.destinationZone == \"graveyard\" then", StringComparison.Ordinal);
+        var end = Script.IndexOf("if event.kind == \"spell_resolved\" and event.destinationZone == \"battlefield\" then", start, StringComparison.Ordinal);
+        var handler = Script[start..end];
+        Assert.Contains("if event.cardInstanceId == nil then", handler);
+        Assert.Contains("pendingCastBySeatId[event.seatId]", handler);
+        Assert.Contains("BridgeScheduleSnapshotReconcile(\"semantic spell resolution without exact instance\")", handler);
+        Assert.Contains("BridgeScheduleSnapshotReconcile(\"unmapped resolved spell \"", handler);
+        Assert.Contains("resolved spell presentation deferred event=", handler);
+        Assert.Contains("return true, 0.1", handler);
+    }
+
+    [Fact]
     public void SnapshotBattlefieldRepair_PreservesForgeRowKindAndTapDoesNotReflow()
     {
         Assert.Contains("battlefieldKind = card.battlefieldKind", Script);
@@ -1356,6 +1370,17 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeScheduleSnapshotReconcile(\"semantic land source already changed \"", handler);
         Assert.Contains("return true, 0.1", handler);
         Assert.DoesNotContain("return false, 0, resolveError", handler);
+    }
+
+    [Fact]
+    public void LandMapping_RepairsStaleHandZoneFromExactMappedGuid()
+    {
+        var resolver = Script.IndexOf("function BridgeResolvePhysicalCard", StringComparison.Ordinal);
+        var body = Script[resolver..];
+        Assert.Contains("expectedZone == \"hand\" and mappedZone ~= \"hand\"", body);
+        Assert.Contains("BridgeTryGetSeatHandObjects(event.seatId)", body);
+        Assert.Contains("BridgeSafeObjectGuid(handObject) == existingGuid", body);
+        Assert.Contains("BridgeRecordLooseCardIdentity(event.cardInstanceId, existingGuid, event.seatId, \"hand\")", body);
     }
 
     [Fact]

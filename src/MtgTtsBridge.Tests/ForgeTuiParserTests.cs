@@ -514,4 +514,23 @@ public sealed class ForgeTuiParserTests
         Assert.Equal("alternative", action.CostKind);
         Assert.DoesNotContain("sourceZone=", action.DisplayName);
     }
+
+    [Fact]
+    public void UnearthProvenance_RemainsAtypedGraveyardActivatedAbility()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== YOUR TURN ===\n" +
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Stitcher's Supplier — return this card [id=77] [bridge sourceZone=graveyard actionKind=activate_ability abilityKind=unearth castMode=normal costKind=printed]\n" +
+            "Enter choice (0-1): ");
+
+        var action = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions[1];
+        Assert.Equal("activate_ability", action.ActionKind);
+        Assert.Equal("unearth", action.AbilityKind);
+        Assert.Equal("graveyard", action.SourceZone);
+        Assert.Equal("forge-object:77", action.SourceCardInstanceId);
+        Assert.DoesNotContain("Unearth", action.DisplayName, StringComparison.OrdinalIgnoreCase);
+    }
 }

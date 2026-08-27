@@ -71,6 +71,7 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("sourceZone=", Patch);
         Assert.Contains("getCastableSpellsFromZone(ZoneType.Graveyard", Patch);
         Assert.Contains("getZone().getZoneType()", Patch);
+        Assert.Contains("getKeyword().getKeyword()", Patch);
         Assert.Contains("getAlternativeCost()", Patch);
     }
 
