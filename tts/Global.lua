@@ -12,6 +12,10 @@ BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
 BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
+-- Configuration, not rules: FREEFORM permits a player to arrange their own
+-- lands after they enter. STRICT re-applies the persistent land row only on
+-- authoritative layout events or an explicit organize request.
+BRIDGE_LAND_PLACEMENT_MODE = BRIDGE_LAND_PLACEMENT_MODE or "FREEFORM"
 BRIDGE_SCRIPT_REVISION = "2026-08-27-f2c-v6-vehicle-zone-guard"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
@@ -222,6 +226,14 @@ BridgeState = {
     -- library cards.  Destructive NEW MATCH removes them instead of shuffling
     -- them into a player's imported deck.
     tokenPhysicalGuids = {},
+    -- Token imports are asynchronous. A Forge identity is allowed one and
+    -- only one in-flight embodiment, independent of token name.
+    tokenMaterializationByInstanceId = {},
+    canonicalCardScaleByGuid = {},
+    landPlacementMode = BRIDGE_LAND_PLACEMENT_MODE,
+    landInsertionOrderByInstanceId = {},
+    nextLandInsertionOrder = 0,
+    discardPresentation = nil,
     battlefieldCounts = {},
     graveyardCounts = {},
     currentTurnSeatId = nil,
@@ -357,7 +369,46 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
     end
     BridgeState.physicalSeatByGuid[guid] = seatId
     BridgeState.physicalZoneByGuid[guid] = zoneName
+    if BridgeCaptureCanonicalCardScale ~= nil then BridgeCaptureCanonicalCardScale(BridgeGetLiveObjectByGuid(guid)) end
     return true
+end
+
+function BridgeBeginTokenMaterialization(cardInstanceId)
+    if cardInstanceId == nil then return false, "token has no Forge CardInstanceId" end
+    local current = BridgeState.tokenMaterializationByInstanceId[cardInstanceId]
+    if current ~= nil and (current.state == "SPAWNING" or current.state == "BOUND") then
+        return false, current.state
+    end
+    BridgeState.tokenMaterializationByInstanceId[cardInstanceId] = {
+        state = "SPAWNING", sessionId = BridgeState.eventSessionId, epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    }
+    return true, "SPAWNING"
+end
+
+function BridgeTokenMaterializationIsCurrent(cardInstanceId, sessionId, epoch)
+    local current = BridgeState.tokenMaterializationByInstanceId[cardInstanceId]
+    return current ~= nil and current.state == "SPAWNING"
+        and current.sessionId == sessionId and current.epoch == epoch
+        and BridgeState.eventSessionId == sessionId and BridgeRuntimeIsCurrent(epoch)
+end
+
+function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)
+    if not BridgeTokenMaterializationIsCurrent(event.cardInstanceId, sessionId, epoch) then
+        return false, "stale token import callback"
+    end
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then return false, "token import returned no live TTS GUID" end
+    local existingInstanceId = BridgeState.physicalInstanceIdByGuid[guid]
+    if existingInstanceId ~= nil and existingInstanceId ~= event.cardInstanceId then
+        return false, "token importer returned a GUID already bound to another Forge identity"
+    end
+    -- Bind the exact Forge identity before moving the object. Snapshot and
+    -- event reconciliation now see BOUND instead of creating a second token.
+    BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "battlefield")
+    BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "BOUND"
+    local moved, moveError = BridgeMoveToBattlefield(event, object, row)
+    if not moved then return false, moveError end
+    return true, nil
 end
 
 function BridgeRecordLibraryContainedState(cardInstanceId, seatId, cardName)
@@ -3360,11 +3411,20 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     if decision.kind == "attacker_selection" then
         BridgeSetStatus("DECLARE ATTACKERS", "Drag/select highlighted creatures into attack row\nDONE ATTACKING")
     elseif decision.kind == "blocker_selection" then
-        BridgeSetStatus("DECLARE BLOCKERS", "Drag/select highlighted creatures into block row\nDONE BLOCKING")
+        local attackerLabel = decision.contextCardName and ("BLOCKING: " .. tostring(decision.contextCardName)) or "DECLARE BLOCKERS"
+        BridgeSetStatus(attackerLabel, "Drag/select highlighted creatures into block row for this exact attacker\nDONE BLOCKING")
     elseif decision.kind == "blocker_assignment" then
         BridgeSetStatus("ASSIGN BLOCKERS", "Choose which attacker each blocker will block\nDONE ASSIGNING")
     elseif decision.kind == "card_selection" then
         BridgeSetStatus("CHOOSE CARD", "Required Forge selection (for example, discard) — this is not a cast action")
+    elseif decision.kind == "discard" then
+        if decision.decisionCauseKind == "cleanup_hand_size" then
+            BridgeSetStatus("DISCARD TO MAXIMUM HAND SIZE", "Choose " .. tostring(decision.minSelections or 1) .. " card(s) from your hand.")
+        elseif decision.decisionCauseKind == "spell_or_ability" then
+            BridgeSetStatus("DISCARD " .. tostring(decision.minSelections or 1) .. " CARD", "Caused by: " .. tostring(decision.sourceCardName or "Forge spell or ability"))
+        else
+            BridgeSetStatus("DISCARD", "Choose Forge's legal discard card(s).")
+        end
     elseif decision.kind == "target_selection" or decision.kind == "defender_selection" then
         BridgeSetStatus("CHOOSE TARGET", BridgeTurnLabel() .. " - " .. tostring(actor) .. " priority")
     elseif decision.kind == "generic_numeric_selection" then
@@ -3451,6 +3511,25 @@ function BridgeClearHighlights()
         if object ~= nil then BridgeSafeObjectCall(object, function(o) o.destruct() end) end
     end
     BridgeState.playerTargetControlGuids = {}
+    BridgeState.discardPresentation = nil
+end
+
+function BridgeApplyDiscardPresentation(decision)
+    if decision == nil or decision.kind ~= "discard" then return end
+    local cause = tostring(decision.decisionCauseKind or "")
+    if cause == "spell_or_ability" and decision.sourceCardInstanceId ~= nil then
+        local guid = BridgeState.physicalByInstanceId[decision.sourceCardInstanceId]
+        local source = guid and BridgeGetLiveObjectByGuid(guid) or nil
+        if source ~= nil then
+            source.highlightOn({1.0, 0.25, 0.1})
+            table.insert(BridgeState.highlightedGuids, guid)
+            BridgeState.discardPresentation = {kind = cause, sourceGuid = guid}
+        end
+    elseif cause == "cleanup_hand_size" then
+        -- A hand is a TTS zone, not a source card. Keep the warning in the
+        -- world-space/HUD status rather than inventing a hostile card.
+        BridgeState.discardPresentation = {kind = cause, seatId = decision.seatId}
+    end
 end
 
 function BridgeClearOptionControls()
@@ -4256,6 +4335,7 @@ function BridgeRenderDecision(decision)
     end
 
     BridgeEnsureDecisionOptionControls(decision, representedActionIds)
+    BridgeApplyDiscardPresentation(decision)
     BridgeUiMarkDirty("decision-render")
 end
 
@@ -5410,6 +5490,12 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.physicalSeatByGuid = {}
     BridgeState.physicalZoneByGuid = {}
     BridgeState.tokenPhysicalGuids = {}
+    BridgeState.tokenMaterializationByInstanceId = {}
+    BridgeState.canonicalCardScaleByGuid = {}
+    BridgeState.landPlacementMode = BRIDGE_LAND_PLACEMENT_MODE
+    BridgeState.landInsertionOrderByInstanceId = {}
+    BridgeState.nextLandInsertionOrder = 0
+    BridgeState.discardPresentation = nil
     BridgeState.battlefieldCounts = {}
     BridgeState.graveyardCounts = {}
     BridgeState.counterStateByInstanceId = {}
@@ -6385,8 +6471,23 @@ function BridgeApplyStructuredCardMove(event)
         local row = event.battlefieldKind
             or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]
             or "creature"
+        local sessionId = BridgeState.eventSessionId
+        local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+        local started, state = BridgeBeginTokenMaterialization(event.cardInstanceId)
+        if not started then
+            BridgeLog("[Bridge] token materialization suppressed instance=" .. tostring(event.cardInstanceId)
+                .. " state=" .. tostring(state))
+            return true, nil
+        end
         BridgeTakeCardFromTokenFetcher(expectedName, event.seatId, function(taken, takeError)
+            if not BridgeTokenMaterializationIsCurrent(event.cardInstanceId, sessionId, epoch) then
+                -- A NEW MATCH/reload or a successful concurrent exact bind made
+                -- this callback obsolete. Never cross-bind its returned object.
+                if taken ~= nil then BridgeSafeObjectCall(taken, function(card) card.destruct() end) end
+                return
+            end
             if taken == nil then
+                BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId] = nil
                 BridgeStopOnDesync(BridgePhysicalMappingError(
                     event,
                     event.sourceZone or "token",
@@ -6396,7 +6497,7 @@ function BridgeApplyStructuredCardMove(event)
                 ))
                 return
             end
-            local moved, moveError = BridgeMoveToBattlefield(event, taken, row)
+            local moved, moveError = BridgeBindTokenMaterialization(event, taken, row, sessionId, epoch)
             if not moved then BridgeStopOnDesync(libraryDrawError(moveError)) end
         end)
         return true, nil
@@ -7124,7 +7225,29 @@ local function BridgeCardScaleSnapshot(object)
     return {x = scale.x, y = scale.y, z = scale.z}
 end
 
-local function BridgeRestoreCardScaleIfChanged(object, beforeScale)
+-- The first live game-card scale is its canonical embodiment scale. Zones,
+-- token imports, Encoder/state rebuilds, and characteristic changes may alter
+-- presentation but must never silently resize that physical card.
+function BridgeCaptureCanonicalCardScale(object)
+    if object == nil or object.tag ~= "Card" then return nil end
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then return nil end
+    local canonical = BridgeState.canonicalCardScaleByGuid[guid]
+    if canonical == nil then
+        canonical = BridgeCardScaleSnapshot(object)
+        if canonical ~= nil then BridgeState.canonicalCardScaleByGuid[guid] = canonical end
+    end
+    return canonical
+end
+
+function BridgeRestoreCanonicalCardScale(object)
+    local guid = BridgeSafeObjectGuid(object)
+    local canonical = guid and BridgeState.canonicalCardScaleByGuid[guid] or nil
+    if canonical == nil then canonical = BridgeCaptureCanonicalCardScale(object) end
+    if canonical ~= nil then BridgeRestoreCardScaleIfChanged(object, canonical) end
+end
+
+function BridgeRestoreCardScaleIfChanged(object, beforeScale)
     if beforeScale == nil then return end
     local afterScale = BridgeCardScaleSnapshot(object)
     if afterScale == nil then return end
@@ -7808,9 +7931,11 @@ function BridgeMoveToBattlefield(event, object, row)
     end
 
     local moved, movementError = pcall(function()
+        BridgeCaptureCanonicalCardScale(object)
         object.use_hands = false
         BridgeSetPhysicalFaceDown(object, BRIDGE_SEATS[event.seatId], event.faceDown == true)
         object.setPosition(destination)
+        BridgeRestoreCanonicalCardScale(object)
     end)
     if not moved then
         return false, "event " .. tostring(event.sequence) .. " could not move physical card: " .. tostring(movementError)
@@ -7818,9 +7943,64 @@ function BridgeMoveToBattlefield(event, object, row)
 
     local guid = object.getGUID()
     BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "battlefield")
+    if row == "land" and event.cardInstanceId ~= nil and BridgeState.landInsertionOrderByInstanceId[event.cardInstanceId] == nil then
+        BridgeState.nextLandInsertionOrder = (BridgeState.nextLandInsertionOrder or 0) + 1
+        BridgeState.landInsertionOrderByInstanceId[event.cardInstanceId] = BridgeState.nextLandInsertionOrder
+    end
     local rowKey = event.seatId .. ":" .. row
     BridgeState.battlefieldCounts[rowKey] = (BridgeState.battlefieldCounts[rowKey] or 0) + 1
+    if row == "land" and BridgeLandPlacementMode() == "STRICT" then BridgeRelayoutStrictLandRow(event.seatId) end
     return true, nil
+end
+
+function BridgeLandPlacementMode()
+    local mode = string.upper(tostring(BridgeState.landPlacementMode or BRIDGE_LAND_PLACEMENT_MODE or "FREEFORM"))
+    return mode == "STRICT" and "STRICT" or "FREEFORM"
+end
+
+function BridgeSetLandPlacementMode(mode)
+    local normalized = string.upper(tostring(mode or "FREEFORM"))
+    if normalized ~= "STRICT" and normalized ~= "FREEFORM" then
+        BridgeShowError("unknown land placement mode " .. tostring(mode))
+        return false
+    end
+    BridgeState.landPlacementMode = normalized
+    BRIDGE_LAND_PLACEMENT_MODE = normalized
+    if normalized == "STRICT" then
+        for seatId, _ in pairs(BRIDGE_SEATS) do BridgeRelayoutStrictLandRow(seatId) end
+    end
+    BridgeLog("[Bridge] land placement mode=" .. normalized)
+    return true
+end
+
+function BridgeRelayoutStrictLandRow(seatId)
+    if BridgeLandPlacementMode() ~= "STRICT" then return end
+    local seat = BRIDGE_SEATS[seatId]
+    local anchor = seat and seat.battlefieldAnchors and seat.battlefieldAnchors.land
+    if anchor == nil then return end
+    local lands = {}
+    for instanceId, order in pairs(BridgeState.landInsertionOrderByInstanceId or {}) do
+        local guid = BridgeState.physicalByInstanceId[instanceId]
+        local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
+        if object ~= nil and BridgeState.physicalSeatByGuid[guid] == seatId
+            and BridgeState.physicalZoneByGuid[guid] == "battlefield" then
+            table.insert(lands, {instanceId = instanceId, order = order, object = object})
+        end
+    end
+    table.sort(lands, function(left, right) return left.order < right.order end)
+    local x = anchor.x
+    for index, land in ipairs(lands) do
+        local bounds = nil
+        pcall(function() bounds = land.object.getBoundsNormalized() end)
+        local width = bounds and bounds.size and tonumber(bounds.size.x) or 2.8
+        local position = {x = x + width / 2, y = anchor.y, z = anchor.z}
+        BridgeSafeObjectCall(land.object, function(card)
+            BridgeCaptureCanonicalCardScale(card)
+            card.setPositionSmooth(position, false, true)
+            BridgeRestoreCanonicalCardScale(card)
+        end)
+        x = position.x + width / 2 + 0.35
+    end
 end
 
 function BridgeBattlefieldPosition(seatId, row)

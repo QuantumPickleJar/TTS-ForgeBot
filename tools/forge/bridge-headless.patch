@@ -1282,9 +1282,20 @@ index 0d731bb6..e32d896b 100644
 +    public CardCollection chooseCardsToDiscardFrom(Player playerDiscard, SpellAbility sa,
 +            CardCollection validCards, int min, int max, CardCollectionView visibleToChooser) {
 +        CardCollection result = new CardCollection();
++        emitDiscardDecisionMetadata(sa, "spell_or_ability");
 +        result.addAll(chooseEntitiesThroughTui("discard", validCards, min, max,
 +            "Choose cards to discard", false));
 +        return result;
++    }
+
++    private void emitDiscardDecisionMetadata(SpellAbility sa, String cause) {
++        Card source = sa == null ? null : sa.getHostCard();
++        String sourceId = source == null ? "" : " sourceCardId=" + source.getId();
++        String sourceName = source == null ? "" : " sourceCardName=" + source.getName();
++        // Machine-readable producer record. The bridge never infers discard
++        // urgency or source identity from the prompt's English wording.
++        System.out.println("[bridge decisionCause=" + cause + " decisionReason=" + cause
++            + sourceId + sourceName + "]");
 +    }
 +
 +    @Override
@@ -1641,3 +1652,110 @@ index 15b7a60f..0381e5b1 100644
          // Game is over
          System.out.println();
          System.out.println("=".repeat(60));
+diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
+index 0d731bb6..52c586c2 100644
+--- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
++++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
+@@ -1338,10 +1338,19 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+ 
+                 // Show available blockers with 0 = "No further blockers"
+                 while (true) {
++                    // Filter the actual relationship for this attacker before
++                    // presenting numeric options. Forge remains the source of
++                    // truth; tokens are ordinary battlefield creatures here.
++                    System.out.println("[bridge blockerForCardId=" + attacker.getId()
++                        + " blockerForName=" + attacker.getName() + "]");
++                    List<Card> legalBlockers = new ArrayList<>();
++                    for (Card candidate : possibleBlockers) {
++                        if (CombatUtil.canBlock(attacker, candidate, combat)) legalBlockers.add(candidate);
++                    }
+                     System.out.println("Who should block this attacker?");
+                     System.out.println("  0. No further blockers");
+-                    for (int i = 0; i < possibleBlockers.size(); i++) {
+-                        Card creature = possibleBlockers.get(i);
++                    for (int i = 0; i < legalBlockers.size(); i++) {
++                        Card creature = legalBlockers.get(i);
+                         String status = "";
+                         if (combat.isBlocking(creature)) {
+                             status = " [BLOCKING]";
+@@ -1350,20 +1357,14 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+                             " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
+                     }
+ 
+-                    int choice = getIntInput(0, possibleBlockers.size());
++                    int choice = getIntInput(0, legalBlockers.size());
+ 
+                     if (choice == 0) {
+                         // No more blockers for this attacker
+                         break;
+                     }
+ 
+-                    Card blocker = possibleBlockers.get(choice - 1);
+-
+-                    // Check if blocker can block this attacker
+-                    if (!CombatUtil.canBlock(attacker, blocker, combat)) {
+-                        System.out.println(">> " + blocker.getName() + " cannot block " + attacker.getName() + ".");
+-                        continue;
+-                    }
++                    Card blocker = legalBlockers.get(choice - 1);
+ 
+                     // Add the blocker
+                     combat.addBlocker(attacker, blocker);
+diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
+index 0d731bb6..52c586c2 100644
+--- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
++++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
+@@ -1507,47 +1508,15 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+ 
+     @Override
+     public CardCollection chooseCardsToDiscardToMaximumHandSize(int numDiscard) {
+-        // Print any new game log entries
+-        TUIGuiBase.printNewLogEntries();
+-
+-        System.out.println();
+-        System.out.println("=".repeat(60));
+-        System.out.println("=== DISCARD TO HAND SIZE ===");
+-        System.out.println("=".repeat(60));
+-
+-        // Get cards in hand
+-        List<Card> hand = new ArrayList<>();
++        CardCollection hand = new CardCollection();
+         for (Card c : player.getCardsIn(ZoneType.Hand)) {
+             hand.add(c);
+         }
+-
+-        CardCollection toDiscard = new CardCollection();
+-
+-        // Let user select cards to discard
+-        for (int discardNum = 1; discardNum <= numDiscard; discardNum++) {
+-            // Show remaining cards with combined prompt
+-            List<Card> remaining = new ArrayList<>();
+-            for (Card c : hand) {
+-                if (!toDiscard.contains(c)) {
+-                    remaining.add(c);
+-                }
+-            }
+-
+-            System.out.println("Your hand (" + remaining.size() + " cards), select " + discardNum + " of " + numDiscard + " to discard:");
+-            for (int i = 0; i < remaining.size(); i++) {
+-                System.out.println("  " + i + ". " + remaining.get(i).getName());
+-            }
+-
+-            int choice = getIntInput(0, remaining.size() - 1);
+-            Card chosen = remaining.get(choice);
+-            toDiscard.add(chosen);
+-
+-            System.out.println(">> Will discard: " + chosen.getName());
+-            System.out.println();
+-        }
+-
+-        System.out.println(">> Discarding " + numDiscard + " card(s)...\n");
+-        return toDiscard;
++        CardCollection result = new CardCollection();
++        emitDiscardDecisionMetadata(null, "cleanup_hand_size");
++        result.addAll(chooseEntitiesThroughTui("discard", hand, numDiscard, numDiscard,
++            "Discard to maximum hand size", false));
++        return result;
+     }
+ 
+     /**

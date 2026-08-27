@@ -24,4 +24,14 @@ public sealed record DecisionDto(
     public bool CanChooseZero => MinSelections == 0;
     public int SelectedCount { get; init; }
     public bool ConfirmRequired { get; init; }
+    // Forge-producer metadata used solely for presentation. It is never a
+    // substitute for the legal ActionIds that Forge supplied.
+    public string? DecisionCauseKind { get; init; }
+    public string? DecisionReason { get; init; }
+    public string? SourceCardInstanceId { get; init; }
+    public string? SourceCardName { get; init; }
+    // Exact Forge context for a sequential relationship decision (for example,
+    // the attacker currently being offered legal blockers).
+    public string? ContextCardInstanceId { get; init; }
+    public string? ContextCardName { get; init; }
 }

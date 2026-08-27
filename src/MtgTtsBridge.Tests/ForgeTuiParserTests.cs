@@ -516,6 +516,57 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void DiscardDecision_UsesStructuredCauseAndExactSourceIdentity()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "Choose cards to discard\n" +
+            "[bridge decisionCause=spell_or_ability decisionReason=spell_or_ability sourceCardId=81 sourceCardName=Liliana of the Veil]\n" +
+            "[kind=discard min=1 max=1 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Island [id=41]\nEnter choice (0-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("discard", decision.Kind);
+        Assert.Equal("spell_or_ability", decision.DecisionCauseKind);
+        Assert.Equal("forge-object:81", decision.SourceCardInstanceId);
+        Assert.Equal("Liliana of the Veil", decision.SourceCardName);
+        Assert.Equal("discard_card", Assert.Single(decision.Actions, action => action.CardInstanceId == "forge-object:41").Type);
+    }
+
+    [Fact]
+    public void CleanupDiscardDecision_HasNoInventedSourceCard()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "Discard to maximum hand size\n" +
+            "[bridge decisionCause=cleanup_hand_size decisionReason=cleanup_hand_size]\n" +
+            "[kind=discard min=2 max=2 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Island [id=41]\n  2. Mountain [id=42]\nEnter choice (0-2): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("cleanup_hand_size", decision.DecisionCauseKind);
+        Assert.Null(decision.SourceCardInstanceId);
+        Assert.Null(decision.SourceCardName);
+        Assert.Equal(2, decision.MinSelections);
+    }
+
+    [Fact]
+    public void BlockerDecision_UsesProducerSuppliedExactAttackerContext()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "[bridge blockerForCardId=91 blockerForName=Ragavan, Nimble Pilferer]\n" +
+            "Who should block this attacker?\n  0. No further blockers\n  1. Pilot [id=44] (1/1)\nEnter choice (0-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("forge-object:91", decision.ContextCardInstanceId);
+        Assert.Equal("Ragavan, Nimble Pilferer", decision.ContextCardName);
+        Assert.Equal("forge-object:44", Assert.Single(decision.Actions, action => action.Type == "choose_blocker").CardInstanceId);
+    }
+
+    [Fact]
     public void UnearthProvenance_RemainsAtypedGraveyardActivatedAbility()
     {
         var parser = new ForgeTuiParser();

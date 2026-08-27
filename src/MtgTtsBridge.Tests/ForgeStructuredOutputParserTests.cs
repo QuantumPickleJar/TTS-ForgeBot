@@ -208,6 +208,27 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void CombatSnapshot_PreservesExactBlockerToAttackerRelationshipsIncludingSharedBlockers()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        var frame = ForgeStructuredOutputParser.Sentinel
+            + "{\"version\":1,\"type\":\"snapshot\",\"sequence\":1,\"reason\":\"combat\",\"players\":["
+            + Player(battlefield: [
+                Card(11, "Attacker A", "battlefield", 0), Card(12, "Attacker B", "battlefield", 1),
+                Card(21, "Blocker", "battlefield", 2)])
+            + "],\"stack\":[],\"combat\":{\"attacks\":["
+            + "{\"attackerForgeObjectId\":11,\"defenderSeatId\":\"forge-player-1\",\"defenderForgeObjectId\":null,\"blockerForgeObjectIds\":[21]},"
+            + "{\"attackerForgeObjectId\":12,\"defenderSeatId\":\"forge-player-1\",\"defenderForgeObjectId\":null,\"blockerForgeObjectIds\":[21]}]}}";
+
+        Assert.Empty(reconciler.Apply("session-a", Parse(parser, frame)));
+        var attacks = reconciler.Current!.Combat!.Attacks;
+        Assert.Equal(2, attacks.Count);
+        Assert.All(attacks, attack => Assert.Equal(["forge:session-a:21"], attack.BlockerCardInstanceIds));
+        Assert.Equal(["forge:session-a:11", "forge:session-a:12"], attacks.Select(attack => attack.AttackerCardInstanceId));
+    }
+
+    [Fact]
     public void ContinuousCharacteristicSnapshot_UpdatesEveryAffectedPermanentAndRevertsWithoutCombat()
     {
         var parser = new ForgeStructuredOutputParser();

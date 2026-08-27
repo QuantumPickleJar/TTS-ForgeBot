@@ -1448,6 +1448,65 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void TokenMaterialization_IsExactlyOncePerForgeInstanceAcrossAsyncSnapshotRaces()
+    {
+        Assert.Contains("tokenMaterializationByInstanceId", Script);
+        Assert.Contains("function BridgeBeginTokenMaterialization(cardInstanceId)", Script);
+        Assert.Contains("current.state == \"SPAWNING\" or current.state == \"BOUND\"", Script);
+        Assert.Contains("function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)", Script);
+        Assert.Contains("BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, \"battlefield\")", Script);
+        Assert.Contains("token materialization suppressed instance=", Script);
+        Assert.Contains("stale token import callback", Script);
+        Assert.Contains("BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = \"BOUND\"", Script);
+    }
+
+    [Fact]
+    public void Presentation_PreservesCanonicalCardScaleAndSeparatesLandPlacementModes()
+    {
+        Assert.Contains("canonicalCardScaleByGuid", Script);
+        Assert.Contains("function BridgeCaptureCanonicalCardScale(object)", Script);
+        Assert.Contains("function BridgeRestoreCanonicalCardScale(object)", Script);
+        Assert.Contains("BridgeRestoreCanonicalCardScale(object)", Script);
+        Assert.Contains("BRIDGE_LAND_PLACEMENT_MODE = BRIDGE_LAND_PLACEMENT_MODE or \"FREEFORM\"", Script);
+        Assert.Contains("function BridgeSetLandPlacementMode(mode)", Script);
+        Assert.Contains("function BridgeRelayoutStrictLandRow(seatId)", Script);
+        Assert.Contains("if row == \"land\" and BridgeLandPlacementMode() == \"STRICT\"", Script);
+        Assert.Contains("landInsertionOrderByInstanceId", Script);
+    }
+
+    [Fact]
+    public void CurrentDecisionRebuildsPhysicalActionsWithoutPriorityGatingTurnBasedCombat()
+    {
+        var staleStart = Script.IndexOf("function BridgeShouldIgnoreStaleDecision", StringComparison.Ordinal);
+        var staleEnd = Script.IndexOf("function BridgeShouldDeferDecision", staleStart, StringComparison.Ordinal);
+        var stalePolicy = Script[staleStart..staleEnd];
+        Assert.Contains("if decision.kind ~= \"main_priority\" then", stalePolicy);
+        Assert.Contains("return false, eventCursor, applied", stalePolicy);
+        Assert.Contains("BLOCKING: ", Script);
+        Assert.Contains("decision.contextCardName", Script);
+
+        var renderStart = Script.IndexOf("function BridgeRenderDecision(decision)", StringComparison.Ordinal);
+        var renderEnd = Script.IndexOf("function BridgeShowError", renderStart, StringComparison.Ordinal);
+        var renderer = Script[renderStart..renderEnd];
+        Assert.Contains("BridgeClearHighlights()", renderer);
+        Assert.Contains("action.cardInstanceId and BridgeState.physicalByInstanceId[action.cardInstanceId]", renderer);
+        Assert.Contains("BridgeState.actionByGuid[guid] = action", renderer);
+        Assert.Contains("action.sourceZone", renderer);
+        Assert.DoesNotContain("currentTypes contains Creature", renderer);
+    }
+
+    [Fact]
+    public void DiscardPresentation_UsesStructuredProvenanceAndRetiresWithDecisionHighlights()
+    {
+        Assert.Contains("function BridgeApplyDiscardPresentation(decision)", Script);
+        Assert.Contains("decision.decisionCauseKind", Script);
+        Assert.Contains("decision.sourceCardInstanceId", Script);
+        Assert.Contains("DISCARD TO MAXIMUM HAND SIZE", Script);
+        Assert.Contains("Caused by:", Script);
+        Assert.Contains("BridgeState.discardPresentation = nil", Script);
+    }
+
+    [Fact]
     public void DestructiveReset_DrainsGraveyardDeckPilesCardByCardBeforeLooseCleanup()
     {
         Assert.Contains("function BridgeReturnGraveyardPilesToLibraries(callback)", Script);

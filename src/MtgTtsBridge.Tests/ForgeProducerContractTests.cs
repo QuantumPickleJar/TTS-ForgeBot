@@ -76,6 +76,32 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void HumanCostChoicesAndDiscardProvenanceRemainForgeProduced()
+    {
+        Assert.Contains("chooseCardsForCost(CardCollectionView optionList", Patch);
+        Assert.Contains("chooseEntitiesThroughTui(kind, optionList", Patch);
+        Assert.DoesNotContain("chooseCrewPayment", Patch);
+        Assert.Contains("emitDiscardDecisionMetadata", Patch);
+        Assert.Contains("decisionCause=", Patch);
+        Assert.Contains("sourceCardId=", Patch);
+        Assert.Contains("sourceCardName=", Patch);
+        Assert.Contains("emitDiscardDecisionMetadata(null, \"cleanup_hand_size\")", Patch);
+        Assert.Contains("Discard to maximum hand size", Patch);
+    }
+
+    [Fact]
+    public void NumericBlockerMenusEnumerateOnlyForgeLegalRelationshipsIncludingTokens()
+    {
+        Assert.Contains("List<Card> legalBlockers = new ArrayList<>()", Patch);
+        Assert.Contains("CombatUtil.canBlock(attacker, candidate, combat)", Patch);
+        Assert.Contains("for (int i = 0; i < legalBlockers.size(); i++)", Patch);
+        Assert.Contains("getIntInput(0, legalBlockers.size())", Patch);
+        Assert.Contains("Card blocker = legalBlockers.get(choice - 1)", Patch);
+        Assert.Contains("blockerForCardId=", Patch);
+        Assert.Contains("blockerForName=", Patch);
+    }
+
+    [Fact]
     public void ForgeBuildStamp_BindsJarToPatchAndUpstreamCommit()
     {
         Assert.Contains("forge-headless-bridge-build.json", Bootstrap);

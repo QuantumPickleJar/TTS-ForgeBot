@@ -547,6 +547,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _currentDecision = decision.Decision with { SeatId = _options.HumanSeatId, Actions = actions };
             _currentDecision = _currentDecision with
             {
+                SourceCardInstanceId = NormalizeInstanceId(_currentDecision.SourceCardInstanceId),
+                ContextCardInstanceId = NormalizeInstanceId(_currentDecision.ContextCardInstanceId),
                 SessionId = _sessionId,
                 EventCursor = _latestEventSequence,
                 ForgeSequence = _latestObservedForgeSequence ?? _structuredState.Current?.ForgeSequence,

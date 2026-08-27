@@ -52,6 +52,8 @@ public sealed partial class ForgeTuiParser
             .ToArray();
 
         var selectionMetadata = SelectionMetadataRegex().Match(promptContext);
+        var decisionProvenance = DecisionProvenanceRegex().Matches(promptContext).Cast<Match>().LastOrDefault();
+        var decisionContext = DecisionContextRegex().Matches(promptContext).Cast<Match>().LastOrDefault();
         var promptKind = selectionMetadata.Success
             ? selectionMetadata.Groups["kind"].Value
             : definition?.Definition.Kind ?? inferredKind;
@@ -117,6 +119,13 @@ public sealed partial class ForgeTuiParser
                     ? int.Parse(selectionMetadata.Groups["selected"].Value, CultureInfo.InvariantCulture)
                     : bridgeActions.Count(action => action.IsSelected),
                 ConfirmRequired = selectionMetadata.Success,
+                DecisionCauseKind = decisionProvenance is { Success: true } ? decisionProvenance.Groups["cause"].Value : null,
+                DecisionReason = decisionProvenance is { Success: true } ? NullIfBlank(decisionProvenance.Groups["reason"].Value) : null,
+                SourceCardInstanceId = decisionProvenance is { Success: true } && decisionProvenance.Groups["sourceId"].Success
+                    ? $"forge-object:{decisionProvenance.Groups["sourceId"].Value}" : null,
+                SourceCardName = decisionProvenance is { Success: true } ? NullIfBlank(decisionProvenance.Groups["sourceName"].Value) : null,
+                ContextCardInstanceId = decisionContext is { Success: true } ? $"forge-object:{decisionContext.Groups["cardId"].Value}" : null,
+                ContextCardName = decisionContext is { Success: true } ? NullIfBlank(decisionContext.Groups["cardName"].Value) : null,
             },
             actions.ToDictionary(
                 option => $"{decisionId}-choice-{option.Number}",
@@ -314,6 +323,8 @@ public sealed partial class ForgeTuiParser
     private static string BoundContext(string context) =>
         context.Length <= 4096 ? context : context[^4096..];
 
+    private static string? NullIfBlank(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
     private static string StripAnsi(string text) => AnsiEscapeRegex().Replace(text, string.Empty);
 
     [GeneratedRegex(@"(?im)^(?:.*?(?:Enter|Select|Choose|Pick|Type|Press)[ \t]+(?:an?[ \t]+)?(?:[A-Za-z]+[ \t]+)?(?:choice|selection|option|number|answer|decision|assignment)\b.*?(?:\:|\?)|.*?(?:Choose|Select|Pick|Type)[ \t]+(?:one|(?:an?[ \t]+)?(?:option|choice|selection|number|assignment))[ \t]*[:\-])[ \t]*\r?$", RegexOptions.CultureInvariant)]
@@ -353,6 +364,15 @@ public sealed partial class ForgeTuiParser
 
     [GeneratedRegex(@"\[kind=(?<kind>[a-z_]+)\s+min=(?<min>\d+)\s+max=(?<max>\d+)\s+selected=(?<selected>\d+)\s+ordered=(?<ordered>true|false)\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SelectionMetadataRegex();
+
+    // This compact record is emitted by the controlled Forge producer, not
+    // inferred from the English discard prompt. sourceName is deliberately
+    // last because card names may contain spaces.
+    [GeneratedRegex(@"\[bridge\s+decisionCause=(?<cause>[a-z_]+)(?:\s+decisionReason=(?<reason>[a-z_]+))?(?:\s+sourceCardId=(?<sourceId>\d+))?(?:\s+sourceCardName=(?<sourceName>[^\]]*?))?\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex DecisionProvenanceRegex();
+
+    [GeneratedRegex(@"\[bridge\s+blockerForCardId=(?<cardId>\d+)\s+blockerForName=(?<cardName>[^\]]*?)\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex DecisionContextRegex();
 
     [GeneratedRegex("\\x1B\\[[0-?]*[ -/]*[@-~]", RegexOptions.CultureInvariant)]
     private static partial Regex AnsiEscapeRegex();
