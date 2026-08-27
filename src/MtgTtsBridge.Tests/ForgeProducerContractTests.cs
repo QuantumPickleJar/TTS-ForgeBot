@@ -65,6 +65,16 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void TrackedTuiProducer_EmitsForgeDerivedActionProvenance()
+    {
+        Assert.Contains("bridgeChoiceMetadata", Patch);
+        Assert.Contains("sourceZone=", Patch);
+        Assert.Contains("getCastableSpellsFromZone(ZoneType.Graveyard", Patch);
+        Assert.Contains("getZone().getZoneType()", Patch);
+        Assert.Contains("getAlternativeCost()", Patch);
+    }
+
+    [Fact]
     public void ForgeBuildStamp_BindsJarToPatchAndUpstreamCommit()
     {
         Assert.Contains("forge-headless-bridge-build.json", Bootstrap);

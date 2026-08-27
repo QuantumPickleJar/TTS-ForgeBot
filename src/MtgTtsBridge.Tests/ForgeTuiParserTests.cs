@@ -494,4 +494,24 @@ public sealed class ForgeTuiParserTests
         Assert.Equal("Completely New Creature Type", parsed.Decision.Actions[2].DisplayName);
         Assert.Equal("2", parsed.Inputs[parsed.Decision.Actions[2].ActionId]);
     }
+
+    [Fact]
+    public void TypedProvenance_ProvidesSourceZoneWithoutParsingDisplayText()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== YOUR TURN ===\n" +
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Faithless Looting — cast this from somewhere [id=91] [bridge sourceZone=graveyard actionKind=cast_spell abilityKind=spell castMode=flashback costKind=alternative]\n" +
+            "Enter choice (0-1): ");
+
+        var action = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions[1];
+        Assert.Equal("graveyard", action.SourceZone);
+        Assert.Equal("cast_spell", action.ActionKind);
+        Assert.Equal("spell", action.AbilityKind);
+        Assert.Equal("flashback", action.CastMode);
+        Assert.Equal("alternative", action.CostKind);
+        Assert.DoesNotContain("sourceZone=", action.DisplayName);
+    }
 }

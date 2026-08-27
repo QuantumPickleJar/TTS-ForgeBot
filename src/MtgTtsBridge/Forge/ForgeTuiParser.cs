@@ -144,7 +144,12 @@ public sealed partial class ForgeTuiParser
     private LegalActionDto BuildAction(ForgeTuiMenuOption option, string decisionId, string kind)
     {
         var forgeCardId = ForgeCardIdRegex().Match(option.Label);
+        var provenance = ActionProvenanceRegex().Match(option.Label);
         var label = ForgeCardIdRegex().Replace(option.Label, string.Empty).Trim();
+        if (provenance.Success)
+        {
+            label = ActionProvenanceRegex().Replace(label, string.Empty).Trim();
+        }
         string? targetKind = null;
         string? targetSeatId = null;
         if (kind is "target_selection" or "defender_selection" or "player_selection")
@@ -161,7 +166,11 @@ public sealed partial class ForgeTuiParser
             }
         }
 
-        var actionType = kind is "target_selection" or "player_selection" ? "choose_target" : GetActionType(label, kind);
+        var actionType = kind is "target_selection" or "player_selection"
+            ? "choose_target"
+            : provenance.Success && provenance.Groups["actionKind"].Success
+                ? provenance.Groups["actionKind"].Value
+                : GetActionType(label, kind);
         var sourceInstanceId = forgeCardId.Success ? $"forge-object:{forgeCardId.Groups["id"].Value}" : null;
         var sourceName = GetCardIdentity(label, kind);
         return new LegalActionDto(
@@ -181,7 +190,11 @@ public sealed partial class ForgeTuiParser
             SourceCardInstanceId: sourceInstanceId,
             SourceCardName: sourceName,
             ShortLabel: label.Length <= 72 ? label : label[..69] + "...",
-            RequiresSelection: kind is "target_selection" or "player_selection" or "card_selection" or "attacker_selection" or "blocker_selection" or "blocker_assignment");
+            RequiresSelection: kind is "target_selection" or "player_selection" or "card_selection" or "attacker_selection" or "blocker_selection" or "blocker_assignment",
+            SourceZone: provenance.Success ? provenance.Groups["sourceZone"].Value : null,
+            AbilityKind: provenance.Success ? provenance.Groups["abilityKind"].Value : null,
+            CastMode: provenance.Success ? provenance.Groups["castMode"].Value : null,
+            CostKind: provenance.Success ? provenance.Groups["costKind"].Value : null);
     }
 
     private bool TryResolveSeat(string playerName, out string seatId)
@@ -311,6 +324,11 @@ public sealed partial class ForgeTuiParser
 
     [GeneratedRegex(@"(?m)^\s*(?<number>\d+)\s*(?:[.):\-])?\s+(?<label>.+?)\s*\r?$", RegexOptions.CultureInvariant)]
     private static partial Regex MenuOptionRegex();
+
+    // Forge emits this additive machine-readable suffix while constructing
+    // numeric choices. Display labels remain presentation-only.
+    [GeneratedRegex(@"\[bridge\s+sourceZone=(?<sourceZone>[A-Za-z_]+)(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+abilityKind=(?<abilityKind>[A-Za-z0-9_$]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+costKind=(?<costKind>[A-Za-z0-9_-]+))?\]", RegexOptions.CultureInvariant)]
+    private static partial Regex ActionProvenanceRegex();
 
     [GeneratedRegex(@"^Play land:\s*(?<name>.+)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PlayLandRegex();

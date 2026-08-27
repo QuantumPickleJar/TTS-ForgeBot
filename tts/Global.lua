@@ -11,6 +11,7 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
+BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
 BRIDGE_SCRIPT_REVISION = "2026-08-26-f2c-v5-creature-type-dropdown"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
@@ -254,6 +255,8 @@ BridgeState = {
     gameEnded = nil,
     playerStateBySeatId = {},
     ui = {mounted = false, dirty = false, flushScheduled = false, actionRows = {}, contextInstanceId = nil,
+        graveyardActionRows = {}, graveyardFolderDecisionId = nil, graveyardFolderOpen = false,
+        graveyardFolderPage = 1,
         manaMode = "AUTO", autoAdvanceMode = "SMART", fastPlaytest = false, gameLogVisible = true,
         gameLog = {},
         diagnosticsVisible = false, reportPanelVisible = false, reportCategoryIndex = 1,
@@ -1191,6 +1194,64 @@ function BridgeHudCreatureTypeCancel(player, value, id)
     BridgeCreatureTypeClearDraft("cancelled")
 end
 
+function BridgeGraveyardClear(reason)
+    local ui = BridgeState.ui
+    if ui == nil then return end
+    ui.graveyardActionRows = {}
+    ui.graveyardFolderDecisionId = nil
+    ui.graveyardFolderOpen = false
+    ui.graveyardFolderPage = 1
+    if reason ~= nil then BridgeLog("[Bridge] graveyard folder cleared reason=" .. tostring(reason)) end
+end
+
+function BridgeGraveyardPrepareDecision(decision, actions)
+    local ui = BridgeState.ui
+    if ui == nil then return actions or {} end
+    if decision == nil or decision.sessionId ~= BridgeState.eventSessionId then
+        if ui.graveyardFolderDecisionId ~= nil then BridgeGraveyardClear("decision-missing-or-session") end
+        return actions or {}
+    end
+
+    local graveyard = {}
+    for _, action in ipairs(actions or {}) do
+        if string.lower(tostring(action.sourceZone or "")) == "graveyard" then
+            table.insert(graveyard, action)
+        end
+    end
+    if #graveyard <= BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD then
+        if ui.graveyardFolderDecisionId ~= nil then BridgeGraveyardClear("folder-not-needed") end
+        return actions or {}
+    end
+
+    if ui.graveyardFolderDecisionId ~= decision.decisionId then
+        ui.graveyardFolderDecisionId = decision.decisionId
+        ui.graveyardFolderOpen = false
+        ui.graveyardFolderPage = 1
+    end
+    ui.graveyardActionRows = graveyard
+    local pageCount = math.max(math.ceil(#graveyard / 24), 1)
+    ui.graveyardFolderPage = math.min(math.max(tonumber(ui.graveyardFolderPage or 1) or 1, 1), pageCount)
+
+    local root = {}
+    local inserted = false
+    for _, action in ipairs(actions or {}) do
+        if string.lower(tostring(action.sourceZone or "")) == "graveyard" then
+            if not inserted then
+                table.insert(root, {
+                    isGraveyardFolder = true,
+                    displayName = "GRAVEYARD ACTIONS (" .. tostring(#graveyard) .. ")",
+                    graveyardActionCount = #graveyard,
+                    actionId = "graveyard-folder-" .. tostring(decision.decisionId)
+                })
+                inserted = true
+            end
+        else
+            table.insert(root, action)
+        end
+    end
+    return root
+end
+
 function BridgeUiTerminalLabel(terminal)
     if terminal == nil then return "" end
     if #(terminal.winnerSeatIds or {}) == 0 then return "DRAW" end
@@ -1231,6 +1292,7 @@ function BridgeUiFlush()
     local actions = terminal and {} or (decision and decision.actions or {})
     BridgeCreatureTypePrepare(decision)
     if decision ~= nil and decision.kind == "creature_type_selection" then actions = {} end
+    actions = BridgeGraveyardPrepareDecision(decision, actions)
     if ui.contextInstanceId ~= nil and decision ~= nil then
         local contextual = {}
         for _, action in ipairs(actions) do
@@ -1251,11 +1313,16 @@ function BridgeUiFlush()
         local action = actions[i]
         BridgeUiSet("BridgeHudAction" .. tostring(i), "active", action ~= nil and "true" or "false")
         if action ~= nil then
-            local prefix = BridgeState.selectedActionIds[action.actionId] == true and "[x] " or "[ ] "
-            BridgeUiSet("BridgeHudAction" .. tostring(i), "text", prefix .. BridgeUiActionLabel(action))
-            BridgeUiSet("BridgeHudAction" .. tostring(i), "tooltip", "Forge action: " .. BridgeUiActionLabel(action)
-                .. "\nKind: " .. tostring(action.actionKind or action.type or "choice")
-                .. (action.sourceCardName and ("\nSource: " .. tostring(action.sourceCardName)) or ""))
+            if action.isGraveyardFolder == true then
+                BridgeUiSet("BridgeHudAction" .. tostring(i), "text", action.displayName)
+                BridgeUiSet("BridgeHudAction" .. tostring(i), "tooltip", "Open the exact Forge actions originating in your graveyard.")
+            else
+                local prefix = BridgeState.selectedActionIds[action.actionId] == true and "[x] " or "[ ] "
+                BridgeUiSet("BridgeHudAction" .. tostring(i), "text", prefix .. BridgeUiActionLabel(action))
+                BridgeUiSet("BridgeHudAction" .. tostring(i), "tooltip", "Forge action: " .. BridgeUiActionLabel(action)
+                    .. "\nKind: " .. tostring(action.actionKind or action.type or "choice")
+                    .. (action.sourceCardName and ("\nSource: " .. tostring(action.sourceCardName)) or ""))
+            end
         end
     end
     local hasPass = false
@@ -1289,6 +1356,14 @@ function BridgeHudAction(player, value, id)
     local index = tonumber(string.match(tostring(id or ""), "(%d+)$"))
     local ui, decision = BridgeState.ui, BridgeState.lastDecision
     local action = index and ui and ui.actionRows[index] or nil
+    if action ~= nil and action.isGraveyardFolder == true then
+        if decision ~= nil and ui.graveyardFolderDecisionId == decision.decisionId
+            and BridgeState.retiredChoiceDecisionIds[decision.decisionId] ~= true then
+            ui.graveyardFolderOpen = not ui.graveyardFolderOpen
+            BridgeUiMarkDirty("graveyard-folder-toggle")
+        end
+        return
+    end
     if BridgeState.gameEnded ~= nil or decision == nil or action == nil
         or decision.decisionId ~= BridgeState.lastDecision.decisionId
         or BridgeState.retiredChoiceDecisionIds[decision.decisionId] == true
@@ -1301,6 +1376,38 @@ function BridgeHudAction(player, value, id)
         return
     end
     BridgeSubmitChoice(decision.decisionId, action.actionId, "hud_action")
+end
+
+function BridgeHudGraveyardAction(player, value, id)
+    local ui, decision = BridgeState.ui, BridgeState.lastDecision
+    local index = tonumber(string.match(tostring(id or ""), "(%d+)$"))
+    local offset = ui and ((tonumber(ui.graveyardFolderPage or 1) - 1) * 24) or 0
+    local action = index and ui and ui.graveyardActionRows[offset + index] or nil
+    if BridgeState.gameEnded ~= nil or decision == nil or action == nil
+        or ui.graveyardFolderDecisionId ~= decision.decisionId
+        or not ui.graveyardFolderOpen
+        or BridgeState.retiredChoiceDecisionIds[decision.decisionId] == true
+        or not BridgeDecisionHasAction(decision, action.actionId) then return end
+    BridgeClaimHumanTtsColor(decision.seatId, player)
+    BridgeSubmitChoice(decision.decisionId, action.actionId, "hud_graveyard_action")
+end
+
+function BridgeHudGraveyardPage(player, value, id)
+    local ui, decision = BridgeState.ui, BridgeState.lastDecision
+    if ui == nil or decision == nil or ui.graveyardFolderDecisionId ~= decision.decisionId
+        or not ui.graveyardFolderOpen then return end
+    local pageCount = math.max(math.ceil(#(ui.graveyardActionRows or {}) / 24), 1)
+    local page = tonumber(ui.graveyardFolderPage or 1) or 1
+    if tostring(id or "") == "BridgeHudGraveyardPrev" then page = page - 1 else page = page + 1 end
+    ui.graveyardFolderPage = math.min(math.max(page, 1), pageCount)
+    BridgeUiMarkDirty("graveyard-folder-page")
+end
+
+function BridgeHudGraveyardClose(player, value, id)
+    local ui, decision = BridgeState.ui, BridgeState.lastDecision
+    if ui == nil or decision == nil or ui.graveyardFolderDecisionId ~= decision.decisionId then return end
+    ui.graveyardFolderOpen = false
+    BridgeUiMarkDirty("graveyard-folder-close")
 end
 
 function BridgeHudConfirm(player, value, id)
@@ -3060,6 +3167,9 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         if BridgeState.ui ~= nil and BridgeState.ui.creatureTypeDecisionId == decision.decisionId then
             BridgeCreatureTypeClearDraft("decision-retired")
         end
+        if BridgeState.ui ~= nil and BridgeState.ui.graveyardFolderDecisionId == decision.decisionId then
+            BridgeGraveyardClear("decision-retired")
+        end
         if BridgeState.lastDecision == nil or BridgeState.lastDecision.decisionId == decision.decisionId then
             BridgeState.lastDecision = nil
             BridgeClearHighlights()
@@ -3070,6 +3180,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
 
     if BridgeState.lastDecision == nil or BridgeState.lastDecision.decisionId ~= decision.decisionId then
         BridgeCreatureTypeClearDraft("decision-replaced")
+        BridgeGraveyardClear("decision-replaced")
     end
 
     BridgeRetireChoiceTransactionsForDecision(decision.decisionId)
@@ -5120,6 +5231,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.eventQueue = {}
     BridgeState.animationRunning = false
     BridgeCreatureTypeClearDraft("session-replaced")
+    BridgeGraveyardClear("session-replaced")
     BridgeState.physicalByInstanceId = {}
     BridgeState.physicalInstanceIdByGuid = {}
     BridgeState.cardNameByInstanceId = {}
@@ -7440,7 +7552,29 @@ function BridgeUiFlush()
             break
         end
     end
-    BridgeUiSet("BridgeHudChoiceTray", "active", hasTextChoices and not creatureTypeDecision and "true" or "false")
+    local graveyardFolderVisible = decision ~= nil
+        and ui.graveyardFolderDecisionId == decision.decisionId
+        and ui.graveyardFolderOpen == true
+    BridgeUiSet("BridgeHudChoiceTray", "active", hasTextChoices and not creatureTypeDecision
+        and not graveyardFolderVisible and "true" or "false")
+    BridgeUiSet("BridgeHudGraveyardPanel", "active", graveyardFolderVisible and "true" or "false")
+    local graveyardPage = tonumber(ui.graveyardFolderPage or 1) or 1
+    local graveyardPageCount = math.max(math.ceil(#(ui.graveyardActionRows or {}) / 24), 1)
+    BridgeUiSet("BridgeHudGraveyardOverflow", "text", graveyardFolderVisible
+        and ("Page " .. tostring(graveyardPage) .. " / " .. tostring(graveyardPageCount)) or "")
+    BridgeUiSet("BridgeHudGraveyardPrev", "active", graveyardFolderVisible and graveyardPage > 1 and "true" or "false")
+    BridgeUiSet("BridgeHudGraveyardNext", "active", graveyardFolderVisible and graveyardPage < graveyardPageCount and "true" or "false")
+    for i = 1, 24 do
+        local action = graveyardFolderVisible and ui.graveyardActionRows[(graveyardPage - 1) * 24 + i] or nil
+        BridgeUiSet("BridgeHudGraveyardAction" .. tostring(i), "active", action ~= nil and "true" or "false")
+        if action ~= nil then
+            BridgeUiSet("BridgeHudGraveyardAction" .. tostring(i), "text", BridgeUiActionLabel(action))
+            BridgeUiSet("BridgeHudGraveyardAction" .. tostring(i), "tooltip", "Forge action from "
+                .. tostring(action.sourceCardName or action.cardIdentity or "graveyard card")
+                .. "\nAction ID: " .. tostring(action.actionId))
+        end
+    end
+    BridgeUiSet("BridgeHudGraveyardClose", "active", graveyardFolderVisible and "true" or "false")
     local creatureTypeLabels = {}
     local creatureTypeSelectedLabel = ""
     for _, option in ipairs(ui.creatureTypeOptions or {}) do

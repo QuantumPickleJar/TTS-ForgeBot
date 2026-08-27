@@ -788,6 +788,28 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void GraveyardActions_UseDecisionScopedFolderWithoutChangingForgeActions()
+    {
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+        Assert.Contains("BridgeHudGraveyardPanel", xml);
+        Assert.Contains("BridgeHudGraveyardAction24", xml);
+        Assert.Contains("BridgeHudGraveyardPage", xml);
+        Assert.Contains("BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6", Script);
+        Assert.Contains("BridgeGraveyardPrepareDecision(decision, actions)", Script);
+        Assert.Contains("action.isGraveyardFolder == true", Script);
+        Assert.Contains("BridgeDecisionHasAction(decision, action.actionId)", Script);
+        Assert.Contains("ui.graveyardFolderDecisionId ~= decision.decisionId", Script);
+        Assert.Contains("BridgeGraveyardClear(\"decision-replaced\")", Script);
+        Assert.Contains("BridgeGraveyardClear(\"session-replaced\")", Script);
+        Assert.Contains("BridgeGraveyardClear(\"decision-retired\")", Script);
+        Assert.Contains("#graveyard <= BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD", Script);
+        Assert.Contains("graveyardFolderPage", Script);
+        Assert.Contains("BridgeHudGraveyardPrev", xml);
+        Assert.Contains("sourceZone or \"\"", Script);
+        Assert.Contains("GRAVEYARD ACTIONS (\" .. tostring(#graveyard) .. \")", Script);
+    }
+
+    [Fact]
     public void KeywordLayout_UsesNativeEncoderValueAndCachesAbovePreference()
     {
         Assert.Contains("function BridgeEnsureKeywordIconLayout(object, encoder)", Script);

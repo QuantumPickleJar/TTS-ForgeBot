@@ -953,12 +953,13 @@ index 0d731bb6..e32d896b 100644
          // Show options to user with context-appropriate header
          if (!isMyTurn) {
              System.out.println("\n=== OPPONENT'S TURN ===");
-@@ -363,14 +393,14 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -363,14 +393,15 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          // Show land options
          for (SpellAbility sa : uniqueLands) {
              Card land = sa.getHostCard();
 -            System.out.println("  " + optionNum + ". Play land: " + land.getName());
-+            System.out.println("  " + optionNum + ". Play land: " + land.getName() + " [id=" + land.getId() + "]");
++            System.out.println("  " + optionNum + ". Play land: " + land.getName() + " [id=" + land.getId() + "]"
++                + bridgeChoiceMetadata(sa, "play_land"));
              optionNum++;
          }
  
@@ -968,7 +969,8 @@ index 0d731bb6..e32d896b 100644
 -            System.out.println("  " + optionNum + ". Cast creature: " + creature.getName() +
 +            System.out.println("  " + optionNum + ". Cast creature: " + creature.getName() + " [id=" + creature.getId() + "]" +
                  " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ") - " +
-                 creature.getManaCost());
+-                creature.getManaCost());
++                creature.getManaCost() + bridgeChoiceMetadata(sa, "cast_spell"));
              optionNum++;
 @@ -379,7 +409,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          // Show artifact options
@@ -976,7 +978,8 @@ index 0d731bb6..e32d896b 100644
              Card artifact = sa.getHostCard();
 -            System.out.println("  " + optionNum + ". Cast artifact: " + artifact.getName() +
 +            System.out.println("  " + optionNum + ". Cast artifact: " + artifact.getName() + " [id=" + artifact.getId() + "]" +
-                 " - " + artifact.getManaCost());
+-                " - " + artifact.getManaCost());
++                " - " + artifact.getManaCost() + bridgeChoiceMetadata(sa, "cast_spell"));
              optionNum++;
          }
 @@ -387,7 +417,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
@@ -985,7 +988,8 @@ index 0d731bb6..e32d896b 100644
              Card sorcery = sa.getHostCard();
 -            System.out.println("  " + optionNum + ". Cast sorcery: " + sorcery.getName() +
 +            System.out.println("  " + optionNum + ". Cast sorcery: " + sorcery.getName() + " [id=" + sorcery.getId() + "]" +
-                 " - " + sorcery.getManaCost());
+-                " - " + sorcery.getManaCost());
++                " - " + sorcery.getManaCost() + bridgeChoiceMetadata(sa, "cast_spell"));
              optionNum++;
          }
 @@ -395,7 +425,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
@@ -994,15 +998,17 @@ index 0d731bb6..e32d896b 100644
              Card instant = sa.getHostCard();
 -            System.out.println("  " + optionNum + ". Cast instant: " + instant.getName() +
 +            System.out.println("  " + optionNum + ". Cast instant: " + instant.getName() + " [id=" + instant.getId() + "]" +
-                 " - " + instant.getManaCost());
+-                " - " + instant.getManaCost());
++                " - " + instant.getManaCost() + bridgeChoiceMetadata(sa, "cast_spell"));
              optionNum++;
          }
-@@ -407,7 +437,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -407,7 +437,8 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              if (description == null || description.isEmpty()) {
                  description = "Activate ability";
              }
 -            System.out.println("  " + optionNum + ". " + source.getName() + ": " + description);
-+            System.out.println("  " + optionNum + ". " + source.getName() + " [id=" + source.getId() + "]: " + description);
++            System.out.println("  " + optionNum + ". " + source.getName() + " [id=" + source.getId() + "]: " + description
++                + bridgeChoiceMetadata(sa, "activate_ability"));
              optionNum++;
          }
  
@@ -1048,7 +1054,59 @@ index 0d731bb6..e32d896b 100644
      /**
       * Get playable land abilities from the player's hand.
       */
-@@ -1165,7 +1230,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -502,11 +569,15 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+                     if (ComputerUtilMana.canPayManaCost(sa, player, 0, false)) {
+                         spells.add(sa);
+                     }
+                     break; // Only need the first castable ability
+                 }
+             }
+         }
+ 
++        // Alternate-cost spell abilities (Flashback, Escape, Unearth, etc.)
++        // are exposed by Forge from their authoritative origin zone. Do not
++        // classify these by English card text.
++        spells.addAll(getCastableSpellsFromZone(ZoneType.Graveyard, creatures ? "creature" : "artifact"));
+         return spells;
+     }
+ 
+@@ -537,5 +611,6 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         }
+ 
++        spells.addAll(getCastableSpellsFromZone(ZoneType.Graveyard, "sorcery"));
+         return spells;
+     }
+ 
+@@ -566,5 +642,28 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         }
+ 
++        spells.addAll(getCastableSpellsFromZone(ZoneType.Graveyard, "instant"));
+         return spells;
+     }
++ 
++    private List<SpellAbility> getCastableSpellsFromZone(ZoneType zone, String category) {
++        List<SpellAbility> spells = new ArrayList<>();
++        for (Card c : player.getCardsIn(zone)) {
++            if ("creature".equals(category) && (!c.isCreature() || c.isLand())) continue;
++            if ("artifact".equals(category) && (!c.isArtifact() || c.isLand())) continue;
++            if ("sorcery".equals(category) && !c.isSorcery()) continue;
++            if ("instant".equals(category) && !c.isInstant()) continue;
++            for (SpellAbility sa : c.getAllPossibleAbilities(player, true)) {
++                if (!sa.isSpell() || !sa.canPlay()) continue;
++                sa.setActivatingPlayer(player);
++                if (!ComputerUtilMana.canPayManaCost(sa, player, 0, false)) continue;
++                if (("sorcery".equals(category) || "instant".equals(category)) && !hasValidTargets(sa)) continue;
++                // Keep every legal ability for this graveyard card. A single
++                // card may expose multiple alternate-cost modes (for example
++                // more than one cast path); Forge's numeric choice remains
++                // the canonical identity for each row.
++                spells.add(sa);
++            }
++        }
++        return spells;
++    }
+ 
+@@ -1165,7 +1261,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
                      if (selectedAttackers.contains(creature)) {
                          status = " [ATTACKING]";
                      }
@@ -1057,7 +1115,7 @@ index 0d731bb6..e32d896b 100644
                          " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
                  }
  
-@@ -1178,9 +1243,13 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1178,9 +1274,13 @@ public class PlayerControllerTUI extends PlayerControllerAi {
  
                  Card selectedAttacker = possibleAttackers.get(choice - 1);
  
@@ -1073,7 +1131,7 @@ index 0d731bb6..e32d896b 100644
                      continue;
                  }
  
-@@ -1210,7 +1279,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1210,7 +1310,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              System.out.println("\nAvailable attackers:");
              for (int i = 0; i < possibleAttackers.size(); i++) {
                  Card creature = possibleAttackers.get(i);
@@ -1082,7 +1140,7 @@ index 0d731bb6..e32d896b 100644
                      " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" +
                      (creature.isTapped() ? " (tapped)" : "") +
                      (creature.isSick() ? " (summoning sickness)" : ""));
-@@ -1346,7 +1415,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1346,7 +1446,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
                          if (combat.isBlocking(creature)) {
                              status = " [BLOCKING]";
                          }
@@ -1091,7 +1149,7 @@ index 0d731bb6..e32d896b 100644
                              " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
                      }
  
-@@ -1550,37 +1619,324 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1550,37 +1650,341 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          return toDiscard;
      }
  
@@ -1308,6 +1366,23 @@ index 0d731bb6..e32d896b 100644
 +            forge.game.player.DelayedReveal delayedReveal, String selectPrompt, Player decider) {
 +        if (delayedReveal != null) reveal(delayedReveal);
 +        return chooseEntitiesThroughTui("search_selection", fetchList, min, max, selectPrompt, false);
++    }
++
++    private String bridgeChoiceMetadata(SpellAbility sa, String actionKind) {
++        Card source = sa == null ? null : sa.getHostCard();
++        ZoneType zone = source == null || source.getZone() == null
++            ? null : source.getZone().getZoneType();
++        String sourceZone = zone == null ? "unknown" : zone.name().toLowerCase(java.util.Locale.ROOT);
++        String abilityKind = sa == null ? "unknown"
++            : sa.getClass().getSimpleName().toLowerCase(java.util.Locale.ROOT);
++        String castMode = sa != null && sa.getAlternativeCost() != null
++            ? sa.getAlternativeCost().name().toLowerCase(java.util.Locale.ROOT) : "normal";
++        String costKind = "normal".equals(castMode) ? "printed" : "alternative";
++        return " [bridge sourceZone=" + sourceZone
++            + " actionKind=" + actionKind
++            + " abilityKind=" + abilityKind
++            + " castMode=" + castMode
++            + " costKind=" + costKind + "]";
 +    }
 +
 +    private <T> int chooseOneTextOption(String kind, String prompt, List<T> options) {

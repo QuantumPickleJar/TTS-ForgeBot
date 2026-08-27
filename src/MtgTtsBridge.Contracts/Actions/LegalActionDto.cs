@@ -18,4 +18,10 @@ public sealed record LegalActionDto(
     string? ShortLabel = null,
     bool RequiresSelection = false,
     int? MinSelections = null,
-    int? MaxSelections = null);
+    int? MaxSelections = null,
+    // Forge-derived provenance. These are presentation/routing metadata only;
+    // ActionId remains the canonical legality identity.
+    string? SourceZone = null,
+    string? AbilityKind = null,
+    string? CastMode = null,
+    string? CostKind = null);

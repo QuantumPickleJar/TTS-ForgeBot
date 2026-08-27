@@ -81,6 +81,45 @@
       </VerticalScrollView>
     </VerticalLayout>
 
+    <!-- Large graveyard-origin choice sets stay in a decision-scoped child panel. -->
+    <VerticalLayout id="BridgeHudGraveyardPanel" active="false" minHeight="160" preferredHeight="190" flexibleHeight="0" spacing="4" padding="7 7 7 7" childForceExpandHeight="false" childForceExpandWidth="true" color="#111827F2">
+      <HorizontalLayout minHeight="24" preferredHeight="24" flexibleHeight="0" spacing="6" childForceExpandWidth="false" childForceExpandHeight="true">
+        <Text text="GRAVEYARD ACTIONS" minWidth="220" preferredWidth="220" flexibleWidth="0" fontSize="12" color="#F8FAFC" alignment="MiddleLeft" />
+        <Button id="BridgeHudGraveyardPrev" active="false" onClick="BridgeHudGraveyardPage" text="PREV" tooltip="Show the previous page of exact Forge graveyard actions." minWidth="65" preferredWidth="65" flexibleWidth="0" fontSize="10" color="#334155EE" textColor="#FFFFFF" />
+        <Button id="BridgeHudGraveyardNext" active="false" onClick="BridgeHudGraveyardPage" text="NEXT" tooltip="Show the next page of exact Forge graveyard actions." minWidth="65" preferredWidth="65" flexibleWidth="0" fontSize="10" color="#334155EE" textColor="#FFFFFF" />
+        <Button id="BridgeHudGraveyardClose" active="false" onClick="BridgeHudGraveyardClose" text="CLOSE" tooltip="Close the graveyard action list without changing Forge state." minWidth="80" preferredWidth="80" flexibleWidth="0" fontSize="10" color="#334155EE" textColor="#FFFFFF" />
+      </HorizontalLayout>
+      <VerticalScrollView minHeight="116" preferredHeight="116" flexibleHeight="0" verticalScrollbarVisibility="AutoHideAndExpandViewport">
+        <VerticalLayout spacing="2" childForceExpandHeight="false" childForceExpandWidth="true">
+          <Button id="BridgeHudGraveyardAction1" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction2" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction3" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction4" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction5" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction6" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction7" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction8" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction9" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction10" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction11" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction12" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction13" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction14" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction15" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction16" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction17" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction18" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction19" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction20" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction21" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction22" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction23" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+          <Button id="BridgeHudGraveyardAction24" active="false" onClick="BridgeHudGraveyardAction" text="" fontSize="12" minHeight="25" preferredHeight="25" flexibleHeight="0" color="#26364ACC" textColor="#F8FAFC" />
+        </VerticalLayout>
+      </VerticalScrollView>
+      <Text id="BridgeHudGraveyardOverflow" text="" minHeight="16" preferredHeight="16" flexibleHeight="0" fontSize="10" color="#FCA5A5" alignment="MiddleLeft" />
+    </VerticalLayout>
+
     <!-- Creature-type choices are kept out of the bounded generic action tray. -->
     <VerticalLayout id="BridgeHudCreatureTypePanel" active="false" minHeight="92" preferredHeight="92" flexibleHeight="0" spacing="5" padding="8 8 8 8" childForceExpandHeight="false" childForceExpandWidth="true" color="#0D1825EE">
       <Text id="BridgeHudCreatureTypePrompt" text="CHOOSE CREATURE TYPE" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="12" color="#F8FAFC" alignment="MiddleLeft" />
