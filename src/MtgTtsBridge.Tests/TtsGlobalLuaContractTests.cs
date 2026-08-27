@@ -851,7 +851,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-26-f2c-v5-creature-type-dropdown\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-27-f2c-v6-vehicle-zone-guard\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -1127,6 +1127,44 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void SemanticSpellResolution_CannotMoveCrewedVehicleFromBattlefield()
+    {
+        var start = Script.IndexOf("if event.kind == \"spell_resolved\" and event.destinationZone == \"graveyard\" then", StringComparison.Ordinal);
+        var end = Script.IndexOf("if event.kind == \"tap_changed\" then", start, StringComparison.Ordinal);
+        var handler = Script[start..end];
+
+        // TUI resolution text is not an identity-bearing zone transition.
+        // Only a physically tracked stack object may use the semantic fallback;
+        // a Vehicle/ability source already on the battlefield must remain there.
+        Assert.Contains("pendingZone ~= \"stack\"", handler);
+        Assert.Contains("mappedZone ~= \"stack\"", handler);
+        Assert.Contains("semantic ability resolution for non-stack object", handler);
+        Assert.Contains("semantic ability resolution for non-stack mapped object", handler);
+        Assert.Contains("BridgeScheduleSnapshotReconcile", handler);
+
+        var resolverStart = Script.IndexOf("function BridgeResolveResolvedSpellObject(event)", StringComparison.Ordinal);
+        var resolverEnd = Script.IndexOf("-- Table-native presentation adapter", resolverStart, StringComparison.Ordinal);
+        var resolver = Script[resolverStart..resolverEnd];
+        Assert.Contains("BridgeResolvePhysicalCard(event, \"stack\")", resolver);
+        Assert.DoesNotContain("{\"stack\", \"battlefield\", \"hand\"}", resolver);
+    }
+
+    [Fact]
+    public void MainPriorityActions_BindExactActivatedAbilitySourceOutsideHand()
+    {
+        var start = Script.IndexOf("local mappedGuid = action.cardInstanceId", StringComparison.Ordinal);
+        var end = Script.IndexOf("if mappedSeatMatches and mappedZoneMatches then", start, StringComparison.Ordinal);
+        var binding = Script[start..end];
+
+        Assert.Contains("action.sourceZone", binding);
+        Assert.Contains("mappedPhysicalZone == actionSourceZone", binding);
+        Assert.Contains("action.type == \"activate_ability\"", binding);
+        Assert.Contains("mappedPhysicalZone == \"battlefield\"", binding);
+        Assert.Contains("mappedPhysicalZone == \"graveyard\"", binding);
+        Assert.Contains("mappedSourceZoneMatches", binding);
+    }
+
+    [Fact]
     public void SnapshotBattlefieldRepair_PreservesForgeRowKindAndTapDoesNotReflow()
     {
         Assert.Contains("battlefieldKind = card.battlefieldKind", Script);
@@ -1381,6 +1419,43 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeTryGetSeatHandObjects(event.seatId)", body);
         Assert.Contains("BridgeSafeObjectGuid(handObject) == existingGuid", body);
         Assert.Contains("BridgeRecordLooseCardIdentity(event.cardInstanceId, existingGuid, event.seatId, \"hand\")", body);
+    }
+
+    [Fact]
+    public void NonAnimatedLandPresentation_UsesAuthoritativeSourceAndDefersMappingGaps()
+    {
+        var start = Script.IndexOf("if not seat.animateAuthoritativeEvents then", StringComparison.Ordinal);
+        var end = Script.IndexOf("if event.kind == \"card_moved\"", start, StringComparison.Ordinal);
+        var handler = Script[start..end];
+        Assert.Contains("local sourceZone = event.sourceZone or \"hand\"", handler);
+        Assert.Contains("BridgeResolvePhysicalCard(event, sourceZone)", handler);
+        Assert.Contains("BridgeScheduleSnapshotReconcile(\"unmapped non-animated land \"", handler);
+        Assert.Contains("return true, 0.1", handler);
+    }
+
+    [Fact]
+    public void TokenMaterialization_DoesNotInvokeGenericEncoderButtonsAndHasForgeProxyFallback()
+    {
+        Assert.Contains("A generic Encoder button is not a token producer", Script);
+        Assert.Contains("string.find(text, \"spawn token\", 1, true)", Script);
+        Assert.DoesNotContain("string.find(label, \"encode\", 1, true) ~= nil then score", Script);
+        Assert.Contains("function BridgeSpawnGenericTokenProxy(expectedName, seatId, callback)", Script);
+        Assert.Contains("BridgeLog(\"[Bridge] token fetcher resolved via generic Forge token proxy for \"", Script);
+        Assert.Contains("tokenPhysicalGuids", Script);
+        Assert.Contains("BridgeMarkTokenPhysicalObject(taken)", Script);
+        Assert.Contains("object.destruct()", Script);
+        Assert.Contains("BridgeSpawnGenericTokenProxy(expectedName, seatId", Script);
+    }
+
+    [Fact]
+    public void DestructiveReset_DrainsGraveyardDeckPilesCardByCardBeforeLooseCleanup()
+    {
+        Assert.Contains("function BridgeReturnGraveyardPilesToLibraries(callback)", Script);
+        Assert.Contains("BridgeObjectNearSeatZone(object, seatId, \"graveyard\")", Script);
+        Assert.Contains("pile.takeObject(options)", Script);
+        Assert.Contains("BridgeStagePhysicalCardForBootstrap(card, job.seatId, {})", Script);
+        Assert.Contains("BridgeReturnGraveyardPilesToLibraries(continueWithLooseCards)", Script);
+        Assert.Contains("whole Deck-on-Deck merges are deliberately avoided", Script);
     }
 
     [Fact]

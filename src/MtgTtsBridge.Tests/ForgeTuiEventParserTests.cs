@@ -85,6 +85,20 @@ public sealed class ForgeTuiEventParserTests
     }
 
     [Fact]
+    public void ResolutionWithoutObjectId_EmitsSemanticEventWithoutInventingIdentity()
+    {
+        var parser = new ForgeTuiEventParser(Seats);
+        var events = parser.Append(
+            "+++ Add To Stack: Player 1 cast Worldly Tutor\n" +
+            "+++ Resolve Stack: Worldly Tutor - Search your library for a card.\n");
+
+        var resolved = Assert.Single(events.Where(item => item.Kind == "spell_resolved"));
+        Assert.Equal("spell_resolved", resolved.Kind);
+        Assert.Null(resolved.ForgeObjectId);
+        Assert.Equal("graveyard", resolved.DestinationZone);
+    }
+
+    [Fact]
     public void TriggerResolution_DoesNotInventCardZoneTransition()
     {
         var parser = new ForgeTuiEventParser(Seats);

@@ -19,3 +19,29 @@ sshould be able to toggle whether or not tapping is automatic or should require 
 - physical preferred (with UI fallback) for Delve abilties
 
 - functionality for abilities that allow you to search enemy's hand (could just parse them into a list for now, but eventually we'll want to physicall reveal their hand until they submit and confim a choice)
+
+- when a player needs to discard a card, it should indicate why (if it was a spell, it should glow red or yellow, with a messsaage on the HUD or the chat. if due to hand size, the hand should glow red)
+
+- When cards enter the battlfield they change size.  This should be disabled to provide ample width for the keywordss
+
+- large armies: when there are too m any carsd on the battlefield to count, we need a cleanup to regain space just from organization, but also ways to utilize stacks of tokens.  This my entail a way to promppt the player how many attackerss thye wish to attack with with if they select a stack (we could use T:# / U:# to reresesn numbrer  of untapped and tapped in a stack)
+
+- lands are still very freeform.   there sshould be a config ssetting to enforce strict land placement
+
+- one should not be able to crew a vehicle if its already been converted into an artifact creature, mount, or otherwise (unless game logic needs this for combos)
+
+Bug: cannot select attackers  by clicking on card (UI button works), noticed on crewed vehicle
+
+Bug: token fetching fails to resolve to the proper token when the attack ability of prodigy's prototype activates. 
+
+bug: an additional token  is created when only one shuold be spawned during prodigy's prototype activation
+
+Bug: lita, mechanical engineer does not fetch the appropriate card when activating her mana ability
+
+Bug: when crewing, player cannot select creature to tap, it is chosen for them (NOTE: this could be an artifact of SMART play, this sshould not be considered smart behavior and must collect a human choice before proceeding to tap anything)
+
+bug: if white is attacking, we have to pass priority to advance even though it's blue selectting blockers that would ideally be where priority passess from them to us, rather than us gating progresssion 
+
+Bug: pilot tokens are viable blockers, but for some reason don't get considered as such when blue attacks
+
+Flaw: blocking selection does not allow defenders to select which creature they wish to have it block, or multiples if they want it to block multiple creature.   Heavily lean on arena's gameplay solution to this
