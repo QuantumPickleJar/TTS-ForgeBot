@@ -608,7 +608,9 @@ index 00000000..8f63342d
 +            firstCard = false;
 +            appendCard(json, card, "stack", position++, emittedCardIds);
 +        }
-+        json.append("],\"combat\":");
++        json.append("],\"relationships\":");
++        appendRelationships(json);
++        json.append(",\"combat\":");
 +        appendCombat(json);
 +        if (game.isGameOver()) {
 +            json.append(",\"gameEnded\":");
@@ -709,6 +711,116 @@ index 00000000..8f63342d
 +            string(json, keyword);
 +        }
 +        json.append("]}");
++    }
++
++    /** Emits only Forge's native attachment/pair pointers; geometry and names
++     * are never consulted. */
++    private void appendRelationships(final StringBuilder json) {
++        final Map<Integer, Card> cards = new java.util.TreeMap<>();
++        for (Player player : game.getPlayers()) {
++            for (ZoneType zone : PLAYER_ZONES) {
++                player.getZone(zone).getCards(false).forEach(card -> cards.putIfAbsent(card.getId(), card));
++            }
++            // Mutated components live in Forge's Merged zone rather than on
++            // the battlefield. They remain part of the authoritative graph.
++            player.getZone(ZoneType.Merged).getCards(false)
++                    .forEach(card -> cards.putIfAbsent(card.getId(), card));
++        }
++        game.getStackZone().getCards().forEach(card -> cards.putIfAbsent(card.getId(), card));
++        final Set<String> emitted = new LinkedHashSet<>();
++        json.append('[');
++        boolean first = true;
++        for (Card source : cards.values()) {
++            if (source.isAttachedToEntity()) {
++                final GameEntity target = source.getEntityAttachedTo();
++                final String kind = source.isAura() ? "aura_attachment"
++                        : source.isEquipment() ? "equipment_attachment"
++                        : source.isFortification() ? "fortification_attachment" : "attachment";
++                final String id = "attachment:" + source.getId() + ":" + (target instanceof Card card ? card.getId() : "player");
++                if (emitted.add(id)) {
++                    if (!first) json.append(',');
++                    first = false;
++                    json.append('{');
++                    property(json, "relationshipId", id).append(',');
++                    property(json, "kind", kind).append(',');
++                    property(json, "sourceForgeObjectId", source.getId()).append(',');
++                    if (target instanceof Card card) property(json, "targetForgeObjectId", card.getId()).append(',');
++                    else if (target instanceof Player player) property(json, "targetSeatId", seatOf(player)).append(',');
++                    json.append('}');
++                }
++            }
++            final Card paired = source.getPairedWith();
++            if (paired != null && source.getId() < paired.getId()) {
++                first = appendRelationship(json, emitted, source.getId() + ":" + paired.getId(),
++                        "paired", source, paired, null, null, null, first);
++            }
++
++            final Card haunting = source.getHaunting();
++            if (haunting != null) {
++                first = appendRelationship(json, emitted, source.getId() + ":" + haunting.getId(),
++                        "haunt", source, haunting, null, "haunting", null, first);
++            }
++
++            int order = 0;
++            for (Card encoded : source.getEncodedCards()) {
++                first = appendRelationship(json, emitted, source.getId() + ":" + encoded.getId(),
++                        "cipher", source, encoded, "cipher:" + source.getId(), "encoded", order++, first);
++            }
++
++            order = 0;
++            for (Object remembered : source.getRemembered()) {
++                if (!(remembered instanceof Card card)) continue;
++                first = appendRelationship(json, emitted, source.getId() + ":" + card.getId(),
++                        "remembered", source, card, "remembered:" + source.getId(),
++                        source.hasKeyword("Champion") ? "championed" : "remembered", order++, first);
++            }
++
++            final Card exiledWith = source.getExiledWith();
++            if (exiledWith != null) {
++                first = appendRelationship(json, emitted, source.getId() + ":" + exiledWith.getId(),
++                        "linked_exile", source, exiledWith, "linked-exile:" + exiledWith.getId(), "exiled", null, first);
++            }
++
++            order = 0;
++            for (Card imprinted : source.getImprintedCards()) {
++                first = appendRelationship(json, emitted, source.getId() + ":" + imprinted.getId(),
++                        "imprinted", source, imprinted, "imprinted:" + source.getId(), "imprinted", order++, first);
++            }
++
++            order = 0;
++            if (source.hasMergedCard()) {
++                for (Card component : source.getMergedCards()) {
++                    first = appendRelationship(json, emitted, source.getId() + ":" + component.getId(),
++                            "mutate", source, component, "merged:" + source.getId(),
++                            component == source ? "top" : "component", order++, first);
++                }
++            }
++
++            final Card melded = source.getMeldedWith();
++            if (melded != null && source.getId() < melded.getId()) {
++                first = appendRelationship(json, emitted, source.getId() + ":" + melded.getId(),
++                        "meld", source, melded, "meld:" + source.getId(), "pair", null, first);
++            }
++        }
++        json.append(']');
++    }
++
++    private boolean appendRelationship(final StringBuilder json, final Set<String> emitted,
++            final String suffix, final String kind, final Card source, final Card target,
++            final String groupId, final String role, final Integer order, final boolean first) {
++        final String id = kind + ":" + suffix;
++        if (!emitted.add(id)) return first;
++        if (!first) json.append(',');
++        json.append('{');
++        property(json, "relationshipId", id).append(',');
++        property(json, "kind", kind).append(',');
++        property(json, "sourceForgeObjectId", source.getId()).append(',');
++        property(json, "targetForgeObjectId", target.getId());
++        if (groupId != null) { json.append(','); property(json, "groupId", groupId); }
++        if (role != null) { json.append(','); property(json, "role", role); }
++        if (order != null) { json.append(','); property(json, "order", order.longValue()); }
++        json.append('}');
++        return false;
 +    }
 +
 +    private void appendCombat(final StringBuilder json) {
