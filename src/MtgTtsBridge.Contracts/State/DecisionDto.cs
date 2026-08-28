@@ -44,4 +44,9 @@ public sealed record DecisionDto(
     // Forge still validates the selected cards before accepting the payment.
     public int? RequiredTotalPower { get; init; }
     public int? SelectedTotalPower { get; init; }
+    /// <summary>
+    /// Payment context when this decision is part of a multi-step cast/activation
+    /// payment sequence. Correlates follow-up decisions to their originating action.
+    /// </summary>
+    public PaymentContextDto? PaymentContext { get; init; }
 }

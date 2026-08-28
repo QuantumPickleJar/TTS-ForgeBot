@@ -34,4 +34,12 @@ public sealed record LegalActionDto(
     // Entity-selection provenance. Cards use CardInstanceId; players use
     // EntitySeatId. These fields never replace ActionId as legal identity.
     string? EntityKind = null,
-    string? EntitySeatId = null);
+    string? EntitySeatId = null)
+{
+    /// <summary>
+    /// Generic structured action provenance. When present, provides richer context
+    /// about the action's origin, mode, and payment requirements. Flat fields above
+    /// are preserved for backward compatibility. ActionId remains canonical.
+    /// </summary>
+    public ActionProvenanceDto? Provenance { get; init; }
+};
