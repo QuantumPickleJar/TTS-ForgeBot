@@ -1,13 +1,23 @@
 [CmdletBinding()]
 param(
-    [string]$RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
+    # Resolve paths after parameter binding.  Some Windows PowerShell hosts
+    # leave $PSScriptRoot empty while evaluating parameter defaults, which
+    # made an otherwise valid rebuild fail before prerequisites were checked.
+    [string]$RepositoryRoot = '',
     [string]$Ref = 'rrn-headless-rebased',
     [switch]$Build
 )
 
 $ErrorActionPreference = 'Stop'
+$scriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ([string]::IsNullOrWhiteSpace($scriptDirectory)) {
+    $scriptDirectory = $PSScriptRoot
+}
+if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
+    $RepositoryRoot = (Resolve-Path (Join-Path $scriptDirectory '..\..')).Path
+}
 $forgeDirectory = Join-Path $RepositoryRoot '.deps\forge'
-$bridgePatch = Join-Path $PSScriptRoot 'bridge-headless.patch'
+$bridgePatch = Join-Path $scriptDirectory 'bridge-headless.patch'
 
 function Require-Command([string]$name) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {

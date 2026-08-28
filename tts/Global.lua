@@ -1719,6 +1719,13 @@ function BridgeHudAction(player, value, id)
         or not BridgeDecisionHasAction(decision, action.actionId) then return end
     BridgeClaimHumanTtsColor(decision.seatId, player)
     if BridgeDecisionNeedsConfirmation(decision) then
+        -- A legacy discard menu may arrive as `card_selection`.  Discarding
+        -- is a Forge action, not a local hand-selection draft: submit the
+        -- exact card action immediately so Forge can move it to its graveyard.
+        if action.type == "discard_card" and BridgeIsDiscardChoice(decision) then
+            BridgeSubmitChoice(decision.decisionId, action.actionId, "hud_discard_card")
+            return
+        end
         -- Structured Forge collection menus use a real `Done` action after
         -- toggling choices. It is a commit, not another local selection.
         if action.type == "choose_none" then
@@ -2029,6 +2036,24 @@ function BridgeIsStructuredForgeToggleChoice(decision)
         or (kind == "mulligan" and tostring(decision.mulliganStage or "") == "bottom_selection")
 end
 
+-- Older Forge/TUI builds identify a discard menu as `card_selection` rather
+-- than the typed `discard` kind.  The action type is still authoritative and
+-- lets the bridge route the physical/UI gesture to the exact Forge action
+-- instead of treating a discard as an uncommitted local card move.
+function BridgeDecisionContainsDiscardAction(decision)
+    if decision == nil then return false end
+    for _, action in ipairs(decision.actions or {}) do
+        if action.type == "discard_card" then return true end
+    end
+    return false
+end
+
+function BridgeIsDiscardChoice(decision)
+    if decision == nil or decision.confirmRequired ~= true then return false end
+    return decision.kind == "discard" or
+        (decision.kind == "card_selection" and BridgeDecisionContainsDiscardAction(decision))
+end
+
 function BridgeCanSubmitStructuredDone(decision, source)
     if decision == nil or decision.confirmRequired ~= true then return true end
     local selected = tonumber(decision.selectedCount or 0) or 0
@@ -2054,7 +2079,7 @@ function BridgeIsStructuredDiscardChoice(decision)
 end
 
 function BridgeTryFinishDiscardChoice(decision, source)
-    if not BridgeIsStructuredDiscardChoice(decision) then return end
+    if not BridgeIsDiscardChoice(decision) then return end
     local selected = tonumber(decision.selectedCount or 0) or 0
     local minimum = tonumber(decision.minSelections or 1) or 1
     local maximum = tonumber(decision.maxSelections or minimum) or minimum
@@ -2071,7 +2096,12 @@ function BridgeTryFinishDiscardChoice(decision, source)
             return
         end
     end
-    BridgeShowError("Forge accepted the discard selection but did not offer Done")
+    -- A legacy one-at-a-time card_selection has no Done action; its accepted
+    -- card is already the complete Forge transaction.  Only the typed
+    -- collection producer promises a separate Done action.
+    if decision.kind == "discard" then
+        BridgeShowError("Forge accepted the discard selection but did not offer Done")
+    end
 end
 
 function BridgeTryFinishSingleOptionalPaymentChoice(decision, source)
@@ -2358,7 +2388,8 @@ function BridgeSubmitChoice(decisionId, actionId, source)
             -- a physical discard click and its HUD use the same model and the
             -- next exact toggle can be submitted.
             if body.currentDecision.decisionId == decisionId
-                and BridgeIsStructuredForgeToggleChoice(body.currentDecision) then
+                and (BridgeIsStructuredForgeToggleChoice(body.currentDecision)
+                    or BridgeIsDiscardChoice(body.currentDecision)) then
                 BridgeState.choiceTransactions[decisionId] = nil
             end
             BridgeAcceptDecision(body.currentDecision, "choice_response", activeTransaction.sessionId, activeTransaction.presentationGeneration)
@@ -3784,6 +3815,8 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         else
             BridgeSetStatus("DISCARD", "Choose Forge's legal discard card(s).")
         end
+    elseif decision.kind == "cost_selection" and tostring(decision.costKind or "") == "crew" then
+        BridgeSetStatus("CREW", "Select Forge-provided creatures, then CONFIRM.")
     elseif decision.kind == "entity_selection" and tostring(decision.selectionKind or "") == "proliferate" then
         BridgeSetStatus("PROLIFERATE", "Select any Forge-provided permanents and/or players, then CONFIRM.")
     elseif decision.kind == "target_selection" or decision.kind == "defender_selection" then
@@ -4812,6 +4845,27 @@ function onObjectPickUp(playerColor, object)
         return
     end
 
+    -- Keep a discard pickup staged until TTS tells us where the card was
+    -- released.  A release in the hand is the physical click/selection
+    -- gesture; a release over the graveyard is the explicit drag gesture.
+    -- Both paths submit the same exact Forge action and never move the card
+    -- locally before Forge accepts it.
+    if object.tag == "Card" and action.type == "discard_card" and BridgeIsDiscardChoice(decision) then
+        BridgeState.pendingIntent = {
+            guid = object.getGUID(),
+            position = object.getPosition(),
+            rotation = object.getRotation(),
+            useHands = object.use_hands,
+            physicalSeatId = BridgeState.physicalSeatByGuid[object.getGUID()],
+            physicalZone = BridgeState.physicalZoneByGuid[object.getGUID()],
+            decisionId = decision.decisionId,
+            action = action,
+            seatId = decision.seatId
+        }
+        BridgeClearHighlights()
+        return
+    end
+
     -- Delve and post-mulligan bottom choices use Forge's native sequential
     -- toggle transaction. A physical pickup submits the exact candidate
     -- ActionId; the returned Forge decision redraws both physical highlights
@@ -4833,13 +4887,6 @@ function onObjectPickUp(playerColor, object)
         seatId = decision.seatId
     }
     BridgeClearHighlights()
-
-    -- A graveyard drop is a physical confirmation for a Forge discard menu.
-    -- Keep its intent alive through onObjectDrop instead of immediately
-    -- rolling it back into the hand's local selection staging.
-    if object.tag == "Card" and action.type == "discard_card" and BridgeIsStructuredDiscardChoice(decision) then
-        return
-    end
 
     if object.tag == "Card" and (BridgeDecisionNeedsConfirmation(decision) or action.requiresSelection == true) then
         local actionId = action.actionId
@@ -4877,17 +4924,19 @@ function onObjectDrop(playerColor, object)
     end
 
     -- Dropping a card onto the graveyard is an explicit physical discard
-    -- confirmation.  A normal pickup/drop in the hand remains staged and
-    -- requires the existing CONFIRM control.
-    if intent.action.type == "discard_card" and BridgeIsStructuredDiscardChoice(decision) then
+    -- confirmation.  Releasing it in the hand (including a normal click)
+    -- submits the same exact action after restoring the presentation-only
+    -- preview.  Forge remains the sole authority for the actual zone move.
+    if intent.action.type == "discard_card" and BridgeIsDiscardChoice(decision) then
+        local decisionId = intent.decisionId
+        local actionId = intent.action.actionId
         if BridgeObjectNearSeatZone(object, intent.seatId, "graveyard") then
-            BridgeSubmitChoice(intent.decisionId, intent.action.actionId, "physical_discard_graveyard")
+            BridgeSubmitChoice(decisionId, actionId, "physical_discard_graveyard")
             return
         end
         BridgeRollbackPendingIntent()
-        if BridgeToggleSingleSelection(decision, intent.action.actionId, intent.guid) then
-            BridgeRenderDecision(decision)
-        end
+        BridgeRenderDecision(decision)
+        BridgeSubmitChoice(decisionId, actionId, "physical_discard_click")
         return
     end
 

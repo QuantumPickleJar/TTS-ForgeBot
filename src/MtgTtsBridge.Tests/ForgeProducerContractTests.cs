@@ -80,7 +80,9 @@ public sealed class ForgeProducerContractTests
     {
         Assert.Contains("chooseCardsForCost(CardCollectionView optionList", Patch);
         Assert.Contains("chooseEntitiesThroughTui(kind, optionList", Patch);
-        Assert.DoesNotContain("chooseCrewPayment", Patch);
+        Assert.Contains("costKind = sa != null && sa.isCrew() ? \"crew\" : \"total_power\"", Patch);
+        Assert.Contains("requiredTotalPower(tapCost)", Patch);
+        Assert.Contains("CardPredicates.CAN_CREW", Patch);
         Assert.Contains("emitDiscardDecisionMetadata", Patch);
         Assert.Contains("decisionCause=", Patch);
         Assert.Contains("sourceCardId=", Patch);

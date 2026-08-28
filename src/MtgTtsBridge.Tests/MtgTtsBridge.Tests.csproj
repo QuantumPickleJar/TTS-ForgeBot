@@ -30,12 +30,14 @@
   <ItemGroup>
     <ProjectReference Include="..\MtgTtsBridge\MtgTtsBridge.csproj" />
     <ProjectReference Include="..\MtgTtsBridge.Contracts\MtgTtsBridge.Contracts.csproj" />
+    <ProjectReference Include="..\MtgTtsBridge.Compatibility\MtgTtsBridge.Compatibility.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <None Update="Fixtures\forge-tui-*.txt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tts\Global.lua" Link="Fixtures\Global.lua" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tts\Global.xml" Link="Fixtures\Global.xml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tools\compatibility\keyword-abilities.json" Link="Fixtures\keyword-abilities.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

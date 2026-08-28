@@ -1018,11 +1018,30 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void PhysicalGraveyardDiscard_SubmitsForgeSelectionThenCompletesItsDoneStep()
     {
-        Assert.Contains("if object.tag == \"Card\" and action.type == \"discard_card\" and BridgeIsStructuredDiscardChoice(decision) then", Script);
+        Assert.Contains("if object.tag == \"Card\" and action.type == \"discard_card\" and BridgeIsDiscardChoice(decision) then", Script);
         Assert.Contains("if BridgeObjectNearSeatZone(object, intent.seatId, \"graveyard\") then", Script);
-        Assert.Contains("BridgeSubmitChoice(intent.decisionId, intent.action.actionId, \"physical_discard_graveyard\")", Script);
+        Assert.Contains("BridgeSubmitChoice(decisionId, actionId, \"physical_discard_graveyard\")", Script);
         Assert.Contains("BridgeTryFinishDiscardChoice(body.currentDecision, activeTransaction.source)", Script);
         Assert.Contains("if selected < minimum or selected > maximum or (not graveyardDrop and minimum ~= maximum) then return end", Script);
+    }
+
+    [Fact]
+    public void LegacyDiscardSelection_SubmitsExactActionForClickHudAndGraveyardDrop()
+    {
+        Assert.Contains("decision.kind == \"card_selection\" and BridgeDecisionContainsDiscardAction(decision)", Script);
+        Assert.Contains("BridgeSubmitChoice(decision.decisionId, action.actionId, \"hud_discard_card\")", Script);
+        Assert.Contains("BridgeState.pendingIntent = {", Script);
+        Assert.Contains("BridgeSubmitChoice(decisionId, actionId, \"physical_discard_click\")", Script);
+        Assert.Contains("Forge remains the sole authority for the actual zone move", Script);
+    }
+
+    [Fact]
+    public void CrewCostSelection_UsesExactForgeCandidatesAndSharedStructuredControls()
+    {
+        Assert.Contains("tostring(decision.costKind or \"\") == \"crew\"", Script);
+        Assert.Contains("kind == \"cost_selection\"", Script);
+        Assert.Contains("physical_structured_toggle", Script);
+        Assert.Contains("hud_structured_toggle", Script);
     }
 
     [Fact]

@@ -1,0 +1,3383 @@
+{
+  "schemaVersion": 1,
+  "rulesBaseline": "Magic Comprehensive Rules §702",
+  "effectiveDate": "2026-08-07",
+  "range": {
+    "first": "702.2",
+    "last": "702.195"
+  },
+  "abilities": [
+    {
+      "rule": "702.2",
+      "name": "Deathtouch",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.3",
+      "name": "Defender",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.4",
+      "name": "Double Strike",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.5",
+      "name": "Enchant",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U1_RELATIONSHIPS"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.6",
+      "name": "Equip",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.7",
+      "name": "First Strike",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.8",
+      "name": "Flash",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.9",
+      "name": "Flying",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.10",
+      "name": "Haste",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.11",
+      "name": "Hexproof",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.12",
+      "name": "Indestructible",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.13",
+      "name": "Intimidate",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.14",
+      "name": "Landwalk",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.15",
+      "name": "Lifelink",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "PARTIAL",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": [
+        {
+          "layer": "ttsPresentation",
+          "kind": "known_limitation",
+          "path": "tts/Global.lua",
+          "description": "Keyword presentation coverage is partial."
+        }
+      ]
+    },
+    {
+      "rule": "702.16",
+      "name": "Protection",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.17",
+      "name": "Reach",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.18",
+      "name": "Shroud",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.19",
+      "name": "Trample",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.20",
+      "name": "Vigilance",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.21",
+      "name": "Ward",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.22",
+      "name": "Banding",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U4_COMBAT_RELATIONSHIP"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.23",
+      "name": "Rampage",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U4_COMBAT_RELATIONSHIP"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.24",
+      "name": "Cumulative Upkeep",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.25",
+      "name": "Flanking",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U4_COMBAT_RELATIONSHIP"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.26",
+      "name": "Phasing",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U5_DESIGNATION_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.27",
+      "name": "Buyback",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "GENERIC_HUMAN_CHOICE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.28",
+      "name": "Shadow",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.29",
+      "name": "Cycling",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.30",
+      "name": "Echo",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.31",
+      "name": "Horsemanship",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.32",
+      "name": "Fading",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.33",
+      "name": "Kicker",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.34",
+      "name": "Flashback",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.35",
+      "name": "Madness",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.36",
+      "name": "Fear",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.37",
+      "name": "Morph",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT",
+        "U0_HIDDEN_INFORMATION"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.38",
+      "name": "Amplify",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.39",
+      "name": "Provoke",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.40",
+      "name": "Storm",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.41",
+      "name": "Affinity",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.42",
+      "name": "Entwine",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.43",
+      "name": "Modular",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.44",
+      "name": "Sunburst",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.45",
+      "name": "Bushido",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U4_COMBAT_RELATIONSHIP"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.46",
+      "name": "Soulshift",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.47",
+      "name": "Splice",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.48",
+      "name": "Offering",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.49",
+      "name": "Ninjutsu",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U0_HIDDEN_INFORMATION"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.50",
+      "name": "Epic",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.51",
+      "name": "Convoke",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.52",
+      "name": "Dredge",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.53",
+      "name": "Transmute",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.54",
+      "name": "Bloodthirst",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.55",
+      "name": "Haunt",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.56",
+      "name": "Replicate",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.57",
+      "name": "Forecast",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.58",
+      "name": "Graft",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.59",
+      "name": "Recover",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.60",
+      "name": "Ripple",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.61",
+      "name": "Split Second",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.62",
+      "name": "Suspend",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.63",
+      "name": "Vanishing",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.64",
+      "name": "Absorb",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.65",
+      "name": "Aura Swap",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U1_RELATIONSHIPS"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.66",
+      "name": "Delve",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.67",
+      "name": "Fortify",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.68",
+      "name": "Frenzy",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.69",
+      "name": "Gravestorm",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.70",
+      "name": "Poisonous",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.71",
+      "name": "Transfigure",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.72",
+      "name": "Champion",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.73",
+      "name": "Changeling",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.74",
+      "name": "Evoke",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.75",
+      "name": "Hideaway",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U0_HIDDEN_INFORMATION"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.76",
+      "name": "Prowl",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.77",
+      "name": "Reinforce",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.78",
+      "name": "Conspire",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.79",
+      "name": "Persist",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.80",
+      "name": "Wither",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.81",
+      "name": "Retrace",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.82",
+      "name": "Devour",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.83",
+      "name": "Exalted",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.84",
+      "name": "Unearth",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.85",
+      "name": "Cascade",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.86",
+      "name": "Annihilator",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.87",
+      "name": "Level Up",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.88",
+      "name": "Rebound",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.89",
+      "name": "Umbra Armor",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.90",
+      "name": "Infect",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.91",
+      "name": "Battle Cry",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.92",
+      "name": "Living Weapon",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U3_VIRTUAL_COPY"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.93",
+      "name": "Undying",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.94",
+      "name": "Miracle",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.95",
+      "name": "Soulbond",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.96",
+      "name": "Overload",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.97",
+      "name": "Scavenge",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.98",
+      "name": "Unleash",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.99",
+      "name": "Cipher",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.100",
+      "name": "Evolve",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.101",
+      "name": "Extort",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.102",
+      "name": "Fuse",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.103",
+      "name": "Bestow",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U1_RELATIONSHIPS"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.104",
+      "name": "Tribute",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.105",
+      "name": "Dethrone",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.106",
+      "name": "Hidden Agenda",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.107",
+      "name": "Outlast",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.108",
+      "name": "Prowess",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.109",
+      "name": "Dash",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.110",
+      "name": "Exploit",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.111",
+      "name": "Menace",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U4_COMBAT_RELATIONSHIP"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.112",
+      "name": "Renown",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.113",
+      "name": "Awaken",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.114",
+      "name": "Devoid",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.115",
+      "name": "Ingest",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.116",
+      "name": "Myriad",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.117",
+      "name": "Surge",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.118",
+      "name": "Skulk",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.119",
+      "name": "Emerge",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.120",
+      "name": "Escalate",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.121",
+      "name": "Melee",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U4_COMBAT_RELATIONSHIP"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.122",
+      "name": "Crew",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "GENERIC_HUMAN_CHOICE",
+        "U4_COMBAT_RELATIONSHIP"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "PARTIAL",
+        "bridgeTransport": "VERIFIED",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": [
+        {
+          "layer": "bridgeTransport",
+          "kind": "contract_test",
+          "path": "src/MtgTtsBridge.Tests/ForgeTuiParserTests.cs",
+          "test": "Crew"
+        },
+        {
+          "layer": "humanController",
+          "kind": "source_contract",
+          "path": "tools/forge/bridge-headless.patch",
+          "description": "Crew choice transport is present in the bridge patch."
+        }
+      ]
+    },
+    {
+      "rule": "702.123",
+      "name": "Fabricate",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.124",
+      "name": "Partner",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U4_COMBAT_RELATIONSHIP",
+        "U6_MULTIPLAYER_SUPPLEMENTAL"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.125",
+      "name": "Undaunted",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.126",
+      "name": "Improvise",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.127",
+      "name": "Aftermath",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U3_VIRTUAL_COPY"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.128",
+      "name": "Embalm",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U3_VIRTUAL_COPY"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.129",
+      "name": "Eternalize",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U3_VIRTUAL_COPY"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.130",
+      "name": "Afflict",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.131",
+      "name": "Ascend",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.132",
+      "name": "Assist",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.133",
+      "name": "Jump-Start",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.134",
+      "name": "Mentor",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.135",
+      "name": "Afterlife",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.136",
+      "name": "Riot",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.137",
+      "name": "Spectacle",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.138",
+      "name": "Escape",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.139",
+      "name": "Companion",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.140",
+      "name": "Mutate",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U1_RELATIONSHIPS"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.141",
+      "name": "Encore",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U3_VIRTUAL_COPY"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.142",
+      "name": "Boast",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.143",
+      "name": "Foretell",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.144",
+      "name": "Demonstrate",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.145",
+      "name": "Daybound and Nightbound",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U5_DESIGNATION_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.146",
+      "name": "Disturb",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U5_DESIGNATION_STATE",
+        "U3_VIRTUAL_COPY"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.147",
+      "name": "Decayed",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.148",
+      "name": "Cleave",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.149",
+      "name": "Training",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.150",
+      "name": "Compleated",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.151",
+      "name": "Reconfigure",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U5_DESIGNATION_STATE",
+        "U1_RELATIONSHIPS"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.152",
+      "name": "Blitz",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.153",
+      "name": "Casualty",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.154",
+      "name": "Enlist",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.155",
+      "name": "Read Ahead",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.156",
+      "name": "Ravenous",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.157",
+      "name": "Squad",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.158",
+      "name": "Space Sculptor",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.159",
+      "name": "Visit",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.160",
+      "name": "Prototype",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT",
+        "U3_VIRTUAL_COPY"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.161",
+      "name": "Living Metal",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U5_DESIGNATION_STATE",
+        "U3_VIRTUAL_COPY"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.162",
+      "name": "More Than Meets the Eye",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.163",
+      "name": "For Mirrodin!",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.164",
+      "name": "Toxic",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.165",
+      "name": "Backup",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.166",
+      "name": "Bargain",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.167",
+      "name": "Craft",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.168",
+      "name": "Disguise",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.169",
+      "name": "Solved",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U5_DESIGNATION_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.170",
+      "name": "Plot",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.171",
+      "name": "Saddle",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.172",
+      "name": "Spree",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.173",
+      "name": "Freerunning",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.174",
+      "name": "Gift",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.175",
+      "name": "Offspring",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.176",
+      "name": "Impending",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.177",
+      "name": "Exhaust",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.178",
+      "name": "Max Speed",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.179",
+      "name": "Start Your Engines!",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.180",
+      "name": "Harmonize",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.181",
+      "name": "Mobilize",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.182",
+      "name": "Job Select",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.183",
+      "name": "Tiered",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U5_DESIGNATION_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.184",
+      "name": "Station",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U5_DESIGNATION_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.185",
+      "name": "Warp",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U2_CAST_PAYMENT"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.186",
+      "name": "∞ (Infinity)",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.187",
+      "name": "Mayhem",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.188",
+      "name": "Web-slinging",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.189",
+      "name": "Firebending",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.190",
+      "name": "Sneak",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.191",
+      "name": "Increment",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.192",
+      "name": "Paradigm",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.193",
+      "name": "Power-up",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.194",
+      "name": "Teamwork",
+      "capabilityFamilies": [
+        "BASIC_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    },
+    {
+      "rule": "702.195",
+      "name": "Storied",
+      "capabilityFamilies": [
+        "BASIC_STATE",
+        "U5_DESIGNATION_STATE"
+      ],
+      "status": {
+        "forgeRules": "UNKNOWN",
+        "humanController": "UNKNOWN",
+        "bridgeTransport": "UNKNOWN",
+        "snapshotState": "UNKNOWN",
+        "ttsPresentation": "UNKNOWN",
+        "automatedCanary": "UNKNOWN",
+        "liveTtsCanary": "UNKNOWN"
+      },
+      "evidence": []
+    }
+  ]
+}

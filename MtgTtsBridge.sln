@@ -11,6 +11,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MtgTtsBridge", "src\MtgTtsB
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MtgTtsBridge.Tests", "src\MtgTtsBridge.Tests\MtgTtsBridge.Tests.csproj", "{8C15A7C4-C0DC-46E9-9066-81B4689735D9}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MtgTtsBridge.Compatibility", "src\MtgTtsBridge.Compatibility\MtgTtsBridge.Compatibility.csproj", "{A9E5A50E-8EE0-4E8B-9F7A-4C6B32F03001}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -57,6 +59,10 @@ Global
 		{8C15A7C4-C0DC-46E9-9066-81B4689735D9}.Release|x64.Build.0 = Release|Any CPU
 		{8C15A7C4-C0DC-46E9-9066-81B4689735D9}.Release|x86.ActiveCfg = Release|Any CPU
 		{8C15A7C4-C0DC-46E9-9066-81B4689735D9}.Release|x86.Build.0 = Release|Any CPU
+		{A9E5A50E-8EE0-4E8B-9F7A-4C6B32F03001}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A9E5A50E-8EE0-4E8B-9F7A-4C6B32F03001}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A9E5A50E-8EE0-4E8B-9F7A-4C6B32F03001}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A9E5A50E-8EE0-4E8B-9F7A-4C6B32F03001}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
