@@ -17,7 +17,8 @@ public sealed record GameSnapshotDto(
     // table-native Monarch helper without implementing Monarch in Lua.
     string? MonarchSeatId = null,
     GameCombatSnapshotDto? Combat = null,
-    GameResultDto? Result = null);
+    GameResultDto? Result = null,
+    IReadOnlyList<GameRelationshipSnapshotDto>? Relationships = null);
 
 public sealed record GameCombatSnapshotDto(IReadOnlyList<GameCombatAttackSnapshotDto> Attacks);
 public sealed record GameCombatAttackSnapshotDto(string AttackerCardInstanceId, string? DefenderSeatId, int? DefenderForgeObjectId, IReadOnlyList<string> BlockerCardInstanceIds);
