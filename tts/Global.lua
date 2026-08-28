@@ -224,6 +224,14 @@ BridgeState = {
     presentedCounterSignatureByGuid = {},
     presentedKeywordSignatureByGuid = {},
     presentedIconLayoutByGuid = {},
+    -- Forge relationship state is a presentation cache only. The graph is
+    -- replaced from each authoritative snapshot; TTS never derives it from
+    -- object overlap or card names.
+    relationshipPresentationById = {},
+    relationshipCardByInstanceId = {},
+    relationshipSummary = {},
+    relationshipIdentityAuthorization = nil,
+    lastAuthoritativeSnapshot = nil,
     preparedDescriptionByGuid = {},
     prototypeDescriptionByGuid = {},
     preparedBadgeGuidByInstanceId = {},
@@ -1724,6 +1732,8 @@ function BridgeUiFlush()
         or (ui.contextInstanceId and "CARD CONTEXT — choose a Forge-provided action" or "Forge decides legality. Screen actions submit exact Forge choices.")
     if not terminal and #(BridgeState.stackSummary or {}) > 0 then footer = "STACK: " .. table.concat(BridgeState.stackSummary, " > ") end
     if not terminal and ui.gameLogVisible and #(ui.gameLog or {}) > 0 then footer = ui.gameLog[#ui.gameLog] end
+    local relationshipFooter = BridgeRelationshipFooter()
+    if not terminal and relationshipFooter ~= "" then footer = relationshipFooter end
     BridgeUiSet("BridgeHudFooter", "text", footer)
 end
 
@@ -2762,6 +2772,173 @@ function BridgeApplyCombatSnapshot(combat)
     end
 end
 
+function BridgeRelationshipIsAttachmentKind(kind)
+    kind = string.lower(tostring(kind or ""))
+    return kind == "attachment"
+        or kind == "aura_attachment"
+        or kind == "equipment_attachment"
+        or kind == "fortification_attachment"
+        or kind == "bestow_attachment"
+        or kind == "reconfigure_attachment"
+end
+
+function BridgeIndexRelationshipCards(snapshot)
+    local indexed = {}
+    for _, seatSnapshot in ipairs(snapshot and snapshot.seats or {}) do
+        for _, zone in ipairs(seatSnapshot.zones or {}) do
+            for _, card in ipairs(zone.cards or {}) do
+                indexed[card.cardInstanceId] = card
+            end
+        end
+    end
+    for _, card in ipairs(snapshot and snapshot.stack or {}) do
+        indexed[card.cardInstanceId] = card
+    end
+    BridgeState.relationshipCardByInstanceId = indexed
+end
+
+-- U0 can install a viewer-aware authorizer here. Until it does, relationship
+-- labels intentionally do not disclose any card identity from the graph.
+function BridgeRelationshipIdentityAuthorized(instanceId, relation)
+    local authorizer = BridgeState.relationshipIdentityAuthorization
+    if type(authorizer) ~= "function" then return false end
+    local ok, allowed = pcall(authorizer, instanceId, relation)
+    if not ok then
+        BridgeLog("[Bridge] relationship identity authorizer failed: " .. tostring(allowed))
+        return false
+    end
+    return allowed == true
+end
+
+function BridgeRelationshipTargetLabel(relation)
+    if relation.targetSeatId ~= nil then
+        return "PLAYER " .. BridgeCurrentSeatLabel(relation.targetSeatId)
+    end
+    local targetId = relation.targetCardInstanceId
+    if targetId ~= nil and BridgeRelationshipIdentityAuthorized(targetId, relation) then
+        local card = BridgeState.relationshipCardByInstanceId[targetId]
+        local label = card and (card.currentCardName or card.cardName) or nil
+        if label ~= nil and tostring(label) ~= "" then return tostring(label) end
+    end
+    return "LINKED FACE-DOWN CARD"
+end
+
+function BridgeRelationshipSummaryLabel(relation)
+    local kind = string.lower(tostring(relation.kind or "relationship"))
+    local role = string.lower(tostring(relation.role or ""))
+    local prefix = string.upper(kind)
+    if kind == "paired" then prefix = "PAIRED WITH" end
+    if kind == "remembered" and role == "championed" then prefix = "CHAMPIONED" end
+    if kind == "linked_exile" then prefix = "LINKED EXILE" end
+    if kind == "mutate" then prefix = "MERGED GROUP" end
+    return prefix .. ": " .. BridgeRelationshipTargetLabel(relation)
+end
+
+function BridgeAttachmentPresentationPosition(target)
+    local ok, position = pcall(function() return target.getPosition() end)
+    if not ok or position == nil then return nil end
+    -- Keep both cards readable while making the authoritative attachment
+    -- obvious. This is depiction only; no TTS joint or lock is created.
+    return {x = position.x + 0.82, y = position.y + 0.18, z = position.z + 0.42}
+end
+
+function BridgeRestoreRelationshipPresentation(presentation)
+    if presentation == nil or presentation.sourceInstanceId == nil or presentation.origin == nil then return end
+    local sourceGuid = BridgeState.physicalByInstanceId[presentation.sourceInstanceId]
+    if sourceGuid == nil or sourceGuid ~= presentation.sourceGuid then return end
+    if BridgeState.physicalZoneByGuid[sourceGuid] ~= "battlefield" then return end
+    local source = BridgeGetLiveObjectByGuid(sourceGuid)
+    if source == nil then return end
+    BridgeSafeObjectCall(source, function(object)
+        object.use_hands = false
+        object.setPositionSmooth(presentation.origin, false, true)
+    end)
+end
+
+function BridgeApplyPhysicalRelationship(relation)
+    local sourceId = relation.sourceCardInstanceId
+    local targetId = relation.targetCardInstanceId
+    local sourceGuid = sourceId and BridgeState.physicalByInstanceId[sourceId] or nil
+    local targetGuid = targetId and BridgeState.physicalByInstanceId[targetId] or nil
+    local source = sourceGuid and BridgeGetLiveObjectByGuid(sourceGuid) or nil
+    local target = targetGuid and BridgeGetLiveObjectByGuid(targetGuid) or nil
+    if source == nil or target == nil or sourceGuid == targetGuid then
+        return nil
+    end
+    if BridgeState.physicalZoneByGuid[sourceGuid] ~= "battlefield"
+        or BridgeState.physicalZoneByGuid[targetGuid] ~= "battlefield" then
+        return nil
+    end
+    local position = BridgeAttachmentPresentationPosition(target)
+    if position == nil then return nil end
+    local prior = BridgeState.relationshipPresentationById[relation.relationshipId]
+    local origin = prior and prior.origin or nil
+    if origin == nil or prior.sourceGuid ~= sourceGuid then
+        local ok, current = pcall(function() return source.getPosition() end)
+        if not ok or current == nil then return nil end
+        origin = current
+    end
+    local moved = BridgeSafeObjectCall(source, function(object)
+        object.use_hands = false
+        object.setPositionSmooth(position, false, true)
+    end)
+    if not moved then return nil end
+    return {
+        sourceInstanceId = sourceId,
+        sourceGuid = sourceGuid,
+        origin = origin,
+        relationshipId = relation.relationshipId
+    }
+end
+
+function BridgeRelationshipFooter()
+    local summaries = BridgeState.relationshipSummary or {}
+    if #summaries == 0 then return "" end
+    local visible = {}
+    for index = 1, math.min(#summaries, 3) do table.insert(visible, summaries[index]) end
+    if #summaries > #visible then
+        table.insert(visible, "+" .. tostring(#summaries - #visible) .. " MORE FORGE RELATIONSHIP(S)")
+    end
+    return table.concat(visible, "  •  ")
+end
+
+function BridgeApplyRelationshipSnapshot(relationships, reason)
+    if relationships == nil then return end
+    BridgeIndexRelationshipCards(BridgeState.lastAuthoritativeSnapshot or {})
+    local previous = BridgeState.relationshipPresentationById or {}
+    local nextPresentation = {}
+    local active = {}
+    local summaries = {}
+    local ordered = {}
+    for _, relation in ipairs(relationships or {}) do
+        if relation.relationshipId ~= nil and not active[relation.relationshipId] then
+            active[relation.relationshipId] = true
+            table.insert(ordered, relation)
+        end
+    end
+    table.sort(ordered, function(left, right)
+        return tostring(left.relationshipId) < tostring(right.relationshipId)
+    end)
+
+    -- Restore removed attachments before capturing origins for any new target.
+    for relationshipId, presentation in pairs(previous) do
+        if not active[relationshipId] then BridgeRestoreRelationshipPresentation(presentation) end
+    end
+    for _, relation in ipairs(ordered) do
+        if BridgeRelationshipIsAttachmentKind(relation.kind) then
+            local presentation = BridgeApplyPhysicalRelationship(relation)
+            if presentation ~= nil then nextPresentation[relation.relationshipId] = presentation end
+        else
+            table.insert(summaries, BridgeRelationshipSummaryLabel(relation))
+        end
+    end
+    BridgeState.relationshipPresentationById = nextPresentation
+    BridgeState.relationshipSummary = summaries
+    BridgeUiMarkDirty("relationships")
+    BridgeLog("[Bridge] relationship snapshot applied count=" .. tostring(#ordered)
+        .. " reason=" .. tostring(reason or "snapshot"))
+end
+
 function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     local movedCount = 0
     BridgePresentationMetric("fullSnapshotReconcileCount")
@@ -2818,6 +2995,8 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
         -- their badges appear without waiting for another Forge mutation.
         BridgeApplySeatSnapshotVisualState(seatSnapshot)
     end
+    BridgeState.lastAuthoritativeSnapshot = snapshot
+    BridgeApplyRelationshipSnapshot(snapshot.relationships, reason)
     BridgeApplyCombatSnapshot(snapshot.combat)
     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
     BridgeLogSnapshotOrdering("applied", snapshot, reason)
@@ -5218,6 +5397,8 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
                                 BridgeState.bootstrapping = false
                                 if not seatsOk then callback(false, seatsError); return end
                                 BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
+                                BridgeState.lastAuthoritativeSnapshot = snapshot
+                                BridgeApplyRelationshipSnapshot(snapshot.relationships, "bootstrap")
                                 BridgeLog(string.format(
                                     "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
                                     #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
@@ -6282,6 +6463,10 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.presentedCounterSignatureByGuid = {}
     BridgeState.presentedKeywordSignatureByGuid = {}
     BridgeState.presentedIconLayoutByGuid = {}
+    BridgeState.relationshipPresentationById = {}
+    BridgeState.relationshipCardByInstanceId = {}
+    BridgeState.relationshipSummary = {}
+    BridgeState.lastAuthoritativeSnapshot = nil
     BridgeState.unsupportedKeywordLogged = {}
     BridgeState.presentationMetrics = {encoderRebuildCount = 0, keywordPropWriteCount = 0, decalWriteCount = 0, fullSnapshotReconcileCount = 0}
     BridgeState.physicalSeatByGuid = {}
