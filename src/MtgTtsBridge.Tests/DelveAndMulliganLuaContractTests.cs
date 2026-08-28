@@ -23,6 +23,39 @@ public sealed class DelveAndMulliganLuaContractTests
     }
 
     [Fact]
+    public void StructuredConfirm_UsesCurrentForgeDoneInsteadOfLegacyLocalSelection()
+    {
+        var start = Script.IndexOf("function BridgeConfirmSelection", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeCancelSelection", start, StringComparison.Ordinal);
+        var confirm = Script[start..end];
+        var structuredStart = confirm.IndexOf("if BridgeIsStructuredForgeToggleChoice(decision)", StringComparison.Ordinal);
+        var legacyStart = confirm.IndexOf("if decision == nil", structuredStart, StringComparison.Ordinal);
+        var structured = confirm[structuredStart..legacyStart];
+
+        Assert.Contains("BridgeIsStructuredForgeToggleChoice(decision)", structured);
+        Assert.Contains("action.type == \"choose_none\"", structured);
+        Assert.Contains("BridgeCanSubmitStructuredDone(decision, \"physical_structured_done\")", structured);
+        Assert.Contains("BridgeSubmitChoice(decision.decisionId, doneAction.actionId, \"physical_structured_done\")", structured);
+        Assert.DoesNotContain("BridgeSelectionCount()", structured);
+        Assert.DoesNotContain("BridgeState.selectedActionIds", structured);
+    }
+
+    [Fact]
+    public void StructuredCancel_DoesNotClearForgeOwnedSelectionLocally()
+    {
+        var start = Script.IndexOf("function BridgeCancelSelection", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeRenderDecision", start, StringComparison.Ordinal);
+        var cancel = Script[start..end];
+        var structuredStart = cancel.IndexOf("if BridgeIsStructuredForgeToggleChoice(decision)", StringComparison.Ordinal);
+        var legacyStart = cancel.IndexOf("BridgeResetSelectionState()", structuredStart, StringComparison.Ordinal);
+        var structured = cancel[structuredStart..legacyStart];
+
+        Assert.Contains("BridgeIsStructuredForgeToggleChoice(decision)", structured);
+        Assert.Contains("STRUCTURED_CANCEL_BLOCKED", structured);
+        Assert.DoesNotContain("BridgeResetSelectionState()", structured);
+    }
+
+    [Fact]
     public void MulliganBottomSelection_UsesForgeSelectedCountAndBottomInsertionOnlyAfterDone()
     {
         Assert.Contains("BridgeIsStructuredForgeToggleChoice(decision)", Script);

@@ -288,29 +288,33 @@ public sealed class ForgeTuiAdapterTests
         if (!File.Exists(command)) return;
 
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-collection-{Guid.NewGuid():N}.cmd");
+        var inputLog = Path.Combine(Path.GetTempPath(), $"forge-tui-collection-{Guid.NewGuid():N}.log");
         await File.WriteAllTextAsync(script, """
             @echo off
             echo === FORGE CHOICE ===
             echo Choose cards to discard
+            echo [bridge decisionCause=cleanup_hand_size decisionReason=cleanup_hand_size]
             echo [kind=discard min=1 max=1 selected=0 ordered=false]
             echo   0. Done
-            echo   1. Island [id=41]
-            <nul set /p "=Enter choice (0-1): "
+            echo   4. Island [id=41]
+            <nul set /p "=Enter choice (0-4): "
             set /p choice=
-            if not "%choice%"=="1" exit /b 41
+            >>"__INPUT_LOG__" echo(%choice%
+            if not "%choice%"=="4" exit /b 41
             echo === FORGE CHOICE ===
             echo Choose cards to discard
             echo [kind=discard min=1 max=1 selected=1 ordered=false]
             echo   0. Done
-            echo   1. Island [id=41] [SELECTED]
-            <nul set /p "=Enter choice (0-1): "
+            echo   4. Island [id=41] [SELECTED]
+            <nul set /p "=Enter choice (0-4): "
             set /p choice=
+            >>"__INPUT_LOG__" echo(%choice%
             if not "%choice%"=="0" exit /b 42
             echo What would you like to do?
             echo   0. Pass priority (do nothing)
             <nul set /p "=Enter choice (0-0): "
             set /p choice=
-            """);
+            """.Replace("__INPUT_LOG__", inputLog));
 
         try
         {
@@ -326,7 +330,9 @@ public sealed class ForgeTuiAdapterTests
 
             var initial = await adapter.StartSessionAsync(CancellationToken.None);
             var firstDecision = Assert.IsType<MtgTtsBridge.Contracts.State.DecisionDto>(initial.CurrentDecision);
+            Assert.Equal("cleanup_hand_size", firstDecision.DecisionCauseKind);
             var card = Assert.Single(firstDecision.Actions, action => action.Type == "discard_card");
+            Assert.Equal("forge-tui-1-choice-4", card.ActionId);
             var toggled = await adapter.SubmitChoiceAsync(
                 new ChoiceRequestDto(firstDecision.DecisionId, card.ActionId) { SessionId = initial.SessionId }, CancellationToken.None);
             Assert.True(toggled.Accepted);
@@ -337,10 +343,187 @@ public sealed class ForgeTuiAdapterTests
                 new ChoiceRequestDto(redraw.DecisionId, done.ActionId) { SessionId = initial.SessionId }, CancellationToken.None);
             Assert.True(completed.Accepted);
             Assert.Equal("forge-tui-2", completed.State.CurrentDecision?.DecisionId);
+            Assert.Equal(["4", "0"], (await File.ReadAllLinesAsync(inputLog)).Select(line => line.Trim()).ToArray());
         }
         finally
         {
             File.Delete(script);
+            File.Delete(inputLog);
+        }
+    }
+
+    [Fact]
+    public async Task MultiCardDiscardWaitsForAllForgeRedrawsBeforeDone()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-discard-two-{Guid.NewGuid():N}.cmd");
+        var inputLog = Path.Combine(Path.GetTempPath(), $"forge-tui-discard-two-{Guid.NewGuid():N}.log");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo === FORGE CHOICE ===
+            echo Choose cards to discard
+            echo [bridge decisionCause=spell_or_ability decisionReason=spell_or_ability sourceCardId=81 sourceCardName=Mind Rot]
+            echo [kind=discard min=2 max=2 selected=0 ordered=false]
+            echo   0. Done
+            echo   4. Island [id=41]
+            echo   5. Mountain [id=42]
+            <nul set /p "=Enter choice (0-5): "
+            set /p choice=
+            >>"__INPUT_LOG__" echo(%choice%
+            if not "%choice%"=="4" exit /b 41
+            echo === FORGE CHOICE ===
+            echo Choose cards to discard
+            echo [kind=discard min=2 max=2 selected=1 ordered=false]
+            echo   0. Done
+            echo   4. Island [id=41] [SELECTED]
+            echo   5. Mountain [id=42]
+            <nul set /p "=Enter choice (0-5): "
+            set /p choice=
+            >>"__INPUT_LOG__" echo(%choice%
+            if not "%choice%"=="5" exit /b 42
+            echo === FORGE CHOICE ===
+            echo Choose cards to discard
+            echo [kind=discard min=2 max=2 selected=2 ordered=false]
+            echo   0. Done
+            echo   4. Island [id=41] [SELECTED]
+            echo   5. Mountain [id=42] [SELECTED]
+            <nul set /p "=Enter choice (0-5): "
+            set /p choice=
+            >>"__INPUT_LOG__" echo(%choice%
+            if not "%choice%"=="0" exit /b 43
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """.Replace("__INPUT_LOG__", inputLog));
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                    DecisionTimeoutSeconds = 5,
+                }), NullLogger<ForgeTuiAdapter>.Instance);
+
+            var initial = await adapter.StartSessionAsync(CancellationToken.None);
+            var firstDecision = Assert.IsType<DecisionDto>(initial.CurrentDecision);
+            Assert.Equal("spell_or_ability", firstDecision.DecisionCauseKind);
+            Assert.Equal(2, firstDecision.MinSelections);
+            var first = Assert.Single(firstDecision.Actions, action => action.CardInstanceId?.EndsWith(":41", StringComparison.Ordinal) == true);
+            var second = Assert.Single(firstDecision.Actions, action => action.CardInstanceId?.EndsWith(":42", StringComparison.Ordinal) == true);
+
+            var firstResponse = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(firstDecision.DecisionId, first.ActionId) { SessionId = initial.SessionId },
+                CancellationToken.None);
+            var oneSelected = Assert.IsType<DecisionDto>(firstResponse.State.CurrentDecision);
+            Assert.Equal(firstDecision.DecisionId, oneSelected.DecisionId);
+            Assert.Equal(1, oneSelected.SelectedCount);
+            Assert.True(oneSelected.Actions.Single(action => action.CardInstanceId?.EndsWith(":41", StringComparison.Ordinal) == true).IsSelected);
+
+            var secondResponse = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(oneSelected.DecisionId, second.ActionId) { SessionId = initial.SessionId },
+                CancellationToken.None);
+            var twoSelected = Assert.IsType<DecisionDto>(secondResponse.State.CurrentDecision);
+            Assert.Equal(2, twoSelected.SelectedCount);
+            Assert.True(twoSelected.Actions.Single(action => action.CardInstanceId?.EndsWith(":41", StringComparison.Ordinal) == true).IsSelected);
+            Assert.True(twoSelected.Actions.Single(action => action.CardInstanceId?.EndsWith(":42", StringComparison.Ordinal) == true).IsSelected);
+
+            var done = Assert.Single(twoSelected.Actions, action => action.Type == "choose_none");
+            var completed = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(twoSelected.DecisionId, done.ActionId) { SessionId = initial.SessionId },
+                CancellationToken.None);
+            Assert.True(completed.Accepted);
+            Assert.Equal("forge-tui-2", completed.State.CurrentDecision?.DecisionId);
+            Assert.Equal(["4", "5", "0"], (await File.ReadAllLinesAsync(inputLog)).Select(line => line.Trim()).ToArray());
+        }
+        finally
+        {
+            File.Delete(script);
+            File.Delete(inputLog);
+        }
+    }
+
+    [Fact]
+    public async Task MulliganBottomCollectionChoiceRoundTripsForgeSelectionThenCurrentDone()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-mulligan-bottom-{Guid.NewGuid():N}.cmd");
+        var inputLog = Path.Combine(Path.GetTempPath(), $"forge-tui-mulligan-bottom-{Guid.NewGuid():N}.log");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo === FORGE CHOICE ===
+            echo Choose cards to put on the bottom of your library
+            echo [kind=mulligan mulliganStage=bottom_selection sourceZone=hand min=1 max=1 selected=0 ordered=false]
+            echo   0. Done
+            echo   1. Island [id=41] [bridge entityKind=card cardInstanceId=41 sourceZone=hand]
+            echo   2. Mountain [id=42] [bridge entityKind=card cardInstanceId=42 sourceZone=hand]
+            <nul set /p "=Enter choice (0-2): "
+            set /p choice=
+            >>"__INPUT_LOG__" echo(%choice%
+            if not "%choice%"=="2" exit /b 41
+            echo === FORGE CHOICE ===
+            echo Choose cards to put on the bottom of your library
+            echo [kind=mulligan mulliganStage=bottom_selection sourceZone=hand min=1 max=1 selected=1 ordered=false]
+            echo   0. Done
+            echo   1. Island [id=41] [bridge entityKind=card cardInstanceId=41 sourceZone=hand]
+            echo   2. Mountain [id=42] [SELECTED] [bridge entityKind=card cardInstanceId=42 sourceZone=hand]
+            <nul set /p "=Enter choice (0-2): "
+            set /p choice=
+            >>"__INPUT_LOG__" echo(%choice%
+            if not "%choice%"=="0" exit /b 42
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """.Replace("__INPUT_LOG__", inputLog));
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                    DecisionTimeoutSeconds = 5,
+                }), NullLogger<ForgeTuiAdapter>.Instance);
+
+            var initial = await adapter.StartSessionAsync(CancellationToken.None);
+            var firstDecision = Assert.IsType<DecisionDto>(initial.CurrentDecision);
+            Assert.Equal("mulligan", firstDecision.Kind);
+            Assert.Equal("bottom_selection", firstDecision.MulliganStage);
+            var mountain = Assert.Single(firstDecision.Actions, action => action.CardIdentity == "Mountain");
+            Assert.Equal("forge-tui-1-choice-2", mountain.ActionId);
+
+            var toggled = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(firstDecision.DecisionId, mountain.ActionId) { SessionId = initial.SessionId },
+                CancellationToken.None);
+            var redraw = Assert.IsType<DecisionDto>(toggled.State.CurrentDecision);
+            Assert.Equal(firstDecision.DecisionId, redraw.DecisionId);
+            Assert.Equal(1, redraw.SelectedCount);
+            Assert.True(Assert.Single(redraw.Actions, action => action.CardIdentity == "Mountain").IsSelected);
+
+            var done = Assert.Single(redraw.Actions, action => action.Type == "choose_none");
+            var completed = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(redraw.DecisionId, done.ActionId) { SessionId = initial.SessionId },
+                CancellationToken.None);
+            Assert.True(completed.Accepted);
+            Assert.Equal("forge-tui-2", completed.State.CurrentDecision?.DecisionId);
+            Assert.Equal(["2", "0"], (await File.ReadAllLinesAsync(inputLog)).Select(line => line.Trim()).ToArray());
+        }
+        finally
+        {
+            File.Delete(script);
+            File.Delete(inputLog);
         }
     }
 

@@ -1717,7 +1717,8 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudPass", "active", hasPass and "true" or "false")
     BridgeUiSet("BridgeHudYield", "active", hasYield and "true" or "false")
     BridgeUiSet("BridgeHudConfirm", "active", decision and BridgeDecisionNeedsConfirmation(decision) and "true" or "false")
-    BridgeUiSet("BridgeHudCancel", "active", decision and BridgeDecisionNeedsConfirmation(decision) and "true" or "false")
+    BridgeUiSet("BridgeHudCancel", "active", decision and BridgeDecisionNeedsConfirmation(decision)
+        and not BridgeIsStructuredForgeToggleChoice(decision) and "true" or "false")
     BridgeUiSet("BridgeHudNewMatch", "active", terminal and "true" or "false")
     BridgeUiSet("BridgeHudNewMatch", "text", BridgeState.resetConfirmationArmed and "CONFIRM NEW MATCH" or "NEW MATCH")
     local footer = terminal and "NEW MATCH is available on the table."
@@ -1764,6 +1765,10 @@ function BridgeHudAction(player, value, id)
         -- Structured Forge collection menus use a real `Done` action after
         -- toggling choices. It is a commit, not another local selection.
         if action.type == "choose_none" then
+            if BridgeIsStructuredForgeToggleChoice(decision) then
+                BridgeConfirmSelection(nil, player, false)
+                return
+            end
             if not BridgeCanSubmitStructuredDone(decision, "hud_collection_done") then return end
             BridgeResetSelectionState()
             BridgeSubmitChoice(decision.decisionId, action.actionId, "hud_collection_done")
@@ -2103,6 +2108,26 @@ function BridgeCanSubmitStructuredDone(decision, source)
         return false
     end
     return true
+end
+
+function BridgeLogStructuredSelectionRedraw(decision, source)
+    if not BridgeIsStructuredForgeToggleChoice(decision) then return end
+    local selectedIds = {}
+    local doneActionId = "none"
+    for _, action in ipairs(decision.actions or {}) do
+        if action.type == "choose_none" then
+            doneActionId = tostring(action.actionId or "none")
+        elseif action.isSelected == true and action.cardInstanceId ~= nil then
+            table.insert(selectedIds, tostring(action.cardInstanceId))
+        end
+    end
+    table.sort(selectedIds)
+    BridgeLog(string.format(
+        "[Bridge] STRUCTURED_SELECTION_REDRAW decision=%s kind=%s source=%s selected=%s min=%s max=%s selectedIds=%s doneAction=%s",
+        tostring(decision.decisionId), tostring(decision.kind), tostring(source),
+        tostring(decision.selectedCount or 0), tostring(decision.minSelections or 0),
+        tostring(decision.maxSelections or 0),
+        #selectedIds > 0 and table.concat(selectedIds, ",") or "none", doneActionId))
 end
 
 -- The controlled Forge TUI exposes collection choices as a toggle menu: a
@@ -2457,6 +2482,10 @@ function BridgeSubmitChoice(decisionId, actionId, source)
                 and (BridgeIsStructuredForgeToggleChoice(body.currentDecision)
                     or BridgeIsDiscardChoice(body.currentDecision)) then
                 BridgeState.choiceTransactions[decisionId] = nil
+            end
+            if body.currentDecision.decisionId == decisionId
+                and BridgeIsStructuredForgeToggleChoice(body.currentDecision) then
+                BridgeLogStructuredSelectionRedraw(body.currentDecision, activeTransaction.source)
             end
             BridgeAcceptDecision(body.currentDecision, "choice_response", activeTransaction.sessionId, activeTransaction.presentationGeneration)
             BridgeTryFinishDiscardChoice(body.currentDecision, activeTransaction.source)
@@ -4632,7 +4661,9 @@ function BridgeEnsureSelectionControls(decision)
         })
     end
     spawnSelectionControl("Forge Confirm Selection", "DONE /\nCONFIRM", 2.0, {0.12, 0.52, 0.24}, "BridgeConfirmSelection")
-    spawnSelectionControl("Forge Cancel Selection", "CANCEL /\nUNDO", 7.5, {0.65, 0.2, 0.12}, "BridgeCancelSelection")
+    if not BridgeIsStructuredForgeToggleChoice(decision) then
+        spawnSelectionControl("Forge Cancel Selection", "CANCEL /\nUNDO", 7.5, {0.65, 0.2, 0.12}, "BridgeCancelSelection")
+    end
 end
 
 function BridgeConfirmSelection(object, playerColor, altClick)
@@ -4642,6 +4673,37 @@ function BridgeConfirmSelection(object, playerColor, altClick)
         if not ok then return end
     end
     local decision = BridgeState.lastDecision
+
+    -- Structured Forge collections are already staged in Forge. Candidate
+    -- clicks have been submitted individually and the redraw is the sole
+    -- source of selectedCount/isSelected. Never consult the legacy local
+    -- selectedActionIds map for this transaction.
+    if BridgeIsStructuredForgeToggleChoice(decision) then
+        local doneAction = nil
+        for _, action in ipairs(decision.actions or {}) do
+            if action.type == "choose_none" then
+                doneAction = action
+                break
+            end
+        end
+        if doneAction == nil then
+            BridgeShowError("Forge structured collection supplied no Done action")
+            BridgeLog("[Bridge] STRUCTURED_DONE_BLOCKED reason=missing_done_action decision="
+                .. tostring(decision.decisionId))
+            return
+        end
+        if not BridgeCanSubmitStructuredDone(decision, "physical_structured_done") then return end
+        BridgeLog(string.format(
+            "[Bridge] STRUCTURED_DONE decision=%s kind=%s selected=%s action=%s source=physical_structured_done",
+            tostring(decision.decisionId), tostring(decision.kind),
+            tostring(decision.selectedCount or 0), tostring(doneAction.actionId)))
+        -- Do not clear local selection state before this call: the existing
+        -- BridgeSubmitChoice bookkeeping records Forge-selected mulligan
+        -- bottom identities when the exact Done action is committed.
+        BridgeSubmitChoice(decision.decisionId, doneAction.actionId, "physical_structured_done")
+        return
+    end
+
     if decision == nil or decision.decisionId ~= BridgeState.selectionDecisionId then
         BridgeShowError("selection is stale")
         BridgeResetSelectionState()
@@ -4681,6 +4743,16 @@ function BridgeCancelSelection(object, playerColor, altClick)
         if not ok then return end
     end
     local decision = BridgeState.lastDecision
+    if BridgeIsStructuredForgeToggleChoice(decision) then
+        -- Forge owns the selected set for a structured collection. There is
+        -- no generic cancel action in this protocol, so never visually clear
+        -- a selection that Forge still holds. The HUD affordance is disabled
+        -- and the physical control is not spawned for this decision.
+        BridgeLog("[Bridge] STRUCTURED_CANCEL_BLOCKED decision=" .. tostring(decision.decisionId)
+            .. " reason=no_forge_cancel_action")
+        BridgeShowError("Forge-owned selection cannot be cancelled here; deselect cards through Forge choices")
+        return
+    end
     BridgeResetSelectionState()
     if decision ~= nil then BridgeRenderDecision(decision) end
 end
