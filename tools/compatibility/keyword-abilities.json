@@ -68,30 +68,39 @@
       "status": {
         "forgeRules": "UNKNOWN",
         "humanController": "UNKNOWN",
-        "bridgeTransport": "UNKNOWN",
-        "snapshotState": "UNKNOWN",
-        "ttsPresentation": "UNKNOWN",
+        "bridgeTransport": "PARTIAL",
+        "snapshotState": "PARTIAL",
+        "ttsPresentation": "PARTIAL",
         "automatedCanary": "UNKNOWN",
         "liveTtsCanary": "UNKNOWN"
       },
-      "evidence": []
+      "evidence": [
+        { "layer": "bridgeTransport", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipProducerContractTests.cs", "test": "ProducerExportsNativeAttachmentAndPairIdentityPointers", "description": "Producer contract checks Forge-native relationship pointers and exact object IDs." },
+        { "layer": "snapshotState", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipSnapshotIntegrationTests.cs", "test": "SnapshotRoundTripsExactGroupedAndOrderedRelationships", "description": "Structured snapshots round-trip grouped and ordered relationship state." },
+        { "layer": "ttsPresentation", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipPresentationContractTests.cs", "test": "SnapshotPresentationConsumesExactForgeRelationshipIdentity", "description": "TTS presentation consumes exact relationship identities; no live canary has run." }
+      ]
     },
     {
       "rule": "702.6",
       "name": "Equip",
       "capabilityFamilies": [
-        "BASIC_STATE"
+        "BASIC_STATE",
+        "U1_RELATIONSHIPS"
       ],
       "status": {
         "forgeRules": "UNKNOWN",
         "humanController": "UNKNOWN",
-        "bridgeTransport": "UNKNOWN",
-        "snapshotState": "UNKNOWN",
-        "ttsPresentation": "UNKNOWN",
+        "bridgeTransport": "PARTIAL",
+        "snapshotState": "PARTIAL",
+        "ttsPresentation": "PARTIAL",
         "automatedCanary": "UNKNOWN",
         "liveTtsCanary": "UNKNOWN"
       },
-      "evidence": []
+      "evidence": [
+        { "layer": "bridgeTransport", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipProducerContractTests.cs", "test": "ProducerExportsNativeAttachmentAndPairIdentityPointers", "description": "Producer contract checks Forge-native relationship pointers and exact object IDs." },
+        { "layer": "snapshotState", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipSnapshotIntegrationTests.cs", "test": "SnapshotRoundTripsExactGroupedAndOrderedRelationships", "description": "Structured snapshots round-trip grouped and ordered relationship state." },
+        { "layer": "ttsPresentation", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipPresentationContractTests.cs", "test": "SnapshotPresentationConsumesExactForgeRelationshipIdentity", "description": "TTS presentation consumes exact relationship identities; no live canary has run." }
+      ]
     },
     {
       "rule": "702.7",
@@ -933,18 +942,23 @@
       "rule": "702.55",
       "name": "Haunt",
       "capabilityFamilies": [
-        "BASIC_STATE"
+        "BASIC_STATE",
+        "U1_RELATIONSHIPS"
       ],
       "status": {
         "forgeRules": "UNKNOWN",
         "humanController": "UNKNOWN",
-        "bridgeTransport": "UNKNOWN",
-        "snapshotState": "UNKNOWN",
-        "ttsPresentation": "UNKNOWN",
+        "bridgeTransport": "PARTIAL",
+        "snapshotState": "PARTIAL",
+        "ttsPresentation": "PARTIAL",
         "automatedCanary": "UNKNOWN",
         "liveTtsCanary": "UNKNOWN"
       },
-      "evidence": []
+      "evidence": [
+        { "layer": "bridgeTransport", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipProducerContractTests.cs", "test": "ProducerExportsNativeAttachmentAndPairIdentityPointers", "description": "Producer contract checks Forge-native relationship pointers and exact object IDs." },
+        { "layer": "snapshotState", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipSnapshotIntegrationTests.cs", "test": "SnapshotRoundTripsExactGroupedAndOrderedRelationships", "description": "Structured snapshots round-trip grouped and ordered relationship state." },
+        { "layer": "ttsPresentation", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipPresentationContractTests.cs", "test": "NonAttachmentsUseReadableLabelsAndHaveAnIdentityAuthorizationHook", "description": "TTS keeps non-attachment links readable without disclosing hidden identities." }
+      ]
     },
     {
       "rule": "702.56",
@@ -1139,18 +1153,23 @@
       "rule": "702.67",
       "name": "Fortify",
       "capabilityFamilies": [
-        "BASIC_STATE"
+        "BASIC_STATE",
+        "U1_RELATIONSHIPS"
       ],
       "status": {
         "forgeRules": "UNKNOWN",
         "humanController": "UNKNOWN",
-        "bridgeTransport": "UNKNOWN",
-        "snapshotState": "UNKNOWN",
-        "ttsPresentation": "UNKNOWN",
+        "bridgeTransport": "PARTIAL",
+        "snapshotState": "PARTIAL",
+        "ttsPresentation": "PARTIAL",
         "automatedCanary": "UNKNOWN",
         "liveTtsCanary": "UNKNOWN"
       },
-      "evidence": []
+      "evidence": [
+        { "layer": "bridgeTransport", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipProducerContractTests.cs", "test": "ProducerExportsNativeAttachmentAndPairIdentityPointers", "description": "Producer contract checks Forge-native relationship pointers and exact object IDs." },
+        { "layer": "snapshotState", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipSnapshotIntegrationTests.cs", "test": "SnapshotRoundTripsExactGroupedAndOrderedRelationships", "description": "Structured snapshots round-trip grouped and ordered relationship state." },
+        { "layer": "ttsPresentation", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipPresentationContractTests.cs", "test": "AttachmentsAreDepictedWithoutWeldingOrInferringFromGeometry", "description": "TTS depicts Forge-reported attachment relationships without welding objects." }
+      ]
     },
     {
       "rule": "702.68",
@@ -1224,18 +1243,23 @@
       "rule": "702.72",
       "name": "Champion",
       "capabilityFamilies": [
-        "BASIC_STATE"
+        "BASIC_STATE",
+        "U1_RELATIONSHIPS"
       ],
       "status": {
         "forgeRules": "UNKNOWN",
         "humanController": "UNKNOWN",
-        "bridgeTransport": "UNKNOWN",
-        "snapshotState": "UNKNOWN",
-        "ttsPresentation": "UNKNOWN",
+        "bridgeTransport": "PARTIAL",
+        "snapshotState": "PARTIAL",
+        "ttsPresentation": "PARTIAL",
         "automatedCanary": "UNKNOWN",
         "liveTtsCanary": "UNKNOWN"
       },
-      "evidence": []
+      "evidence": [
+        { "layer": "bridgeTransport", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipProducerContractTests.cs", "test": "ProducerCarriesGroupedAndOrderedNativeRelationshipMetadata", "description": "Producer contract covers Forge remembered-card links used by Champion." },
+        { "layer": "snapshotState", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipSnapshotIntegrationTests.cs", "test": "SnapshotRoundTripsExactGroupedAndOrderedRelationships", "description": "Structured snapshots round-trip grouped and ordered relationship state." },
+        { "layer": "ttsPresentation", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipPresentationContractTests.cs", "test": "NonAttachmentsUseReadableLabelsAndHaveAnIdentityAuthorizationHook", "description": "TTS presents Champion-style links generically until viewer authorization exists." }
+      ]
     },
     {
       "rule": "702.73",
@@ -1617,18 +1641,23 @@
       "rule": "702.95",
       "name": "Soulbond",
       "capabilityFamilies": [
-        "BASIC_STATE"
+        "BASIC_STATE",
+        "U1_RELATIONSHIPS"
       ],
       "status": {
         "forgeRules": "UNKNOWN",
         "humanController": "UNKNOWN",
-        "bridgeTransport": "UNKNOWN",
-        "snapshotState": "UNKNOWN",
-        "ttsPresentation": "UNKNOWN",
+        "bridgeTransport": "PARTIAL",
+        "snapshotState": "PARTIAL",
+        "ttsPresentation": "PARTIAL",
         "automatedCanary": "UNKNOWN",
         "liveTtsCanary": "UNKNOWN"
       },
-      "evidence": []
+      "evidence": [
+        { "layer": "bridgeTransport", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipProducerContractTests.cs", "test": "ProducerExportsNativeAttachmentAndPairIdentityPointers", "description": "Producer contract checks Forge pairing pointers and exact object IDs." },
+        { "layer": "snapshotState", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipSnapshotIntegrationTests.cs", "test": "RelationshipsSurviveUnrelatedSnapshotChanges", "description": "The relationship set survives an unrelated phase/priority snapshot change." },
+        { "layer": "ttsPresentation", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipPresentationContractTests.cs", "test": "NonAttachmentsUseReadableLabelsAndHaveAnIdentityAuthorizationHook", "description": "TTS presents pair links as readable non-attachment context." }
+      ]
     },
     {
       "rule": "702.96",
@@ -1685,18 +1714,23 @@
       "rule": "702.99",
       "name": "Cipher",
       "capabilityFamilies": [
-        "BASIC_STATE"
+        "BASIC_STATE",
+        "U1_RELATIONSHIPS"
       ],
       "status": {
         "forgeRules": "UNKNOWN",
         "humanController": "UNKNOWN",
-        "bridgeTransport": "UNKNOWN",
-        "snapshotState": "UNKNOWN",
-        "ttsPresentation": "UNKNOWN",
+        "bridgeTransport": "PARTIAL",
+        "snapshotState": "PARTIAL",
+        "ttsPresentation": "PARTIAL",
         "automatedCanary": "UNKNOWN",
         "liveTtsCanary": "UNKNOWN"
       },
-      "evidence": []
+      "evidence": [
+        { "layer": "bridgeTransport", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipProducerContractTests.cs", "test": "ProducerCarriesGroupedAndOrderedNativeRelationshipMetadata", "description": "Producer contract covers Forge encoded-card links used by Cipher." },
+        { "layer": "snapshotState", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipSnapshotIntegrationTests.cs", "test": "SnapshotRoundTripsExactGroupedAndOrderedRelationships", "description": "Structured snapshots round-trip grouped and ordered relationship state." },
+        { "layer": "ttsPresentation", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipPresentationContractTests.cs", "test": "NonAttachmentsUseReadableLabelsAndHaveAnIdentityAuthorizationHook", "description": "TTS presents encoded links without disclosing hidden identities." }
+      ]
     },
     {
       "rule": "702.100",
@@ -1759,13 +1793,17 @@
       "status": {
         "forgeRules": "UNKNOWN",
         "humanController": "UNKNOWN",
-        "bridgeTransport": "UNKNOWN",
-        "snapshotState": "UNKNOWN",
-        "ttsPresentation": "UNKNOWN",
+        "bridgeTransport": "PARTIAL",
+        "snapshotState": "PARTIAL",
+        "ttsPresentation": "PARTIAL",
         "automatedCanary": "UNKNOWN",
         "liveTtsCanary": "UNKNOWN"
       },
-      "evidence": []
+      "evidence": [
+        { "layer": "bridgeTransport", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipProducerContractTests.cs", "test": "ProducerExportsNativeAttachmentAndPairIdentityPointers", "description": "Producer contract checks Forge-native attachment pointers and exact object IDs." },
+        { "layer": "snapshotState", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipSnapshotIntegrationTests.cs", "test": "SnapshotRoundTripsExactGroupedAndOrderedRelationships", "description": "Structured snapshots round-trip grouped and ordered relationship state." },
+        { "layer": "ttsPresentation", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipPresentationContractTests.cs", "test": "AttachmentsAreDepictedWithoutWeldingOrInferringFromGeometry", "description": "TTS depicts Forge-reported attachment relationships without welding objects." }
+      ]
     },
     {
       "rule": "702.104",
@@ -2413,13 +2451,17 @@
       "status": {
         "forgeRules": "UNKNOWN",
         "humanController": "UNKNOWN",
-        "bridgeTransport": "UNKNOWN",
-        "snapshotState": "UNKNOWN",
-        "ttsPresentation": "UNKNOWN",
+        "bridgeTransport": "PARTIAL",
+        "snapshotState": "PARTIAL",
+        "ttsPresentation": "PARTIAL",
         "automatedCanary": "UNKNOWN",
         "liveTtsCanary": "UNKNOWN"
       },
-      "evidence": []
+      "evidence": [
+        { "layer": "bridgeTransport", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipProducerContractTests.cs", "test": "ProducerCarriesGroupedAndOrderedNativeRelationshipMetadata", "description": "Producer contract covers ordered Forge merged-card components." },
+        { "layer": "snapshotState", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipSnapshotIntegrationTests.cs", "test": "SnapshotRoundTripsExactGroupedAndOrderedRelationships", "description": "Structured snapshots round-trip grouped and ordered relationship state." },
+        { "layer": "ttsPresentation", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipPresentationContractTests.cs", "test": "NonAttachmentsUseReadableLabelsAndHaveAnIdentityAuthorizationHook", "description": "TTS presents merged relationships as readable context; no live canary has run." }
+      ]
     },
     {
       "rule": "702.141",
@@ -2608,13 +2650,17 @@
       "status": {
         "forgeRules": "UNKNOWN",
         "humanController": "UNKNOWN",
-        "bridgeTransport": "UNKNOWN",
-        "snapshotState": "UNKNOWN",
-        "ttsPresentation": "UNKNOWN",
+        "bridgeTransport": "PARTIAL",
+        "snapshotState": "PARTIAL",
+        "ttsPresentation": "PARTIAL",
         "automatedCanary": "UNKNOWN",
         "liveTtsCanary": "UNKNOWN"
       },
-      "evidence": []
+      "evidence": [
+        { "layer": "bridgeTransport", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipProducerContractTests.cs", "test": "ProducerExportsNativeAttachmentAndPairIdentityPointers", "description": "Producer contract checks Forge-native attachment pointers and exact object IDs." },
+        { "layer": "snapshotState", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipSnapshotIntegrationTests.cs", "test": "SnapshotRoundTripsExactGroupedAndOrderedRelationships", "description": "Structured snapshots round-trip grouped and ordered relationship state." },
+        { "layer": "ttsPresentation", "kind": "contract_test", "path": "src/MtgTtsBridge.Tests/RelationshipPresentationContractTests.cs", "test": "AttachmentsAreDepictedWithoutWeldingOrInferringFromGeometry", "description": "TTS depicts Forge-reported attachment relationships without welding objects." }
+      ]
     },
     {
       "rule": "702.152",
