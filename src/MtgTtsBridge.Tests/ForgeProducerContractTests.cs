@@ -102,13 +102,47 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
-    public void HumanPriorityDoesNotPreFilterForgeLegalActionsOrAutoPassTheTurn()
+    public void HumanPriorityUsesForgeLegalityAndAutoPassesOnlyEmptyWindows()
     {
         Assert.Contains("List<SpellAbility> landAbilities = getPlayableLands();", Patch);
         Assert.Contains("getCastableCreaturesAndArtifacts(true)", Patch);
-        Assert.Contains("preserving human pass window", Patch);
+        Assert.Contains("auto-passing empty human priority window", Patch);
+        Assert.Contains("sa.setActivatingPlayer(player);", Patch);
+        Assert.Contains("sa.isLandAbility() && sa.canPlay()", Patch);
         Assert.DoesNotContain("boolean sorcerySpeedWindow", Patch);
         Assert.Contains("} else if (totalActions == 0) {", Patch);
+    }
+
+    [Fact]
+    public void PrototypeActionsExposeTypedCastModeAndBothLegalAbilities()
+    {
+        Assert.Contains("boolean prototypeSpell", Patch);
+        Assert.Contains("castMode = preparedSpell ? \"prepare\" : prototypeSpell ? \"prototype\"", Patch);
+        Assert.Contains("prototypePower=", Patch);
+        Assert.Contains("prototypeToughness=", Patch);
+        Assert.Contains("bridgeDisplayedManaCost", Patch);
+        Assert.Contains("sa.getPayCosts().toString()", Patch);
+        Assert.Contains("Keep every legal ability", Patch);
+    }
+
+    [Fact]
+    public void ProliferateEntitiesExposeExactCardInstancesAndPlayerSeats()
+    {
+        Assert.Contains("bridgeEntityMetadata", Patch);
+        Assert.Contains("String entityKind = zone == ZoneType.Battlefield ? \"permanent\" : \"card\"", Patch);
+        Assert.Contains("entityKind=\" + entityKind + \" cardInstanceId=", Patch);
+        Assert.Contains("entityKind=player seatId=forge-player-", Patch);
+        Assert.Contains("selectionKind=proliferate", Patch);
+        Assert.Contains("ApiType.Proliferate", Patch);
+        Assert.Contains("chooseEntitiesForEffect", Patch);
+    }
+
+    [Fact]
+    public void PrototypeDesignationIsAuthoritativeAndSeparateFromKeywords()
+    {
+        Assert.Contains("isPrototyped()", Patch);
+        Assert.Contains("string(json, \"prototyped\")", Patch);
+        Assert.Contains("json.append(\"\\\"cardDesignations\\\":[\");", Patch);
     }
 
     [Fact]

@@ -174,7 +174,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("decision.eventCursor", Script);
         Assert.Contains("BridgeState.lastAppliedEventSequence", Script);
         Assert.Contains("decision.prioritySeatId", Script);
-        Assert.Contains("BridgeDecisionOffersActionType(decision, \"play_land\")", Script);
+        Assert.Contains("must not suppress that action", Script);
+        Assert.DoesNotContain("local staleLandWindow", Script);
     }
 
     [Fact]
@@ -1375,7 +1376,35 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("awaiting exact structured transition", Script);
         Assert.Contains("function moveFromLibraryDeckToBattlefield(deck)", Script);
         Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"battlefield\"", Script);
-        Assert.Contains("BridgeTakeCardFromDeckByIdentity(deck, expectedName", Script);
+        Assert.Contains("BridgeQueueLibraryExtraction(event.seatId", Script);
+        Assert.Contains("BridgeTakeCardFromDeckByIdentity(liveDeck, expectedName", Script);
+    }
+
+    [Fact]
+    public void EmptyHumanPriorityWindows_AutoPassButLegalLandWindowsRemainVisible()
+    {
+        Assert.Contains("function BridgeDecisionHasNonPassAction", Script);
+        Assert.Contains("empty_priority_auto_pass", Script);
+        Assert.Contains("not BridgeDecisionHasNonPassAction(decision)", Script);
+        Assert.Contains("legal land, spell, ability, target, or structured choice remains visible", Script);
+    }
+
+    [Fact]
+    public void OpeningHandLibraryExtractions_AreSerializedAndSingleCardLibrariesRemainDrawable()
+    {
+        Assert.Contains("function BridgeQueueLibraryExtraction", Script);
+        Assert.Contains("function BridgeProcessLibraryExtractionQueue", Script);
+        Assert.Contains("deck.tag == \"Card\"", Script);
+        Assert.Contains("physical single-card library mismatched authoritative identity", Script);
+        Assert.Contains("opening-hand draws", Script);
+        Assert.Contains("library-extraction-complete", Script);
+    }
+
+    [Fact]
+    public void LifelinkUsesTheTableNativeKeywordTileAsset()
+    {
+        Assert.Contains("lifelink = {name=\"Lifelink\"", Script);
+        Assert.Contains("https://steamusercontent-a.akamaihd.net/ugc/1647720820459778541", Script);
     }
 
     [Fact]
@@ -1461,7 +1490,7 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void TokenMaterialization_UsesBuiltInCardButtonBeforeExactVisualImportAndDegradedProxy()
+    public void TokenMaterialization_UsesExactVisualImportBeforeDegradedProxy()
     {
         Assert.Contains("A generic Encoder button is not a token producer", Script);
         Assert.Contains("string.find(text, \"spawn token\", 1, true)", Script);
@@ -1479,12 +1508,12 @@ public sealed class TtsGlobalLuaContractTests
         var fetchStart = Script.IndexOf("function BridgeTakeCardFromTokenFetcher", StringComparison.Ordinal);
         var fetchEnd = Script.IndexOf("function BridgeSetPhysicalFaceDown", fetchStart, StringComparison.Ordinal);
         var fetcher = Script[fetchStart..fetchEnd];
-        Assert.True(fetcher.IndexOf("BridgeTrySpawnTokenViaEncodeButton", StringComparison.Ordinal)
-            < fetcher.IndexOf("BridgeImportExactTokenVisual", StringComparison.Ordinal));
         Assert.True(fetcher.IndexOf("BridgeImportExactTokenVisual", StringComparison.Ordinal)
             < fetcher.IndexOf("BridgeSpawnGenericTokenProxy", StringComparison.Ordinal));
-        Assert.Contains("built-in card token button requested", fetcher);
-        Assert.Contains("built-in card button and exact art importer failed", fetcher);
+        Assert.Contains("exact token visual import requested", fetcher);
+        Assert.Contains("Source-card buttons such as EmblemsAndTokens", fetcher);
+        Assert.DoesNotContain("BridgeTrySpawnTokenViaEncodeButton(expectedName, seatId", fetcher);
+        Assert.Contains("DEGRADED token presentation: exact art importer failed", fetcher);
         Assert.Contains("local finished = false", fetcher);
         Assert.Contains("ignored duplicate token visual callback", fetcher);
     }
@@ -1499,6 +1528,17 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("invoked built-in card button positionally", invoker);
         Assert.True(invoker.IndexOf("globalHandler(source, seatColor, false)", StringComparison.Ordinal)
             < invoker.IndexOf("owner.call(clickFunction, payload)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DisabledLegacyTokenButtonPath_DoesNotLeaveStatementsAfterLuaReturn()
+    {
+        var start = Script.IndexOf("function BridgeTrySpawnTokenViaEncodeButton", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeSpawnGenericTokenProxy", start, StringComparison.Ordinal);
+        var disabledPath = Script[start..end];
+
+        Assert.Contains("legacy source-card token button path disabled", disabledPath);
+        Assert.DoesNotContain("\n    return\n", disabledPath);
     }
 
     [Fact]

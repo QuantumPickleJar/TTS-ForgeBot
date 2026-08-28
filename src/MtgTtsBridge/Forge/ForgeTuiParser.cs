@@ -95,6 +95,7 @@ public sealed partial class ForgeTuiParser
         var decisionId = $"forge-tui-{_decisionNumber}";
         var bridgeActions = actions.Select(option => BuildAction(option, decisionId, kind)).ToArray();
         var mulliganStage = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["mulliganStage"].Value) : null;
+        var selectionKind = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["selectionKind"].Value) : null;
         var forgeCollectionRequiresDone = selectionMetadata.Success
             && RequiresForgeCollectionConfirmation(kind, mulliganStage);
         var shape = selectionMetadata.Success
@@ -130,6 +131,7 @@ public sealed partial class ForgeTuiParser
                 ContextCardInstanceId = decisionContext is { Success: true } ? $"forge-object:{decisionContext.Groups["cardId"].Value}" : null,
                 ContextCardName = decisionContext is { Success: true } ? NullIfBlank(decisionContext.Groups["cardName"].Value) : null,
                 CostKind = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["costKind"].Value) : null,
+                SelectionKind = selectionKind,
                 MulliganStage = mulliganStage,
                 CandidateSourceZone = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["sourceZone"].Value) : null,
             },
@@ -160,7 +162,12 @@ public sealed partial class ForgeTuiParser
     {
         var forgeCardId = ForgeCardIdRegex().Match(option.Label);
         var provenance = ActionProvenanceRegex().Match(option.Label);
+        var entityProvenance = EntityProvenanceRegex().Match(option.Label);
         var label = ForgeCardIdRegex().Replace(option.Label, string.Empty).Trim();
+        if (entityProvenance.Success)
+        {
+            label = EntityProvenanceRegex().Replace(label, string.Empty).Trim();
+        }
         if (provenance.Success)
         {
             label = ActionProvenanceRegex().Replace(label, string.Empty).Trim();
@@ -169,9 +176,16 @@ public sealed partial class ForgeTuiParser
                 label = "PREPARED SPELL: " + label;
             }
         }
+        var entityKind = entityProvenance.Success
+            ? NullIfBlank(entityProvenance.Groups["entityKind"].Value) : null;
+        var entitySeatId = entityProvenance.Success
+            ? NullIfBlank(entityProvenance.Groups["seatId"].Value) : null;
+        var entityCardId = entityProvenance.Success && entityProvenance.Groups["cardInstanceId"].Success
+            ? $"forge-object:{entityProvenance.Groups["cardInstanceId"].Value}" : null;
         string? targetKind = null;
         string? targetSeatId = null;
-        if (kind is "target_selection" or "defender_selection" or "player_selection")
+        if (kind is "target_selection" or "defender_selection" or "player_selection"
+            || string.Equals(entityKind, "player", StringComparison.OrdinalIgnoreCase))
         {
             var player = PlayerTargetRegex().Match(label);
             if (player.Success && TryResolveSeat(player.Groups["player"].Value.Trim(), out var seatId))
@@ -184,14 +198,31 @@ public sealed partial class ForgeTuiParser
                 targetKind = "card";
             }
         }
+        if (string.Equals(entityKind, "player", StringComparison.OrdinalIgnoreCase))
+        {
+            targetKind = "player";
+            targetSeatId ??= entitySeatId;
+        }
 
+        // Entity provenance is additive metadata.  It must not change the
+        // established action contract for discard/sacrifice/delve/mulligan
+        // collections merely because those candidates are cards too.  Only
+        // the generic entity-selection decision (used by Proliferate) maps to
+        // choose_entity; the Forge decision kind remains authoritative for
+        // every other collection.
         var actionType = kind is "target_selection" or "player_selection"
             ? "choose_target"
-            : provenance.Success && provenance.Groups["actionKind"].Success
-                ? provenance.Groups["actionKind"].Value
-                : GetActionType(label, kind);
-        var sourceInstanceId = forgeCardId.Success ? $"forge-object:{forgeCardId.Groups["id"].Value}" : null;
-        var sourceName = GetCardIdentity(label, kind);
+            : kind == "entity_selection"
+                && (string.Equals(entityKind, "player", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(entityKind, "permanent", StringComparison.OrdinalIgnoreCase))
+                ? "choose_entity"
+                : provenance.Success && provenance.Groups["actionKind"].Success
+                    ? provenance.Groups["actionKind"].Value
+                    : GetActionType(label, kind);
+        var sourceInstanceId = entityCardId
+            ?? (forgeCardId.Success ? $"forge-object:{forgeCardId.Groups["id"].Value}" : null);
+        var sourceName = string.Equals(entityKind, "player", StringComparison.OrdinalIgnoreCase)
+            ? null : GetCardIdentity(label, kind);
         return new LegalActionDto(
             ActionId: $"{decisionId}-choice-{option.Number}",
             Type: actionType,
@@ -213,12 +244,19 @@ public sealed partial class ForgeTuiParser
             // highlighted target is selected, not staged behind the collection
             // confirmation control used for discard/sacrifice menus.
             RequiresSelection: kind is "card_selection" or "attacker_selection" or "blocker_selection" or "blocker_assignment",
-            SourceZone: provenance.Success ? provenance.Groups["sourceZone"].Value : null,
+            SourceZone: entityProvenance.Success && entityProvenance.Groups["sourceZone"].Success
+                ? entityProvenance.Groups["sourceZone"].Value
+                : provenance.Success ? provenance.Groups["sourceZone"].Value : null,
             AbilityKind: provenance.Success ? provenance.Groups["abilityKind"].Value : null,
             CastMode: provenance.Success ? provenance.Groups["castMode"].Value : null,
             CostKind: provenance.Success ? provenance.Groups["costKind"].Value : null,
             PreparedSourceCardInstanceId: provenance.Success && provenance.Groups["preparedSourceId"].Success
-                ? $"forge-object:{provenance.Groups["preparedSourceId"].Value}" : null);
+                ? $"forge-object:{provenance.Groups["preparedSourceId"].Value}" : null,
+            PrototypePower: provenance.Success ? NullIfBlank(provenance.Groups["prototypePower"].Value) : null,
+            PrototypeToughness: provenance.Success ? NullIfBlank(provenance.Groups["prototypeToughness"].Value) : null,
+            DisplayManaCost: provenance.Success ? NullIfBlank(provenance.Groups["displayManaCost"].Value) : null,
+            EntityKind: entityKind,
+            EntitySeatId: entitySeatId);
     }
 
     private static bool RequiresForgeCollectionConfirmation(string kind, string? mulliganStage) =>
@@ -287,6 +325,7 @@ public sealed partial class ForgeTuiParser
         ("creature_type_selection", _) => "choose_creature_type",
         ("numeric_selection", _) => "choose_number",
         ("yes_no", _) => "choose_option",
+        ("entity_selection", _) => "choose_entity",
         ("defender_selection", _) => "choose_target",
         ("card_selection", _) => "discard_card",
         (_, var value) when value.StartsWith("Pass priority", StringComparison.OrdinalIgnoreCase) => "pass_priority",
@@ -360,8 +399,11 @@ public sealed partial class ForgeTuiParser
 
     // Forge emits this additive machine-readable suffix while constructing
     // numeric choices. Display labels remain presentation-only.
-    [GeneratedRegex(@"\[bridge\s+sourceZone=(?<sourceZone>[A-Za-z_]+)(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+abilityKind=(?<abilityKind>[A-Za-z0-9_$]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+costKind=(?<costKind>[A-Za-z0-9_-]+))?(?:\s+preparedSourceCardId=(?<preparedSourceId>\d+))?\]", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\[bridge\s+sourceZone=(?<sourceZone>[A-Za-z_]+)(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+abilityKind=(?<abilityKind>[A-Za-z0-9_$]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+costKind=(?<costKind>[A-Za-z0-9_-]+))?(?:\s+displayManaCost=(?<displayManaCost>[A-Za-z0-9{}+*/-]+))?(?:\s+prototypePower=(?<prototypePower>[A-Za-z0-9+*/-]+))?(?:\s+prototypeToughness=(?<prototypeToughness>[A-Za-z0-9+*/-]+))?(?:\s+preparedSourceCardId=(?<preparedSourceId>\d+))?\]", RegexOptions.CultureInvariant)]
     private static partial Regex ActionProvenanceRegex();
+
+    [GeneratedRegex(@"\[bridge\s+entityKind=(?<entityKind>[A-Za-z_]+)(?:\s+cardInstanceId=(?<cardInstanceId>\d+))?(?:\s+seatId=(?<seatId>[A-Za-z0-9_-]+))?(?:\s+sourceZone=(?<sourceZone>[A-Za-z_]+))?\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex EntityProvenanceRegex();
 
     [GeneratedRegex(@"^Play land:\s*(?<name>.+)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PlayLandRegex();
@@ -384,7 +426,7 @@ public sealed partial class ForgeTuiParser
     [GeneratedRegex(@"\s+\[id=(?<id>\d+)\]", RegexOptions.CultureInvariant)]
     private static partial Regex ForgeCardIdRegex();
 
-    [GeneratedRegex(@"\[kind=(?<kind>[a-z_]+)(?:\s+costKind=(?<costKind>[a-z_]+))?(?:\s+mulliganStage=(?<mulliganStage>[a-z_]+))?(?:\s+sourceZone=(?<sourceZone>[a-z_]+))?\s+min=(?<min>\d+)\s+max=(?<max>\d+)\s+selected=(?<selected>\d+)\s+ordered=(?<ordered>true|false)\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\[kind=(?<kind>[a-z_]+)(?:\s+selectionKind=(?<selectionKind>[a-z_]+))?(?:\s+costKind=(?<costKind>[a-z_]+))?(?:\s+mulliganStage=(?<mulliganStage>[a-z_]+))?(?:\s+sourceZone=(?<sourceZone>[a-z_]+))?\s+min=(?<min>\d+)\s+max=(?<max>\d+)\s+selected=(?<selected>\d+)\s+ordered=(?<ordered>true|false)\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SelectionMetadataRegex();
 
     // This compact record is emitted by the controlled Forge producer, not

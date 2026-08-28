@@ -31,9 +31,21 @@ public sealed class DelveAndMulliganLuaContractTests
         Assert.Contains("action.type == \"choose_none\"", Script);
         Assert.Contains("candidate.isSelected == true", Script);
         Assert.Contains("mulliganBottomInstanceIds", Script);
-        Assert.Contains("deck.setRotation({rotation.x, rotation.y + 180, rotation.z})", Script);
-        Assert.Contains("deck.putObject(object)", Script);
+        Assert.Contains("function BridgeQueueMulliganBottomInsertion", Script);
+        Assert.Contains("function BridgeProcessMulliganBottomQueue", Script);
+        Assert.Contains("rotation.z + 180", Script);
+        Assert.Contains("deck.putObject(item.object)", Script);
         Assert.Contains("deck.setRotation(rotation)", Script);
+    }
+
+    [Fact]
+    public void StructuredPhysicalDiscard_ReRendersForgeSelectedStateBeforeAcceptingAnotherToggle()
+    {
+        Assert.Contains("physical_structured_toggle", Script);
+        Assert.Contains("body.currentDecision.decisionId == decisionId", Script);
+        Assert.Contains("BridgeIsStructuredForgeToggleChoice(body.currentDecision)", Script);
+        Assert.Contains("BridgeState.choiceTransactions[decisionId] = nil", Script);
+        Assert.Contains("including selectedCount and", Script);
     }
 
     [Fact]

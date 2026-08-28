@@ -27,4 +27,11 @@ public sealed record LegalActionDto(
     string? CostKind = null,
     // Exact source permanent for a Forge-created virtual PreparedSpell copy.
     // This is presentation context only; ActionId remains authoritative.
-    string? PreparedSourceCardInstanceId = null);
+    string? PreparedSourceCardInstanceId = null,
+    string? PrototypePower = null,
+    string? PrototypeToughness = null,
+    string? DisplayManaCost = null,
+    // Entity-selection provenance. Cards use CardInstanceId; players use
+    // EntitySeatId. These fields never replace ActionId as legal identity.
+    string? EntityKind = null,
+    string? EntitySeatId = null);

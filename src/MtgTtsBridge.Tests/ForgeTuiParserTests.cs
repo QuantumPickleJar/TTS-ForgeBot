@@ -46,6 +46,61 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void ProliferateMixedEntities_UsesExactCardInstancesAndPlayerSeats()
+    {
+        var parser = new ForgeTuiParser(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Player 1"] = "forge-player-1",
+            ["AI"] = "forge-player-2",
+        });
+        var result = parser.Append("""
+            === FORGE CHOICE ===
+            Choose proliferate targets
+            [kind=entity_selection selectionKind=proliferate min=0 max=3 selected=0 ordered=false]
+              0. Done
+              1. Player 1 (Life: 20) [bridge entityKind=player seatId=forge-player-1]
+              2. Walking Ballista [id=42] [bridge entityKind=permanent cardInstanceId=42 sourceZone=battlefield]
+              3. AI (Life: 20) [bridge entityKind=player seatId=forge-player-2]
+            Enter choice (0-3):
+            """);
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
+        Assert.Equal("entity_selection", decision.Decision.Kind);
+        Assert.Equal("proliferate", decision.Decision.SelectionKind);
+        Assert.True(decision.Decision.ConfirmRequired);
+        var player = decision.Decision.Actions.Single(action => action.EntitySeatId == "forge-player-1");
+        Assert.Equal("player", player.EntityKind);
+        Assert.Equal("player", player.TargetKind);
+        Assert.Equal("forge-player-1", player.TargetSeatId);
+        Assert.Null(player.CardInstanceId);
+        var permanent = decision.Decision.Actions.Single(action => action.EntityKind == "permanent");
+        Assert.Equal("forge-object:42", permanent.CardInstanceId);
+        Assert.Equal("battlefield", permanent.SourceZone);
+        Assert.Equal("choose_entity", permanent.Type);
+    }
+
+    [Fact]
+    public void PrototypeCastProvenance_IsTypedAndDistinctFromNormalCast()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("""
+            What would you like to do?
+              0. Pass priority (do nothing)
+              1. Cast creature: Blitz Automaton (3/3) - {1}{B}{B} [id=7] [bridge sourceZone=hand actionKind=cast_spell abilityKind=spell castMode=prototype costKind=alternative displayManaCost={1}{B}{B} prototypePower=3 prototypeToughness=3]
+              2. Cast creature: Blitz Automaton (6/6) - {7} [id=7] [bridge sourceZone=hand actionKind=cast_spell abilityKind=spell castMode=normal costKind=printed]
+            Enter choice (0-2):
+            """);
+
+        var actions = result.ParsedDecision!.Decision.Actions.Where(action => action.CardIdentity == "Blitz Automaton").ToArray();
+        Assert.Equal(2, actions.Length);
+        Assert.Equal("prototype", actions[0].CastMode);
+        Assert.Equal("normal", actions[1].CastMode);
+        Assert.Equal("{1}{B}{B}", actions[0].DisplayManaCost);
+        Assert.NotEqual(actions[0].ActionId, actions[1].ActionId);
+        Assert.Equal("forge-object:7", actions[0].CardInstanceId);
+    }
+
+    [Fact]
     public void InitialDecision_ParsesIncrementalTuiOutputAndMapsInputs()
     {
         var transcript = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "forge-tui-initial-menu.txt"));
@@ -584,6 +639,39 @@ public sealed class ForgeTuiParserTests
         Assert.Equal(4, decision.MaxSelections);
         Assert.Equal("forge-object:41", decision.Actions[1].CardInstanceId);
         Assert.Equal("forge-object:42", decision.Actions[2].CardInstanceId);
+    }
+
+    [Fact]
+    public void EntityProvenance_DoesNotChangeDiscardActionContract()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\nChoose cards to discard\n" +
+            "[kind=discard min=1 max=1 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Island [id=41] [bridge entityKind=card cardInstanceId=41 sourceZone=hand]\n" +
+            "Enter choice (0-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        var action = Assert.Single(decision.Actions, candidate => candidate.CardInstanceId == "forge-object:41");
+        Assert.Equal("discard_card", action.Type);
+        Assert.Equal("hand", action.SourceZone);
+    }
+
+    [Fact]
+    public void EntityProvenance_MapsOnlyGenericEntitySelectionToChooseEntity()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\nProliferate\n" +
+            "[kind=entity_selection selectionKind=proliferate min=0 max=2 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Ballista [id=41] [bridge entityKind=permanent cardInstanceId=41 sourceZone=battlefield]\n" +
+            "  2. You [bridge entityKind=player seatId=forge-player-1 sourceZone=command]\n" +
+            "Enter choice (0-2): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.All(decision.Actions.Where(candidate => candidate.CardInstanceId != null || candidate.EntitySeatId != null),
+            action => Assert.Equal("choose_entity", action.Type));
+        Assert.Equal("forge-player-1", decision.Actions[2].EntitySeatId);
     }
 
     [Fact]

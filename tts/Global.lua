@@ -216,6 +216,12 @@ BridgeState = {
     presentedCounterSignatureByGuid = {},
     presentedKeywordSignatureByGuid = {},
     presentedIconLayoutByGuid = {},
+    preparedDescriptionByGuid = {},
+    prototypeDescriptionByGuid = {},
+    preparedBadgeGuidByInstanceId = {},
+    preparedPresentationGuidByInstanceId = {},
+    preparedDesignationStateByInstanceId = {},
+    preparedSpellControlGuids = {},
     unsupportedKeywordLogged = {},
     presentationMetrics = {encoderRebuildCount = 0, keywordPropWriteCount = 0, decalWriteCount = 0, fullSnapshotReconcileCount = 0},
     physicalSeatByGuid = {},
@@ -235,6 +241,10 @@ BridgeState = {
     nextLandInsertionOrder = 0,
     discardPresentation = nil,
     mulliganBottomInstanceIds = {},
+    mulliganBottomQueueBySeatId = {},
+    mulliganBottomInsertionActiveBySeatId = {},
+    libraryExtractionQueueBySeatId = {},
+    libraryExtractionActiveBySeatId = {},
     battlefieldCounts = {},
     graveyardCounts = {},
     currentTurnSeatId = nil,
@@ -280,6 +290,7 @@ BridgeState = {
     choiceProtocolFailureTimes = {},
     gameEnded = nil,
     playerStateBySeatId = {},
+    playerCountersBySeatId = {},
     ui = {mounted = false, dirty = false, flushScheduled = false, actionRows = {}, contextInstanceId = nil,
         graveyardActionRows = {}, graveyardFolderDecisionId = nil, graveyardFolderOpen = false,
         graveyardFolderPage = 1,
@@ -425,7 +436,23 @@ function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)
     BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "battlefield")
     BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "BOUND"
     local moved, moveError = BridgeMoveToBattlefield(event, object, row)
-    if not moved then return false, moveError end
+    if not moved then
+        -- Binding is provisional until the art-bearing object reaches the
+        -- authoritative battlefield position.  A failed placement must not
+        -- leave the lifecycle stuck in BOUND or make a later snapshot create
+        -- a second physical token for the same Forge instance.
+        BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "FAILED"
+        if BridgeState.physicalByInstanceId[event.cardInstanceId] == guid then
+            BridgeState.physicalByInstanceId[event.cardInstanceId] = nil
+        end
+        if BridgeState.physicalInstanceIdByGuid[guid] == event.cardInstanceId then
+            BridgeState.physicalInstanceIdByGuid[guid] = nil
+        end
+        BridgeState.physicalSeatByGuid[guid] = nil
+        BridgeState.physicalZoneByGuid[guid] = nil
+        BridgeSafeObjectCall(object, function(card) card.destruct() end)
+        return false, moveError
+    end
     return true, nil
 end
 
@@ -1074,6 +1101,102 @@ function BridgeObjectNearSeatZone(object, seatId, zoneName)
     local dx = position.x - anchor.x
     local dz = position.z - anchor.z
     return dx * dx + dz * dz <= 16.0
+end
+
+-- TTS can only put an object on the visible top of a Deck.  For a Forge-
+-- accepted mulligan-bottom move, invert the physical deck, insert one exact
+-- card, then restore it.  The queue prevents simultaneous authoritative card
+-- moves from racing each other's deck rotation.
+function BridgeProcessMulliganBottomQueue(seatId)
+    if BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true then return end
+    local queue = BridgeState.mulliganBottomQueueBySeatId[seatId]
+    local item = queue and queue[1] or nil
+    if item == nil then return end
+    BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] = true
+
+    local function complete()
+        local current = BridgeState.mulliganBottomQueueBySeatId[seatId]
+        if current ~= nil then table.remove(current, 1) end
+        BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] = nil
+        BridgeProcessMulliganBottomQueue(seatId)
+    end
+
+    local deck = BridgeResolveSeatLibraryDeck(seatId)
+    if deck ~= nil and deck.tag == "Deck" and BridgeObjectIsUsable(item.object) then
+        local rotation = deck.getRotation()
+        -- A face-down card is represented by a 180-degree roll in this table;
+        -- use that same axis to expose the physical bottom as the temporary top.
+        local inverted = {rotation.x, rotation.y, rotation.z + 180}
+        deck.setRotation(inverted)
+        BridgeWaitFrames(function()
+            if BridgeObjectIsUsable(deck) and BridgeObjectIsUsable(item.object) then
+                deck.putObject(item.object)
+            end
+            BridgeWaitFrames(function()
+                if BridgeObjectIsUsable(deck) then deck.setRotation(rotation) end
+                complete()
+            end, 2)
+        end, 2)
+        return
+    end
+
+    -- A one-card library is not a TTS Deck yet. Put the selected card directly
+    -- beneath that one physical card, face down, so TTS can form the stack
+    -- without incorrectly leaving the mulligan card face up on top.
+    if deck ~= nil and deck.tag == "Card" and BridgeObjectIsUsable(item.object) then
+        local topPosition = deck.getPosition()
+        BridgeSetPhysicalFaceDown(item.object, BRIDGE_SEATS[seatId], true)
+        item.object.setPositionSmooth({topPosition.x, topPosition.y - 0.06, topPosition.z}, false, true)
+        BridgeWaitFrames(complete, 3)
+        return
+    end
+
+    local seat = BRIDGE_SEATS[seatId]
+    local libraryZone = seat and BridgeGetLiveObjectByGuid(seat.libraryZoneGuid) or nil
+    if BridgeObjectIsUsable(item.object) and libraryZone ~= nil then
+        BridgeSetPhysicalFaceDown(item.object, seat, true)
+        item.object.setPositionSmooth(libraryZone.getPosition(), false, true)
+    end
+    BridgeLog("[Bridge] mulligan bottom presentation degraded: no usable library deck for seat=" .. tostring(seatId))
+    complete()
+end
+
+function BridgeQueueMulliganBottomInsertion(seatId, object)
+    if BridgeState.mulliganBottomQueueBySeatId[seatId] == nil then
+        BridgeState.mulliganBottomQueueBySeatId[seatId] = {}
+    end
+    table.insert(BridgeState.mulliganBottomQueueBySeatId[seatId], {object = object})
+    BridgeProcessMulliganBottomQueue(seatId)
+end
+
+-- Library-to-public-zone events can arrive as a burst while TTS is still
+-- resolving the prior Deck.takeObject callback (notably the opening seven).
+-- Serialize those physical extractions per seat so deck indices never race.
+function BridgeProcessLibraryExtractionQueue(seatId)
+    if BridgeState.libraryExtractionActiveBySeatId[seatId] == true then return end
+    local queue = BridgeState.libraryExtractionQueueBySeatId[seatId]
+    local job = queue and queue[1] or nil
+    if job == nil then return end
+    BridgeState.libraryExtractionActiveBySeatId[seatId] = true
+    local finished = false
+    local function complete()
+        if finished then return end
+        finished = true
+        local current = BridgeState.libraryExtractionQueueBySeatId[seatId]
+        if current ~= nil then table.remove(current, 1) end
+        BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
+        BridgeProcessLibraryExtractionQueue(seatId)
+        BridgeTryPresentPendingDecision("library-extraction-complete")
+    end
+    job(complete)
+end
+
+function BridgeQueueLibraryExtraction(seatId, job)
+    if BridgeState.libraryExtractionQueueBySeatId[seatId] == nil then
+        BridgeState.libraryExtractionQueueBySeatId[seatId] = {}
+    end
+    table.insert(BridgeState.libraryExtractionQueueBySeatId[seatId], job)
+    BridgeProcessLibraryExtractionQueue(seatId)
 end
 
 function BridgeReturnGraveyardPilesToLibraries(callback)
@@ -2200,6 +2323,17 @@ function BridgeSubmitChoice(decisionId, actionId, source)
             BridgeStopDecisionPolling()
             BridgeMarkTransitionExpected(0)
             BridgeRecordLatencyProbeDecisionReady(body.currentDecision)
+            -- Forge collection choices deliberately keep the same DecisionId
+            -- while each exact candidate is toggled.  This response is the
+            -- authoritative staged state (including selectedCount and
+            -- [SELECTED] rows), not a stale replay of a consumed decision.
+            -- Release the completed request transaction before rendering it so
+            -- a physical discard click and its HUD use the same model and the
+            -- next exact toggle can be submitted.
+            if body.currentDecision.decisionId == decisionId
+                and BridgeIsStructuredForgeToggleChoice(body.currentDecision) then
+                BridgeState.choiceTransactions[decisionId] = nil
+            end
             BridgeAcceptDecision(body.currentDecision, "choice_response", activeTransaction.sessionId, activeTransaction.presentationGeneration)
             BridgeTryFinishDiscardChoice(body.currentDecision, activeTransaction.source)
             BridgeTryFinishSingleOptionalPaymentChoice(body.currentDecision, activeTransaction.source)
@@ -2299,6 +2433,13 @@ function BridgeDecisionOffersActionType(decision, actionType)
     return false
 end
 
+function BridgeDecisionHasNonPassAction(decision)
+    for _, action in ipairs((decision and decision.actions) or {}) do
+        if action.type ~= "pass_priority" then return true end
+    end
+    return false
+end
+
 function BridgeShouldIgnoreStaleDecision(decision)
     local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
     local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
@@ -2324,10 +2465,10 @@ function BridgeShouldIgnoreStaleDecision(decision)
     local activeMismatch = decision.activeSeatId ~= nil
         and BridgeState.currentTurnSeatId ~= nil
         and decision.activeSeatId ~= BridgeState.currentTurnSeatId
-    local staleLandWindow = BridgeDecisionOffersActionType(decision, "play_land")
-        and ((BridgeState.currentTurnSeatId ~= nil and decision.seatId ~= BridgeState.currentTurnSeatId)
-            or (decision.activeSeatId ~= nil and decision.activeSeatId ~= decision.seatId))
-    if stalePrioritySeat or activeMismatch or staleLandWindow then
+    -- A decision containing an exact play-land ActionId is Forge's current
+    -- legal window. Local phase mirrors can be one event behind while moving
+    -- from draw to Main I, so they must not suppress that action.
+    if stalePrioritySeat or activeMismatch then
         return true, eventCursor, applied
     end
 
@@ -2335,6 +2476,17 @@ function BridgeShouldIgnoreStaleDecision(decision)
 end
 
 function BridgeShouldDeferDecision(decision)
+    -- Do not show KEEP/MULLIGAN until the authoritative opening-hand draws
+    -- have all completed their serialized physical extraction. Otherwise a
+    -- player can be asked to assess six visible cards while Forge has seven.
+    if decision ~= nil and decision.kind == "mulligan" then
+        local queue = BridgeState.libraryExtractionQueueBySeatId[decision.seatId]
+        if BridgeState.libraryExtractionActiveBySeatId[decision.seatId] == true
+            or (queue ~= nil and #queue > 0) then
+            return true, tonumber(decision.eventCursor or 0) or 0,
+                tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+        end
+    end
     local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
     local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
     if eventCursor <= 0 then return false, eventCursor, applied end
@@ -2509,6 +2661,11 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                 end
             end
         end
+        -- A newly materialized battlefield card may not have had a physical
+        -- GUID when the first visual pass ran. Reapply the same authoritative
+        -- snapshot after zone reconciliation so persistent designations and
+        -- their badges appear without waiting for another Forge mutation.
+        BridgeApplySeatSnapshotVisualState(seatSnapshot)
     end
     BridgeApplyCombatSnapshot(snapshot.combat)
     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
@@ -3600,6 +3757,8 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         else
             BridgeSetStatus("DISCARD", "Choose Forge's legal discard card(s).")
         end
+    elseif decision.kind == "entity_selection" and tostring(decision.selectionKind or "") == "proliferate" then
+        BridgeSetStatus("PROLIFERATE", "Select any Forge-provided permanents and/or players, then CONFIRM.")
     elseif decision.kind == "target_selection" or decision.kind == "defender_selection" then
         BridgeSetStatus("CHOOSE TARGET", BridgeTurnLabel() .. " - " .. tostring(actor) .. " priority")
     elseif decision.kind == "generic_numeric_selection" then
@@ -3958,9 +4117,16 @@ function BridgeSelectPlayerTargetControl(object, playerColor, altClick)
         BridgeShowError("player target control is stale")
         return
     end
+    local actorSeat = BRIDGE_SEATS[decision.seatId]
+    if actorSeat ~= nil and actorSeat.ttsColor ~= playerColor then
+        BridgeShowError("this target decision belongs to TTS color " .. tostring(actorSeat.ttsColor))
+        return
+    end
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
     BridgeClearHighlights()
-    BridgeSubmitChoice(decisionId, actionId, "player_target_control")
+    local source = BridgeIsStructuredForgeToggleChoice(decision)
+        and "physical_player_structured_toggle" or "player_target_control"
+    BridgeSubmitChoice(decisionId, actionId, source)
 end
 
 function BridgeEnsureEndTurnButton(seatId)
@@ -4162,6 +4328,10 @@ function BridgeSelectPlayerTarget(object, playerColor, altClick)
         BridgeShowError("this target decision belongs to TTS color " .. tostring(actorSeat.ttsColor))
         return
     end
+    if BridgeIsStructuredForgeToggleChoice(decision) then
+        BridgeSubmitChoice(decision.decisionId, action.actionId, "physical_player_structured_toggle")
+        return
+    end
     BridgeSubmitChoice(decision.decisionId, action.actionId, "player_target_surface")
 end
 
@@ -4354,6 +4524,7 @@ end
 
 function BridgeRenderDecision(decision)
     BridgeClearHighlights()
+    BridgeRenderPreparedSpellPresentations(decision)
 
     if decision == nil or decision.actions == nil then
         BridgeResetSelectionState()
@@ -4388,6 +4559,20 @@ function BridgeRenderDecision(decision)
                     BridgeSubmitChoice(decision.decisionId, action.actionId, "yield_auto_pass")
                     return
                 end
+            end
+        end
+    end
+
+    -- With only Pass priority available, Forge has exposed no meaningful human
+    -- action. Advance upkeep/draw and other empty windows automatically. Any
+    -- legal land, spell, ability, target, or structured choice remains visible.
+    if decision.kind == "main_priority"
+        and BridgeDecisionOffersActionType(decision, "pass_priority")
+        and not BridgeDecisionHasNonPassAction(decision) then
+        for _, action in ipairs(decision.actions) do
+            if action.type == "pass_priority" then
+                BridgeSubmitChoice(decision.decisionId, action.actionId, "empty_priority_auto_pass")
+                return
             end
         end
     end
@@ -5434,13 +5619,36 @@ end
 
 function BridgeApplySeatSnapshotVisualState(seatSnapshot)
     local seat = BRIDGE_SEATS[seatSnapshot.seatId]
+    BridgeState.playerCountersBySeatId[seatSnapshot.seatId] = {}
+    for counterKind, counterValue in pairs(seatSnapshot.counters or {}) do
+        BridgeState.playerCountersBySeatId[seatSnapshot.seatId][BridgeNormalizeCounterName(counterKind)] = tonumber(counterValue) or 0
+    end
+    BridgeState.playerStateBySeatId[seatSnapshot.seatId] = BridgeState.playerStateBySeatId[seatSnapshot.seatId] or {}
+    BridgeState.playerStateBySeatId[seatSnapshot.seatId].life = seatSnapshot.life
+    BridgeState.playerStateBySeatId[seatSnapshot.seatId].poison = seatSnapshot.poison
+    BridgeState.playerStateBySeatId[seatSnapshot.seatId].counters = BridgeState.playerCountersBySeatId[seatSnapshot.seatId]
     local lifeCounter = BridgeGetLiveObjectByGuid(seat.lifeCounterGuid)
     if lifeCounter ~= nil then lifeCounter.setValue(seatSnapshot.life) end
     BridgeSetManaBank(seatSnapshot.seatId, seatSnapshot.manaPool or {})
     BridgeApplySeatTrackers(seatSnapshot)
+    local battlefieldInstances = {}
     for _, zone in ipairs(seatSnapshot.zones or {}) do
         if zone.name == "battlefield" then
             for _, card in ipairs(zone.cards or {}) do
+                battlefieldInstances[card.cardInstanceId] = true
+                local designations = {}
+                for _, designation in ipairs(card.cardDesignations or {}) do
+                    designations[string.lower(tostring(designation))] = true
+                end
+                -- Keep designation truth even while the physical card is
+                -- still materializing. Snapshot reconciliation, not the
+                -- presence of a TTS object, owns removal as well as addition.
+                BridgeState.cardDesignationsByInstanceId[card.cardInstanceId] = designations
+                local previousPrepared = BridgeState.preparedDesignationStateByInstanceId[card.cardInstanceId]
+                local hadPreparedBaseline = previousPrepared ~= nil
+                local wasPrepared = previousPrepared == true
+                local isPrepared = designations["prepared"] == true
+                BridgeState.preparedDesignationStateByInstanceId[card.cardInstanceId] = isPrepared
                 local guid = BridgeState.physicalByInstanceId[card.cardInstanceId]
                 local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
                 if object ~= nil then
@@ -5453,11 +5661,6 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
                         keywords[BridgeNormalizeKeywordName(keyword)] = true
                     end
                     BridgeState.keywordStateByInstanceId[card.cardInstanceId] = keywords
-                    local designations = {}
-                    for _, designation in ipairs(card.cardDesignations or {}) do
-                        designations[string.lower(tostring(designation))] = true
-                    end
-                    BridgeState.cardDesignationsByInstanceId[card.cardInstanceId] = designations
                     local keywordsApplied, keywordError = BridgeSetCardKeywords(object, card.keywords)
                     if not keywordsApplied then BridgeLog("[Bridge] keyword visual unsupported: " .. tostring(keywordError)) end
                     -- Encoder rebuilds performed by counters/keywords may
@@ -5467,8 +5670,56 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
                     if not presentationApplied then
                         BridgeLog("[Bridge] optional card presentation skipped: " .. tostring(presentationError))
                     end
+                    BridgeSetPreparedDesignationPresentation(object, isPrepared)
+                    BridgeEnsurePreparedBadge(object, card.cardInstanceId, isPrepared)
+                    -- A snapshot establishes persistent truth; only a change
+                    -- from an already-established false baseline gets the
+                    -- one-shot transition pulse.  Reload/reconcile of an
+                    -- already-prepared permanent must not replay it.
+                    if isPrepared and hadPreparedBaseline and not wasPrepared then
+                        BridgePulsePreparedDesignation(object, card.cardInstanceId)
+                    end
+                    BridgeSetPrototypeDesignationPresentation(object, designations["prototyped"] == true)
                 end
             end
+        end
+    end
+    -- A prepared designation is meaningful only while the permanent remains
+    -- on the battlefield. Clear any saved presentation as soon as an
+    -- authoritative snapshot places that identity elsewhere.
+    local stalePreparedInstances = {}
+    local trackedDesignationInstances = {}
+    for instanceId, _ in pairs(BridgeState.cardDesignationsByInstanceId or {}) do
+        trackedDesignationInstances[instanceId] = true
+    end
+    for instanceId, _ in pairs(BridgeState.preparedDesignationStateByInstanceId or {}) do
+        trackedDesignationInstances[instanceId] = true
+    end
+    for instanceId, _ in pairs(trackedDesignationInstances) do
+        local guid = BridgeState.physicalByInstanceId[instanceId]
+        local mappedSeat = guid and BridgeState.physicalSeatByGuid[guid] or nil
+        if mappedSeat == seatSnapshot.seatId and not battlefieldInstances[instanceId] then
+            table.insert(stalePreparedInstances, {instanceId = instanceId, guid = guid})
+        end
+    end
+    for _, stale in ipairs(stalePreparedInstances) do
+        local object = stale.guid and BridgeGetLiveObjectByGuid(stale.guid) or nil
+        local priorZone = stale.guid and BridgeState.physicalZoneByGuid[stale.guid] or nil
+        if object ~= nil then
+            BridgeSetPreparedDesignationPresentation(object, false)
+            if priorZone ~= "stack" then BridgeSetPrototypeDesignationPresentation(object, false) end
+        end
+        BridgeDestroyPreparedBadge(stale.instanceId)
+        BridgeState.preparedPresentationGuidByInstanceId[stale.instanceId] = nil
+        BridgeState.preparedDesignationStateByInstanceId[stale.instanceId] = nil
+        BridgeState.cardDesignationsByInstanceId[stale.instanceId] = nil
+    end
+    for instanceId, badgeGuid in pairs(BridgeState.preparedBadgeGuidByInstanceId or {}) do
+        local cardGuid = BridgeState.physicalByInstanceId[instanceId]
+        local cardZone = cardGuid and BridgeState.physicalZoneByGuid[cardGuid] or nil
+        if BridgeState.preparedDesignationStateByInstanceId[instanceId] ~= true
+            or cardGuid == nil or (cardZone ~= nil and cardZone ~= "battlefield") then
+            BridgeDestroyPreparedBadge(instanceId)
         end
     end
 end
@@ -5717,6 +5968,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeStopEventPolling()
     BridgeStopDecisionPolling()
     BridgeReturnAttackPresentation(nil)
+    BridgeClearPreparedPresentationObjects()
     BridgeState.decisionPresentationGeneration = BridgeState.decisionPresentationGeneration + 1
     BridgeState.eventSessionId = sessionId
     BridgeState.lastReceivedEventSequence = 0
@@ -5748,11 +6000,21 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.nextLandInsertionOrder = 0
     BridgeState.discardPresentation = nil
     BridgeState.mulliganBottomInstanceIds = {}
+    BridgeState.mulliganBottomQueueBySeatId = {}
+    BridgeState.mulliganBottomInsertionActiveBySeatId = {}
+    BridgeState.libraryExtractionQueueBySeatId = {}
+    BridgeState.libraryExtractionActiveBySeatId = {}
     BridgeState.battlefieldCounts = {}
     BridgeState.graveyardCounts = {}
     BridgeState.counterStateByInstanceId = {}
     BridgeState.keywordStateByInstanceId = {}
     BridgeState.cardDesignationsByInstanceId = {}
+    BridgeState.preparedDescriptionByGuid = {}
+    BridgeState.prototypeDescriptionByGuid = {}
+    BridgeState.preparedBadgeGuidByInstanceId = {}
+    BridgeState.preparedPresentationGuidByInstanceId = {}
+    BridgeState.preparedDesignationStateByInstanceId = {}
+    BridgeState.preparedSpellControlGuids = {}
     BridgeState.untappedRotationByGuid = {}
     BridgeState.pendingCastBySeatId = {}
     BridgeState.attackOriginByGuid = {}
@@ -5762,6 +6024,8 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.zoneAnchorGuidBySeatAndZone = {}
     BridgeState.yieldSeatId = nil
     BridgeState.gameEnded = nil
+    BridgeState.playerStateBySeatId = {}
+    BridgeState.playerCountersBySeatId = {}
     BridgeState.prioritySeatId = nil
     BridgeState.stackSummary = {}
     BridgeUiMarkDirty("session-reset")
@@ -6602,6 +6866,306 @@ function BridgeResolveResolvedSpellObject(event)
     return nil, resolveError or "resolved spell cannot be uniquely located on the physical stack"
 end
 
+-- Prepared is a Forge card designation, not a counter or keyword.  Keep the
+-- indication presentation-only by prefixing the card inspection description;
+-- the saved description is restored when Forge removes the designation.
+function BridgeSetPreparedDesignationPresentation(object, prepared)
+    if object == nil or type(object.setDescription) ~= "function" then return false end
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then return false end
+    BridgeState.preparedDescriptionByGuid = BridgeState.preparedDescriptionByGuid or {}
+    local saved = BridgeState.preparedDescriptionByGuid[guid]
+    local current = ""
+    if type(object.getDescription) == "function" then
+        local ok, value = pcall(function() return object.getDescription() end)
+        if ok and value ~= nil then current = tostring(value) end
+    end
+    if prepared == true then
+        if saved == nil then
+            saved = current
+            while string.sub(saved, 1, 9) == "PREPARED\n" or string.sub(saved, 1, 10) == "PROTOTYPE\n" do
+                saved = string.sub(saved, string.sub(saved, 1, 9) == "PREPARED\n" and 10 or 11)
+            end
+            BridgeState.preparedDescriptionByGuid[guid] = saved
+        end
+        local instanceId = BridgeState.physicalInstanceIdByGuid[guid]
+        if instanceId ~= nil then
+            BridgeState.preparedPresentationGuidByInstanceId[instanceId] = guid
+        end
+        local desired = "PREPARED"
+        if saved ~= "" then desired = desired .. "\n" .. saved end
+        if current ~= desired then pcall(function() object.setDescription(desired) end) end
+    elseif saved ~= nil then
+        pcall(function() object.setDescription(saved) end)
+        BridgeState.preparedDescriptionByGuid[guid] = nil
+    end
+    return true
+end
+
+function BridgeSetPrototypeDesignationPresentation(object, prototyped)
+    if object == nil or type(object.setDescription) ~= "function" then return false end
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then return false end
+    BridgeState.prototypeDescriptionByGuid = BridgeState.prototypeDescriptionByGuid or {}
+    local saved = BridgeState.prototypeDescriptionByGuid[guid]
+    local current = ""
+    if type(object.getDescription) == "function" then
+        local ok, value = pcall(function() return object.getDescription() end)
+        if ok and value ~= nil then current = tostring(value) end
+    end
+    if prototyped == true then
+        if saved == nil then
+            saved = current
+            while string.sub(saved, 1, 9) == "PREPARED\n" or string.sub(saved, 1, 10) == "PROTOTYPE\n" do
+                saved = string.sub(saved, string.sub(saved, 1, 9) == "PREPARED\n" and 10 or 11)
+            end
+            BridgeState.prototypeDescriptionByGuid[guid] = saved
+        end
+        local desired = "PROTOTYPE"
+        if saved ~= "" then desired = desired .. "\n" .. saved end
+        if current ~= desired then pcall(function() object.setDescription(desired) end) end
+    elseif saved ~= nil then
+        pcall(function() object.setDescription(saved) end)
+        BridgeState.prototypeDescriptionByGuid[guid] = nil
+    end
+    return true
+end
+
+function BridgeClearCardDesignationPresentation(instanceId, object, clearPrototype)
+    if instanceId == nil then return end
+    local guid = BridgeState.physicalByInstanceId[instanceId]
+        or BridgeState.preparedPresentationGuidByInstanceId[instanceId]
+    local live = object or BridgeGetLiveObjectByGuid(guid)
+    if live ~= nil then
+        BridgeSetPreparedDesignationPresentation(live, false)
+        if clearPrototype ~= false then BridgeSetPrototypeDesignationPresentation(live, false) end
+    end
+    BridgeDestroyPreparedBadge(instanceId)
+    BridgeState.preparedPresentationGuidByInstanceId[instanceId] = nil
+    BridgeState.preparedDesignationStateByInstanceId[instanceId] = nil
+    BridgeState.cardDesignationsByInstanceId[instanceId] = nil
+end
+
+function BridgePresentationBadgeNoop(object, playerColor, altClick)
+    -- Locked presentation badge; intentionally has no gameplay behavior.
+end
+
+function BridgeDestroyPreparedBadge(instanceId)
+    local guid = BridgeState.preparedBadgeGuidByInstanceId
+        and BridgeState.preparedBadgeGuidByInstanceId[instanceId] or nil
+    if guid ~= nil then BridgeUnregisterPresentationObject(guid) end
+    local badge = BridgeGetLiveObjectByGuid(guid)
+    if badge ~= nil then
+        BridgeSafeObjectCall(badge, function(o) o.destruct() end)
+    end
+    if BridgeState.preparedBadgeGuidByInstanceId ~= nil then
+        BridgeState.preparedBadgeGuidByInstanceId[instanceId] = nil
+    end
+end
+
+function BridgeClearPreparedPresentationObjects()
+    local badgeInstances = {}
+    for instanceId, _ in pairs(BridgeState.preparedBadgeGuidByInstanceId or {}) do
+        table.insert(badgeInstances, instanceId)
+    end
+    for _, instanceId in ipairs(badgeInstances) do BridgeDestroyPreparedBadge(instanceId) end
+    for _, guid in ipairs(BridgeState.preparedSpellControlGuids or {}) do
+        BridgeUnregisterPresentationObject(guid)
+        local object = BridgeGetLiveObjectByGuid(guid)
+        if object ~= nil then
+            BridgeSafeObjectCall(object, function(o) o.destruct() end)
+        end
+    end
+    BridgeState.preparedSpellControlGuids = {}
+end
+
+function BridgePreparedBadgePosition(object)
+    local ok, position = pcall(function() return object.getPosition() end)
+    if not ok or position == nil then return nil end
+    return {x = position.x, y = position.y + 0.55, z = position.z}
+end
+
+function BridgeEnsurePreparedBadge(object, instanceId, prepared)
+    if instanceId == nil then return false end
+    if not prepared then
+        BridgeDestroyPreparedBadge(instanceId)
+        return true
+    end
+    if object == nil or not BridgeObjectIsUsable(object) then return false end
+    local position = BridgePreparedBadgePosition(object)
+    if position == nil then return false end
+    local existingGuid = BridgeState.preparedBadgeGuidByInstanceId[instanceId]
+    local existing = BridgeGetLiveObjectByGuid(existingGuid)
+    if existing ~= nil then
+        pcall(function()
+            existing.setPosition(position)
+            existing.setRotation(object.getRotation())
+        end)
+        return true
+    end
+    local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    spawnObject({
+        type = "BlockSquare",
+        position = position,
+        rotation = object.getRotation(),
+        scale = {1.45, 0.18, 0.34},
+        callback_function = function(badge)
+            if not BridgeRuntimeIsCurrent(epoch) then
+                if badge ~= nil then badge.destruct() end
+                return
+            end
+            if badge == nil or BridgeState.preparedDesignationStateByInstanceId[instanceId] ~= true then
+                if badge ~= nil then badge.destruct() end
+                return
+            end
+            badge.setName("Forge Prepared Status")
+            badge.setLock(true)
+            BridgeRegisterPresentationObject(badge, "prepared_badge")
+            badge.setColorTint({0.42, 0.16, 0.62})
+            badge.setRotation(object.getRotation())
+            badge.createButton({
+                click_function = "BridgePresentationBadgeNoop",
+                function_owner = Global,
+                label = "PREPARED",
+                position = {0, 0.45, 0},
+                width = 900,
+                height = 250,
+                font_size = 90,
+                color = {0.42, 0.16, 0.62, 1},
+                font_color = {1, 1, 1, 1},
+                tooltip = "Forge designation: Prepared"
+            })
+            badge.setVar("bridgePreparedInstanceId", instanceId)
+            BridgeState.preparedBadgeGuidByInstanceId[instanceId] = badge.getGUID()
+        end
+    })
+    return true
+end
+
+function BridgePulsePreparedDesignation(object, instanceId)
+    if object == nil or BridgeState.preparedDesignationStateByInstanceId[instanceId] ~= true then return end
+    -- This is a short transition cue only.  It is deliberately not retained
+    -- in highlightedGuids, so blue/orange legal-action semantics remain clear.
+    pcall(function() object.highlightOn({0.62, 0.18, 0.86}, 1.5) end)
+end
+
+function BridgePreparedSpellPosition(seatId, index)
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil then return nil end
+    local base = nil
+    local ttsColor = seat.ttsColor
+    if ttsColor ~= nil and Player[ttsColor] ~= nil and type(Player[ttsColor].getHandTransform) == "function" then
+        local ok, hand = pcall(function() return Player[ttsColor].getHandTransform(1) end)
+        if ok and hand ~= nil then base = hand.position end
+    end
+    base = base or seat.libraryAnchor
+    if base == nil then return nil end
+    local column = ((tonumber(index or 1) or 1) - 1) % 3
+    return {x = base.x + 3.2 + column * 3.6, y = base.y + 0.8, z = base.z + seat.tableSideZ * 1.8}
+end
+
+function BridgeCastPreparedSpellTile(object, playerColor, altClick)
+    if object == nil or BridgeState.submitting then return end
+    local decision = BridgeState.lastDecision
+    local decisionId = object.getVar("bridgeDecisionId")
+    local actionId = object.getVar("bridgeActionId")
+    if decision == nil or decision.decisionId ~= decisionId or actionId == nil then
+        BridgeShowError("prepared spell presentation is stale")
+        return
+    end
+    local action = nil
+    for _, candidate in ipairs(decision.actions or {}) do
+        if candidate.actionId == actionId then action = candidate; break end
+    end
+    if action == nil or tostring(action.castMode or "") ~= "prepare" then
+        BridgeShowError("prepared spell action is no longer offered by Forge")
+        return
+    end
+    BridgeClaimHumanTtsColor(decision.seatId, playerColor)
+    if BridgeIsStructuredForgeToggleChoice(decision) then
+        BridgeSubmitChoice(decisionId, actionId, "physical_player_structured_toggle")
+        return
+    end
+    BridgeClearHighlights()
+    BridgeSubmitChoice(decision.decisionId, action.actionId, "prepared_spell_tile")
+end
+
+function BridgeRenderPreparedSpellPresentations(decision)
+    BridgeClearPreparedSpellControls()
+    if decision == nil or decision.actions == nil then return end
+    local seat = BRIDGE_SEATS[decision.seatId]
+    if seat == nil then return end
+    local index = 0
+    for _, action in ipairs(decision.actions) do
+        if tostring(action.castMode or "") == "prepare" and action.actionId ~= nil then
+            index = index + 1
+            local position = BridgePreparedSpellPosition(decision.seatId, index)
+            if position ~= nil then
+                -- Capture loop values before registering the asynchronous TTS
+                -- callback so multiple prepared sources cannot cross-bind
+                -- their exact Forge ActionIds.
+                local renderedDecisionId = decision.decisionId
+                local renderedActionId = action.actionId
+                local display = tostring(action.displayName or action.shortLabel or "Prepared spell")
+                if string.sub(display, 1, 16) == "PREPARED SPELL: " then
+                    display = string.sub(display, 17)
+                end
+                local cost = tostring(action.displayManaCost or "")
+                local sourceName = action.preparedSourceCardInstanceId
+                    and BridgeState.cardNameByInstanceId[action.preparedSourceCardInstanceId] or nil
+                local sourceLabel = sourceName ~= nil and tostring(sourceName) ~= ""
+                    and ("\nBY " .. tostring(sourceName)) or ""
+                if #display > 28 then display = string.sub(display, 1, 25) .. "..." end
+                spawnObject({
+                    type = "BlockSquare",
+                    position = position,
+                    rotation = {0, seat.tableSideZ < 0 and 180 or 0, 0},
+                    scale = {1.7, 0.24, 1.15},
+                    callback_function = function(control)
+                        if control == nil then return end
+                        if BridgeState.lastDecision == nil or BridgeState.lastDecision.decisionId ~= renderedDecisionId then
+                            BridgeUnregisterPresentationObject(control)
+                            control.destruct()
+                            return
+                        end
+                        control.setName("Forge Prepared Spell")
+                        control.setLock(true)
+                        BridgeRegisterPresentationObject(control, "prepared_spell_affordance")
+                        control.setColorTint({0.38, 0.18, 0.60})
+                        control.createButton({
+                            click_function = "BridgeCastPreparedSpellTile",
+                            function_owner = Global,
+                            label = "PREPARED SPELL\n" .. display .. sourceLabel
+                                .. (cost ~= "" and ("\n" .. cost) or "") .. "\nCAST",
+                            position = {0, 0.55, 0},
+                            width = 1300,
+                            height = 900,
+                            font_size = 70,
+                            color = {0.38, 0.18, 0.60, 1},
+                            font_color = {1, 1, 1, 1},
+                            tooltip = "Forge action: cast this prepared spell"
+                        })
+                        control.setVar("bridgeDecisionId", renderedDecisionId)
+                        control.setVar("bridgeActionId", renderedActionId)
+                        table.insert(BridgeState.preparedSpellControlGuids, control.getGUID())
+                    end
+                })
+            end
+        end
+    end
+end
+
+function BridgeClearPreparedSpellControls()
+    for _, guid in ipairs(BridgeState.preparedSpellControlGuids or {}) do
+        BridgeUnregisterPresentationObject(guid)
+        local object = BridgeGetLiveObjectByGuid(guid)
+        if object ~= nil then
+            BridgeSafeObjectCall(object, function(o) o.destruct() end)
+        end
+    end
+    BridgeState.preparedSpellControlGuids = {}
+end
+
 function BridgeApplyStructuredCardMove(event)
     if event.cardInstanceId == nil then return false, "structured zone change has no cardInstanceId" end
     local seat = BRIDGE_SEATS[event.seatId]
@@ -6658,6 +7222,8 @@ function BridgeApplyStructuredCardMove(event)
             BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, event.destinationZone)
             if event.destinationZone == "battlefield" then
                 BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
+            else
+                BridgeClearCardDesignationPresentation(event.cardInstanceId, object, event.destinationZone ~= "stack")
             end
             BridgeLog(string.format(
                 "[Bridge] idempotent move event=%s instance=%s already at %s",
@@ -6700,19 +7266,30 @@ function BridgeApplyStructuredCardMove(event)
         local hand, handError = BridgeTryGetSeatHandTransform(event.seatId)
         if hand == nil then return false, handError end
         local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
-        BridgeTakeCardFromDeckByIdentity(deck, expectedName, hand.position, true, function(drawn, takeError)
-            if drawn == nil then
-                BridgeStopOnDesync(libraryDrawError(takeError))
+        BridgeQueueLibraryExtraction(event.seatId, function(complete)
+            local liveDeck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName) or BridgeFindLibraryDeckForSeat(event.seatId)
+            if liveDeck == nil then
+                BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued extraction"))
+                complete()
                 return
             end
-            local drawnGuid = BridgeSafeObjectGuid(drawn)
-            if drawnGuid == nil then
-                BridgeStopOnDesync(libraryDrawError("physical library returned a card with no GUID"))
-                return
-            end
-            BridgeRecordLooseCardIdentity(event.cardInstanceId, drawnGuid, event.seatId, event.destinationZone)
-            drawn.use_hands = true
-            BridgeSetPhysicalFaceDown(drawn, seat, event.faceDown == true)
+            BridgeTakeCardFromDeckByIdentity(liveDeck, expectedName, hand.position, true, function(drawn, takeError)
+                if drawn == nil then
+                    BridgeStopOnDesync(libraryDrawError(takeError))
+                    complete()
+                    return
+                end
+                local drawnGuid = BridgeSafeObjectGuid(drawn)
+                if drawnGuid == nil then
+                    BridgeStopOnDesync(libraryDrawError("physical library returned a card with no GUID"))
+                    complete()
+                    return
+                end
+                BridgeRecordLooseCardIdentity(event.cardInstanceId, drawnGuid, event.seatId, event.destinationZone)
+                drawn.use_hands = true
+                BridgeSetPhysicalFaceDown(drawn, seat, event.faceDown == true)
+                BridgeWaitFrames(complete, 1)
+            end)
         end)
         return true, nil
     end
@@ -6724,18 +7301,28 @@ function BridgeApplyStructuredCardMove(event)
             return false, "library zone is unavailable for authoritative library-to-battlefield move"
         end
         local staging = libraryZone.getPosition()
-        BridgeTakeCardFromDeckByIdentity(deck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
-            function(taken, takeError)
-                if taken == nil then
-                    BridgeStopOnDesync(libraryDrawError(takeError))
-                    return
-                end
-                local row = event.battlefieldKind
-                    or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]
-                    or "creature"
-                local moved, moveError = BridgeMoveToBattlefield(event, taken, row)
-                if not moved then BridgeStopOnDesync(libraryDrawError(moveError)) end
-            end)
+        BridgeQueueLibraryExtraction(event.seatId, function(complete)
+            local liveDeck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName) or BridgeFindLibraryDeckForSeat(event.seatId)
+            if liveDeck == nil then
+                BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued extraction"))
+                complete()
+                return
+            end
+            BridgeTakeCardFromDeckByIdentity(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
+                function(taken, takeError)
+                    if taken == nil then
+                        BridgeStopOnDesync(libraryDrawError(takeError))
+                        complete()
+                        return
+                    end
+                    local row = event.battlefieldKind
+                        or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]
+                        or "creature"
+                    local moved, moveError = BridgeMoveToBattlefield(event, taken, row)
+                    if not moved then BridgeStopOnDesync(libraryDrawError(moveError)) end
+                    BridgeWaitFrames(complete, 1)
+                end)
+        end)
         return true, nil
     end
 
@@ -6887,6 +7474,13 @@ function BridgeApplyStructuredCardMove(event)
         )
     end
 
+    if event.destinationZone ~= "battlefield" then
+        -- Prepared/prototyped are zone-scoped Forge state. Retire their
+        -- presentation as soon as the exact physical card leaves the
+        -- battlefield; a later snapshot remains authoritative for recovery.
+        BridgeClearCardDesignationPresentation(event.cardInstanceId, object, event.destinationZone ~= "stack")
+    end
+
     if event.destinationZone == "hand" then
         local hand, handError = BridgeTryGetSeatHandTransform(event.seatId)
         if hand == nil then return false, handError end
@@ -6927,21 +7521,12 @@ function BridgeApplyStructuredCardMove(event)
             return false, "cannot move to library: configured library zone is unavailable"
         end
         object.use_hands = false
-        local deck = BridgeResolveSeatLibraryDeck(event.seatId)
-        if BridgeState.mulliganBottomInstanceIds[event.cardInstanceId] == true and deck ~= nil and deck.tag == "Deck" then
-            -- TTS putObject inserts on top. Flip only for this authoritative
-            -- mulligan-bottom move, insert, then restore the deck orientation.
+        if BridgeState.mulliganBottomInstanceIds[event.cardInstanceId] == true then
+            -- This exact physical placement is only a presentation response to
+            -- Forge's accepted post-mulligan selection; it never decides which
+            -- cards go to the bottom.
             BridgeState.mulliganBottomInstanceIds[event.cardInstanceId] = nil
-            local rotation = deck.getRotation()
-            deck.setRotation({rotation.x, rotation.y + 180, rotation.z})
-            BridgeWaitFrames(function()
-                if BridgeObjectIsUsable(deck) and BridgeObjectIsUsable(object) then
-                    deck.putObject(object)
-                    BridgeWaitFrames(function()
-                        if BridgeObjectIsUsable(deck) then deck.setRotation(rotation) end
-                    end, 2)
-                end
-            end, 1)
+            BridgeQueueMulliganBottomInsertion(event.seatId, object)
         else
             object.setPositionSmooth(libraryZone.getPosition(), false, true)
         end
@@ -6969,6 +7554,7 @@ function BridgeMoveToGraveyard(event, object)
     if not moved then return false, "could not move card to graveyard: " .. tostring(movementError) end
     local guid = object.getGUID()
     BridgeState.pendingCastBySeatId[event.seatId] = nil
+    BridgeClearCardDesignationPresentation(event.cardInstanceId, object)
     BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "graveyard")
     return true, nil
 end
@@ -7001,6 +7587,18 @@ end
 function BridgeTakeCardFromDeckByIdentity(deck, expectedName, position, smooth, callback)
     if not BridgeObjectIsUsable(deck) then
         callback(nil, "physical library deck is no longer available")
+        return
+    end
+
+    -- TTS turns a one-card Deck into a Card. It is still the authoritative
+    -- library object and must be drawable rather than reported as empty.
+    if deck.tag == "Card" then
+        if expectedName ~= nil and expectedName ~= "" and not BridgeCardNameMatches(deck.getName(), expectedName) then
+            callback(nil, "physical single-card library mismatched authoritative identity")
+            return
+        end
+        deck.setPositionSmooth(position, smooth == true, true)
+        callback(deck, nil)
         return
     end
 
@@ -7169,133 +7767,11 @@ function BridgeInvokeButtonClick(source, button, seatColor)
 end
 
 function BridgeTrySpawnTokenViaEncodeButton(expectedName, seatId, callback)
-    local seat = BRIDGE_SEATS[seatId]
-    if seat == nil then
-        callback(nil, "token spawn fallback has no configured seat")
-        return
-    end
-
-    local beforeGuids = {}
-    for _, object in ipairs(getAllObjects()) do
-        if object.tag == "Card" then
-            local guid = BridgeSafeObjectGuid(object)
-            if guid ~= nil then beforeGuids[guid] = true end
-        end
-    end
-
-    local candidates = {}
-    local expectedNormalized = string.lower(BridgeNormalizeCardName(expectedName or ""))
-    for _, object in ipairs(getAllObjects()) do
-        if BridgeObjectIsUsable(object) and object.tag == "Card" and BridgeObjectIsOnSeatSide(object, seat) then
-            local buttons = object.getButtons and object.getButtons() or {}
-            for _, button in ipairs(buttons) do
-                if BridgeButtonLooksLikeTokenSpawner(button) then
-                    local label = string.lower(tostring(button.label or ""))
-                    local tooltip = string.lower(tostring(button.tooltip or ""))
-                    local sourceName = string.lower(tostring(BridgePhysicalCanonicalCardName(object) or ""))
-                    local score = 0
-                    if string.find(label, "emblem", 1, true) ~= nil then score = score + 4 end
-                    if string.find(tooltip, "emblem", 1, true) ~= nil then score = score + 4 end
-                    if string.find(label, "token", 1, true) ~= nil then score = score + 3 end
-                    if string.find(tooltip, "token", 1, true) ~= nil then score = score + 3 end
-                    if expectedNormalized ~= "" then
-                        if string.find(label, expectedNormalized, 1, true) ~= nil then score = score + 3 end
-                        if string.find(tooltip, expectedNormalized, 1, true) ~= nil then score = score + 3 end
-                    end
-                    if string.find(sourceName, "shorikai", 1, true) ~= nil
-                        and string.find(expectedNormalized, "pilot", 1, true) ~= nil then
-                        score = score + 8
-                    end
-                    table.insert(candidates, {object = object, button = button, score = score})
-                    break
-                end
-            end
-        end
-    end
-
-    if #candidates == 0 then
-        callback(nil, "no EMBLEM/token button candidate found on seat side")
-        return
-    end
-
-    table.sort(candidates, function(left, right)
-        if left.score == right.score then
-            local leftGuid = BridgeSafeObjectGuid(left.object) or ""
-            local rightGuid = BridgeSafeObjectGuid(right.object) or ""
-            return leftGuid < rightGuid
-        end
-        return left.score > right.score
-    end)
-
-    local function findSpawnedToken()
-        local spawned = {}
-        for _, object in ipairs(getAllObjects()) do
-            if object.tag == "Card" then
-                local guid = BridgeSafeObjectGuid(object)
-                if guid ~= nil and beforeGuids[guid] ~= true then
-                    table.insert(spawned, object)
-                end
-            end
-        end
-        for _, object in ipairs(spawned) do
-            if BridgeTokenNameMatches(BridgeSafeObjectName(object), expectedName) then
-                -- A source-card token button may emit a bundle (for example,
-                -- Blackjack plus Treasure). Keep only the requested result.
-                for _, extra in ipairs(spawned) do
-                    if extra ~= object then pcall(function() extra.destruct() end) end
-                end
-                return object
-            end
-        end
-        return nil
-    end
-
-    local attempt = 1
-    local maxAttempts = math.min(#candidates, 3)
-    local seatColor = seat.ttsColor or "Blue"
-    local resolved = false
-
-    local function finish(object, err)
-        if resolved then return end
-        resolved = true
-        callback(object, err)
-    end
-
-    local function tryNext()
-        if attempt > maxAttempts then
-            finish(nil, "EMBLEM/token button spawn did not produce the expected token")
-            return
-        end
-        local candidate = candidates[attempt]
-        attempt = attempt + 1
-        local invoked = BridgeInvokeButtonClick(candidate.object, candidate.button, seatColor)
-        if not invoked then
-            tryNext()
-            return
-        end
-
-        BridgeWaitFrames(function()
-            local spawned = findSpawnedToken()
-            if spawned ~= nil then
-                BridgeMarkTokenPhysicalObject(spawned)
-                BridgeLog("[Bridge] token fetcher resolved via EMBLEM/TOKEN button for " .. tostring(expectedName))
-                finish(spawned, nil)
-                return
-            end
-            BridgeWaitFrames(function()
-                local delayed = findSpawnedToken()
-                if delayed ~= nil then
-                    BridgeMarkTokenPhysicalObject(delayed)
-                    BridgeLog("[Bridge] token fetcher resolved via delayed EMBLEM/TOKEN spawn for " .. tostring(expectedName))
-                    finish(delayed, nil)
-                    return
-                end
-                tryNext()
-            end, 25)
-        end, 8)
-    end
-
-    tryNext()
+    -- Kept for diagnostics/backward compatibility only.  A source-card
+    -- EmblemsAndTokens callback is not safely invocable through Object.call;
+    -- automatic materialization uses BridgeImportExactTokenVisual instead.
+    BridgeLog("[Bridge] legacy source-card token button path disabled name=" .. tostring(expectedName))
+    callback(nil, "legacy source-card token button path disabled")
 end
 
 function BridgeSpawnGenericTokenProxy(expectedName, seatId, callback)
@@ -7553,32 +8029,27 @@ function BridgeTakeCardFromTokenFetcher(expectedName, seatId, callback)
     end
 
     local function fallbackVisualImport(reason)
-        BridgeLog("[Bridge] built-in card token button requested name=" .. tostring(expectedName)
+        -- Source-card buttons such as EmblemsAndTokens are not a generic
+        -- token-import API.  Their TTS callback ABI is (card, player, alt),
+        -- which Object.call cannot reproduce, and they may emit a bundle of
+        -- related tokens.  Go directly to the exact one-token visual import;
+        -- retain the button scanner only as an explicit legacy diagnostic.
+        BridgeLog("[Bridge] exact token visual import requested name=" .. tostring(expectedName)
             .. " reason=" .. tostring(reason or "no art-bearing reusable token"))
-        BridgeTrySpawnTokenViaEncodeButton(expectedName, seatId, function(buttonToken, buttonError)
-            if buttonToken ~= nil and BridgeIsArtBearingCard(buttonToken) then
-                finish(buttonToken, nil)
-                return
-            end
-            BridgeLog("[Bridge] built-in card token button unavailable name=" .. tostring(expectedName)
-                .. " error=" .. tostring(buttonError) .. "; trying exact visual importer")
-            BridgeImportExactTokenVisual(expectedName, seatId, function(imported, importError)
+        BridgeImportExactTokenVisual(expectedName, seatId, function(imported, importError)
             if imported ~= nil then
                 finish(imported, nil)
                 return
             end
             BridgeSpawnGenericTokenProxy(expectedName, seatId, function(proxy, proxyError)
                 if proxy ~= nil then
-                    BridgeLog("[Bridge] DEGRADED token presentation: built-in card button and exact art importer failed name="
-                        .. tostring(expectedName) .. " buttonError=" .. tostring(buttonError)
-                        .. " importError=" .. tostring(importError))
+                    BridgeLog("[Bridge] DEGRADED token presentation: exact art importer failed name="
+                        .. tostring(expectedName) .. " importError=" .. tostring(importError))
                     finish(proxy, nil)
                     return
                 end
-                finish(nil, "built-in card token button failed: " .. tostring(buttonError)
-                    .. "; exact token visual import failed: " .. tostring(importError)
+                finish(nil, "exact token visual import failed: " .. tostring(importError)
                     .. "; generic proxy failed: " .. tostring(proxyError))
-            end)
             end)
         end)
     end
@@ -8049,7 +8520,7 @@ local BRIDGE_KEYWORD_DECALS = {
     ["first strike"] = {name="First Strike", url="http://cloud-3.steamusercontent.com/ugc/1647720820459774469/9FB16BFF1B02B2455C3D844127EC39A141534F33/"},
     hexproof = {name="Hexproof", url="http://cloud-3.steamusercontent.com/ugc/1647720820459777186/41A7105B5FBBFE116EBFD950C5809724CCD508B1/"},
     indestructible = {name="Indestructible", url="http://cloud-3.steamusercontent.com/ugc/1647721275620396729/06E0D42899D763E8C179326CB8A904543C1F25DA/"},
-    lifelink = {name="Lifelink", url="http://cloud-3.steamusercontent.com/ugc/1647720820459778541/EC0A9AE3F2A92ED0070E0050A3AB451046D79A35/"},
+    lifelink = {name="Lifelink", url="https://steamusercontent-a.akamaihd.net/ugc/1647720820459778541/EC0A9AE3F2A92ED0070E0050A3AB451046D79A35/"},
     menace = {name="Menace", url="http://cloud-3.steamusercontent.com/ugc/1647720820459779239/1C65FC6264E001EB3DCBC88A8473B0EABE33834A/"},
     reach = {name="Reach", url="http://cloud-3.steamusercontent.com/ugc/1647720820459781368/2390550F830E8BF214F9FF9CD971976A35C95230/"},
     trample = {name="Trample", url="http://cloud-3.steamusercontent.com/ugc/1647720820459785398/41B89DCAC842C5C2624AC5EFA9428492C2841515/"},

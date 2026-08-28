@@ -37,6 +37,7 @@ public sealed record DecisionDto(
     // Typed native-choice provenance. These are presentation hints emitted by
     // Forge at the controller boundary; legal ActionIds remain authoritative.
     public string? CostKind { get; init; }
+    public string? SelectionKind { get; init; }
     public string? MulliganStage { get; init; }
     public string? CandidateSourceZone { get; init; }
 }
