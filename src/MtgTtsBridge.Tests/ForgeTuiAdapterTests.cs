@@ -195,6 +195,67 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
+    public async Task CollectionChoice_RedrawnMenuAcceptsCardThenDoneUnderOneDecision()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-collection-{Guid.NewGuid():N}.cmd");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo === FORGE CHOICE ===
+            echo Choose cards to discard
+            echo [kind=discard min=1 max=1 selected=0 ordered=false]
+            echo   0. Done
+            echo   1. Island [id=41]
+            <nul set /p "=Enter choice (0-1): "
+            set /p choice=
+            echo === FORGE CHOICE ===
+            echo Choose cards to discard
+            echo [kind=discard min=1 max=1 selected=1 ordered=false]
+            echo   0. Done
+            echo   1. Island [id=41] [SELECTED]
+            <nul set /p "=Enter choice (0-1): "
+            set /p choice=
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """);
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                    DecisionTimeoutSeconds = 5,
+                }), NullLogger<ForgeTuiAdapter>.Instance);
+
+            var initial = await adapter.StartSessionAsync(CancellationToken.None);
+            var firstDecision = Assert.IsType<MtgTtsBridge.Contracts.State.DecisionDto>(initial.CurrentDecision);
+            var card = Assert.Single(firstDecision.Actions, action => action.Type == "discard_card");
+            var toggled = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(firstDecision.DecisionId, card.ActionId) { SessionId = initial.SessionId }, CancellationToken.None);
+            Assert.True(toggled.Accepted);
+            var redraw = Assert.IsType<MtgTtsBridge.Contracts.State.DecisionDto>(toggled.State.CurrentDecision);
+            Assert.Equal(firstDecision.DecisionId, redraw.DecisionId);
+            var done = Assert.Single(redraw.Actions, action => action.Type == "choose_none");
+            var completed = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(redraw.DecisionId, done.ActionId) { SessionId = initial.SessionId }, CancellationToken.None);
+            Assert.True(completed.Accepted);
+            Assert.Equal("forge-tui-2", completed.State.CurrentDecision?.DecisionId);
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
     public async Task ConcurrentDuplicateChoice_ConsumesForgeDecisionAndWritesStdinOnlyOnce()
     {
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");

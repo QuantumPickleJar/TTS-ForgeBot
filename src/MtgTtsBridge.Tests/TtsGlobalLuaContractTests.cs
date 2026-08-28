@@ -1406,6 +1406,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("empty_priority_auto_pass", Script);
         Assert.Contains("not BridgeDecisionHasNonPassAction(decision)", Script);
         Assert.Contains("legal land, spell, ability, target, or structured choice remains visible", Script);
+        Assert.Contains("Priority/active-seat fields are descriptive state, not ordering keys", Script);
+        Assert.DoesNotContain("if stalePrioritySeat or activeMismatch then", Script);
     }
 
     [Fact]
@@ -1417,6 +1419,16 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("physical single-card library mismatched authoritative identity", Script);
         Assert.Contains("opening-hand draws", Script);
         Assert.Contains("library-extraction-complete", Script);
+    }
+
+    [Fact]
+    public void MulliganBottomUsesExplicitDeckIndex_NotRotationHeuristic()
+    {
+        Assert.Contains("function BridgeInsertCardAtLibraryBottom(deck, object, seat)", Script);
+        Assert.Contains("local entries = deck.getObjects() or {}", Script);
+        Assert.Contains("return deck.putObject(object, #entries)", Script);
+        Assert.Contains("Rotating a TTS Deck is", Script);
+        Assert.DoesNotContain("local inverted = {rotation.x, rotation.y, rotation.z + 180}", Script);
     }
 
     [Fact]

@@ -241,6 +241,7 @@ BridgeState = {
     nextLandInsertionOrder = 0,
     discardPresentation = nil,
     mulliganBottomInstanceIds = {},
+    mulliganReturningInstanceIds = {},
     mulliganBottomQueueBySeatId = {},
     mulliganBottomInsertionActiveBySeatId = {},
     libraryExtractionQueueBySeatId = {},
@@ -1119,10 +1120,17 @@ function BridgeDeckContainsTrackedCardForSeat(deck, seatId)
     return false
 end
 
--- TTS can only put an object on the visible top of a Deck.  For a Forge-
--- accepted mulligan-bottom move, invert the physical deck, insert one exact
--- card, then restore it.  The queue prevents simultaneous authoritative card
--- moves from racing each other's deck rotation.
+-- Insert at the container's explicit bottom index.  Rotating a TTS Deck is
+-- only presentation geometry; it does not reverse the container's logical
+-- getObjects/putObject order and previously left rejected hands on top.
+-- The queue still serializes asynchronous merges.
+function BridgeInsertCardAtLibraryBottom(deck, object, seat)
+    if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" or not BridgeObjectIsUsable(object) then return nil end
+    local entries = deck.getObjects() or {}
+    BridgeSetPhysicalFaceDown(object, seat, true)
+    return deck.putObject(object, #entries)
+end
+
 function BridgeProcessMulliganBottomQueue(seatId)
     if BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true then return end
     local queue = BridgeState.mulliganBottomQueueBySeatId[seatId]
@@ -1139,20 +1147,13 @@ function BridgeProcessMulliganBottomQueue(seatId)
 
     local deck = BridgeResolveSeatLibraryDeck(seatId)
     if deck ~= nil and deck.tag == "Deck" and BridgeObjectIsUsable(item.object) then
-        local rotation = deck.getRotation()
-        -- A face-down card is represented by a 180-degree roll in this table;
-        -- use that same axis to expose the physical bottom as the temporary top.
-        local inverted = {rotation.x, rotation.y, rotation.z + 180}
-        deck.setRotation(inverted)
+        local merged = BridgeInsertCardAtLibraryBottom(deck, item.object, BRIDGE_SEATS[seatId])
+        if merged == nil then
+            BridgeLog("[Bridge] mulligan bottom insertion returned no deck object seat=" .. tostring(seatId))
+        end
         BridgeWaitFrames(function()
-            if BridgeObjectIsUsable(deck) and BridgeObjectIsUsable(item.object) then
-                deck.putObject(item.object)
-            end
-            BridgeWaitFrames(function()
-                if BridgeObjectIsUsable(deck) then deck.setRotation(rotation) end
-                complete()
-            end, 2)
-        end, 2)
+            complete()
+        end, 3)
         return
     end
 
@@ -2242,6 +2243,33 @@ function BridgeSubmitChoice(decisionId, actionId, source)
             end
         end
     end
+    -- A MULLIGAN action returns the rejected opening hand to the library
+    -- before Forge deals the replacement hand.  Mark those exact physical
+    -- instances before the first authoritative hand->library event arrives;
+    -- the event handler can then insert them at the physical bottom instead
+    -- of briefly putting them face-up on top of the deck.
+    if activeDecision ~= nil and activeDecision.decisionId == decisionId
+        and activeDecision.kind == "mulligan"
+        and tostring(activeDecision.mulliganStage or "") == "keep_or_mulligan" then
+        local selectedAction = nil
+        for _, candidateAction in ipairs(activeDecision.actions or {}) do
+            if candidateAction.actionId == actionId then
+                selectedAction = candidateAction
+                break
+            end
+        end
+        if selectedAction ~= nil and selectedAction.type == "mulligan" then
+            for instanceId, guid in pairs(BridgeState.physicalByInstanceId or {}) do
+                local zone = BridgeState.physicalZoneByGuid[guid]
+                local seatId = BridgeState.physicalSeatByGuid[guid]
+                if zone == "hand" and seatId == activeDecision.seatId then
+                    BridgeState.mulliganReturningInstanceIds[instanceId] = true
+                end
+            end
+            BridgeLog("[Bridge] marked rejected opening hand for physical library bottom seat="
+                .. tostring(activeDecision.seatId))
+        end
+    end
     if transaction ~= nil then
         if transaction.actionId == actionId then
             -- Same logical choice is already in flight or complete. Do not
@@ -2333,6 +2361,14 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         end
         if not ok then
             activeTransaction.state = "rejected"
+            -- No authoritative mulligan transition follows a rejected
+            -- MULLIGAN action. Retire the pre-marked hand identities so a
+            -- later unrelated library move cannot be misrouted to bottom.
+            if activeTransaction.source == "hud_action"
+                or activeTransaction.source == "physical_mulligan"
+                or activeTransaction.source == "physical_card_drop" then
+                BridgeState.mulliganReturningInstanceIds = {}
+            end
             BridgeState.latencyProbe = nil
             BridgeMarkTransitionExpected(0)
             BridgeClearHighlights()
@@ -2517,17 +2553,16 @@ function BridgeShouldIgnoreStaleDecision(decision)
         return true, eventCursor, applied
     end
 
-    local stalePrioritySeat = decision.prioritySeatId ~= nil
-        and decision.seatId ~= nil
-        and decision.prioritySeatId ~= decision.seatId
-    local activeMismatch = decision.activeSeatId ~= nil
-        and BridgeState.currentTurnSeatId ~= nil
-        and decision.activeSeatId ~= BridgeState.currentTurnSeatId
-    -- A decision containing an exact play-land ActionId is Forge's current
-    -- legal window. Local phase mirrors can be one event behind while moving
-    -- from draw to Main I, so they must not suppress that action.
-    if stalePrioritySeat or activeMismatch then
-        return true, eventCursor, applied
+    -- Priority/active-seat fields are descriptive state, not ordering keys.
+    -- During a phase transition the event feed can legitimately update one
+    -- before the decision poll (and a decision's chooser can differ from the
+    -- current priority seat). Treating either mismatch as stale discarded the
+    -- authoritative Main 1 land/spell menu and could skip the turn; it must not suppress that action.
+    -- Only the
+    -- comparable Forge turn number above can establish staleness here.
+    if decision.prioritySeatId ~= nil or decision.activeSeatId ~= nil then
+        BridgeLog(string.format("[Bridge] retaining decision despite state mirror (priority=%s active=%s current=%s)",
+            tostring(decision.prioritySeatId), tostring(decision.activeSeatId), tostring(BridgeState.currentTurnSeatId)))
     end
 
     return false, eventCursor, applied
@@ -6091,6 +6126,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.nextLandInsertionOrder = 0
     BridgeState.discardPresentation = nil
     BridgeState.mulliganBottomInstanceIds = {}
+    BridgeState.mulliganReturningInstanceIds = {}
     BridgeState.mulliganBottomQueueBySeatId = {}
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
     BridgeState.libraryExtractionQueueBySeatId = {}
@@ -7597,7 +7633,13 @@ function BridgeApplyStructuredCardMove(event)
             return false, "cannot move to library: configured library zone is unavailable"
         end
         object.use_hands = false
-        if BridgeState.mulliganBottomInstanceIds[event.cardInstanceId] == true then
+        if BridgeState.mulliganReturningInstanceIds[event.cardInstanceId] == true then
+            -- Rejected opening-hand cards are authoritative hand->library
+            -- moves during the MULLIGAN action.  They belong at the physical
+            -- bottom before the replacement draw, not at the deck anchor.
+            BridgeState.mulliganReturningInstanceIds[event.cardInstanceId] = nil
+            BridgeQueueMulliganBottomInsertion(event.seatId, object)
+        elseif BridgeState.mulliganBottomInstanceIds[event.cardInstanceId] == true then
             -- This exact physical placement is only a presentation response to
             -- Forge's accepted post-mulligan selection; it never decides which
             -- cards go to the bottom.

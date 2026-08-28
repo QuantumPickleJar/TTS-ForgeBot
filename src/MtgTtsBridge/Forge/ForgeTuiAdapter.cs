@@ -276,10 +276,21 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         TaskCompletionSource<ForgeTuiDecision> waiter;
         string forgeInput = string.Empty;
         Process? process;
+        DecisionDto? decisionForRequest;
+        LegalActionDto? currentActionForRequest;
         lock (_sync)
         {
+            decisionForRequest = _currentDecision;
             var currentDecisionId = _currentDecision?.DecisionId;
-            var resolvedAlready = _resolvedChoices.TryGetValue(request.DecisionId, out var resolvedChoice);
+            var currentAction = _currentDecision?.Actions.FirstOrDefault(action =>
+                string.Equals(action.ActionId, request.ActionId, StringComparison.Ordinal));
+            currentActionForRequest = currentAction;
+            var isCollectionToggle = IsCollectionDecision(_currentDecision)
+                && currentAction is not null
+                && !string.Equals(currentAction.Type, "choose_none", StringComparison.Ordinal);
+            ResolvedChoice? resolvedChoice = null;
+            var resolvedAlready = !isCollectionToggle
+                && _resolvedChoices.TryGetValue(request.DecisionId, out resolvedChoice);
             _logger.LogInformation(
                 "CHOICE_REQUEST requestId={RequestId} clientRuntimeId={ClientRuntimeId} clientRevision={ClientRevision} source={Source} requestSessionId={RequestSessionId} serverSessionId={ServerSessionId} decision={DecisionId} action={ActionId} currentDecision={CurrentDecisionId} state={State} resolvedAlready={ResolvedAlready} previouslyAcceptedAction={PreviouslyAcceptedAction}",
                 request.RequestId ?? "(missing)",
@@ -347,8 +358,16 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             {
                 return Reject("forge_process_exited", "The Forge TUI process exited before the choice could be submitted.");
             }
-            _resolvedChoices.Add(_currentDecision.DecisionId, new ResolvedChoice(request.ActionId, "awaiting_forge"));
-            MarkDecisionResolved(_currentDecision.DecisionId, request.ActionId);
+            if (!isCollectionToggle)
+            {
+                _resolvedChoices.Add(_currentDecision.DecisionId, new ResolvedChoice(request.ActionId, "awaiting_forge"));
+                MarkDecisionResolved(_currentDecision.DecisionId, request.ActionId);
+            }
+            else
+            {
+                _logger.LogDebug("Forge collection toggle remains in the same logical decision decision={DecisionId} action={ActionId}",
+                    request.DecisionId, request.ActionId);
+            }
             _currentDecision = null;
             _currentInputs = null;
             _state = "awaiting_forge";
@@ -356,6 +375,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
 
         _logger.LogInformation("Forge TUI stdin action={ActionId} input={ForgeInput}", request.ActionId, forgeInput);
+        if (currentActionForRequest is not null && string.Equals(currentActionForRequest.Type, "choose_none", StringComparison.Ordinal)
+            && IsCollectionDecision(decisionForRequest))
+        {
+            _parser.CompleteCollectionDecision();
+        }
         try
         {
             await process.StandardInput.WriteLineAsync(forgeInput).ConfigureAwait(false);
@@ -791,6 +815,13 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         _recentControllerDiagnostics.Enqueue(line.Length <= 1024 ? line : line[..1024]);
         while (_recentControllerDiagnostics.Count > limit) _recentControllerDiagnostics.Dequeue();
     }
+
+    private static bool IsCollectionDecision(DecisionDto? decision) =>
+        decision is not null && decision.ConfirmRequired &&
+        (decision.Kind is "discard" or "sacrifice" or "payment_option" or "search_selection"
+            or "entity_selection" or "cost_selection"
+            || decision.Kind == "mulligan"
+                && string.Equals(decision.MulliganStage, "bottom_selection", StringComparison.Ordinal));
 
     private void MarkGameEnded(GameResultDto result)
     {

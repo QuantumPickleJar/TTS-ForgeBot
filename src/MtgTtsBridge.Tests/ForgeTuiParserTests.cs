@@ -700,6 +700,45 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void CollectionRedraws_RetainOneLogicalDecisionIdentity()
+    {
+        var parser = new ForgeTuiParser();
+        var first = parser.Append(
+            "=== FORGE CHOICE ===\nChoose cards to discard\n" +
+            "[kind=discard min=1 max=2 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Island [id=41]\n  2. Mountain [id=42]\nEnter choice (0-2): ");
+        var second = parser.Append(
+            "=== FORGE CHOICE ===\nChoose cards to discard\n" +
+            "[kind=discard min=1 max=2 selected=1 ordered=false]\n" +
+            "  0. Done\n  1. Island [id=41] [SELECTED]\n  2. Mountain [id=42]\nEnter choice (0-2): ");
+
+        var firstDecision = Assert.IsType<ForgeTuiDecision>(first.ParsedDecision).Decision;
+        var secondDecision = Assert.IsType<ForgeTuiDecision>(second.ParsedDecision).Decision;
+        Assert.Equal(firstDecision.DecisionId, secondDecision.DecisionId);
+        Assert.Equal(firstDecision.Actions[1].ActionId, secondDecision.Actions[1].ActionId);
+        Assert.Equal(1, secondDecision.SelectedCount);
+        parser.CompleteCollectionDecision();
+        var next = parser.Append(
+            "=== FORGE CHOICE ===\nChoose cards to discard\n" +
+            "[kind=discard min=1 max=1 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Plains [id=43]\nEnter choice (0-1): ");
+        Assert.NotEqual(firstDecision.DecisionId, Assert.IsType<ForgeTuiDecision>(next.ParsedDecision).Decision.DecisionId);
+    }
+
+    [Fact]
+    public void MulliganKeepActions_AreTypedWithoutDisplayParsingInTheBridge()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\nOpening hand\n" +
+            "[kind=mulligan mulliganStage=keep_or_mulligan min=1 max=1 selected=0 ordered=false]\n" +
+            "  0. Keep\n  1. Mulligan\nEnter choice (0-1): ");
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("keep_hand", decision.Actions[0].Type);
+        Assert.Equal("mulligan", decision.Actions[1].Type);
+    }
+
+    [Fact]
     public void MulliganDecisions_KeepNativeStagesAndExactBottomCardIdentity()
     {
         var parser = new ForgeTuiParser();

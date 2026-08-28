@@ -16,6 +16,8 @@ public sealed partial class ForgeTuiParser
     private readonly IReadOnlyDictionary<string, string> _playerSeats;
     private readonly string _opponentSeatId;
     private int _decisionNumber;
+    private string? _activeCollectionKey;
+    private string? _activeCollectionDecisionId;
 
     public ForgeTuiParser(IReadOnlyDictionary<string, string>? playerSeats = null, string opponentSeatId = "forge-player-2")
     {
@@ -27,6 +29,8 @@ public sealed partial class ForgeTuiParser
     {
         _buffer.Clear();
         _decisionNumber = 0;
+        _activeCollectionKey = null;
+        _activeCollectionDecisionId = null;
     }
 
     public ForgeTuiParserResult Append(string chunk)
@@ -90,9 +94,40 @@ public sealed partial class ForgeTuiParser
 
         _buffer.Remove(0, prompt.Index + prompt.Length);
 
-        _decisionNumber++;
         var kind = promptKind ?? "generic_numeric_selection";
-        var decisionId = $"forge-tui-{_decisionNumber}";
+        // A collection choice is a single Forge transaction even though the
+        // TUI redraws its menu after every candidate toggle.  Reuse the
+        // logical decision identity until its explicit Done action is sent;
+        // otherwise the bridge treats the next toggle as stale and Forge
+        // never receives the completed discard.
+        var collectionKey = selectionMetadata.Success && RequiresForgeCollectionConfirmation(kind,
+            selectionMetadata.Groups["mulliganStage"].Value)
+            ? string.Join("|", kind,
+                selectionMetadata.Groups["selectionKind"].Value,
+                selectionMetadata.Groups["costKind"].Value,
+                selectionMetadata.Groups["mulliganStage"].Value,
+                selectionMetadata.Groups["sourceZone"].Value)
+            : null;
+        var reuseCollectionDecision = collectionKey is not null
+            && string.Equals(_activeCollectionKey, collectionKey, StringComparison.Ordinal)
+            && _activeCollectionDecisionId is not null;
+        if (!reuseCollectionDecision)
+        {
+            _decisionNumber++;
+            if (collectionKey is not null)
+            {
+                _activeCollectionKey = collectionKey;
+                _activeCollectionDecisionId = $"forge-tui-{_decisionNumber}";
+            }
+            else
+            {
+                _activeCollectionKey = null;
+                _activeCollectionDecisionId = null;
+            }
+        }
+        var decisionId = reuseCollectionDecision
+            ? _activeCollectionDecisionId!
+            : $"forge-tui-{_decisionNumber}";
         var bridgeActions = actions.Select(option => BuildAction(option, decisionId, kind)).ToArray();
         var mulliganStage = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["mulliganStage"].Value) : null;
         var selectionKind = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["selectionKind"].Value) : null;
@@ -210,7 +245,13 @@ public sealed partial class ForgeTuiParser
         // the generic entity-selection decision (used by Proliferate) maps to
         // choose_entity; the Forge decision kind remains authoritative for
         // every other collection.
-        var actionType = kind is "target_selection" or "player_selection"
+        var actionType = kind == "mulligan"
+            && label.Equals("Mulligan", StringComparison.OrdinalIgnoreCase)
+                ? "mulligan"
+            : kind == "mulligan"
+                && label.Equals("Keep", StringComparison.OrdinalIgnoreCase)
+                    ? "keep_hand"
+            : kind is "target_selection" or "player_selection"
             ? "choose_target"
             : kind == "entity_selection"
                 && (string.Equals(entityKind, "player", StringComparison.OrdinalIgnoreCase)
@@ -257,6 +298,13 @@ public sealed partial class ForgeTuiParser
             DisplayManaCost: provenance.Success ? NullIfBlank(provenance.Groups["displayManaCost"].Value) : null,
             EntityKind: entityKind,
             EntitySeatId: entitySeatId);
+    }
+
+    /// <summary>Ends the current redraw-based collection transaction.</summary>
+    public void CompleteCollectionDecision()
+    {
+        _activeCollectionKey = null;
+        _activeCollectionDecisionId = null;
     }
 
     private static bool RequiresForgeCollectionConfirmation(string kind, string? mulliganStage) =>

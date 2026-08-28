@@ -113,6 +113,8 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("sa.isLandAbility() && sa.canPlay()", Patch);
         Assert.DoesNotContain("boolean sorcerySpeedWindow", Patch);
         Assert.Contains("} else if (totalActions == 0) {", Patch);
+        Assert.True(Patch.IndexOf("sa.setActivatingPlayer(player);", StringComparison.Ordinal) < Patch.IndexOf("if (!sa.canPlay()) continue;", StringComparison.Ordinal));
+        Assert.DoesNotContain("isMainPhase &&", Patch);
     }
 
     [Fact]

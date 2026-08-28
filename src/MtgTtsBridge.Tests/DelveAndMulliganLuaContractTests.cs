@@ -33,9 +33,9 @@ public sealed class DelveAndMulliganLuaContractTests
         Assert.Contains("mulliganBottomInstanceIds", Script);
         Assert.Contains("function BridgeQueueMulliganBottomInsertion", Script);
         Assert.Contains("function BridgeProcessMulliganBottomQueue", Script);
-        Assert.Contains("rotation.z + 180", Script);
-        Assert.Contains("deck.putObject(item.object)", Script);
-        Assert.Contains("deck.setRotation(rotation)", Script);
+        Assert.Contains("function BridgeInsertCardAtLibraryBottom(deck, object, seat)", Script);
+        Assert.Contains("return deck.putObject(object, #entries)", Script);
+        Assert.DoesNotContain("rotation.z + 180", Script);
     }
 
     [Fact]
@@ -54,5 +54,15 @@ public sealed class DelveAndMulliganLuaContractTests
         Assert.Contains("if BridgeDecisionNeedsConfirmation(decision) then", Script);
         Assert.Contains("BridgeSubmitChoice(decision.decisionId, action.actionId, \"hud_action\")", Script);
         Assert.Contains("mulliganStage or \"\") == \"bottom_selection\"", Script);
+    }
+
+    [Fact]
+    public void RejectedOpeningHand_IsQueuedAtBottomBeforeReplacementDraw()
+    {
+        Assert.Contains("mulliganReturningInstanceIds", Script);
+        Assert.Contains("selectedAction.type == \"mulligan\"", Script);
+        Assert.Contains("zone == \"hand\" and seatId == activeDecision.seatId", Script);
+        Assert.Contains("mulliganReturningInstanceIds[event.cardInstanceId] == true", Script);
+        Assert.Contains("BridgeQueueMulliganBottomInsertion(event.seatId, object)", Script);
     }
 }
