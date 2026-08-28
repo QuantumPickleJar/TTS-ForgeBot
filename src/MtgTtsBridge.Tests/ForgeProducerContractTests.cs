@@ -50,7 +50,8 @@ public sealed class ForgeProducerContractTests
     [Fact]
     public void TrackedBridgeStateFeed_EmitsEmptyCombatDuringNewMatchStartup()
     {
-        Assert.Contains("json.append(\"],\\\"combat\\\":\");", Patch);
+        Assert.Contains("json.append(\"],\\\"relationships\\\":\");", Patch);
+        Assert.Contains("json.append(\",\\\"combat\\\":\");", Patch);
         Assert.Contains("if (combat == null)", Patch);
         Assert.Contains("json.append(\"]}\");", Patch);
     }
