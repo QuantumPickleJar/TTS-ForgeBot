@@ -40,7 +40,7 @@ public sealed class ForgeTuiAdapterTests
         await File.WriteAllTextAsync(script, """
             @echo off
             echo [TUI-INHERITED] kind=choose_color turn=2 phase=Main
-            echo [TUI-DIAG priority] turn=2 phase=Main priority=Player 1 isMyTurn=true totalActions=1 uniqueActions=1
+            echo [TUI-DIAG priority] turn=2 phase=Main active=Player 1 priority=Player 1 isActivePlayersTurn=true hasPriority=true totalActions=1 uniqueActions=1
             echo What would you like to do?
             echo   0. Pass priority (do nothing)
             <nul set /p "=Enter choice (0-0): "
@@ -72,6 +72,93 @@ public sealed class ForgeTuiAdapterTests
             var events = await adapter.GetEventsAsync(0, CancellationToken.None);
             Assert.Contains(events.Events, item => item.Kind == "turn_changed" && item.TurnNumber == 2);
             Assert.Contains(events.Events, item => item.Kind == "phase_changed" && item.Phase == "Main");
+            Assert.Contains(events.Events, item => item.Kind == "priority_changed" && item.PrioritySeatId == "forge-player-1");
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
+    public async Task ActiveTurnAndPriorityRemainIndependentWhenTheyDiffer()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-priority-semantics-{Guid.NewGuid():N}.cmd");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo [TUI-DIAG priority] turn=4 phase=Main 1 active=AI-monored priority=Player 1 isActivePlayersTurn=false hasPriority=true totalActions=1 uniqueActions=1
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """);
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                }),
+                NullLogger<ForgeTuiAdapter>.Instance);
+
+            var state = await adapter.StartSessionAsync(CancellationToken.None);
+            Assert.Equal("forge-player-2", state.CurrentDecision!.ActiveSeatId);
+            Assert.Equal("forge-player-1", state.CurrentDecision.PrioritySeatId);
+            Assert.Equal(4, state.CurrentDecision.TurnNumber);
+            Assert.Equal("Main 1", state.CurrentDecision.PhaseName);
+
+            var events = await adapter.GetEventsAsync(0, CancellationToken.None);
+            Assert.Contains(events.Events, item => item.Kind == "turn_changed" && item.ActiveSeatId == "forge-player-2");
+            Assert.Contains(events.Events, item => item.Kind == "phase_changed" && item.ActiveSeatId == "forge-player-2");
+            Assert.Contains(events.Events, item => item.Kind == "priority_changed"
+                && item.PrioritySeatId == "forge-player-1"
+                && item.ActiveSeatId == "forge-player-2");
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
+    public async Task StructuredStateDoesNotSuppressUnreplacedTurnAndPhaseEvents()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-raw-phase-events-{Guid.NewGuid():N}.cmd");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo @@FORGE_BRIDGE_STATE@@{"version":1,"type":"snapshot","sequence":1,"reason":"baseline","players":[],"stack":[]}
+            echo +++ Turn: Turn 3 (Player 1)
+            echo +++ Phase: Player 1's Main phase, precombat
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """);
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                }),
+                NullLogger<ForgeTuiAdapter>.Instance);
+
+            await adapter.StartSessionAsync(CancellationToken.None);
+            var events = await adapter.GetEventsAsync(0, CancellationToken.None);
+            Assert.Contains(events.Events, item => item.Kind == "turn_changed" && item.TurnNumber == 3);
+            Assert.Contains(events.Events, item => item.Kind == "phase_changed" && item.Phase == "Main phase, precombat");
         }
         finally
         {
@@ -248,6 +335,106 @@ public sealed class ForgeTuiAdapterTests
             var done = Assert.Single(redraw.Actions, action => action.Type == "choose_none");
             var completed = await adapter.SubmitChoiceAsync(
                 new ChoiceRequestDto(redraw.DecisionId, done.ActionId) { SessionId = initial.SessionId }, CancellationToken.None);
+            Assert.True(completed.Accepted);
+            Assert.Equal("forge-tui-2", completed.State.CurrentDecision?.DecisionId);
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
+    public async Task CrewCollectionChoiceKeepsDuplicateNamesDistinctAcrossMultipleSelections()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-crew-selection-{Guid.NewGuid():N}.cmd");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            :initial
+            echo === FORGE CHOICE ===
+            echo CREW - SELECT CREATURES
+            echo [kind=cost_selection costKind=crew sourceZone=battlefield requiredTotalPower=3 selectedTotalPower=0 min=0 max=3 selected=0 ordered=false]
+            echo   0. Done
+            echo   1. Grizzly Bears [id=41] [bridge entityKind=permanent cardInstanceId=41 sourceZone=battlefield]
+            echo   2. Grizzly Bears [id=42] [bridge entityKind=permanent cardInstanceId=42 sourceZone=battlefield]
+            echo   3. Llanowar Elves [id=43] [bridge entityKind=permanent cardInstanceId=43 sourceZone=battlefield]
+            <nul set /p "=Enter choice (0-3): "
+            set /p choice=
+            if "%choice%"=="1" goto first
+            exit /b 41
+            :first
+            echo === FORGE CHOICE ===
+            echo CREW - SELECT CREATURES
+            echo [kind=cost_selection costKind=crew sourceZone=battlefield requiredTotalPower=3 selectedTotalPower=2 min=0 max=3 selected=1 ordered=false]
+            echo   0. Done
+            echo   1. Grizzly Bears [id=41] [SELECTED] [bridge entityKind=permanent cardInstanceId=41 sourceZone=battlefield]
+            echo   2. Grizzly Bears [id=42] [bridge entityKind=permanent cardInstanceId=42 sourceZone=battlefield]
+            echo   3. Llanowar Elves [id=43] [bridge entityKind=permanent cardInstanceId=43 sourceZone=battlefield]
+            <nul set /p "=Enter choice (0-3): "
+            set /p choice=
+            if "%choice%"=="2" goto second
+            exit /b 42
+            :second
+            echo === FORGE CHOICE ===
+            echo CREW - SELECT CREATURES
+            echo [kind=cost_selection costKind=crew sourceZone=battlefield requiredTotalPower=3 selectedTotalPower=4 min=0 max=3 selected=2 ordered=false]
+            echo   0. Done
+            echo   1. Grizzly Bears [id=41] [SELECTED] [bridge entityKind=permanent cardInstanceId=41 sourceZone=battlefield]
+            echo   2. Grizzly Bears [id=42] [SELECTED] [bridge entityKind=permanent cardInstanceId=42 sourceZone=battlefield]
+            echo   3. Llanowar Elves [id=43] [bridge entityKind=permanent cardInstanceId=43 sourceZone=battlefield]
+            <nul set /p "=Enter choice (0-3): "
+            set /p choice=
+            if not "%choice%"=="0" exit /b 43
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """);
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                    DecisionTimeoutSeconds = 5,
+                }), NullLogger<ForgeTuiAdapter>.Instance);
+
+            var initial = await adapter.StartSessionAsync(CancellationToken.None);
+            var firstDecision = Assert.IsType<DecisionDto>(initial.CurrentDecision);
+            Assert.Equal("crew", firstDecision.CostKind);
+            Assert.StartsWith("forge:", firstDecision.Actions[1].CardInstanceId, StringComparison.Ordinal);
+            Assert.EndsWith(":41", firstDecision.Actions[1].CardInstanceId, StringComparison.Ordinal);
+            Assert.EndsWith(":42", firstDecision.Actions[2].CardInstanceId, StringComparison.Ordinal);
+            Assert.EndsWith(":43", firstDecision.Actions[3].CardInstanceId, StringComparison.Ordinal);
+            Assert.Equal(3, firstDecision.RequiredTotalPower);
+
+            var firstSelection = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(firstDecision.DecisionId, firstDecision.Actions[1].ActionId) { SessionId = initial.SessionId },
+                CancellationToken.None);
+            var secondDecision = Assert.IsType<DecisionDto>(firstSelection.State.CurrentDecision);
+            Assert.Equal(firstDecision.DecisionId, secondDecision.DecisionId);
+            Assert.Equal(2, secondDecision.SelectedTotalPower);
+            Assert.True(secondDecision.Actions[1].IsSelected);
+            Assert.False(secondDecision.Actions[2].IsSelected);
+
+            var secondSelection = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(secondDecision.DecisionId, secondDecision.Actions[2].ActionId) { SessionId = initial.SessionId },
+                CancellationToken.None);
+            var completedSelection = Assert.IsType<DecisionDto>(secondSelection.State.CurrentDecision);
+            Assert.Equal(4, completedSelection.SelectedTotalPower);
+            Assert.True(completedSelection.Actions[1].IsSelected);
+            Assert.True(completedSelection.Actions[2].IsSelected);
+
+            var done = Assert.Single(completedSelection.Actions, action => action.Type == "choose_none");
+            var completed = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(completedSelection.DecisionId, done.ActionId) { SessionId = initial.SessionId },
+                CancellationToken.None);
             Assert.True(completed.Accepted);
             Assert.Equal("forge-tui-2", completed.State.CurrentDecision?.DecisionId);
         }

@@ -23,6 +23,8 @@ public sealed class ForgeTuiEventParserTests
         Assert.Equal(
             ["turn_changed", "phase_changed", "land_played", "mana_ability_used", "spell_cast", "spell_resolved", "land_played", "spell_cast", "spell_resolved", "attack_declared", "attack_declared", "card_moved", "player_state"],
             events.Select(item => item.Kind));
+        Assert.Equal(1, events[0].TurnNumber);
+        Assert.Equal("forge-player-1", events[0].ActiveSeatId);
         Assert.Equal("forge-player-2", events[6].SeatId);
         Assert.Equal(128, events[6].ForgeObjectId);
         Assert.Equal("forge-player-2", events[8].SeatId);

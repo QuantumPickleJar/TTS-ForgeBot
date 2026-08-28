@@ -169,6 +169,10 @@ public sealed partial class ForgeTuiParser
                 SelectionKind = selectionKind,
                 MulliganStage = mulliganStage,
                 CandidateSourceZone = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["sourceZone"].Value) : null,
+                RequiredTotalPower = selectionMetadata.Success && selectionMetadata.Groups["requiredTotalPower"].Success
+                    ? int.Parse(selectionMetadata.Groups["requiredTotalPower"].Value, CultureInfo.InvariantCulture) : null,
+                SelectedTotalPower = selectionMetadata.Success && selectionMetadata.Groups["selectedTotalPower"].Success
+                    ? int.Parse(selectionMetadata.Groups["selectedTotalPower"].Value, CultureInfo.InvariantCulture) : null,
             },
             actions.ToDictionary(
                 option => $"{decisionId}-choice-{option.Number}",
@@ -474,7 +478,7 @@ public sealed partial class ForgeTuiParser
     [GeneratedRegex(@"\s+\[id=(?<id>\d+)\]", RegexOptions.CultureInvariant)]
     private static partial Regex ForgeCardIdRegex();
 
-    [GeneratedRegex(@"\[kind=(?<kind>[a-z_]+)(?:\s+selectionKind=(?<selectionKind>[a-z_]+))?(?:\s+costKind=(?<costKind>[a-z_]+))?(?:\s+mulliganStage=(?<mulliganStage>[a-z_]+))?(?:\s+sourceZone=(?<sourceZone>[a-z_]+))?\s+min=(?<min>\d+)\s+max=(?<max>\d+)\s+selected=(?<selected>\d+)\s+ordered=(?<ordered>true|false)\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\[kind=(?<kind>[a-z_]+)(?:\s+selectionKind=(?<selectionKind>[a-z_]+))?(?:\s+costKind=(?<costKind>[a-z_]+))?(?:\s+mulliganStage=(?<mulliganStage>[a-z_]+))?(?:\s+sourceZone=(?<sourceZone>[a-z_]+))?(?:\s+requiredTotalPower=(?<requiredTotalPower>\d+))?(?:\s+selectedTotalPower=(?<selectedTotalPower>\d+))?\s+min=(?<min>\d+)\s+max=(?<max>\d+)\s+selected=(?<selected>\d+)\s+ordered=(?<ordered>true|false)\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SelectionMetadataRegex();
 
     // This compact record is emitted by the controlled Forge producer, not

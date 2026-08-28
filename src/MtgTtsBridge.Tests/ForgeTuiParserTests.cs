@@ -648,10 +648,10 @@ public sealed class ForgeTuiParserTests
         var result = parser.Append(
             "=== FORGE CHOICE ===\n" +
             "Tap any number of creatures you control with total power 3 or greater\n" +
-            "[kind=cost_selection costKind=crew sourceZone=battlefield min=0 max=3 selected=0 ordered=false]\n" +
+            "[kind=cost_selection costKind=crew sourceZone=battlefield requiredTotalPower=3 selectedTotalPower=2 min=0 max=3 selected=1 ordered=false]\n" +
             "  0. Done\n" +
             "  1. Grizzly Bears [id=41] [bridge entityKind=permanent cardInstanceId=41 sourceZone=battlefield]\n" +
-            "  2. Llanowar Elves [id=42] [bridge entityKind=permanent cardInstanceId=42 sourceZone=battlefield]\n" +
+            "  2. Grizzly Bears [id=42] [bridge entityKind=permanent cardInstanceId=42 sourceZone=battlefield]\n" +
             "Enter choice (0-2): ");
 
         var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
@@ -660,10 +660,14 @@ public sealed class ForgeTuiParserTests
         Assert.Equal("battlefield", decision.CandidateSourceZone);
         Assert.Equal(0, decision.MinSelections);
         Assert.Equal(3, decision.MaxSelections);
+        Assert.Equal(3, decision.RequiredTotalPower);
+        Assert.Equal(2, decision.SelectedTotalPower);
         Assert.Equal("choose_option", decision.Actions[1].Type);
         Assert.Equal("forge-object:41", decision.Actions[1].CardInstanceId);
         Assert.Equal("battlefield", decision.Actions[1].SourceZone);
         Assert.Equal("forge-object:42", decision.Actions[2].CardInstanceId);
+        Assert.Equal("Grizzly Bears", decision.Actions[1].CardIdentity);
+        Assert.Equal("Grizzly Bears", decision.Actions[2].CardIdentity);
     }
 
     [Fact]

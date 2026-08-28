@@ -81,15 +81,20 @@ public sealed partial class ForgeTuiEventParser
         var match = TurnRegex().Match(line);
         if (match.Success)
         {
-            return [Create("turn_changed", match.Groups["player"].Value, null, null, null, null, line)];
+            var turn = int.Parse(match.Groups["turn"].Value, System.Globalization.CultureInfo.InvariantCulture);
+            var activeSeat = ResolveSeat(match.Groups["player"].Value);
+            return [new ForgeTuiRawEvent(
+                "turn_changed", activeSeat, null, null, null, null, line,
+                TurnNumber: turn, ActiveSeatId: activeSeat)];
         }
 
         match = PhaseRegex().Match(line);
         if (match.Success)
         {
+            var activeSeat = ResolveSeat(match.Groups["player"].Value);
             return [new ForgeTuiRawEvent(
-                "phase_changed", ResolveSeat(match.Groups["player"].Value), null, null, null, null, line,
-                Phase: match.Groups["phase"].Value.Trim())];
+                "phase_changed", activeSeat, null, null, null, null, line,
+                Phase: match.Groups["phase"].Value.Trim(), ActiveSeatId: activeSeat)];
         }
 
         match = LandRegex().Match(line);
@@ -226,7 +231,7 @@ public sealed partial class ForgeTuiEventParser
         return playerName.StartsWith("AI-", StringComparison.OrdinalIgnoreCase) ? _opponentSeatId : null;
     }
 
-    [GeneratedRegex(@"^\+\+\+ Turn: Turn \d+ \((?<player>.+)\)$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^\+\+\+ Turn: Turn (?<turn>\d+) \((?<player>.+)\)$", RegexOptions.CultureInvariant)]
     private static partial Regex TurnRegex();
 
     [GeneratedRegex(@"^\+\+\+ Phase: (?<player>.+?)'s (?<phase>.+)$", RegexOptions.CultureInvariant)]

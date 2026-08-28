@@ -511,8 +511,12 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                                     rawEvent.Summary);
                                 continue;
                             }
+                            // Structured snapshots currently do not carry
+                            // turn/phase/priority state. Keep the continuous
+                            // Forge TUI authority for those transitions until
+                            // an equivalent structured contract exists.
                             if (_structuredState.Current is not null
-                                && rawEvent.Kind is "player_state" or "card_moved" or "turn_changed" or "phase_changed") continue;
+                                && rawEvent.Kind is "player_state" or "card_moved") continue;
                             EnqueueEvent(rawEvent);
                         }
                     }
@@ -687,6 +691,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
     private void EnqueueEvent(ForgeTuiRawEvent rawEvent)
     {
+        if (IsDuplicateTransition(rawEvent)) return;
         _latestEventSequence++;
         var cardInstanceId = rawEvent.ForgeObjectId is null
             ? null
@@ -742,6 +747,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         {
             _latestObservedPhaseName = authoritativeEvent.Phase;
         }
+        if (authoritativeEvent.Kind == "priority_changed")
+        {
+            _latestObservedPrioritySeatId = authoritativeEvent.PrioritySeatId ?? authoritativeEvent.SeatId ?? _latestObservedPrioritySeatId;
+        }
         if (authoritativeEvent.Kind == "land_played" && cardInstanceId is not null)
         {
             _landCardInstanceIds.Add(cardInstanceId);
@@ -769,6 +778,27 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
     }
 
+    private bool IsDuplicateTransition(ForgeTuiRawEvent rawEvent)
+    {
+        if (rawEvent.Kind is not ("turn_changed" or "phase_changed" or "priority_changed")) return false;
+        var previous = _events.LastOrDefault(item => item.Kind == rawEvent.Kind);
+        if (previous is null) return false;
+
+        var activeSeat = rawEvent.ActiveSeatId ?? rawEvent.SeatId;
+        var previousActiveSeat = previous.ActiveSeatId ?? previous.SeatId;
+        if (activeSeat is null || !string.Equals(activeSeat, previousActiveSeat, StringComparison.Ordinal)) return false;
+
+        return rawEvent.Kind switch
+        {
+            "turn_changed" => rawEvent.TurnNumber == previous.TurnNumber,
+            "phase_changed" => string.Equals(rawEvent.Phase, previous.Phase, StringComparison.Ordinal),
+            "priority_changed" => rawEvent.TurnNumber == previous.TurnNumber
+                && string.Equals(rawEvent.Phase, previous.Phase, StringComparison.Ordinal)
+                && string.Equals(rawEvent.PrioritySeatId, previous.PrioritySeatId, StringComparison.Ordinal),
+            _ => false,
+        };
+    }
+
     private IReadOnlyList<ForgeTuiRawEvent> ObserveControllerDiagnostics(string text)
     {
         var events = new List<ForgeTuiRawEvent>();
@@ -791,11 +821,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     var turn = int.Parse(match.Groups["turn"].Value, System.Globalization.CultureInfo.InvariantCulture);
                     var phase = match.Groups["phase"].Value.Trim();
                     var priorityName = match.Groups["priority"].Value.Trim();
-                    var isMyTurn = bool.Parse(match.Groups["isMyTurn"].Value);
-                    var prioritySeat = _options.PlayerSeats.TryGetValue(priorityName, out var mappedPrioritySeat)
-                        ? mappedPrioritySeat
-                        : _latestObservedPrioritySeatId;
-                    var activeSeat = isMyTurn ? _options.HumanSeatId : _opponentSeatId;
+                    var activeName = match.Groups["active"].Value.Trim();
+                    var isActivePlayersTurn = bool.Parse(match.Groups["isActivePlayersTurn"].Value);
+                    var hasPriority = bool.Parse(match.Groups["hasPriority"].Value);
+                    var prioritySeat = ResolveDiagnosticSeat(priorityName);
+                    var activeSeat = ResolveDiagnosticSeat(activeName) ?? _latestObservedActiveSeatId;
 
                     if (_latestObservedTurnNumber != turn || !string.Equals(_latestObservedActiveSeatId, activeSeat, StringComparison.Ordinal))
                     {
@@ -833,6 +863,23 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                             ForgeSequence: _latestObservedForgeSequence));
                     }
 
+                    if (!string.Equals(_latestObservedPrioritySeatId, prioritySeat, StringComparison.Ordinal))
+                    {
+                        events.Add(new ForgeTuiRawEvent(
+                            "priority_changed",
+                            prioritySeat,
+                            null,
+                            null,
+                            null,
+                            null,
+                            $"Authoritative priority is now {priorityName}; humanHasPriority={hasPriority}.",
+                            TurnNumber: turn,
+                            ActiveSeatId: activeSeat,
+                            PrioritySeatId: prioritySeat,
+                            Phase: phase,
+                            ForgeSequence: _latestObservedForgeSequence));
+                    }
+
                     _latestObservedPrioritySeatId = prioritySeat;
                 }
             }
@@ -845,6 +892,13 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         const int limit = 24;
         _recentControllerDiagnostics.Enqueue(line.Length <= 1024 ? line : line[..1024]);
         while (_recentControllerDiagnostics.Count > limit) _recentControllerDiagnostics.Dequeue();
+    }
+
+    private string? ResolveDiagnosticSeat(string playerName)
+    {
+        if (string.Equals(playerName, "none", StringComparison.OrdinalIgnoreCase)) return null;
+        if (_options.PlayerSeats.TryGetValue(playerName, out var seatId)) return seatId;
+        return playerName.StartsWith("AI-", StringComparison.OrdinalIgnoreCase) ? _opponentSeatId : null;
     }
 
     private static bool IsCollectionDecision(DecisionDto? decision) =>
@@ -866,7 +920,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     }
 
     private static readonly Regex PriorityDiagnosticRegex = new(
-        @"^\[TUI-DIAG priority\]\s+turn=(?<turn>\d+)\s+phase=(?<phase>.+?)\s+priority=(?<priority>.+?)\s+isMyTurn=(?<isMyTurn>true|false)\b",
+        @"^\[TUI-DIAG priority\]\s+turn=(?<turn>\d+)\s+phase=(?<phase>.+?)\s+active=(?<active>.+?)\s+priority=(?<priority>.+?)\s+isActivePlayersTurn=(?<isActivePlayersTurn>true|false)\s+hasPriority=(?<hasPriority>true|false)\b",
         RegexOptions.CultureInvariant);
 
     private async Task HandleProcessExitAsync(Process process, long processGeneration, int exitCode)

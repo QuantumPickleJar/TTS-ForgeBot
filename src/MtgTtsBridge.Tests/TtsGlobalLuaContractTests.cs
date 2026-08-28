@@ -1404,7 +1404,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("local owner = BridgeState.currentTurnSeatId == \"forge-player-1\" and \"YOUR TURN\"", Script);
         Assert.Contains("or (BridgeState.currentTurnSeatId and \"OPPONENT TURN\"", Script);
         Assert.Contains("or \"NO PRIORITY\"", Script);
-        Assert.Contains("BridgeState.prioritySeatId = event.prioritySeatId", Script);
+        Assert.Contains("if event.prioritySeatId ~= nil then BridgeState.prioritySeatId = event.prioritySeatId end", Script);
+        Assert.Contains("if event.kind == \"priority_changed\" then", Script);
+        Assert.Contains("BridgeUiMarkDirty(\"priority\")", Script);
         Assert.Contains("BridgeState.currentPhase = nil", Script);
     }
 
@@ -1709,6 +1711,31 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgeRelayoutStrictLandRow(seatId)", Script);
         Assert.Contains("if row == \"land\" and BridgeLandPlacementMode() == \"STRICT\"", Script);
         Assert.Contains("landInsertionOrderByInstanceId", Script);
+    }
+
+    [Fact]
+    public void EveryGameCardEncoderMutationUsesOneCanonicalScaleSafeBoundary()
+    {
+        Assert.Contains("function BridgeEncoderMutation(object, operation, label)", Script);
+        Assert.Contains("local canonical = BridgeCaptureCanonicalCardScale(object)", Script);
+        Assert.Contains("BridgeRestoreCardScaleIfChanged(object, canonical)", Script);
+        Assert.Contains("BridgeWaitFrames(function()", Script);
+        Assert.Contains("end, 2)", Script);
+        Assert.Contains("end, \"APIencodeObject\")", Script);
+        Assert.Contains("end, \"APIobjEnableProp\")", Script);
+        Assert.Contains("end, \"APIobjSetPropData+APIrebuildButtons\")", Script);
+        Assert.Contains("end, \"keywords+APIrebuildButtons\")", Script);
+        Assert.Contains("end, \"counter-fallback+APIrebuildButtons\")", Script);
+        Assert.Contains("if object == nil or object.tag ~= \"Card\" then", Script);
+    }
+
+    [Fact]
+    public void CrewDecisionUsesForgePowerProgressInTheHumanChoiceHud()
+    {
+        Assert.Contains("decision.kind == \"cost_selection\" and decision.costKind == \"crew\"", Script);
+        Assert.Contains("CREW — SELECT CREATURES", Script);
+        Assert.Contains("decision.selectedTotalPower or 0", Script);
+        Assert.Contains("decision.requiredTotalPower", Script);
     }
 
     [Fact]

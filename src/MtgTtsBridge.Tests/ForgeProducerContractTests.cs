@@ -78,6 +78,13 @@ public sealed class ForgeProducerContractTests
     [Fact]
     public void HumanCostChoicesAndDiscardProvenanceRemainForgeProduced()
     {
+        Assert.Contains("getCostDecisionMaker(Player player, SpellAbility ability, boolean effect, String prompt)", Patch);
+        Assert.Contains("costDecisionMaker=TuiCostDecision", Patch);
+        Assert.Contains("private final class TuiCostDecision extends AiCostDecision", Patch);
+        Assert.Contains("public PaymentDecision visit(CostTapType cost)", Patch);
+        Assert.Contains("forgeValidTapCandidates(cost, ability)", Patch);
+        Assert.Contains("abilityIsCrew=\"", Patch);
+        Assert.DoesNotContain("return new AiCostDecision(player, ability, effect);", Patch);
         Assert.Contains("chooseCardsForCost(CardCollectionView optionList", Patch);
         Assert.Contains("chooseEntitiesThroughTui(kind, optionList", Patch);
         Assert.Contains("costKind = sa != null && sa.isCrew() ? \"crew\" : \"total_power\"", Patch);
@@ -110,7 +117,11 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("getCastableCreaturesAndArtifacts(true)", Patch);
         Assert.Contains("auto-passing empty human priority window", Patch);
         Assert.Contains("sa.setActivatingPlayer(player);", Patch);
-        Assert.Contains("boolean isMyTurn = player.equals(ph.getPriorityPlayer());", Patch);
+        Assert.Contains("boolean isActivePlayersTurn = ph.isPlayerTurn(player);", Patch);
+        Assert.Contains("boolean hasPriority = player.equals(ph.getPriorityPlayer());", Patch);
+        Assert.Contains("+ \" active=\" + ph.getPlayerTurn().getName()", Patch);
+        Assert.Contains("+ \" isActivePlayersTurn=\" + isActivePlayersTurn", Patch);
+        Assert.Contains("+ \" hasPriority=\" + hasPriority", Patch);
         Assert.Contains("sa.isLandAbility() && player.canPlayLand(c, false, sa)", Patch);
         Assert.DoesNotContain("sa.isLandAbility() && sa.canPlay() && player.canPlayLand(c, false, sa)", Patch);
         Assert.Contains("if (!player.canPlayLand(land, false, chosenSa))", Patch);

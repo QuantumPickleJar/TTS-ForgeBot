@@ -916,6 +916,7 @@ index 0d731bb6..18ef1187 100644
 @@ -4,16 +4,29 @@ import com.google.common.collect.Multimap;
  import forge.LobbyPlayer;
  import forge.ai.ComputerUtilMana;
++import forge.ai.AiCostDecision;
  import forge.card.MagicColor;
 +import forge.card.ColorSet;
 +import forge.card.mana.ManaCost;
@@ -929,12 +930,15 @@ index 0d731bb6..18ef1187 100644
  import forge.game.card.CardCollection;
 +import forge.game.card.CardCollectionView;
 +import forge.game.card.CardLists;
++import forge.game.card.CardPredicates;
  import forge.game.combat.Combat;
  import forge.game.combat.CombatUtil;
 +import forge.game.cost.CostPartMana;
 +import forge.game.cost.CostPartWithList;
 +import forge.game.cost.CostPart;
++import forge.game.cost.CostDecisionMakerBase;
 +import forge.game.cost.CostTapType;
++import forge.game.cost.PaymentDecision;
 +import forge.game.mana.ManaConversionMatrix;
  import forge.game.phase.PhaseHandler;
  import forge.game.player.Player;
@@ -947,6 +951,44 @@ index 0d731bb6..18ef1187 100644
          return false; // We're a human player
      }
  
++    @Override
++    public CostDecisionMakerBase getCostDecisionMaker(Player player, SpellAbility ability, boolean effect, String prompt) {
++        System.out.println("[TUI-DIAG cost] controller=PlayerControllerTUI costDecisionMaker=TuiCostDecision");
++        return new TuiCostDecision(player, ability, effect);
++    }
++
++    private final class TuiCostDecision extends AiCostDecision {
++        private TuiCostDecision(Player payer, SpellAbility ability, boolean effect) {
++            super(payer, ability, effect);
++        }
++
++        @Override
++        public PaymentDecision visit(CostTapType cost) {
++            if (!cost.getType().contains("+withTotalPowerGE")) {
++                return super.visit(cost);
++            }
++
++            CardCollectionView candidates = forgeValidTapCandidates(cost, ability);
++            System.out.println("[TUI-DIAG cost] visitor=CostTapType abilityIsCrew="
++                + ability.isCrew() + " candidateCount=" + candidates.size());
++            CardCollectionView selected = PlayerControllerTUI.this.chooseCardsForCost(
++                candidates, ability, cost, 0, false, cost.toString());
++            System.out.println("[TUI-DIAG cost] visitor=CostTapType humanSelectionCount="
++                + (selected == null ? 0 : selected.size()));
++            return selected == null ? null : PaymentDecision.card(selected);
++        }
++    }
++
++    private CardCollectionView forgeValidTapCandidates(CostTapType cost, SpellAbility ability) {
++        String type = cost.getType();
++        int aggregateMarker = type.indexOf("+withTotalPowerGE");
++        if (aggregateMarker >= 0) type = type.substring(0, aggregateMarker);
++        CardCollection candidates = CardLists.getValidCards(
++            player.getCardsIn(ZoneType.Battlefield), type.split(";"), player, ability.getHostCard(), ability);
++        if (!cost.canTapSource) candidates.remove(ability.getHostCard());
++        return CardLists.filter(candidates, ability.isCrew() ? CardPredicates.CAN_CREW : CardPredicates.CAN_TAP);
++    }
++
 +    private void reportInheritedDecision(String kind) {
 +        // Machine-readable development telemetry only. It deliberately omits
 +        // candidate/card details so inherited behavior cannot leak hidden state.
@@ -981,7 +1023,8 @@ index 0d731bb6..18ef1187 100644
 +        // Priority holder, rather than active-turn player, owns this menu.
 +        // This prevents exposing sorcery-speed actions off-turn and keeps
 +        // empty-window auto-pass scoped to the actual human controller.
-+        boolean isMyTurn = player.equals(ph.getPriorityPlayer());
++        boolean isActivePlayersTurn = ph.isPlayerTurn(player);
++        boolean hasPriority = player.equals(ph.getPriorityPlayer());
          boolean isMainPhase = ph.is(forge.game.phase.PhaseType.MAIN1) || ph.is(forge.game.phase.PhaseType.MAIN2);
          boolean isPostCombatMain = ph.is(forge.game.phase.PhaseType.MAIN2);
          boolean isEndStep = ph.is(forge.game.phase.PhaseType.END_OF_TURN);
@@ -1030,11 +1073,11 @@ index 0d731bb6..18ef1187 100644
 +        int uniqueActions = uniqueLands.size() + uniqueCreatures.size() + uniqueArtifacts.size() +
 +                           uniqueInstants.size() + uniqueSorceries.size() + uniqueActivated.size();
 +
-+        emitPriorityDiagnostic(ph, isMyTurn, landAbilities, creatureAbilities, artifactAbilities,
++        emitPriorityDiagnostic(ph, isActivePlayersTurn, hasPriority, landAbilities, creatureAbilities, artifactAbilities,
 +            sorceryAbilities, instantAbilities, activatedAbilities, totalActions, uniqueActions);
 +
          // Smart auto-passing on opponent's turn
-         if (!isMyTurn) {
+         if (!isActivePlayersTurn) {
              // Only prompt on opponent's turn if:
 @@ -315,26 +351,17 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              if (totalActions == 0) {
@@ -1070,7 +1113,7 @@ index 0d731bb6..18ef1187 100644
 -                           uniqueInstants.size() + uniqueSorceries.size() + uniqueActivated.size();
 -
          // Show options to user with context-appropriate header
-         if (!isMyTurn) {
+         if (!isActivePlayersTurn) {
              System.out.println("\n=== OPPONENT'S TURN ===");
 @@ -363,40 +390,43 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          // Show land options
@@ -1142,7 +1185,8 @@ index 0d731bb6..18ef1187 100644
  
 +    private void emitPriorityDiagnostic(
 +            PhaseHandler ph,
-+            boolean isMyTurn,
++            boolean isActivePlayersTurn,
++            boolean hasPriority,
 +            List<SpellAbility> lands,
 +            List<SpellAbility> creatures,
 +            List<SpellAbility> artifacts,
@@ -1154,8 +1198,10 @@ index 0d731bb6..18ef1187 100644
 +        Player priority = ph.getPriorityPlayer();
 +        System.out.println("[TUI-DIAG priority] turn=" + ph.getTurn()
 +            + " phase=" + ph.getPhase().nameForUi
++            + " active=" + ph.getPlayerTurn().getName()
 +            + " priority=" + (priority == null ? "none" : priority.getName())
-+            + " isMyTurn=" + isMyTurn
++            + " isActivePlayersTurn=" + isActivePlayersTurn
++            + " hasPriority=" + hasPriority
 +            + " lands=" + describeActions(lands)
 +            + " creatures=" + describeActions(creatures)
 +            + " artifacts=" + describeActions(artifacts)
@@ -1507,9 +1553,19 @@ index 0d731bb6..18ef1187 100644
 +        while (true) {
 +            System.out.println("\n=== FORGE CHOICE ===");
 +            System.out.println(title == null || title.isBlank() ? "Choose from Forge's legal candidates" : title);
++            int selectedTotalPower = 0;
++            if (requiredTotalPower > 0) {
++                CardCollection selectedCards = new CardCollection();
++                for (T candidate : selected) {
++                    if (candidate instanceof Card card) selectedCards.add(card);
++                }
++                selectedTotalPower = CardLists.getTotalPower(selectedCards, powerAbility);
++            }
 +            String metadata = structuredMetadata == null || structuredMetadata.isBlank()
 +                ? "" : " " + structuredMetadata;
 +            System.out.println("[kind=" + effectiveKind + metadata + " min=" + min + " max=" + boundedMax
++                + (requiredTotalPower > 0 ? " requiredTotalPower=" + requiredTotalPower
++                    + " selectedTotalPower=" + selectedTotalPower : "")
 +                + " selected=" + selected.size() + " ordered=" + ordered + "]");
 +            System.out.println("  0. Done");
 +            for (int i = 0; i < candidates.size(); i++) {
@@ -1612,6 +1668,8 @@ index 0d731bb6..18ef1187 100644
 +            CostPartWithList costPart, int amount, boolean isOptional, String prompt) {
 +        CardCollection result = new CardCollection();
 +        if (costPart instanceof CostTapType tapCost && costPart.getType().contains("+withTotalPowerGE")) {
++            System.out.println("[TUI-DIAG cost] controller=PlayerControllerTUI visitor=chooseCardsForCost costPart=CostTapType abilityIsCrew="
++                + (sa != null && sa.isCrew()) + " candidateCount=" + optionList.size());
 +            // Crew/Saddle costs are an any-number selection constrained by
 +            // Forge's computed total-power requirement.  The old generic path
 +            // used amount=Any (which calculates to zero) and therefore emitted
@@ -1622,6 +1680,7 @@ index 0d731bb6..18ef1187 100644
 +            result.addAll(chooseEntitiesThroughTui("cost_selection", optionList, 0, optionList.size(),
 +                bridgeResolveCardNamePlaceholders(prompt, sa), false, metadata,
 +                requiredTotalPower(tapCost), sa));
++            System.out.println("[TUI-DIAG cost] controller=PlayerControllerTUI visitor=chooseCardsForCost humanSelectionCount=" + result.size());
 +            return result;
 +        }
 +        String kind = costPart.getClass().getSimpleName().toLowerCase().contains("sacrifice")

@@ -40,4 +40,8 @@ public sealed record DecisionDto(
     public string? SelectionKind { get; init; }
     public string? MulliganStage { get; init; }
     public string? CandidateSourceZone { get; init; }
+    // Forge-computed aggregate payment progress. These are display metadata;
+    // Forge still validates the selected cards before accepting the payment.
+    public int? RequiredTotalPower { get; init; }
+    public int? SelectedTotalPower { get; init; }
 }

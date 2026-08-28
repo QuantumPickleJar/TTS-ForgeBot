@@ -1640,8 +1640,11 @@ function BridgeUiFlush()
     local phaseStatus = tostring(BridgeState.currentPhase or "WAITING")
     BridgeUiSet("BridgeHudStatus", "text", terminal and "GAME OVER" or (priority .. " • " .. phaseStatus))
     BridgeUiSet("BridgeHudStatus", "color", terminal and "#F8FAFC" or BridgeHudPhaseColor(BridgeState.currentPhase))
-    BridgeUiSet("BridgeHudPrompt", "text", terminal and BridgeUiTerminalLabel(terminal)
-        or (decision and (decision.prompt or decision.kind or "Choose an action") or "AI THINKING..."))
+    local prompt = decision and (decision.prompt or decision.kind or "Choose an action") or "AI THINKING..."
+    if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew" then
+        prompt = "CREW — SELECT CREATURES"
+    end
+    BridgeUiSet("BridgeHudPrompt", "text", terminal and BridgeUiTerminalLabel(terminal) or prompt)
     BridgeUiSet("BridgeHudMana", "text", "MANA: " .. tostring(ui.manaMode or "AUTO"))
     BridgeUiSet("BridgeHudMode", "text", tostring(ui.autoAdvanceMode or "SMART"))
     BridgeUiSet("BridgeHudFast", "text", ui.fastPlaytest and "FAST: ON" or "FAST: OFF")
@@ -1680,7 +1683,13 @@ function BridgeUiFlush()
     end
     local min = tonumber(decision and decision.minSelections or 0) or 0
     local max = tonumber(decision and decision.maxSelections or 0) or 0
-    BridgeUiSet("BridgeHudSelection", "text", decision and ("Selected: " .. tostring(selected) .. " / " .. tostring(max) .. " (min " .. tostring(min) .. ")") or "")
+    local selectionText = decision and ("Selected: " .. tostring(selected) .. " / " .. tostring(max) .. " (min " .. tostring(min) .. ")") or ""
+    if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew"
+        and decision.requiredTotalPower ~= nil then
+        selectionText = "TOTAL POWER " .. tostring(decision.selectedTotalPower or 0)
+            .. " / " .. tostring(decision.requiredTotalPower)
+    end
+    BridgeUiSet("BridgeHudSelection", "text", selectionText)
     for i = 1, 24 do
         local action = actions[i]
         BridgeUiSet("BridgeHudAction" .. tostring(i), "active", action ~= nil and "true" or "false")
@@ -6545,10 +6554,10 @@ function BridgeApplyAuthoritativeEvent(event)
         else
             BridgeState.currentTurnSeatId = event.seatId
         end
-        -- A turn transition without an explicit priority is authoritative
-        -- evidence that the previous priority no longer applies. Retaining it
-        -- made the HUD claim YOUR PRIORITY during the opponent's turn.
-        BridgeState.prioritySeatId = event.prioritySeatId
+        -- Priority is an independent Forge state transition. Keep the last
+        -- known value here when this turn event has no priority payload; the
+        -- following priority event will update it authoritatively.
+        if event.prioritySeatId ~= nil then BridgeState.prioritySeatId = event.prioritySeatId end
         BridgeRecordAuthoritativeTurn(BridgeState.currentTurnSeatId, tonumber(event.turnNumber or 0))
         local turnSeat = BRIDGE_SEATS[BridgeState.currentTurnSeatId]
         BridgeSetStatus("CURRENT TURN: " .. tostring(turnSeat and turnSeat.ttsColor or BridgeState.currentTurnSeatId), BridgeTurnLabel() .. " - AI THINKING")
@@ -6575,9 +6584,9 @@ function BridgeApplyAuthoritativeEvent(event)
         if event.activeSeatId ~= nil then
             BridgeState.currentTurnSeatId = event.activeSeatId
         end
-        -- Phase boundaries also retire the prior priority until Forge supplies
-        -- the next priority-bearing decision/event.
-        BridgeState.prioritySeatId = event.prioritySeatId
+        -- Phase and priority are independent authoritative values. Do not
+        -- overwrite priority from a phase event that carries no priority.
+        if event.prioritySeatId ~= nil then BridgeState.prioritySeatId = event.prioritySeatId end
         BridgeClearHighlights()
         if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
             BridgeState.lastDecision = nil
@@ -6604,6 +6613,22 @@ function BridgeApplyAuthoritativeEvent(event)
         end
         BridgeTryPresentPendingDecision("phase-change")
         BridgeUiMarkDirty("phase")
+        return true, 0.1
+    end
+
+    if event.kind == "priority_changed" then
+        -- Priority is an independent Forge state transition. It may change
+        -- while active turn and phase remain unchanged and must not depend on
+        -- a decision menu being visible.
+        BridgeState.prioritySeatId = event.prioritySeatId or event.seatId
+        if event.activeSeatId ~= nil then BridgeState.currentTurnSeatId = event.activeSeatId end
+        if event.phase ~= nil and tostring(event.phase) ~= "" then BridgeState.currentPhase = event.phase end
+        if event.turnNumber ~= nil and tonumber(event.turnNumber) ~= nil and tonumber(event.turnNumber) > 0 then
+            BridgeState.tableTurnCount = tonumber(event.turnNumber)
+            BridgeRefreshTurnCounterLabels()
+        end
+        BridgeLog("[Bridge] authoritative priority changed to seat " .. tostring(BridgeState.prioritySeatId))
+        BridgeUiMarkDirty("priority")
         return true, 0.1
     end
 
@@ -8466,9 +8491,9 @@ function BridgeEnsureTableEncoded(object)
     end)
     if not ok then return nil, "could not inspect Encoder state: " .. tostring(encodedOrError) end
     if encodedOrError ~= true then
-        local encoded, encodeError = pcall(function()
+        local encoded, encodeError = BridgeEncoderMutation(object, function()
             encoder.call("APIencodeObject", {obj = object})
-        end)
+        end, "APIencodeObject")
         if not encoded then return nil, "could not encode card: " .. tostring(encodeError) end
     end
     if guid ~= nil and BridgeState.encoderIdentityLoggedGuids[guid] ~= true then
@@ -8492,9 +8517,9 @@ function BridgeEnsureEncoderProperty(object, propertyId)
     end)
     if not ok then return nil, "could not inspect Encoder property " .. tostring(propertyId) .. ": " .. tostring(enabledOrError) end
     if enabledOrError ~= true then
-        local enabled, enableError = pcall(function()
+        local enabled, enableError = BridgeEncoderMutation(object, function()
             encoder.call("APIobjEnableProp", {obj = object, propID = propertyId})
-        end)
+        end, "APIobjEnableProp")
         if not enabled then return nil, "could not enable Encoder property " .. tostring(propertyId) .. ": " .. tostring(enableError) end
     end
     return encoder, nil
@@ -8543,20 +8568,45 @@ function BridgeRestoreCardScaleIfChanged(object, beforeScale)
     end
 end
 
+-- All Encoder mutations on real game cards cross this boundary.  The first
+-- call captures the canonical scale before Encoder can alter the transform;
+-- the immediate and deferred restores cover both synchronous and delayed TTS
+-- rebuild work.  Presentation-only helper objects are intentionally exempt.
+function BridgeEncoderMutation(object, operation, label)
+    if object == nil or object.tag ~= "Card" then
+        return pcall(operation)
+    end
+    local canonical = BridgeCaptureCanonicalCardScale(object)
+    local ok, result = pcall(operation)
+    if canonical ~= nil then
+        BridgeRestoreCardScaleIfChanged(object, canonical)
+        BridgeWaitFrames(function()
+            if BridgeObjectIsUsable(object) then
+                BridgeRestoreCardScaleIfChanged(object, canonical)
+            end
+        end, 2)
+    end
+    if not ok then return false, result end
+    BridgeLog("[Bridge] Encoder mutation scale-safe operation=" .. tostring(label or "unknown")
+        .. " guid=" .. tostring(BridgeSafeObjectGuid(object)))
+    return true, result
+end
+
 function BridgeMutateUnifiedState(object, mutate)
     local encoder, encoderError = BridgeEnsureEncoderProperty(object, BRIDGE_UNIFIED_PROPERTY)
     if encoder == nil then return false, encoderError end
     local ok, applyError = pcall(function()
-        local scaleBeforeRebuild = BridgeCardScaleSnapshot(object)
         local encoded = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_UNIFIED_PROPERTY})
         if encoded == nil or encoded.tyrantUnified == nil then error("card lacks Easy Modules Unified metadata") end
         mutate(encoded.tyrantUnified)
-        encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_UNIFIED_PROPERTY, data = encoded})
-        BridgePresentationMetric("unifiedPropWriteCount")
-        -- Rebuild through Encoder: direct card buttons do not survive this call.
-        encoder.call("APIrebuildButtons", {obj = object})
-        BridgePresentationMetric("encoderRebuildCount")
-        BridgeRestoreCardScaleIfChanged(object, scaleBeforeRebuild)
+        local mutated, mutationError = BridgeEncoderMutation(object, function()
+            encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_UNIFIED_PROPERTY, data = encoded})
+            BridgePresentationMetric("unifiedPropWriteCount")
+            -- Rebuild through Encoder: direct card buttons do not survive this call.
+            encoder.call("APIrebuildButtons", {obj = object})
+            BridgePresentationMetric("encoderRebuildCount")
+        end, "APIobjSetPropData+APIrebuildButtons")
+        if not mutated then error(mutationError) end
     end)
     if not ok then return false, tostring(applyError) end
     return true, nil
@@ -8642,27 +8692,30 @@ function BridgeSetPhasedState(object, phased)
     local guid = BridgeSafeObjectGuid(object)
     if guid ~= nil and BridgeState.presentedPhasedByGuid[guid] == (phased == true) then return true, nil end
     local ok, applyError = pcall(function()
-        local enabled = encoder.call("APIobjIsPropEnabled", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
-        if phased == true then
-            if enabled ~= true then
-                encoder.call("APIobjEnableProp", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
-            end
-            local data = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
-            if data == nil then error("card lacks Phasing metadata") end
-            data.mtg_phased = true
-            encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY, data = data})
-        elseif enabled == true then
-            -- Clear stale module data before hiding the property so a later,
-            -- genuine phasing event cannot resurrect an old visual state.
-            local data = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
-            if data ~= nil then
-                data.mtg_phased = false
+        local mutated, mutationError = BridgeEncoderMutation(object, function()
+            local enabled = encoder.call("APIobjIsPropEnabled", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
+            if phased == true then
+                if enabled ~= true then
+                    encoder.call("APIobjEnableProp", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
+                end
+                local data = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
+                if data == nil then error("card lacks Phasing metadata") end
+                data.mtg_phased = true
                 encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY, data = data})
+            elseif enabled == true then
+                -- Clear stale module data before hiding the property so a later,
+                -- genuine phasing event cannot resurrect an old visual state.
+                local data = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
+                if data ~= nil then
+                    data.mtg_phased = false
+                    encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_PHASE_PROPERTY, data = data})
+                end
+                encoder.call("APIobjDisableProp", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
             end
-            encoder.call("APIobjDisableProp", {obj = object, propID = BRIDGE_PHASE_PROPERTY})
-        end
-        encoder.call("APIrebuildButtons", {obj = object})
-        BridgePresentationMetric("encoderRebuildCount")
+            encoder.call("APIrebuildButtons", {obj = object})
+            BridgePresentationMetric("encoderRebuildCount")
+        end, "phase-property+APIrebuildButtons")
+        if not mutated then error(mutationError) end
         if guid ~= nil then BridgeState.presentedPhasedByGuid[guid] = phased == true end
     end)
     if not ok then return false, tostring(applyError) end
@@ -8874,9 +8927,9 @@ function BridgeEnsureKeywordIconLayout(object, encoder)
         if guid ~= nil then BridgeState.presentedIconLayoutByGuid[guid] = "above" end
         return true, nil, false
     end
-    local applied, applyError = pcall(function()
+    local applied, applyError = BridgeEncoderMutation(object, function()
         encoder.call("APIobjSetValueData", {obj = object, valueID = "iconLayout", data = {iconLayout = "above"}})
-    end)
+    end, "APIobjSetValueData")
     if not applied then return false, tostring(applyError), false end
     if guid ~= nil then BridgeState.presentedIconLayoutByGuid[guid] = "above" end
     return true, nil, true
@@ -8906,7 +8959,6 @@ function BridgeSetCardKeywordState(object, keyword, enabled)
     local layoutOk, layoutError = BridgeEnsureKeywordIconLayout(object, encoder)
     if not layoutOk then return false, layoutError end
     local ok, applyError = pcall(function()
-        local scaleBeforeRebuild = BridgeCardScaleSnapshot(object)
         local data = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY})
         if data == nil then error("card is not encoded with πKeywords") end
         data[property] = enabled and 1 or 0
@@ -8917,11 +8969,13 @@ function BridgeSetCardKeywordState(object, keyword, enabled)
         end
         if enabled and found == nil then table.insert(data.activeIcons, property) end
         if not enabled and found ~= nil then table.remove(data.activeIcons, found) end
-        encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY, data = data})
-        BridgePresentationMetric("keywordPropWriteCount")
-        encoder.call("APIrebuildButtons", {obj = object})
-        BridgePresentationMetric("encoderRebuildCount")
-        BridgeRestoreCardScaleIfChanged(object, scaleBeforeRebuild)
+        local mutated, mutationError = BridgeEncoderMutation(object, function()
+            encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY, data = data})
+            BridgePresentationMetric("keywordPropWriteCount")
+            encoder.call("APIrebuildButtons", {obj = object})
+            BridgePresentationMetric("encoderRebuildCount")
+        end, "keyword-state+APIrebuildButtons")
+        if not mutated then error(mutationError) end
         BridgeRenderKeywordDecals(object, enabled, encoder)
     end)
     if not ok then return false, tostring(applyError) end
@@ -8951,8 +9005,11 @@ function BridgeSetCardKeywords(object, absoluteKeywords)
     if not layoutOk then return false, layoutError end
     if guid ~= nil and BridgeState.presentedKeywordSignatureByGuid[guid] == signature then
         if layoutChanged then
-            encoder.call("APIrebuildButtons", {obj = object})
-            BridgePresentationMetric("encoderRebuildCount")
+            local rebuilt, rebuildError = BridgeEncoderMutation(object, function()
+                encoder.call("APIrebuildButtons", {obj = object})
+                BridgePresentationMetric("encoderRebuildCount")
+            end, "keyword-layout+APIrebuildButtons")
+            if not rebuilt then return false, rebuildError end
         end
         return true, nil
     end
@@ -8964,7 +9021,6 @@ function BridgeSetCardKeywords(object, absoluteKeywords)
         end
     end
     local ok, applyError = pcall(function()
-        local scaleBeforeRebuild = BridgeCardScaleSnapshot(object)
         local data = encoder.call("APIobjGetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY})
         if data == nil then error("card lacks πKeywords metadata") end
         data.activeIcons = {}
@@ -8973,11 +9029,13 @@ function BridgeSetCardKeywords(object, absoluteKeywords)
             data[property] = isEnabled and 1 or 0
             if isEnabled then table.insert(data.activeIcons, property) end
         end
-        encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY, data = data})
-        BridgePresentationMetric("keywordPropWriteCount")
-        encoder.call("APIrebuildButtons", {obj = object})
-        BridgePresentationMetric("encoderRebuildCount")
-        BridgeRestoreCardScaleIfChanged(object, scaleBeforeRebuild)
+        local mutated, mutationError = BridgeEncoderMutation(object, function()
+            encoder.call("APIobjSetPropData", {obj = object, propID = BRIDGE_KEYWORDS_PROPERTY, data = data})
+            BridgePresentationMetric("keywordPropWriteCount")
+            encoder.call("APIrebuildButtons", {obj = object})
+            BridgePresentationMetric("encoderRebuildCount")
+        end, "keywords+APIrebuildButtons")
+        if not mutated then error(mutationError) end
         BridgeRenderKeywordDecals(object, enabled, encoder)
         if guid ~= nil then BridgeState.presentedKeywordSignatureByGuid[guid] = signature end
     end)
@@ -9019,14 +9077,17 @@ function BridgeSetForgeBotCounterFallback(object, namedCounters)
     local ok, applyError = pcall(function()
         local encoded = encoder.call("APIobjectExists", {obj = object})
         if encoded ~= true then error("card is not Encoder-managed") end
-        local enabled = encoder.call("APIobjIsPropEnabled", {obj = object, propID = BRIDGE_COUNTER_FALLBACK_PROPERTY})
-        if needsFallback and enabled ~= true then
-            encoder.call("APIobjEnableProp", {obj = object, propID = BRIDGE_COUNTER_FALLBACK_PROPERTY})
-        elseif not needsFallback and enabled == true then
-            encoder.call("APIobjDisableProp", {obj = object, propID = BRIDGE_COUNTER_FALLBACK_PROPERTY})
-        end
-        encoder.call("APIrebuildButtons", {obj = object})
-        BridgePresentationMetric("encoderRebuildCount")
+        local mutated, mutationError = BridgeEncoderMutation(object, function()
+            local enabled = encoder.call("APIobjIsPropEnabled", {obj = object, propID = BRIDGE_COUNTER_FALLBACK_PROPERTY})
+            if needsFallback and enabled ~= true then
+                encoder.call("APIobjEnableProp", {obj = object, propID = BRIDGE_COUNTER_FALLBACK_PROPERTY})
+            elseif not needsFallback and enabled == true then
+                encoder.call("APIobjDisableProp", {obj = object, propID = BRIDGE_COUNTER_FALLBACK_PROPERTY})
+            end
+            encoder.call("APIrebuildButtons", {obj = object})
+            BridgePresentationMetric("encoderRebuildCount")
+        end, "counter-fallback+APIrebuildButtons")
+        if not mutated then error(mutationError) end
     end)
     if not ok then return false, tostring(applyError) end
     return true, nil
