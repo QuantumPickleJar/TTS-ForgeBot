@@ -1128,7 +1128,10 @@ function BridgeInsertCardAtLibraryBottom(deck, object, seat)
     if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" or not BridgeObjectIsUsable(object) then return nil end
     local entries = deck.getObjects() or {}
     BridgeSetPhysicalFaceDown(object, seat, true)
-    return deck.putObject(object, #entries)
+    -- `getObjects` is one-based while TTS' insertion index is the slot after
+    -- the requested object. The final occupied slot is therefore `#entries +
+    -- 1`; using `#entries` left the rejected card ahead of the bottom card.
+    return deck.putObject(object, #entries + 1)
 end
 
 function BridgeProcessMulliganBottomQueue(seatId)
@@ -1143,6 +1146,9 @@ function BridgeProcessMulliganBottomQueue(seatId)
         if current ~= nil then table.remove(current, 1) end
         BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] = nil
         BridgeProcessMulliganBottomQueue(seatId)
+        -- A replacement opening-hand draw must not overtake a preceding
+        -- authoritative hand->library insertion.
+        BridgeProcessLibraryExtractionQueue(seatId)
     end
 
     local deck = BridgeResolveSeatLibraryDeck(seatId)
@@ -1191,6 +1197,10 @@ end
 -- Serialize those physical extractions per seat so deck indices never race.
 function BridgeProcessLibraryExtractionQueue(seatId)
     if BridgeState.libraryExtractionActiveBySeatId[seatId] == true then return end
+    if BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
+        or #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {}) > 0 then
+        return
+    end
     local queue = BridgeState.libraryExtractionQueueBySeatId[seatId]
     local job = queue and queue[1] or nil
     if job == nil then return end
@@ -1213,6 +1223,7 @@ function BridgeQueueLibraryExtraction(seatId, job)
         BridgeState.libraryExtractionQueueBySeatId[seatId] = {}
     end
     table.insert(BridgeState.libraryExtractionQueueBySeatId[seatId], job)
+    BridgeProcessMulliganBottomQueue(seatId)
     BridgeProcessLibraryExtractionQueue(seatId)
 end
 
@@ -2080,28 +2091,14 @@ function BridgeIsStructuredDiscardChoice(decision)
 end
 
 function BridgeTryFinishDiscardChoice(decision, source)
-    if not BridgeIsDiscardChoice(decision) then return end
-    local selected = tonumber(decision.selectedCount or 0) or 0
-    local minimum = tonumber(decision.minSelections or 1) or 1
-    local maximum = tonumber(decision.maxSelections or minimum) or minimum
-    local graveyardDrop = source == "physical_discard_graveyard"
-    -- A fixed-count discard is complete as soon as Forge has accepted the
-    -- last card.  A deliberate graveyard drop is also an explicit request to
-    -- finish at the current legal count, even when a spell permits more.
-    if selected < minimum or selected > maximum or (not graveyardDrop and minimum ~= maximum) then return end
-    for _, action in ipairs(decision.actions or {}) do
-        if action.type == "choose_none" then
-            BridgeLog("[Bridge] completing Forge discard with Done decision=" .. tostring(decision.decisionId)
-                .. " selected=" .. tostring(selected) .. " source=" .. tostring(source))
-            BridgeSubmitChoice(decision.decisionId, action.actionId, "discard_auto_done")
-            return
-        end
-    end
-    -- A legacy one-at-a-time card_selection has no Done action; its accepted
-    -- card is already the complete Forge transaction.  Only the typed
-    -- collection producer promises a separate Done action.
-    if decision.kind == "discard" then
-        BridgeShowError("Forge accepted the discard selection but did not offer Done")
+    -- A redraw-based Forge collection is one logical transaction, but every
+    -- redraw supplies the authoritative selected set and its exact Done
+    -- ActionId. Do not race that menu with a local auto-complete: render the
+    -- returned state and let explicit CONFIRM submit the returned Done.
+    if BridgeIsDiscardChoice(decision) then
+        BridgeLog("[Bridge] discard redraw decision=" .. tostring(decision.decisionId)
+            .. " selected=" .. tostring(decision.selectedCount or 0)
+            .. " source=" .. tostring(source) .. " awaiting explicit Done")
     end
 end
 
@@ -2263,7 +2260,12 @@ function BridgeSubmitChoice(decisionId, actionId, source)
                 local zone = BridgeState.physicalZoneByGuid[guid]
                 local seatId = BridgeState.physicalSeatByGuid[guid]
                 if zone == "hand" and seatId == activeDecision.seatId then
-                    BridgeState.mulliganReturningInstanceIds[instanceId] = true
+                    BridgeState.mulliganReturningInstanceIds[instanceId] = {
+                        sessionId = BridgeState.eventSessionId,
+                        decisionId = decisionId,
+                        actionId = actionId,
+                        seatId = activeDecision.seatId
+                    }
                 end
             end
             BridgeLog("[Bridge] marked rejected opening hand for physical library bottom seat="
@@ -2367,7 +2369,12 @@ function BridgeSubmitChoice(decisionId, actionId, source)
             if activeTransaction.source == "hud_action"
                 or activeTransaction.source == "physical_mulligan"
                 or activeTransaction.source == "physical_card_drop" then
-                BridgeState.mulliganReturningInstanceIds = {}
+                for instanceId, marker in pairs(BridgeState.mulliganReturningInstanceIds or {}) do
+                    if marker ~= nil and marker.sessionId == activeTransaction.sessionId
+                        and marker.decisionId == decisionId and marker.actionId == actionId then
+                        BridgeState.mulliganReturningInstanceIds[instanceId] = nil
+                    end
+                end
             end
             BridgeState.latencyProbe = nil
             BridgeMarkTransitionExpected(0)
@@ -3861,7 +3868,8 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     elseif decision.kind == "creature_type_selection" then
         BridgeSetStatus("CHOOSE CREATURE TYPE", BridgeTurnLabel() .. " - " .. tostring(actor) .. " priority")
     else
-        BridgeSetStatus("YOUR PRIORITY", BridgeTurnLabel() .. " - " .. tostring(actor) .. " - " .. tostring(BridgeState.currentPhase or "Forge decision"))
+        local priorityHeadline = decision.seatId == "forge-player-1" and "YOUR PRIORITY" or "OPPONENT PRIORITY"
+        BridgeSetStatus(priorityHeadline, BridgeTurnLabel() .. " - " .. tostring(actor) .. " - " .. tostring(BridgeState.currentPhase or "Forge decision"))
     end
     BridgeRenderDecision(decision)
 
@@ -6945,9 +6953,16 @@ function BridgeApplyAuthoritativeEvent(event)
 end
 
 function BridgeResolveResolvedSpellObject(event)
-    local pendingCast = BridgeState.pendingCastBySeatId[event.seatId]
-    local pendingObject = pendingCast ~= nil and getObjectFromGUID(pendingCast.guid) or nil
-    if pendingObject ~= nil and BridgeCardNameMatches(pendingObject.getName(), event.cardName) then
+    if event == nil then return nil, "resolved spell event is missing" end
+    local pendingBySeat = BridgeState.pendingCastBySeatId or {}
+    local pendingCast = event.seatId ~= nil and pendingBySeat[event.seatId] or nil
+    local pendingObject = pendingCast ~= nil and pendingCast.guid ~= nil and getObjectFromGUID(pendingCast.guid) or nil
+    local pendingName = nil
+    if pendingObject ~= nil and type(pendingObject.getName) == "function" then
+        local ok, value = pcall(function() return pendingObject.getName() end)
+        if ok then pendingName = value end
+    end
+    if pendingObject ~= nil and pendingName ~= nil and BridgeCardNameMatches(pendingName, event.cardName) then
         local pendingGuid = BridgeSafeObjectGuid(pendingObject)
         local pendingZone = pendingGuid and BridgeState.physicalZoneByGuid[pendingGuid] or nil
         if pendingZone ~= "stack" then
@@ -6956,7 +6971,7 @@ function BridgeResolveResolvedSpellObject(event)
         if event.cardInstanceId ~= nil then
             BridgeRecordLooseCardIdentity(event.cardInstanceId, pendingCast.guid, event.seatId, "stack")
         end
-        BridgeState.pendingCastBySeatId[event.seatId] = nil
+        pendingBySeat[event.seatId] = nil
         return pendingObject, nil
     end
 
@@ -7633,7 +7648,9 @@ function BridgeApplyStructuredCardMove(event)
             return false, "cannot move to library: configured library zone is unavailable"
         end
         object.use_hands = false
-        if BridgeState.mulliganReturningInstanceIds[event.cardInstanceId] == true then
+        local returningMarker = BridgeState.mulliganReturningInstanceIds[event.cardInstanceId]
+        if returningMarker ~= nil and returningMarker.sessionId == BridgeState.eventSessionId
+            and returningMarker.seatId == event.seatId then
             -- Rejected opening-hand cards are authoritative hand->library
             -- moves during the MULLIGAN action.  They belong at the physical
             -- bottom before the replacement draw, not at the deck anchor.

@@ -110,7 +110,11 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("getCastableCreaturesAndArtifacts(true)", Patch);
         Assert.Contains("auto-passing empty human priority window", Patch);
         Assert.Contains("sa.setActivatingPlayer(player);", Patch);
-        Assert.Contains("sa.isLandAbility() && sa.canPlay()", Patch);
+        Assert.Contains("boolean isMyTurn = player.equals(ph.getPriorityPlayer());", Patch);
+        Assert.Contains("sa.isLandAbility() && player.canPlayLand(c, false, sa)", Patch);
+        Assert.DoesNotContain("sa.isLandAbility() && sa.canPlay() && player.canPlayLand(c, false, sa)", Patch);
+        Assert.Contains("if (!player.canPlayLand(land, false, chosenSa))", Patch);
+        Assert.Contains("rejected stale land action", Patch);
         Assert.DoesNotContain("boolean sorcerySpeedWindow", Patch);
         Assert.Contains("} else if (totalActions == 0) {", Patch);
         Assert.True(Patch.IndexOf("sa.setActivatingPlayer(player);", StringComparison.Ordinal) < Patch.IndexOf("if (!sa.canPlay()) continue;", StringComparison.Ordinal));

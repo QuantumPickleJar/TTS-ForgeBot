@@ -2,6 +2,24 @@ using MtgTtsBridge.Contracts.State;
 
 namespace MtgTtsBridge.Forge;
 
+/// <summary>Raised when one authoritative snapshot locates a Forge card identity more than once.</summary>
+public sealed class ForgeStructuredDuplicateCardInstanceException : InvalidOperationException
+{
+    public ForgeStructuredDuplicateCardInstanceException(string sessionId, long forgeSequence, string cardInstanceId, IReadOnlyList<string> locations)
+        : base($"Duplicate structured CardInstanceId session={sessionId} forgeSequence={forgeSequence} cardInstanceId={cardInstanceId} locations={string.Join("; ", locations)}")
+    {
+        SessionId = sessionId;
+        ForgeSequence = forgeSequence;
+        CardInstanceId = cardInstanceId;
+        Locations = locations;
+    }
+
+    public string SessionId { get; }
+    public long ForgeSequence { get; }
+    public string CardInstanceId { get; }
+    public IReadOnlyList<string> Locations { get; }
+}
+
 /// <summary>Diffs authoritative snapshots into bounded embodiment changes; it never derives game rules.</summary>
 public sealed class ForgeStructuredStateReconciler
 {
@@ -24,6 +42,10 @@ public sealed class ForgeStructuredStateReconciler
         }
 
         var next = ConvertSnapshot(sessionId, source);
+        // Validate even the initial baseline. Otherwise a malformed startup
+        // snapshot could be accepted and only fail later during its first
+        // diff, after contaminating the authoritative current state.
+        _ = Flatten(sessionId, next);
         if (!_hasBaseline || Current is null)
         {
             Current = next;
@@ -31,7 +53,7 @@ public sealed class ForgeStructuredStateReconciler
             return [];
         }
 
-        var events = Diff(Current, next);
+        var events = Diff(sessionId, Current, next);
         Current = next;
         // Preserve the producer-local snapshot sequence on every event. It is
         // diagnostic metadata only; TTS orders physical work by the bridge's
@@ -124,18 +146,18 @@ public sealed class ForgeStructuredStateReconciler
                 source.GameEnded.Reason));
     }
 
-    private static IReadOnlyList<ForgeTuiRawEvent> Diff(GameSnapshotDto previous, GameSnapshotDto next)
+    private static IReadOnlyList<ForgeTuiRawEvent> Diff(string sessionId, GameSnapshotDto previous, GameSnapshotDto next)
     {
         var events = new List<ForgeTuiRawEvent>();
         if (!CombatEqual(previous.Combat, next.Combat))
         {
             foreach (var attack in next.Combat?.Attacks ?? [])
             {
-                var attacker = Flatten(next).GetValueOrDefault(attack.AttackerCardInstanceId);
+                var attacker = Flatten(sessionId, next).GetValueOrDefault(attack.AttackerCardInstanceId);
                 if (attacker is not null) events.Add(new ForgeTuiRawEvent("attack_declared", attacker.ControllerSeatId ?? attacker.OwnerSeatId, attacker.CardName, attacker.ForgeCardId, "battlefield", "battlefield", "Authoritative combat assignment."));
                 foreach (var blockerId in attack.BlockerCardInstanceIds)
                 {
-                    var blocker = Flatten(next).GetValueOrDefault(blockerId);
+                    var blocker = Flatten(sessionId, next).GetValueOrDefault(blockerId);
                     if (blocker is not null) events.Add(new ForgeTuiRawEvent("block_declared", blocker.ControllerSeatId ?? blocker.OwnerSeatId, blocker.CardName, blocker.ForgeCardId, "battlefield", "battlefield", "Authoritative combat assignment."));
                 }
             }
@@ -187,8 +209,8 @@ public sealed class ForgeStructuredStateReconciler
             }
         }
 
-        var beforeCards = Flatten(previous);
-        var afterCards = Flatten(next);
+        var beforeCards = Flatten(sessionId, previous);
+        var afterCards = Flatten(sessionId, next);
         foreach (var (id, card) in afterCards.OrderBy(pair => pair.Value.ZonePosition))
         {
             beforeCards.TryGetValue(id, out var oldCard);
@@ -320,12 +342,34 @@ public sealed class ForgeStructuredStateReconciler
         return events;
     }
 
-    private static Dictionary<string, GameCardSnapshotDto> Flatten(GameSnapshotDto snapshot) =>
-        snapshot.Seats
-            .SelectMany(seat => seat.Zones)
-            .SelectMany(zone => zone.Cards)
-            .Concat(snapshot.Stack)
-            .ToDictionary(card => card.CardInstanceId, StringComparer.Ordinal);
+    private static Dictionary<string, GameCardSnapshotDto> Flatten(string sessionId, GameSnapshotDto snapshot)
+    {
+        var located = snapshot.Seats
+            .SelectMany(seat => seat.Zones.SelectMany(zone => zone.Cards.Select(card => new
+            {
+                Card = card,
+                Location = $"seat={seat.SeatId} zone={zone.Name} owner={card.OwnerSeatId ?? "none"} controller={card.ControllerSeatId ?? "none"} forgeCardId={card.ForgeCardId} card={card.CardName}"
+            })))
+            .Concat(snapshot.Stack.Select(card => new
+            {
+                Card = card,
+                Location = $"stack owner={card.OwnerSeatId ?? "none"} controller={card.ControllerSeatId ?? "none"} forgeCardId={card.ForgeCardId} card={card.CardName}"
+            }))
+            .ToArray();
+
+        var duplicate = located.GroupBy(item => item.Card.CardInstanceId, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new ForgeStructuredDuplicateCardInstanceException(
+                sessionId,
+                snapshot.ForgeSequence,
+                duplicate.Key,
+                duplicate.Select(item => item.Location).ToArray());
+        }
+
+        return located.ToDictionary(item => item.Card.CardInstanceId, item => item.Card, StringComparer.Ordinal);
+    }
 
     private static string NormalizeKeyword(string keyword)
     {

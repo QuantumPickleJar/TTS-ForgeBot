@@ -33,6 +33,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private readonly Queue<string> _seenDecisionOrder = new();
     private Process? _process;
     private CancellationTokenSource? _processCancellation;
+    // A cancelled reader can still return a buffered chunk after NEW MATCH.
+    // Only the reader generation that created the current process may mutate
+    // parser/reconciler/session state.
+    private long _processGeneration;
     private Task? _stdoutReaderTask;
     private TaskCompletionSource<ForgeTuiDecision>? _nextDecision;
     private DecisionDto? _currentDecision;
@@ -209,6 +213,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         var cancellation = new CancellationTokenSource();
         TaskCompletionSource<ForgeTuiDecision> initialDecision;
+        long processGeneration;
 
         lock (_sync)
         {
@@ -239,10 +244,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _diagnosticContext = null;
             _process = process;
             _processCancellation = cancellation;
+            processGeneration = ++_processGeneration;
             initialDecision = NewDecisionWaiter();
         }
 
-        process.Exited += (_, _) => _ = HandleProcessExitAsync(process, process.ExitCode);
+        process.Exited += (_, _) => _ = HandleProcessExitAsync(process, processGeneration, process.ExitCode);
         if (!process.Start())
         {
             throw new InvalidOperationException("Forge TUI process could not be started.");
@@ -251,8 +257,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         lock (_sync) _startupTracker.MarkProcessLaunched();
 
         _logger.LogInformation("Started Forge TUI process {ProcessId}: {Executable} (TTS library decks, Legacy assumption)", process.Id, _options.Executable);
-        lock (_sync) _stdoutReaderTask = ReadOutputAsync(process.StandardOutput, isError: false, cancellation.Token);
-        _ = ReadOutputAsync(process.StandardError, isError: true, cancellation.Token);
+        lock (_sync) _stdoutReaderTask = ReadOutputAsync(process, processGeneration, process.StandardOutput, isError: false, cancellation.Token);
+        _ = ReadOutputAsync(process, processGeneration, process.StandardError, isError: true, cancellation.Token);
 
         try
         {
@@ -433,7 +439,12 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private sealed record ResolvedChoice(string ActionId, string State);
     private sealed record SeenDecision(DateTimeOffset FirstPresentedAtUtc, string? ResolvedActionId, DateTimeOffset? ResolvedAtUtc);
 
-    private async Task ReadOutputAsync(StreamReader reader, bool isError, CancellationToken cancellationToken)
+    private bool IsCurrentProcessGeneration(Process process, long processGeneration)
+    {
+        lock (_sync) return ReferenceEquals(_process, process) && _processGeneration == processGeneration;
+    }
+
+    private async Task ReadOutputAsync(Process process, long processGeneration, StreamReader reader, bool isError, CancellationToken cancellationToken)
     {
         var buffer = new char[1024];
         try
@@ -443,6 +454,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 var count = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).ConfigureAwait(false);
                 if (count == 0) return;
                 var chunk = new string(buffer, 0, count);
+                if (!IsCurrentProcessGeneration(process, processGeneration))
+                {
+                    _logger.LogDebug("Discarded Forge output from retired process generation {Generation}", processGeneration);
+                    return;
+                }
                 if (isError)
                 {
                     foreach (var line in chunk.Split('\n'))
@@ -461,6 +477,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 ForgeTuiParserResult result;
                 lock (_sync)
                 {
+                    if (!ReferenceEquals(_process, process) || _processGeneration != processGeneration) return;
                     var output = _structuredParser.Append(chunk);
                     foreach (var snapshot in output.Snapshots)
                     {
@@ -501,38 +518,51 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     }
                     result = _parser.Append(tuiText);
                 }
-                if (result.ParsedDecision is not null)
+                var stopForParserFailure = false;
+                lock (_sync)
                 {
-                    var parsed = result.ParsedDecision;
-                    _logger.LogInformation(
-                        "Forge TUI parsed decision {DecisionId} kind={Kind} prompt={Prompt} actions={ActionCount}",
-                        parsed.Decision.DecisionId,
-                        parsed.Decision.Kind,
-                        parsed.Decision.Prompt ?? "(none)",
-                        parsed.Decision.Actions.Count);
-                    _nextDecision?.TrySetResult(parsed);
+                    if (!ReferenceEquals(_process, process) || _processGeneration != processGeneration) return;
+                    if (result.ParsedDecision is not null)
+                    {
+                        var parsed = result.ParsedDecision;
+                        _logger.LogInformation(
+                            "Forge TUI parsed decision {DecisionId} kind={Kind} prompt={Prompt} actions={ActionCount}",
+                            parsed.Decision.DecisionId,
+                            parsed.Decision.Kind,
+                            parsed.Decision.Prompt ?? "(none)",
+                            parsed.Decision.Actions.Count);
+                        _nextDecision?.TrySetResult(parsed);
+                    }
+                    if (result.UnsupportedPrompt is not null)
+                    {
+                        _logger.LogWarning(
+                            "Forge TUI unsupported prompt {Code}; context={Context}",
+                            result.UnsupportedPrompt.Code,
+                            result.UnsupportedPrompt.Context);
+                        SetUnsupportedPrompt(result.UnsupportedPrompt);
+                    }
+                    if (result.ErrorCode is not null)
+                    {
+                        _logger.LogError(
+                            "Forge TUI parser error {Code}: {Message}",
+                            result.ErrorCode,
+                            result.ErrorMessage);
+                        Fail(result.ErrorCode, result.ErrorMessage!);
+                        stopForParserFailure = true;
+                    }
                 }
-                if (result.UnsupportedPrompt is not null)
-                {
-                    _logger.LogWarning(
-                        "Forge TUI unsupported prompt {Code}; context={Context}",
-                        result.UnsupportedPrompt.Code,
-                        result.UnsupportedPrompt.Context);
-                    SetUnsupportedPrompt(result.UnsupportedPrompt);
-                }
-                if (result.ErrorCode is not null)
-                {
-                    _logger.LogError(
-                        "Forge TUI parser error {Code}: {Message}",
-                        result.ErrorCode,
-                        result.ErrorMessage);
-                    Fail(result.ErrorCode, result.ErrorMessage!);
-                    _ = StopProcessAsync();
-                }
+                if (stopForParserFailure) _ = StopProcessAsync(processGeneration);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-        catch (Exception ex) { Fail("forge_output_failure", ex.Message); }
+        catch (ForgeStructuredDuplicateCardInstanceException ex)
+        {
+            if (IsCurrentProcessGeneration(process, processGeneration)) Fail("duplicate_structured_card_instance_id", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            if (IsCurrentProcessGeneration(process, processGeneration)) Fail("forge_output_failure", ex.Message);
+        }
     }
 
     private TaskCompletionSource<ForgeTuiDecision> NewDecisionWaiter()
@@ -838,12 +868,12 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         @"^\[TUI-DIAG priority\]\s+turn=(?<turn>\d+)\s+phase=(?<phase>.+?)\s+priority=(?<priority>.+?)\s+isMyTurn=(?<isMyTurn>true|false)\b",
         RegexOptions.CultureInvariant);
 
-    private async Task HandleProcessExitAsync(Process process, int exitCode)
+    private async Task HandleProcessExitAsync(Process process, long processGeneration, int exitCode)
     {
         Task? stdoutReader;
         lock (_sync)
         {
-            if (!ReferenceEquals(_process, process)) return;
+            if (!ReferenceEquals(_process, process) || _processGeneration != processGeneration) return;
             stdoutReader = _stdoutReaderTask;
         }
 
@@ -852,6 +882,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
         lock (_sync)
         {
+            if (!ReferenceEquals(_process, process) || _processGeneration != processGeneration) return;
             if (string.Equals(_state, "game_ended", StringComparison.Ordinal)) return;
         }
         Fail("forge_process_exited", $"Forge TUI process exited with code {exitCode}.");
@@ -998,11 +1029,21 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         return false;
     }
 
-    private async Task StopProcessAsync()
+    private async Task StopProcessAsync(long? expectedGeneration = null)
     {
         Process? process;
         CancellationTokenSource? cancellation;
-        lock (_sync) { process = _process; cancellation = _processCancellation; _process = null; _processCancellation = null; }
+        lock (_sync)
+        {
+            if (expectedGeneration is not null && _processGeneration != expectedGeneration.Value) return;
+            process = _process;
+            cancellation = _processCancellation;
+            _process = null;
+            _processCancellation = null;
+            // Invalidate buffered output before cancelling/killing the old
+            // process. A subsequent session gets a distinct generation.
+            _processGeneration++;
+        }
         if (cancellation is not null) await cancellation.CancelAsync().ConfigureAwait(false);
         if (process is not null)
         {

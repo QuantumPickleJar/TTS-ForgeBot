@@ -170,6 +170,25 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void Reconciliation_RejectsDuplicateStructuredIdentityWithBothAuthoritativeLocations()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        var card = Card(91, "Worldly Tutor", "hand", 0);
+        var frame = ForgeStructuredOutputParser.Sentinel
+            + $$"""{"version":1,"type":"snapshot","sequence":9,"reason":"duplicate-canary","monarchSeatId":null,"players":[{{Player(hand: [card])}}],"stack":[{{card}}]}""";
+
+        var exception = Assert.Throws<ForgeStructuredDuplicateCardInstanceException>(
+            () => reconciler.Apply("new-session", Parse(parser, frame)));
+
+        Assert.Equal("forge:new-session:91", exception.CardInstanceId);
+        Assert.Equal(9, exception.ForgeSequence);
+        Assert.Equal(2, exception.Locations.Count);
+        Assert.Contains(exception.Locations, location => location.Contains("zone=hand", StringComparison.Ordinal));
+        Assert.Contains(exception.Locations, location => location.StartsWith("stack ", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Reconciliation_EmitsTerminalEventFromForgeOutcome_NotFromLifeInference()
     {
         var parser = new ForgeStructuredOutputParser();

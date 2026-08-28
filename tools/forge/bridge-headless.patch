@@ -444,6 +444,7 @@ index 00000000..8f63342d
 +import forge.util.ThreadUtil;
 +
 +import java.util.IdentityHashMap;
++import java.util.HashSet;
 +import java.util.LinkedHashSet;
 +import java.util.List;
 +import java.util.Map;
@@ -459,6 +460,11 @@ index 00000000..8f63342d
 + * human TUI parser sees them.
 + */
 +final class BridgeStateFeed {
++    private static final class DuplicateCardIdentityException extends RuntimeException {
++        DuplicateCardIdentityException(final Card card, final String zone) {
++            super("CardInstanceId " + card.getId() + " appeared more than once while emitting " + zone);
++        }
++    }
 +    static final String SENTINEL = "@@FORGE_BRIDGE_STATE@@";
 +    private static final List<ZoneType> PLAYER_ZONES = List.of(
 +            ZoneType.Library,
@@ -560,6 +566,14 @@ index 00000000..8f63342d
 +            }
 +        } catch (ConcurrentModificationException ignored) {
 +            ThreadUtil.delay(25, this::emitWhenStable);
++        } catch (DuplicateCardIdentityException duplicate) {
++            // Opening-hand/mulligan setup can transiently expose the same Card
++            // reference twice while Forge is moving it between zones. Never
++            // publish that impossible snapshot; retry after the mutation batch
++            // settles. The bridge retains a loud duplicate check for any
++            // duplicate that still escapes this producer barrier.
++            trace("snapshot deferred: " + duplicate.getMessage());
++            ThreadUtil.delay(25, this::emitWhenStable);
 +        } catch (RuntimeException exception) {
 +            // A diagnostics feed must never change or terminate Forge gameplay.
 +            snapshotScheduled.set(false);
@@ -569,6 +583,7 @@ index 00000000..8f63342d
 +
 +    private void emitSnapshot(final String reason, final long generation) {
 +        final StringBuilder json = new StringBuilder(32768);
++        final Set<Integer> emittedCardIds = new HashSet<>();
 +        json.append('{');
 +        property(json, "version", 1).append(',');
 +        property(json, "type", "snapshot").append(',');
@@ -582,7 +597,7 @@ index 00000000..8f63342d
 +        for (Player player : game.getPlayers()) {
 +            if (!firstPlayer) json.append(',');
 +            firstPlayer = false;
-+            appendPlayer(json, player);
++            appendPlayer(json, player, emittedCardIds);
 +        }
 +
 +        json.append("],\"stack\":[");
@@ -591,7 +606,7 @@ index 00000000..8f63342d
 +        for (Card card : game.getStackZone().getCards()) {
 +            if (!firstCard) json.append(',');
 +            firstCard = false;
-+            appendCard(json, card, "stack", position++);
++            appendCard(json, card, "stack", position++, emittedCardIds);
 +        }
 +        json.append("],\"combat\":");
 +        appendCombat(json);
@@ -608,7 +623,7 @@ index 00000000..8f63342d
 +                + " battlefield=" + battlefieldSummary());
 +    }
 +
-+    private void appendPlayer(final StringBuilder json, final Player player) {
++    private void appendPlayer(final StringBuilder json, final Player player, final Set<Integer> emittedCardIds) {
 +        json.append('{');
 +        property(json, "seatId", seatOf(player)).append(',');
 +        property(json, "forgePlayerId", player.getId()).append(',');
@@ -641,14 +656,17 @@ index 00000000..8f63342d
 +                if (card.getCurrentStateName() == CardStateName.PreparedSpell) continue;
 +                if (!firstCard) json.append(',');
 +                firstCard = false;
-+                appendCard(json, card, zoneName(zoneType), position++);
++                appendCard(json, card, zoneName(zoneType), position++, emittedCardIds);
 +            }
 +            json.append("]}");
 +        }
 +        json.append("]}");
 +    }
 +
-+    private void appendCard(final StringBuilder json, final Card card, final String zone, final int position) {
++    private void appendCard(final StringBuilder json, final Card card, final String zone, final int position, final Set<Integer> emittedCardIds) {
++        if (!emittedCardIds.add(card.getId())) {
++            throw new DuplicateCardIdentityException(card, zone);
++        }
 +        final String canonicalName = card.getPaperCard() == null ? card.getName() : card.getPaperCard().getName();
 +        json.append('{');
 +        property(json, "forgeCardId", card.getId()).append(',');
@@ -956,7 +974,16 @@ index 0d731bb6..18ef1187 100644
              if (c.isCreature()) {
                  desc += " (" + c.getNetPower() + "/" + c.getNetToughness() + ")";
              }
-@@ -272,22 +300,15 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -269,25 +297,18 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+         Game game = getGame();
+         PhaseHandler ph = game.getPhaseHandler();
+-        boolean isMyTurn = ph.isPlayerTurn(player);
++        // Priority holder, rather than active-turn player, owns this menu.
++        // This prevents exposing sorcery-speed actions off-turn and keeps
++        // empty-window auto-pass scoped to the actual human controller.
++        boolean isMyTurn = player.equals(ph.getPriorityPlayer());
+         boolean isMainPhase = ph.is(forge.game.phase.PhaseType.MAIN1) || ph.is(forge.game.phase.PhaseType.MAIN2);
+         boolean isPostCombatMain = ph.is(forge.game.phase.PhaseType.MAIN2);
          boolean isEndStep = ph.is(forge.game.phase.PhaseType.END_OF_TURN);
          boolean stackHasItems = !game.getStack().isEmpty();
  
@@ -1159,10 +1186,42 @@ index 0d731bb6..18ef1187 100644
 +                    // Forge's authoritative turn, phase, and land-play-limit
 +                    // rules. Do not rely on construction-time state here.
 +                    sa.setActivatingPlayer(player);
-                     if (sa.isLandAbility() && sa.canPlay()) {
+-                    if (sa.isLandAbility() && sa.canPlay()) {
++                    // Player.canPlayLand is Forge's native timing/turn/stack/
++                    // land-limit authority for a normal land.
++                    if (sa.isLandAbility() && player.canPlayLand(c, false, sa)) {
                          lands.add(sa);
                          break; // Only need one land ability per land
-@@ -496,17 +566,24 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -480,6 +550,28 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+ 
+         return lands;
+     }
++
++    @Override
++    public boolean playChosenSpellAbility(final SpellAbility chosenSa) {
++        if (chosenSa == null) {
++            System.out.println("[TUI-DIAG priority] rejected null selected action");
++            return false;
++        }
++        chosenSa.setActivatingPlayer(player);
++        if (chosenSa.isLandAbility()) {
++            Card land = chosenSa.getHostCard();
++            // Revalidate at commit time. A stale land menu must be rejected,
++            // never silently treated as a successful action/pass that lets the
++            // game advance through later priority windows.
++            if (!player.canPlayLand(land, false, chosenSa)) {
++                System.out.println("[TUI-DIAG priority] rejected stale land action id=" + land.getId());
++                return false;
++            }
++            chosenSa.resolve();
++            return true;
++        }
++        return super.playChosenSpellAbility(chosenSa);
++    }
+ 
+     /**
+      * Get castable creature or artifact spells from the player's hand.
+@@ -496,17 +588,24 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              // Get the main spell ability (casting the card)
              for (SpellAbility sa : c.getAllPossibleAbilities(player, true)) {
                  // We want spell abilities that can be cast from hand

@@ -210,6 +210,7 @@ public sealed class ForgeTuiAdapterTests
             echo   1. Island [id=41]
             <nul set /p "=Enter choice (0-1): "
             set /p choice=
+            if not "%choice%"=="1" exit /b 41
             echo === FORGE CHOICE ===
             echo Choose cards to discard
             echo [kind=discard min=1 max=1 selected=1 ordered=false]
@@ -217,6 +218,7 @@ public sealed class ForgeTuiAdapterTests
             echo   1. Island [id=41] [SELECTED]
             <nul set /p "=Enter choice (0-1): "
             set /p choice=
+            if not "%choice%"=="0" exit /b 42
             echo What would you like to do?
             echo   0. Pass priority (do nothing)
             <nul set /p "=Enter choice (0-0): "

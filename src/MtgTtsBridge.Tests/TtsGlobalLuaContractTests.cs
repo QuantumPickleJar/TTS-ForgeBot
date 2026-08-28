@@ -125,7 +125,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("staged Forge selection decision=", Script);
         Assert.Contains("function BridgeTryFinishDiscardChoice(decision, source)", Script);
         Assert.Contains("physical_discard_graveyard", Script);
-        Assert.Contains("completing Forge discard with Done", Script);
+        Assert.Contains("awaiting explicit Done", Script);
         Assert.DoesNotContain("BridgeState.physicalZoneByGuid[intent.guid] = \"graveyard\"", Script);
     }
 
@@ -570,9 +570,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeState.pendingCastBySeatId[intent.seatId]", Script);
         Assert.Contains("BridgeResolveResolvedSpellObject", Script);
         Assert.Contains("BridgeRecordLooseCardIdentity(event.cardInstanceId, pendingCast.guid, event.seatId, \"stack\")", Script);
-        Assert.Contains("BridgeState.pendingCastBySeatId[event.seatId] = nil", Script);
-        Assert.Contains("local pendingObject = pendingCast ~= nil and getObjectFromGUID(pendingCast.guid) or nil", Script);
-        Assert.Contains("if pendingObject ~= nil and BridgeCardNameMatches(pendingObject.getName(), event.cardName) then", Script);
+        Assert.Contains("pendingBySeat[event.seatId] = nil", Script);
+        Assert.Contains("pendingCast ~= nil and pendingCast.guid ~= nil", Script);
+        Assert.Contains("if pendingObject ~= nil and pendingName ~= nil and BridgeCardNameMatches(pendingName, event.cardName) then", Script);
     }
 
     [Fact]
@@ -1016,13 +1016,14 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void PhysicalGraveyardDiscard_SubmitsForgeSelectionThenCompletesItsDoneStep()
+    public void PhysicalGraveyardDiscard_SubmitsForgeSelectionThenRendersReturnedDoneStep()
     {
         Assert.Contains("if object.tag == \"Card\" and action.type == \"discard_card\" and BridgeIsDiscardChoice(decision) then", Script);
         Assert.Contains("if BridgeObjectNearSeatZone(object, intent.seatId, \"graveyard\") then", Script);
         Assert.Contains("BridgeSubmitChoice(decisionId, actionId, \"physical_discard_graveyard\")", Script);
         Assert.Contains("BridgeTryFinishDiscardChoice(body.currentDecision, activeTransaction.source)", Script);
-        Assert.Contains("if selected < minimum or selected > maximum or (not graveyardDrop and minimum ~= maximum) then return end", Script);
+        Assert.Contains("awaiting explicit Done", Script);
+        Assert.DoesNotContain("discard_auto_done", Script);
     }
 
     [Fact]
@@ -1411,6 +1412,13 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void PriorityStatusUsesDecisionSeatInsteadOfHardcodedHumanHeadline()
+    {
+        Assert.Contains("local priorityHeadline = decision.seatId == \"forge-player-1\" and \"YOUR PRIORITY\" or \"OPPONENT PRIORITY\"", Script);
+        Assert.DoesNotContain("BridgeSetStatus(\"YOUR PRIORITY\", BridgeTurnLabel()", Script);
+    }
+
+    [Fact]
     public void OpeningHandLibraryExtractions_AreSerializedAndSingleCardLibrariesRemainDrawable()
     {
         Assert.Contains("function BridgeQueueLibraryExtraction", Script);
@@ -1426,7 +1434,7 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgeInsertCardAtLibraryBottom(deck, object, seat)", Script);
         Assert.Contains("local entries = deck.getObjects() or {}", Script);
-        Assert.Contains("return deck.putObject(object, #entries)", Script);
+        Assert.Contains("return deck.putObject(object, #entries + 1)", Script);
         Assert.Contains("Rotating a TTS Deck is", Script);
         Assert.DoesNotContain("local inverted = {rotation.x, rotation.y, rotation.z + 180}", Script);
     }
