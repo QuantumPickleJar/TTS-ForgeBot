@@ -1638,11 +1638,27 @@ public sealed class TtsGlobalLuaContractTests
     public void DestructiveReset_DrainsGraveyardDeckPilesCardByCardBeforeLooseCleanup()
     {
         Assert.Contains("function BridgeReturnGraveyardPilesToLibraries(callback)", Script);
+        Assert.Contains("function BridgeDeckContainsTrackedCardForSeat(deck, seatId)", Script);
         Assert.Contains("BridgeObjectNearSeatZone(object, seatId, \"graveyard\")", Script);
+        Assert.Contains("Re-read the live contents before every extraction", Script);
+        Assert.Contains("When a TTS Deck reaches one card it is replaced by a loose", Script);
+        Assert.Contains("BridgeWaitFrames(function() done(true, nil) end, 2)", Script);
+        Assert.Contains("local entry = entries[1]", Script);
         Assert.Contains("pile.takeObject(options)", Script);
         Assert.Contains("BridgeStagePhysicalCardForBootstrap(card, job.seatId, {})", Script);
         Assert.Contains("BridgeReturnGraveyardPilesToLibraries(continueWithLooseCards)", Script);
         Assert.Contains("whole Deck-on-Deck merges are deliberately avoided", Script);
+    }
+
+    [Fact]
+    public void ResolvedSpellObject_DoesNotReferenceChoiceInteractionLocals()
+    {
+        var start = Script.IndexOf("function BridgeResolveResolvedSpellObject(event)", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeSetPreparedDesignationPresentation", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var resolver = Script[start..end];
+        Assert.DoesNotContain("intent.action", resolver);
+        Assert.DoesNotContain("BridgeToggleSingleSelection", resolver);
     }
 
     [Fact]

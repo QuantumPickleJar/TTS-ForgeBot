@@ -1103,6 +1103,22 @@ function BridgeObjectNearSeatZone(object, seatId, zoneName)
     return dx * dx + dz * dz <= 16.0
 end
 
+-- Once cards are stacked, TTS no longer exposes their positions.  Preserve an
+-- identity-based way to recognize a graveyard pile even when the pile was
+-- nudged outside the nominal graveyard anchor radius.
+function BridgeDeckContainsTrackedCardForSeat(deck, seatId)
+    if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then return false end
+    local entries = {}
+    local ok = pcall(function() entries = deck.getObjects() or {} end)
+    if not ok then return false end
+    for _, entry in ipairs(entries) do
+        local guid = entry and entry.guid or nil
+        local mappedSeat = guid and BridgeState.physicalSeatByGuid[guid] or nil
+        if mappedSeat == seatId then return true end
+    end
+    return false
+end
+
 -- TTS can only put an object on the visible top of a Deck.  For a Forge-
 -- accepted mulligan-bottom move, invert the physical deck, insert one exact
 -- card, then restore it.  The queue prevents simultaneous authoritative card
@@ -1211,7 +1227,8 @@ function BridgeReturnGraveyardPilesToLibraries(callback)
                 if BridgeObjectIsUsable(object) and object.tag == "Deck"
                     and guid ~= nil and guid ~= libraryGuid and not seen[guid]
                     and not BridgeIsPresentationOnlyObject(object)
-                    and BridgeObjectNearSeatZone(object, seatId, "graveyard") then
+                    and (BridgeObjectNearSeatZone(object, seatId, "graveyard")
+                        or BridgeDeckContainsTrackedCardForSeat(object, seatId)) then
                     seen[guid] = true
                     table.insert(jobs, {pile = object, library = library, seatId = seatId, guid = guid})
                 end
@@ -1222,15 +1239,25 @@ function BridgeReturnGraveyardPilesToLibraries(callback)
     local function drain(job, done)
         local pile = job.pile
         local library = job.library
-        local entries = {}
-        local inspected = pcall(function() entries = pile.getObjects() or {} end)
-        if not inspected then done(false, "could not inspect graveyard pile " .. tostring(job.guid)); return end
-        local index = 1
         local drained = 0
         local function nextCard()
-            if not BridgeObjectIsUsable(pile) then done(true, nil); return end
-            local entry = entries[index]
-            index = index + 1
+            if not BridgeObjectIsUsable(pile) then
+                -- When a TTS Deck reaches one card it is replaced by a loose
+                -- Card object.  Give that replacement a couple of frames to
+                -- appear before the caller sweeps loose graveyard cards;
+                -- otherwise the final card is invisible to getAllObjects and
+                -- remains stranded outside the new library.
+                BridgeWaitFrames(function() done(true, nil) end, 2)
+                return
+            end
+            -- Re-read the live contents before every extraction.  A TTS Deck's
+            -- contained-object indices are re-numbered after takeObject; using
+            -- one snapshot of indices can therefore skip cards and leave them
+            -- stranded in the old graveyard pile.
+            local entries = {}
+            local inspected = pcall(function() entries = pile.getObjects() or {} end)
+            if not inspected then done(false, "could not inspect graveyard pile " .. tostring(job.guid)); return end
+            local entry = entries[1]
             if entry == nil then
                 BridgeLog(string.format("[Bridge] drained graveyard pile guid=%s seat=%s cards=%d",
                     tostring(job.guid), tostring(job.seatId), drained))
@@ -4849,6 +4876,21 @@ function onObjectDrop(playerColor, object)
         return
     end
 
+    -- Dropping a card onto the graveyard is an explicit physical discard
+    -- confirmation.  A normal pickup/drop in the hand remains staged and
+    -- requires the existing CONFIRM control.
+    if intent.action.type == "discard_card" and BridgeIsStructuredDiscardChoice(decision) then
+        if BridgeObjectNearSeatZone(object, intent.seatId, "graveyard") then
+            BridgeSubmitChoice(intent.decisionId, intent.action.actionId, "physical_discard_graveyard")
+            return
+        end
+        BridgeRollbackPendingIntent()
+        if BridgeToggleSingleSelection(decision, intent.action.actionId, intent.guid) then
+            BridgeRenderDecision(decision)
+        end
+        return
+    end
+
     if intent.action.type == "play_land" or intent.action.type == "cast_spell" then
         local current = object.getPosition()
         local dx = current.x - intent.position.x
@@ -6831,21 +6873,6 @@ function BridgeResolveResolvedSpellObject(event)
         end
         BridgeState.pendingCastBySeatId[event.seatId] = nil
         return pendingObject, nil
-    end
-
-    if intent.action.type == "discard_card" and BridgeIsStructuredDiscardChoice(decision) then
-        if BridgeObjectNearSeatZone(object, intent.seatId, "graveyard") then
-            BridgeSubmitChoice(intent.decisionId, intent.action.actionId, "physical_discard_graveyard")
-            return
-        end
-        -- A normal pickup/drop in the hand remains selectable, but deliberately
-        -- requires the existing CONFIRM control.  Only an actual graveyard
-        -- drop bypasses that extra gesture.
-        BridgeRollbackPendingIntent()
-        if BridgeToggleSingleSelection(decision, intent.action.actionId, intent.guid) then
-            BridgeRenderDecision(decision)
-        end
-        return
     end
 
     if event.cardInstanceId ~= nil then
