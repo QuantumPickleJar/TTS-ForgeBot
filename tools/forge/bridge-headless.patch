@@ -354,10 +354,10 @@ index 922d78e1..386e7beb 100644
              }
 diff --git a/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
 new file mode 100644
-index 00000000..f4128ca1
+index 00000000..8b5187a8
 --- /dev/null
 +++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
-@@ -0,0 +1,439 @@
+@@ -0,0 +1,447 @@
 +package forge.headless;
 +
 +import com.google.common.collect.Multiset;
@@ -367,6 +367,7 @@ index 00000000..f4128ca1
 +import forge.game.Game;
 +import forge.game.GameEntity;
 +import forge.game.card.Card;
++import forge.card.CardStateName;
 +import forge.game.combat.Combat;
 +import forge.game.card.CounterType;
 +import forge.game.event.GameEvent;
@@ -583,6 +584,10 @@ index 00000000..f4128ca1
 +            boolean firstCard = true;
 +            int position = 0;
 +            for (Card card : player.getZone(zoneType).getCards(false)) {
++                // Forge owns PreparedSpell copies in exile. They are legal
++                // virtual/UI-only spell objects, not physical TTS cards; their
++                // cast action carries an exact relation to the source instead.
++                if (card.getCurrentStateName() == CardStateName.PreparedSpell) continue;
 +                if (!firstCard) json.append(',');
 +                firstCard = false;
 +                appendCard(json, card, zoneName(zoneType), position++);
@@ -612,6 +617,9 @@ index 00000000..f4128ca1
 +        json.append("\"currentTypes\":");
 +        appendCurrentTypes(json, card.getType());
 +        json.append(',');
++        json.append("\"cardDesignations\":[");
++        if (card.isPrepared()) string(json, "prepared");
++        json.append("],");
 +        json.append("\"counters\":");
 +        appendCounters(json, card.getCounters());
 +        json.append(",\"keywords\":[");
@@ -829,10 +837,10 @@ index 44aee4f4..959cd694 100644
          String version = BuildInfo.getVersionString().toLowerCase();
          if (version.contains("git") || version.contains("snapshot")) {
 diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-index 0d731bb6..c156bef7 100644
+index 0d731bb6..b7993de9 100644
 --- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 +++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-@@ -4,16 +4,25 @@ import com.google.common.collect.Multimap;
+@@ -4,16 +4,26 @@ import com.google.common.collect.Multimap;
  import forge.LobbyPlayer;
  import forge.ai.ComputerUtilMana;
  import forge.card.MagicColor;
@@ -843,6 +851,7 @@ index 0d731bb6..c156bef7 100644
  import forge.deck.DeckSection;
  import forge.game.Game;
  import forge.game.card.Card;
++import forge.card.CardStateName;
  import forge.game.card.CardCollection;
 +import forge.game.card.CardCollectionView;
  import forge.game.combat.Combat;
@@ -858,7 +867,7 @@ index 0d731bb6..c156bef7 100644
  import forge.game.spellability.SpellAbility;
  import forge.game.zone.ZoneType;
  import forge.item.PaperCard;
-@@ -90,6 +99,21 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -90,6 +100,21 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          return false; // We're a human player
      }
  
@@ -880,7 +889,7 @@ index 0d731bb6..c156bef7 100644
      @Override
      public void revealAnte(String message, Multimap<Player, PaperCard> removedAnteCards) {
          // No-op for TUI - we don't need to show ante cards
-@@ -192,7 +216,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -192,7 +217,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              return desc;
          } else if (target instanceof Card) {
              Card c = (Card) target;
@@ -889,30 +898,38 @@ index 0d731bb6..c156bef7 100644
              if (c.isCreature()) {
                  desc += " (" + c.getNetPower() + "/" + c.getNetToughness() + ")";
              }
-@@ -272,15 +296,18 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -272,22 +297,15 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          boolean isEndStep = ph.is(forge.game.phase.PhaseType.END_OF_TURN);
          boolean stackHasItems = !game.getStack().isEmpty();
  
 -        // Get playable actions from hand
--        List<SpellAbility> landAbilities = getPlayableLands();
-+        // The TUI must not invent sorcery-speed timing. Forge's own ability
-+        // legality checks remain authoritative, but only the active player in
-+        // an empty-stack main phase can even be offered these action families.
-+        boolean sorcerySpeedWindow = isMyTurn && isMainPhase && !stackHasItems;
-+        List<SpellAbility> landAbilities = sorcerySpeedWindow ? getPlayableLands() : new ArrayList<>();
-         List<SpellAbility> creatureAbilities = new ArrayList<>();
-         List<SpellAbility> artifactAbilities = new ArrayList<>();
-         List<SpellAbility> instantAbilities = new ArrayList<>();
-         List<SpellAbility> sorceryAbilities = new ArrayList<>();
- 
++        // Each helper asks Forge's SpellAbility.canPlay() for the authoritative
++        // answer. Do not add a second TUI timing filter here: that filter once
++        // suppressed a legal human land drop, made totalActions appear zero,
++        // and caused the bridge to pass the rest of the turn.
+         List<SpellAbility> landAbilities = getPlayableLands();
+-        List<SpellAbility> creatureAbilities = new ArrayList<>();
+-        List<SpellAbility> artifactAbilities = new ArrayList<>();
+-        List<SpellAbility> instantAbilities = new ArrayList<>();
+-        List<SpellAbility> sorceryAbilities = new ArrayList<>();
+-
 -        // In any main phase, check for castable sorcery-speed spells
 -        if (isMainPhase) {
-+        // Only the active player may receive sorcery-speed actions.
-+        if (sorcerySpeedWindow) {
-             creatureAbilities = getCastableCreaturesAndArtifacts(true);
-             artifactAbilities = getCastableCreaturesAndArtifacts(false);
-             sorceryAbilities = getCastableSorceries();
-@@ -296,6 +323,21 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+-            creatureAbilities = getCastableCreaturesAndArtifacts(true);
+-            artifactAbilities = getCastableCreaturesAndArtifacts(false);
+-            sorceryAbilities = getCastableSorceries();
+-        }
+-
+-        // Instants can be cast at any time we have priority
+-        instantAbilities = getCastableInstants();
++        List<SpellAbility> creatureAbilities = getCastableCreaturesAndArtifacts(true);
++        List<SpellAbility> artifactAbilities = getCastableCreaturesAndArtifacts(false);
++        List<SpellAbility> instantAbilities = getCastableInstants();
++        List<SpellAbility> sorceryAbilities = getCastableSorceries();
+ 
+         // Get activated abilities from permanents on the battlefield
+         List<SpellAbility> activatedAbilities = getActivatedAbilities();
+@@ -296,6 +314,21 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          int totalActions = landAbilities.size() + creatureAbilities.size() + artifactAbilities.size() +
                             instantAbilities.size() + sorceryAbilities.size() + activatedAbilities.size();
  
@@ -934,8 +951,21 @@ index 0d731bb6..c156bef7 100644
          // Smart auto-passing on opponent's turn
          if (!isMyTurn) {
              // Only prompt on opponent's turn if:
-@@ -323,18 +365,6 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -315,26 +348,13 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+             if (totalActions == 0) {
+                 return null;
              }
+-        } else {
+-            // On our turn, if there are no options besides passing, auto-pass without prompting
+-            if (totalActions == 0) {
+-                System.out.println(">> Auto-passing priority (no actions available)...\n");
+-                return null;
+-            }
++        } else if (totalActions == 0) {
++            // A human priority window must remain explicit. It is the only
++            // safe fallback if an unexpected adapter omission is discovered;
++            // silently returning null advances Forge's turn without consent.
++            System.out.println("[TUI-DIAG priority] no non-pass actions; preserving human pass window");
          }
  
 -        // Deduplicate abilities - only show unique actions
@@ -953,7 +983,7 @@ index 0d731bb6..c156bef7 100644
          // Show options to user with context-appropriate header
          if (!isMyTurn) {
              System.out.println("\n=== OPPONENT'S TURN ===");
-@@ -363,40 +393,41 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -363,40 +383,41 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          // Show land options
          for (SpellAbility sa : uniqueLands) {
              Card land = sa.getHostCard();
@@ -1004,7 +1034,7 @@ index 0d731bb6..c156bef7 100644
              optionNum++;
          }
  
-@@ -407,7 +438,8 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -407,7 +428,8 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              if (description == null || description.isEmpty()) {
                  description = "Activate ability";
              }
@@ -1014,7 +1044,7 @@ index 0d731bb6..c156bef7 100644
              optionNum++;
          }
  
-@@ -459,6 +491,41 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -459,6 +481,41 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          }
      }
  
@@ -1056,7 +1086,7 @@ index 0d731bb6..c156bef7 100644
      /**
       * Get playable land abilities from the player's hand.
       */
-@@ -507,6 +574,10 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -507,6 +564,11 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              }
          }
  
@@ -1064,22 +1094,25 @@ index 0d731bb6..c156bef7 100644
 +        // are exposed by Forge from their authoritative origin zone. Do not
 +        // classify these by English card text.
 +        spells.addAll(getCastableSpellsFromZone(ZoneType.Graveyard, creatures ? "creature" : "artifact"));
++        spells.addAll(getCastableSpellsFromZone(ZoneType.Exile, creatures ? "creature" : "artifact"));
          return spells;
      }
  
-@@ -536,6 +607,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -536,6 +598,8 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              }
          }
  
 +        spells.addAll(getCastableSpellsFromZone(ZoneType.Graveyard, "sorcery"));
++        spells.addAll(getCastableSpellsFromZone(ZoneType.Exile, "sorcery"));
          return spells;
      }
  
-@@ -565,6 +637,29 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -565,6 +629,30 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              }
          }
  
 +        spells.addAll(getCastableSpellsFromZone(ZoneType.Graveyard, "instant"));
++        spells.addAll(getCastableSpellsFromZone(ZoneType.Exile, "instant"));
 +        return spells;
 +    }
 + 
@@ -1105,7 +1138,7 @@ index 0d731bb6..c156bef7 100644
          return spells;
      }
  
-@@ -575,8 +670,13 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -575,8 +663,13 @@ public class PlayerControllerTUI extends PlayerControllerAi {
      private List<SpellAbility> getActivatedAbilities() {
          List<SpellAbility> abilities = new ArrayList<>();
  
@@ -1121,7 +1154,7 @@ index 0d731bb6..c156bef7 100644
              // Get all abilities for this permanent
              for (SpellAbility sa : c.getAllPossibleAbilities(player, true)) {
                  // We want activated abilities (not spells, not triggered)
-@@ -1165,7 +1265,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1165,7 +1258,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
                      if (selectedAttackers.contains(creature)) {
                          status = " [ATTACKING]";
                      }
@@ -1130,7 +1163,7 @@ index 0d731bb6..c156bef7 100644
                          " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
                  }
  
-@@ -1178,9 +1278,13 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1178,9 +1271,13 @@ public class PlayerControllerTUI extends PlayerControllerAi {
  
                  Card selectedAttacker = possibleAttackers.get(choice - 1);
  
@@ -1146,7 +1179,7 @@ index 0d731bb6..c156bef7 100644
                      continue;
                  }
  
-@@ -1210,7 +1314,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1210,7 +1307,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              System.out.println("\nAvailable attackers:");
              for (int i = 0; i < possibleAttackers.size(); i++) {
                  Card creature = possibleAttackers.get(i);
@@ -1155,7 +1188,7 @@ index 0d731bb6..c156bef7 100644
                      " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" +
                      (creature.isTapped() ? " (tapped)" : "") +
                      (creature.isSick() ? " (summoning sickness)" : ""));
-@@ -1338,32 +1442,35 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1338,32 +1435,35 @@ public class PlayerControllerTUI extends PlayerControllerAi {
  
                  // Show available blockers with 0 = "No further blockers"
                  while (true) {
@@ -1202,7 +1235,7 @@ index 0d731bb6..c156bef7 100644
  
                      // Add the blocker
                      combat.addBlocker(attacker, blocker);
-@@ -1507,80 +1614,428 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1507,80 +1607,429 @@ public class PlayerControllerTUI extends PlayerControllerAi {
  
      @Override
      public CardCollection chooseCardsToDiscardToMaximumHandSize(int numDiscard) {
@@ -1248,7 +1281,6 @@ index 0d731bb6..c156bef7 100644
 -                if (!toDiscard.contains(c)) {
 -                    remaining.add(c);
 -                }
--            }
 +    private String bridgeDisplayCardName(Card card) {
 +        if (card == null) return "Card";
 +        if (card.getPaperCard() != null && card.getPaperCard().getName() != null) {
@@ -1262,10 +1294,7 @@ index 0d731bb6..c156bef7 100644
 +        String sourceName = bridgeDisplayCardName(sa.getHostCard());
 +        return title.replace("CARDNAME", sourceName).replace("NICKNAME", sourceName);
 +    }
- 
--            System.out.println("Your hand (" + remaining.size() + " cards), select " + discardNum + " of " + numDiscard + " to discard:");
--            for (int i = 0; i < remaining.size(); i++) {
--                System.out.println("  " + i + ". " + remaining.get(i).getName());
++
 +    private <T extends GameEntity> List<T> chooseEntitiesThroughTui(
 +            String kind, FCollectionView<T> options, int min, int max, String title, boolean ordered) {
 +        return chooseEntitiesThroughTui(kind, options, min, max, title, ordered, "");
@@ -1294,7 +1323,6 @@ index 0d731bb6..c156bef7 100644
 +                System.out.println("  " + (i + 1) + ". " + formatDecisionEntity(candidate)
 +                    + (selected.contains(candidate) ? " [SELECTED]" : ""));
 +            }
-+            System.out.print("Enter choice (0-" + candidates.size() + "): ");
 +            int choice = getIntInput(0, candidates.size());
 +            if (choice == 0) {
 +                if (selected.size() >= min && selected.size() <= boundedMax) return selected;
@@ -1311,10 +1339,7 @@ index 0d731bb6..c156bef7 100644
 +            }
 +        }
 +    }
- 
--            int choice = getIntInput(0, remaining.size() - 1);
--            Card chosen = remaining.get(choice);
--            toDiscard.add(chosen);
++
 +    @Override
 +    public CardCollectionView choosePermanentsToSacrifice(SpellAbility sa, int min, int max,
 +            CardCollectionView validTargets, String message) {
@@ -1323,9 +1348,7 @@ index 0d731bb6..c156bef7 100644
 +            bridgeResolveCardNamePlaceholders(message, sa), false));
 +        return result;
 +    }
- 
--            System.out.println(">> Will discard: " + chosen.getName());
--            System.out.println();
++
 +    @Override
 +    public CardCollectionView chooseCardsForEffect(CardCollectionView sourceList, SpellAbility sa,
 +            String title, int min, int max, boolean isOptional, Map<String, Object> params) {
@@ -1362,7 +1385,10 @@ index 0d731bb6..c156bef7 100644
 +            "Choose cards to discard", false));
 +        return result;
 +    }
-+
+ 
+-            System.out.println("Your hand (" + remaining.size() + " cards), select " + discardNum + " of " + numDiscard + " to discard:");
+-            for (int i = 0; i < remaining.size(); i++) {
+-                System.out.println("  " + i + ". " + remaining.get(i).getName());
 +    private void emitDiscardDecisionMetadata(SpellAbility sa, String cause) {
 +        Card source = sa == null ? null : sa.getHostCard();
 +        String sourceId = source == null ? "" : " sourceCardId=" + source.getId();
@@ -1408,15 +1434,12 @@ index 0d731bb6..c156bef7 100644
 +            System.out.println("[kind=mulligan mulliganStage=keep_or_mulligan min=1 max=1 selected=0 ordered=false]");
 +            System.out.println("  0. Keep");
 +            System.out.println("  1. Mulligan");
-+            System.out.print("Enter choice (0-1): ");
 +            int choice = getIntInput(0, 1);
 +            if (choice == 0) return true;
 +            if (choice == 1) return false;
-         }
++        }
 +    }
- 
--        System.out.println(">> Discarding " + numDiscard + " card(s)...\n");
--        return toDiscard;
++
 +    @Override
 +    public CardCollectionView tuckCardsViaMulligan(CardCollectionView hand, int cardsToReturn) {
 +        if (cardsToReturn <= 0) return CardCollection.EMPTY;
@@ -1425,20 +1448,8 @@ index 0d731bb6..c156bef7 100644
 +            "Choose cards to put on the bottom of your library", false,
 +            "mulliganStage=bottom_selection sourceZone=hand"));
 +        return result;
-     }
- 
--    /**
--     * Deduplicate spell abilities by card name, keeping first occurrence.
--     * Used for lands, creatures, artifacts, sorceries, and instants.
--     */
--    private List<SpellAbility> deduplicateByCardName(List<SpellAbility> abilities) {
--        List<SpellAbility> unique = new ArrayList<>();
--        java.util.Set<String> seenNames = new java.util.HashSet<>();
--        for (SpellAbility sa : abilities) {
--            String name = sa.getHostCard().getName();
--            if (!seenNames.contains(name)) {
--                unique.add(sa);
--                seenNames.add(name);
++    }
++
 +    @Override
 +    public List<AbilitySub> chooseModeForAbility(SpellAbility sa, List<AbilitySub> possible,
 +            int min, int num, boolean allowRepeat) {
@@ -1453,33 +1464,22 @@ index 0d731bb6..c156bef7 100644
 +                AbilitySub mode = possible.get(i);
 +                System.out.println("  " + (i + 1) + ". " + mode.getDescription()
 +                    + (selected.contains(mode) ? " [SELECTED]" : ""));
-+            }
-+            System.out.print("Enter choice (0-" + possible.size() + "): ");
+             }
 +            int choice = getIntInput(0, possible.size());
 +            if (choice == 0) {
 +                if (selected.size() >= min && selected.size() <= num) return selected;
 +                System.out.println("Selection requires " + min + " to " + num + " modes.");
 +                continue;
-             }
++            }
 +            AbilitySub mode = possible.get(choice - 1);
 +            if (selected.contains(mode) && !allowRepeat) selected.remove(mode);
 +            else if (selected.size() < num) selected.add(mode);
-         }
--        return unique;
-     }
++        }
++    }
  
--    /**
--     * Deduplicate activated abilities by card name + description.
--     * Different abilities on the same card will show separately.
--     */
--    private List<SpellAbility> deduplicateByDescription(List<SpellAbility> abilities) {
--        List<SpellAbility> unique = new ArrayList<>();
--        java.util.Set<String> seenKeys = new java.util.HashSet<>();
--        for (SpellAbility sa : abilities) {
--            String key = sa.getHostCard().getName() + ":" + sa.getDescription();
--            if (!seenKeys.contains(key)) {
--                unique.add(sa);
--                seenKeys.add(key);
+-            int choice = getIntInput(0, remaining.size() - 1);
+-            Card chosen = remaining.get(choice);
+-            toDiscard.add(chosen);
 +    @Override
 +    public int chooseNumber(SpellAbility sa, String title, int min, int max) {
 +        // Forge asks several setup/internal questions with only one legal value.
@@ -1491,10 +1491,11 @@ index 0d731bb6..c156bef7 100644
 +        for (int value = min; value <= max; value++) {
 +            System.out.println("  " + (value - min) + ". " + value);
 +        }
-+        System.out.print("Enter choice (0-" + (max - min) + "): ");
 +        return min + getIntInput(0, max - min);
 +    }
-+
+ 
+-            System.out.println(">> Will discard: " + chosen.getName());
+-            System.out.println();
 +    @Override
 +    public int chooseNumber(SpellAbility sa, String title, List<Integer> values, Player relatedPlayer) {
 +        if (values.size() == 1) return values.get(0);
@@ -1502,7 +1503,6 @@ index 0d731bb6..c156bef7 100644
 +        System.out.println(title);
 +        System.out.println("[kind=numeric_selection min=1 max=1 selected=0 ordered=false]");
 +        for (int i = 0; i < values.size(); i++) System.out.println("  " + i + ". " + values.get(i));
-+        System.out.print("Enter choice (0-" + (values.size() - 1) + "): ");
 +        return values.get(getIntInput(0, values.size() - 1));
 +    }
 +
@@ -1544,16 +1544,27 @@ index 0d731bb6..c156bef7 100644
 +            ? sa.getKeyword().getKeyword().toString().toLowerCase(java.util.Locale.ROOT) : null;
 +        String abilityKind = keywordName != null ? keywordName
 +            : (sa == null ? "unknown" : sa.getClass().getSimpleName().toLowerCase(java.util.Locale.ROOT));
-+        String castMode = sa != null && sa.getAlternativeCost() != null
++        boolean preparedSpell = source != null && source.getCurrentStateName() == CardStateName.PreparedSpell;
++        String castMode = preparedSpell ? "prepare" : sa != null && sa.getAlternativeCost() != null
 +            ? sa.getAlternativeCost().name().toLowerCase(java.util.Locale.ROOT) : "normal";
-+        String costKind = "normal".equals(castMode) ? "printed" : "alternative";
++        String costKind = "prepare".equals(castMode) ? "prepare"
++            : "normal".equals(castMode) ? "printed" : "alternative";
++        Card preparedSource = null;
++        if (preparedSpell) {
++            for (Card candidate : player.getCardsIn(ZoneType.Battlefield)) {
++                if (candidate.getPreparedSpell() == source) { preparedSource = candidate; break; }
++            }
+         }
 +        return " [bridge sourceZone=" + sourceZone
 +            + " actionKind=" + actionKind
 +            + " abilityKind=" + abilityKind
 +            + " castMode=" + castMode
-+            + " costKind=" + costKind + "]";
++            + " costKind=" + costKind
++            + (preparedSource == null ? "" : " preparedSourceCardId=" + preparedSource.getId()) + "]";
 +    }
-+
+ 
+-        System.out.println(">> Discarding " + numDiscard + " card(s)...\n");
+-        return toDiscard;
 +    private <T> int chooseOneTextOption(String kind, String prompt, List<T> options) {
 +        // A single legal option is an automatic Forge choice, not an interaction.
 +        // In particular, replacement/static abilities can ask this during setup.
@@ -1564,10 +1575,21 @@ index 0d731bb6..c156bef7 100644
 +        for (int i = 0; i < options.size(); i++) {
 +            System.out.println("  " + i + ". " + options.get(i));
 +        }
-+        System.out.print("Enter choice (0-" + (options.size() - 1) + "): ");
 +        return getIntInput(0, options.size() - 1);
-+    }
-+
+     }
+ 
+-    /**
+-     * Deduplicate spell abilities by card name, keeping first occurrence.
+-     * Used for lands, creatures, artifacts, sorceries, and instants.
+-     */
+-    private List<SpellAbility> deduplicateByCardName(List<SpellAbility> abilities) {
+-        List<SpellAbility> unique = new ArrayList<>();
+-        java.util.Set<String> seenNames = new java.util.HashSet<>();
+-        for (SpellAbility sa : abilities) {
+-            String name = sa.getHostCard().getName();
+-            if (!seenNames.contains(name)) {
+-                unique.add(sa);
+-                seenNames.add(name);
 +    @Override
 +    public byte chooseColor(String message, SpellAbility sa, ColorSet colors) {
 +        List<Byte> masks = new ArrayList<>();
@@ -1578,12 +1600,25 @@ index 0d731bb6..c156bef7 100644
 +            if (colors.hasAnyColor(all[i])) {
 +                masks.add(all[i]);
 +                names.add(labels[i]);
-+            }
-+        }
+             }
+         }
+-        return unique;
 +        if (masks.isEmpty()) return 0;
 +        return masks.get(chooseOneTextOption("mana_color", message, names));
-+    }
-+
+     }
+ 
+-    /**
+-     * Deduplicate activated abilities by card name + description.
+-     * Different abilities on the same card will show separately.
+-     */
+-    private List<SpellAbility> deduplicateByDescription(List<SpellAbility> abilities) {
+-        List<SpellAbility> unique = new ArrayList<>();
+-        java.util.Set<String> seenKeys = new java.util.HashSet<>();
+-        for (SpellAbility sa : abilities) {
+-            String key = sa.getHostCard().getName() + ":" + sa.getDescription();
+-            if (!seenKeys.contains(key)) {
+-                unique.add(sa);
+-                seenKeys.add(key);
 +    @Override
 +    public byte chooseColorAllowColorless(String message, Card card, ColorSet colors) {
 +        List<Byte> masks = new ArrayList<>();
@@ -1612,7 +1647,7 @@ index 0d731bb6..c156bef7 100644
 +    public forge.game.staticability.StaticAbility chooseSingleStaticAbility(
 +            List<forge.game.staticability.StaticAbility> options) {
 +        return options.get(chooseOneTextOption("replacement_choice", "Choose static effect", options));
-+    }
+     }
 +
 +    @Override
 +    public String chooseProtectionType(SpellAbility sa, List<String> choices) {
@@ -1635,7 +1670,7 @@ index 0d731bb6..c156bef7 100644
 +        int choice = chooseOneTextOption("creature_type_selection", "Choose " + kindOfType.toLowerCase(java.util.Locale.ROOT), types);
 +        if (isOptional && choice == 0) return null;
 +        return types.get(isOptional ? choice - 1 : choice);
-     }
++    }
 +
 +    @Override
 +    public List<forge.game.spellability.OptionalCostValue> chooseOptionalCosts(
@@ -1652,7 +1687,6 @@ index 0d731bb6..c156bef7 100644
 +                System.out.println("  " + (i + 1) + ". " + option
 +                    + (selected.contains(option) ? " [SELECTED]" : ""));
 +            }
-+            System.out.print("Enter choice (0-" + options.size() + "): ");
 +            int choice = getIntInput(0, options.size());
 +            if (choice == 0) return selected;
 +            forge.game.spellability.OptionalCostValue option = options.get(choice - 1);
@@ -1682,7 +1716,6 @@ index 0d731bb6..c156bef7 100644
 +        System.out.println("[kind=yes_no min=1 max=1 selected=0 ordered=false]");
 +        System.out.println("  0. No");
 +        System.out.println("  1. Yes");
-+        System.out.print("Enter choice (0-1): ");
 +        return getIntInput(0, 1) == 1;
 +    }
 +

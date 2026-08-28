@@ -1170,10 +1170,11 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void MainPriorityActions_BindExactActivatedAbilitySourceOutsideHand()
     {
-        var start = Script.IndexOf("local mappedGuid = action.cardInstanceId", StringComparison.Ordinal);
+        var start = Script.IndexOf("local presentationInstanceId = action.preparedSourceCardInstanceId", StringComparison.Ordinal);
         var end = Script.IndexOf("if mappedSeatMatches and mappedZoneMatches then", start, StringComparison.Ordinal);
         var binding = Script[start..end];
 
+        Assert.Contains("action.preparedSourceCardInstanceId or action.cardInstanceId", binding);
         Assert.Contains("action.sourceZone", binding);
         Assert.Contains("mappedPhysicalZone == actionSourceZone", binding);
         Assert.Contains("action.type == \"activate_ability\"", binding);
@@ -1278,7 +1279,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void RealDecisionIdentity_WinsOverDuplicateNameFallback()
     {
-        Assert.Contains("action.cardInstanceId and BridgeState.physicalByInstanceId[action.cardInstanceId]", Script);
+        Assert.Contains("presentationInstanceId and BridgeState.physicalByInstanceId[presentationInstanceId]", Script);
         Assert.Contains("if mappedSeatMatches and mappedZoneMatches then", Script);
         Assert.Contains("if mappedGuid == nil and #matches > 1 then", Script);
         Assert.Contains("repaired instance mapping", Script);
@@ -1357,6 +1358,14 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("pendingTransition.destinationZone == \"battlefield\"", Script);
         Assert.Contains("semantic land presentation deferred event=%s instance=%s after structured move=%s", Script);
         Assert.Contains("This does not suppress unrelated or wrong-instance moves", Script);
+    }
+
+    [Fact]
+    public void BattlefieldMovementRestoresCanonicalScaleAfterDeferredTtsPresentation()
+    {
+        Assert.Contains("TTS hand/Encoder presentation can apply a scale change", Script);
+        Assert.Contains("BridgeWaitFrames(function()", Script);
+        Assert.Contains("BridgeRestoreCanonicalCardScale(object)", Script);
     }
 
     [Fact]
@@ -1568,7 +1577,7 @@ public sealed class TtsGlobalLuaContractTests
         var renderEnd = Script.IndexOf("function BridgeShowError", renderStart, StringComparison.Ordinal);
         var renderer = Script[renderStart..renderEnd];
         Assert.Contains("BridgeClearHighlights()", renderer);
-        Assert.Contains("action.cardInstanceId and BridgeState.physicalByInstanceId[action.cardInstanceId]", renderer);
+        Assert.Contains("presentationInstanceId and BridgeState.physicalByInstanceId[presentationInstanceId]", renderer);
         Assert.Contains("BridgeState.actionByGuid[guid] = action", renderer);
         Assert.Contains("action.sourceZone", renderer);
         Assert.DoesNotContain("currentTypes contains Creature", renderer);

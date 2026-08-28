@@ -66,4 +66,6 @@ public sealed record GameCardSnapshotDto(
 {
     /// <summary>Forge-event-derived physical row hint; never inferred from card text.</summary>
     public string? BattlefieldKind { get; init; }
+    // Card-level designation data is Forge truth, not a counter or keyword.
+    public IReadOnlyList<string> CardDesignations { get; init; } = [];
 }

@@ -234,6 +234,7 @@ BridgeState = {
     landInsertionOrderByInstanceId = {},
     nextLandInsertionOrder = 0,
     discardPresentation = nil,
+    mulliganBottomInstanceIds = {},
     battlefieldCounts = {},
     graveyardCounts = {},
     currentTurnSeatId = nil,
@@ -246,6 +247,7 @@ BridgeState = {
     yieldTurnNumber = nil,
     counterStateByInstanceId = {},
     keywordStateByInstanceId = {},
+    cardDesignationsByInstanceId = {},
     untappedRotationByGuid = {},
     pendingCastBySeatId = {},
     snapshotForgeSequence = 0,
@@ -408,7 +410,15 @@ function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)
     if guid == nil then return false, "token import returned no live TTS GUID" end
     local existingInstanceId = BridgeState.physicalInstanceIdByGuid[guid]
     if existingInstanceId ~= nil and existingInstanceId ~= event.cardInstanceId then
-        return false, "token importer returned a GUID already bound to another Forge identity"
+        -- Never steal a live physical object from another Forge card. Importer
+        -- callbacks can race a prior token import and return its object; that
+        -- is a presentation failure for this token, not a game-state desync.
+        BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "FAILED"
+        BridgeLog("[Bridge] token import rejected duplicate GUID=" .. tostring(guid)
+            .. " requested=" .. tostring(event.cardInstanceId)
+            .. " alreadyBound=" .. tostring(existingInstanceId))
+        BridgeScheduleSnapshotReconcile("duplicate token importer GUID")
+        return false, "duplicate token importer GUID"
     end
     -- Bind the exact Forge identity before moving the object. Snapshot and
     -- event reconciliation now see BOUND instead of creating a second token.
@@ -1471,7 +1481,7 @@ function BridgeUiFlush()
     if ui.contextInstanceId ~= nil and decision ~= nil then
         local contextual = {}
         for _, action in ipairs(actions) do
-            local source = action.sourceCardInstanceId or action.cardInstanceId
+            local source = action.preparedSourceCardInstanceId or action.sourceCardInstanceId or action.cardInstanceId
             if source == ui.contextInstanceId then table.insert(contextual, action) end
         end
         if #contextual > 0 then actions = contextual else ui.contextInstanceId = nil end
@@ -1479,8 +1489,19 @@ function BridgeUiFlush()
     ui.actionRows = actions
     ui.actionPanelRenderCount = (ui.actionPanelRenderCount or 0) + 1
     ui.candidatePanelRenderCount = (ui.candidatePanelRenderCount or 0) + 1
-    local selected = decision and BridgeDecisionNeedsConfirmation(decision) and BridgeSelectionCount()
-        or tonumber(decision and decision.selectedCount or 0) or 0
+    -- Forge's structured menus (including London-mulligan bottom selection)
+    -- own their staged set. Do not mask its authoritative selectedCount with
+    -- the legacy one-card local draft used by non-structured prompts.
+    local selected = 0
+    if decision ~= nil then
+        if BridgeIsStructuredForgeToggleChoice(decision) then
+            selected = tonumber(decision.selectedCount or 0) or 0
+        elseif BridgeDecisionNeedsConfirmation(decision) then
+            selected = BridgeSelectionCount()
+        else
+            selected = tonumber(decision.selectedCount or 0) or 0
+        end
+    end
     local min = tonumber(decision and decision.minSelections or 0) or 0
     local max = tonumber(decision and decision.maxSelections or 0) or 0
     BridgeUiSet("BridgeHudSelection", "text", decision and ("Selected: " .. tostring(selected) .. " / " .. tostring(max) .. " (min " .. tostring(min) .. ")") or "")
@@ -1492,7 +1513,10 @@ function BridgeUiFlush()
                 BridgeUiSet("BridgeHudAction" .. tostring(i), "text", action.displayName)
                 BridgeUiSet("BridgeHudAction" .. tostring(i), "tooltip", "Open the exact Forge actions originating in your graveyard.")
             else
-                local prefix = BridgeState.selectedActionIds[action.actionId] == true and "[x] " or "[ ] "
+                -- Structured Forge choices retain selection on the Forge side;
+                -- local draft state is only used by legacy single-card flows.
+                local prefix = (BridgeState.selectedActionIds[action.actionId] == true or action.isSelected == true)
+                    and "[x] " or "[ ] "
                 BridgeUiSet("BridgeHudAction" .. tostring(i), "text", prefix .. BridgeUiActionLabel(action))
                 BridgeUiSet("BridgeHudAction" .. tostring(i), "tooltip", "Forge action: " .. BridgeUiActionLabel(action)
                     .. "\nKind: " .. tostring(action.actionKind or action.type or "choice")
@@ -2019,6 +2043,24 @@ function BridgeSubmitChoice(decisionId, actionId, source)
 
     if decisionId == nil or actionId == nil or actionId == "" then
         return
+    end
+    local activeDecision = BridgeState.lastDecision
+    if activeDecision ~= nil and activeDecision.decisionId == decisionId
+        and activeDecision.kind == "mulligan"
+        and tostring(activeDecision.mulliganStage or "") == "bottom_selection" then
+        -- Toggle actions merely stage Forge's native selection. Mark cards for
+        -- the presentation-only bottom insertion only when its Forge-provided
+        -- Done action commits the currently selected exact identities.
+        for _, action in ipairs(activeDecision.actions or {}) do
+            if action.actionId == actionId and action.type == "choose_none" then
+                for _, candidate in ipairs(activeDecision.actions or {}) do
+                    if candidate.cardInstanceId ~= nil and candidate.isSelected == true then
+                        BridgeState.mulliganBottomInstanceIds[candidate.cardInstanceId] = true
+                    end
+                end
+                break
+            end
+        end
     end
     if transaction ~= nil then
         if transaction.actionId == actionId then
@@ -4410,7 +4452,8 @@ function BridgeRenderDecision(decision)
         end
 
         local matches = {}
-        local mappedGuid = action.cardInstanceId and BridgeState.physicalByInstanceId[action.cardInstanceId] or nil
+        local presentationInstanceId = action.preparedSourceCardInstanceId or action.cardInstanceId
+        local mappedGuid = presentationInstanceId and BridgeState.physicalByInstanceId[presentationInstanceId] or nil
         local mappedObject = BridgeGetLiveObjectByGuid(mappedGuid)
         local mappedSeatMatches = mappedObject ~= nil and (decision.kind ~= "main_priority"
             or BridgeState.physicalSeatByGuid[mappedGuid] == decision.seatId)
@@ -4531,6 +4574,14 @@ function onObjectPickUp(playerColor, object)
     end
 
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
+
+    -- A prepared spell is a Forge-owned virtual copy in exile. The physical
+    -- permanent is only its contextual selection surface and must not be
+    -- moved as though it were the spell being cast.
+    if object.tag == "Card" and tostring(action.castMode or "") == "prepare" then
+        BridgeSubmitChoice(decision.decisionId, action.actionId, "physical_prepared_spell")
+        return
+    end
 
     -- A target is a single Forge choice, not a local collection. Requiring a
     -- second confirmation after touching a legal instant target left the stack
@@ -5402,6 +5453,11 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
                         keywords[BridgeNormalizeKeywordName(keyword)] = true
                     end
                     BridgeState.keywordStateByInstanceId[card.cardInstanceId] = keywords
+                    local designations = {}
+                    for _, designation in ipairs(card.cardDesignations or {}) do
+                        designations[string.lower(tostring(designation))] = true
+                    end
+                    BridgeState.cardDesignationsByInstanceId[card.cardInstanceId] = designations
                     local keywordsApplied, keywordError = BridgeSetCardKeywords(object, card.keywords)
                     if not keywordsApplied then BridgeLog("[Bridge] keyword visual unsupported: " .. tostring(keywordError)) end
                     -- Encoder rebuilds performed by counters/keywords may
@@ -5691,10 +5747,12 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.landInsertionOrderByInstanceId = {}
     BridgeState.nextLandInsertionOrder = 0
     BridgeState.discardPresentation = nil
+    BridgeState.mulliganBottomInstanceIds = {}
     BridgeState.battlefieldCounts = {}
     BridgeState.graveyardCounts = {}
     BridgeState.counterStateByInstanceId = {}
     BridgeState.keywordStateByInstanceId = {}
+    BridgeState.cardDesignationsByInstanceId = {}
     BridgeState.untappedRotationByGuid = {}
     BridgeState.pendingCastBySeatId = {}
     BridgeState.attackOriginByGuid = {}
@@ -6713,7 +6771,14 @@ function BridgeApplyStructuredCardMove(event)
                 return
             end
             local moved, moveError = BridgeBindTokenMaterialization(event, taken, row, sessionId, epoch)
-            if not moved then BridgeStopOnDesync(libraryDrawError(moveError)) end
+            if not moved then
+                -- A rejected asynchronous importer object must never turn into
+                -- a fake card_moved failure for an unrelated physical card.
+                -- Keep Forge authoritative and let the next snapshot retry.
+                BridgeLog("[Bridge] token materialization deferred instance="
+                    .. tostring(event.cardInstanceId) .. " reason=" .. tostring(moveError))
+                BridgeScheduleSnapshotReconcile("token materialization deferred")
+            end
         end)
         return true, nil
     end
@@ -6862,7 +6927,24 @@ function BridgeApplyStructuredCardMove(event)
             return false, "cannot move to library: configured library zone is unavailable"
         end
         object.use_hands = false
-        object.setPositionSmooth(libraryZone.getPosition(), false, true)
+        local deck = BridgeResolveSeatLibraryDeck(event.seatId)
+        if BridgeState.mulliganBottomInstanceIds[event.cardInstanceId] == true and deck ~= nil and deck.tag == "Deck" then
+            -- TTS putObject inserts on top. Flip only for this authoritative
+            -- mulligan-bottom move, insert, then restore the deck orientation.
+            BridgeState.mulliganBottomInstanceIds[event.cardInstanceId] = nil
+            local rotation = deck.getRotation()
+            deck.setRotation({rotation.x, rotation.y + 180, rotation.z})
+            BridgeWaitFrames(function()
+                if BridgeObjectIsUsable(deck) and BridgeObjectIsUsable(object) then
+                    deck.putObject(object)
+                    BridgeWaitFrames(function()
+                        if BridgeObjectIsUsable(deck) then deck.setRotation(rotation) end
+                    end, 2)
+                end
+            end, 1)
+        else
+            object.setPositionSmooth(libraryZone.getPosition(), false, true)
+        end
         BridgeRecordLibraryContainedState(event.cardInstanceId, event.seatId, event.cardName)
         return true, nil
     end
@@ -8368,6 +8450,13 @@ function BridgeMoveToBattlefield(event, object, row)
     if not moved then
         return false, "event " .. tostring(event.sequence) .. " could not move physical card: " .. tostring(movementError)
     end
+
+    -- TTS hand/Encoder presentation can apply a scale change on the frame in
+    -- which the card leaves its prior container. Restore again after that
+    -- deferred work has run; this is visual only and retains the exact card.
+    BridgeWaitFrames(function()
+        if BridgeObjectIsUsable(object) then BridgeRestoreCanonicalCardScale(object) end
+    end, 2)
 
     local guid = object.getGUID()
     BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "battlefield")

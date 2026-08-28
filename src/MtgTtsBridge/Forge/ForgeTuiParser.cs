@@ -94,6 +94,9 @@ public sealed partial class ForgeTuiParser
         var kind = promptKind ?? "generic_numeric_selection";
         var decisionId = $"forge-tui-{_decisionNumber}";
         var bridgeActions = actions.Select(option => BuildAction(option, decisionId, kind)).ToArray();
+        var mulliganStage = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["mulliganStage"].Value) : null;
+        var forgeCollectionRequiresDone = selectionMetadata.Success
+            && RequiresForgeCollectionConfirmation(kind, mulliganStage);
         var shape = selectionMetadata.Success
             ? (
                 Min: int.Parse(selectionMetadata.Groups["min"].Value, CultureInfo.InvariantCulture),
@@ -118,7 +121,7 @@ public sealed partial class ForgeTuiParser
                 SelectedCount = selectionMetadata.Success
                     ? int.Parse(selectionMetadata.Groups["selected"].Value, CultureInfo.InvariantCulture)
                     : bridgeActions.Count(action => action.IsSelected),
-                ConfirmRequired = selectionMetadata.Success || shape.RequiresConfirmation,
+                ConfirmRequired = forgeCollectionRequiresDone || shape.RequiresConfirmation,
                 DecisionCauseKind = decisionProvenance is { Success: true } ? decisionProvenance.Groups["cause"].Value : null,
                 DecisionReason = decisionProvenance is { Success: true } ? NullIfBlank(decisionProvenance.Groups["reason"].Value) : null,
                 SourceCardInstanceId = decisionProvenance is { Success: true } && decisionProvenance.Groups["sourceId"].Success
@@ -127,7 +130,7 @@ public sealed partial class ForgeTuiParser
                 ContextCardInstanceId = decisionContext is { Success: true } ? $"forge-object:{decisionContext.Groups["cardId"].Value}" : null,
                 ContextCardName = decisionContext is { Success: true } ? NullIfBlank(decisionContext.Groups["cardName"].Value) : null,
                 CostKind = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["costKind"].Value) : null,
-                MulliganStage = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["mulliganStage"].Value) : null,
+                MulliganStage = mulliganStage,
                 CandidateSourceZone = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["sourceZone"].Value) : null,
             },
             actions.ToDictionary(
@@ -161,6 +164,10 @@ public sealed partial class ForgeTuiParser
         if (provenance.Success)
         {
             label = ActionProvenanceRegex().Replace(label, string.Empty).Trim();
+            if (string.Equals(provenance.Groups["castMode"].Value, "prepare", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "PREPARED SPELL: " + label;
+            }
         }
         string? targetKind = null;
         string? targetSeatId = null;
@@ -209,8 +216,14 @@ public sealed partial class ForgeTuiParser
             SourceZone: provenance.Success ? provenance.Groups["sourceZone"].Value : null,
             AbilityKind: provenance.Success ? provenance.Groups["abilityKind"].Value : null,
             CastMode: provenance.Success ? provenance.Groups["castMode"].Value : null,
-            CostKind: provenance.Success ? provenance.Groups["costKind"].Value : null);
+            CostKind: provenance.Success ? provenance.Groups["costKind"].Value : null,
+            PreparedSourceCardInstanceId: provenance.Success && provenance.Groups["preparedSourceId"].Success
+                ? $"forge-object:{provenance.Groups["preparedSourceId"].Value}" : null);
     }
+
+    private static bool RequiresForgeCollectionConfirmation(string kind, string? mulliganStage) =>
+        kind is "discard" or "sacrifice" or "payment_option" or "search_selection" or "entity_selection" or "cost_selection"
+        || (kind == "mulligan" && string.Equals(mulliganStage, "bottom_selection", StringComparison.Ordinal));
 
     private bool TryResolveSeat(string playerName, out string seatId)
     {
@@ -347,7 +360,7 @@ public sealed partial class ForgeTuiParser
 
     // Forge emits this additive machine-readable suffix while constructing
     // numeric choices. Display labels remain presentation-only.
-    [GeneratedRegex(@"\[bridge\s+sourceZone=(?<sourceZone>[A-Za-z_]+)(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+abilityKind=(?<abilityKind>[A-Za-z0-9_$]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+costKind=(?<costKind>[A-Za-z0-9_-]+))?\]", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\[bridge\s+sourceZone=(?<sourceZone>[A-Za-z_]+)(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+abilityKind=(?<abilityKind>[A-Za-z0-9_$]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+costKind=(?<costKind>[A-Za-z0-9_-]+))?(?:\s+preparedSourceCardId=(?<preparedSourceId>\d+))?\]", RegexOptions.CultureInvariant)]
     private static partial Regex ActionProvenanceRegex();
 
     [GeneratedRegex(@"^Play land:\s*(?<name>.+)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]

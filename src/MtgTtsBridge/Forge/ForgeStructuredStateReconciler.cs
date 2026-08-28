@@ -75,7 +75,15 @@ public sealed class ForgeStructuredStateReconciler
                 .Where(type => !string.IsNullOrWhiteSpace(type))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(type => type, StringComparer.Ordinal)
-                .ToArray());
+                .ToArray())
+        {
+            CardDesignations = (card.CardDesignations ?? [])
+                .Select(NormalizeDesignation)
+                .Where(designation => !string.IsNullOrWhiteSpace(designation))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(designation => designation, StringComparer.Ordinal)
+                .ToArray()
+        };
 
         static bool HasCreatureType(ForgeStructuredCard card) =>
             card.CurrentTypes?.Any(type => string.Equals(type, "creature", StringComparison.OrdinalIgnoreCase)) == true;

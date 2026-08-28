@@ -24,4 +24,7 @@ public sealed record LegalActionDto(
     string? SourceZone = null,
     string? AbilityKind = null,
     string? CastMode = null,
-    string? CostKind = null);
+    string? CostKind = null,
+    // Exact source permanent for a Forge-created virtual PreparedSpell copy.
+    // This is presentation context only; ActionId remains authoritative.
+    string? PreparedSourceCardInstanceId = null);

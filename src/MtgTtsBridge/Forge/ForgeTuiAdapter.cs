@@ -540,7 +540,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             var actions = decision.Decision.Actions.Select(action => action with
             {
                 CardInstanceId = NormalizeInstanceId(action.CardInstanceId),
-                SourceCardInstanceId = NormalizeInstanceId(action.SourceCardInstanceId)
+                SourceCardInstanceId = NormalizeInstanceId(action.SourceCardInstanceId),
+                PreparedSourceCardInstanceId = NormalizeInstanceId(action.PreparedSourceCardInstanceId)
             }).ToArray();
 
             var inputs = decision.Inputs.ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.Ordinal);

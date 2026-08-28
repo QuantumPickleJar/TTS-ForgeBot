@@ -102,6 +102,16 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void HumanPriorityDoesNotPreFilterForgeLegalActionsOrAutoPassTheTurn()
+    {
+        Assert.Contains("List<SpellAbility> landAbilities = getPlayableLands();", Patch);
+        Assert.Contains("getCastableCreaturesAndArtifacts(true)", Patch);
+        Assert.Contains("preserving human pass window", Patch);
+        Assert.DoesNotContain("boolean sorcerySpeedWindow", Patch);
+        Assert.Contains("} else if (totalActions == 0) {", Patch);
+    }
+
+    [Fact]
     public void NumericBlockerMenusEnumerateOnlyForgeLegalRelationshipsIncludingTokens()
     {
         Assert.Contains("List<Card> legalBlockers = new ArrayList<>()", Patch);

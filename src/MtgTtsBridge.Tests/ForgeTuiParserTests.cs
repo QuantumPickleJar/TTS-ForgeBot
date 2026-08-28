@@ -598,6 +598,7 @@ public sealed class ForgeTuiParserTests
         var keepDecision = Assert.IsType<ForgeTuiDecision>(keep.ParsedDecision).Decision;
         Assert.Equal("mulligan", keepDecision.Kind);
         Assert.Equal("keep_or_mulligan", keepDecision.MulliganStage);
+        Assert.False(keepDecision.ConfirmRequired);
         var keepParsed = Assert.IsType<ForgeTuiDecision>(keep.ParsedDecision);
         Assert.Equal("0", keepParsed.Inputs[keepDecision.Actions[0].ActionId]);
         Assert.Equal("1", keepParsed.Inputs[keepDecision.Actions[1].ActionId]);
@@ -609,9 +610,27 @@ public sealed class ForgeTuiParserTests
 
         var bottomDecision = Assert.IsType<ForgeTuiDecision>(bottom.ParsedDecision).Decision;
         Assert.Equal("bottom_selection", bottomDecision.MulliganStage);
+        Assert.True(bottomDecision.ConfirmRequired);
         Assert.Equal("hand", bottomDecision.CandidateSourceZone);
         Assert.Equal("forge-object:51", bottomDecision.Actions[1].CardInstanceId);
         Assert.Equal("forge-object:52", bottomDecision.Actions[2].CardInstanceId);
+    }
+
+    [Fact]
+    public void PreparedSpell_UsesExactVirtualSourceProvenanceWithoutNameMatching()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Cast creature: Craft with Pride [id=91] (2/2) - {R} [bridge sourceZone=exile actionKind=cast_spell abilityKind=spell castMode=prepare costKind=prepare preparedSourceCardId=41]\n" +
+            "Enter choice (0-1): ");
+
+        var action = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions[1];
+        Assert.Equal("prepare", action.CastMode);
+        Assert.Equal("prepare", action.CostKind);
+        Assert.Equal("forge-object:41", action.PreparedSourceCardInstanceId);
+        Assert.StartsWith("PREPARED SPELL:", action.DisplayName, StringComparison.Ordinal);
     }
 
     [Fact]
