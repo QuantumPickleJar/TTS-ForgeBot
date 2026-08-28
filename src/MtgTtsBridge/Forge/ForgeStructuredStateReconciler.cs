@@ -143,7 +143,17 @@ public sealed class ForgeStructuredStateReconciler
             Result: source.GameEnded is null ? null : new GameResultDto(
                 source.GameEnded.WinnerSeatIds,
                 source.GameEnded.LoserSeatIds,
-                source.GameEnded.Reason));
+                source.GameEnded.Reason),
+            Relationships: GameRelationshipGraph.Normalize((source.Relationships ?? [])
+                .Select(relationship => new GameRelationshipSnapshotDto(
+                    relationship.RelationshipId,
+                    relationship.Kind,
+                    relationship.SourceForgeObjectId is null ? null : $"forge:{sessionId}:{relationship.SourceForgeObjectId}",
+                    relationship.TargetForgeObjectId is null ? null : $"forge:{sessionId}:{relationship.TargetForgeObjectId}",
+                    relationship.TargetSeatId,
+                    relationship.GroupId,
+                    relationship.Role,
+                    relationship.Order))));
     }
 
     private static IReadOnlyList<ForgeTuiRawEvent> Diff(string sessionId, GameSnapshotDto previous, GameSnapshotDto next)

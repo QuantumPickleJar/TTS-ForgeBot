@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using MtgTtsBridge.Contracts.State;
 
 namespace MtgTtsBridge.Forge;
 
@@ -89,7 +90,8 @@ public sealed record ForgeStructuredSnapshot(
     IReadOnlyList<ForgeStructuredCard> Stack,
     string? MonarchSeatId = null,
     ForgeStructuredCombat? Combat = null,
-    ForgeStructuredGameEnded? GameEnded = null);
+    ForgeStructuredGameEnded? GameEnded = null,
+    IReadOnlyList<ForgeStructuredRelationship>? Relationships = null);
 
 public sealed record ForgeStructuredCombat(IReadOnlyList<ForgeStructuredCombatAttack> Attacks);
 public sealed record ForgeStructuredCombatAttack(int AttackerForgeObjectId, string? DefenderSeatId, int? DefenderForgeObjectId, IReadOnlyList<int> BlockerForgeObjectIds);
@@ -98,6 +100,16 @@ public sealed record ForgeStructuredGameEnded(
     IReadOnlyList<string> WinnerSeatIds,
     IReadOnlyList<string> LoserSeatIds,
     string? Reason);
+
+public sealed record ForgeStructuredRelationship(
+    string RelationshipId,
+    string Kind,
+    int? SourceForgeObjectId = null,
+    int? TargetForgeObjectId = null,
+    string? TargetSeatId = null,
+    string? GroupId = null,
+    string? Role = null,
+    int? Order = null);
 
 public sealed record ForgeStructuredPlayer(
     string SeatId,
