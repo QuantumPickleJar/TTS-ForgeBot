@@ -1419,6 +1419,22 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void HudPhaseColorIsDerivedFromAuthoritativePhaseWithoutAdvancingTurn()
+    {
+        Assert.Contains("function BridgeHudPhaseColor(phase)", Script);
+        Assert.Contains("BridgeHudStatus\", \"color\", terminal and \"#F8FAFC\" or BridgeHudPhaseColor(BridgeState.currentPhase)", Script);
+        Assert.Contains("BridgeHudRefreshPhaseRibbon()", Script);
+    }
+
+    [Fact]
+    public void CombatDecisionsCannotRenderBeforeAuthoritativeCombatPhase()
+    {
+        Assert.Contains("ignoring combat decision before phase transition", Script);
+        Assert.Contains("decision.kind == \"attacker_selection\"", Script);
+        Assert.Contains("string.find(phase, \"COMBAT\", 1, true)", Script);
+    }
+
+    [Fact]
     public void OpeningHandLibraryExtractions_AreSerializedAndSingleCardLibrariesRemainDrawable()
     {
         Assert.Contains("function BridgeQueueLibraryExtraction", Script);

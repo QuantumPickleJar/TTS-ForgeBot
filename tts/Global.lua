@@ -1626,6 +1626,7 @@ function BridgeUiFlush()
     local priority = BridgeState.prioritySeatId == "forge-player-1" and "YOUR PRIORITY"
         or (BridgeState.prioritySeatId and "OPPONENT PRIORITY" or tostring(BridgeState.statusHeadline or "FORGEBOT"))
     BridgeUiSet("BridgeHudStatus", "text", terminal and "GAME OVER" or priority)
+    BridgeUiSet("BridgeHudStatus", "color", terminal and "#F8FAFC" or BridgeHudPhaseColor(BridgeState.currentPhase))
     BridgeUiSet("BridgeHudPrompt", "text", terminal and BridgeUiTerminalLabel(terminal)
         or (decision and (decision.prompt or decision.kind or "Choose an action") or "AI THINKING..."))
     BridgeUiSet("BridgeHudMana", "text", "MANA: " .. tostring(ui.manaMode or "AUTO"))
@@ -2545,12 +2546,40 @@ function BridgeShouldIgnoreStaleDecision(decision)
     local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
     local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
     if eventCursor <= 0 or eventCursor >= applied then
+        if decision ~= nil and (decision.kind == "attacker_selection"
+            or decision.kind == "blocker_selection" or decision.kind == "blocker_assignment") then
+            local phase = string.upper(tostring(BridgeState.currentPhase or ""))
+            local combatPhase = string.find(phase, "COMBAT", 1, true) ~= nil
+                or string.find(phase, "ATTACK", 1, true) ~= nil
+                or string.find(phase, "BLOCK", 1, true) ~= nil
+                or string.find(phase, "DAMAGE", 1, true) ~= nil
+            if not combatPhase then
+                BridgeLog("[Bridge] ignoring combat decision before phase transition phase=" .. tostring(BridgeState.currentPhase))
+                return true, eventCursor, applied
+            end
+        end
         return false, eventCursor, applied
     end
 
     if decision.kind ~= "main_priority" then
-        -- Combat/target decisions can arrive after additional phase events; they
-        -- remain valid and suppressing them causes interaction softlocks.
+        -- A combat decision cannot be presented while the authoritative phase
+        -- is still draw/main. This is a stale poll result, not a valid combat
+        -- choice; presenting it alongside the draw step desynchronizes the UI.
+        if decision.kind == "attacker_selection" or decision.kind == "blocker_selection"
+            or decision.kind == "blocker_assignment" then
+            local phase = string.upper(tostring(BridgeState.currentPhase or ""))
+            local combatPhase = string.find(phase, "COMBAT", 1, true) ~= nil
+                or string.find(phase, "ATTACK", 1, true) ~= nil
+                or string.find(phase, "BLOCK", 1, true) ~= nil
+                or string.find(phase, "DAMAGE", 1, true) ~= nil
+            if not combatPhase then
+                BridgeLog("[Bridge] ignoring stale combat decision while phase=" .. tostring(BridgeState.currentPhase))
+                return true, eventCursor, applied
+            end
+        end
+        -- Other non-priority decisions can legitimately arrive after
+        -- additional phase events; retain them unless the phase contradicts
+        -- their decision kind as above.
         return false, eventCursor, applied
     end
 
@@ -9446,6 +9475,23 @@ function BridgeHudRefreshPhaseRibbon()
             phaseId == activeId and BRIDGE_HUD_COLORS.active or BRIDGE_HUD_COLORS.inactive
         )
     end
+end
+
+-- Phase presentation is derived from the authoritative Forge phase field.
+-- The HUD never advances phases; this color is only a readable cue that the
+-- state machine has already moved to a new phase.
+function BridgeHudPhaseColor(phase)
+    local value = string.upper(tostring(phase or ""))
+    if string.find(value, "UNTAP", 1, true) then return "#94A3B8" end
+    if string.find(value, "UPKEEP", 1, true) then return "#F59E0B" end
+    if string.find(value, "DRAW", 1, true) then return "#22C55E" end
+    if string.find(value, "MAIN", 1, true) then return "#38BDF8" end
+    if string.find(value, "COMBAT", 1, true)
+        or string.find(value, "ATTACK", 1, true)
+        or string.find(value, "BLOCK", 1, true)
+        or string.find(value, "DAMAGE", 1, true) then return "#F97316" end
+    if string.find(value, "END", 1, true) or string.find(value, "CLEANUP", 1, true) then return "#A78BFA" end
+    return "#F8FAFC"
 end
 
 function BridgeHudConnectionPresentation()

@@ -974,7 +974,7 @@ index 0d731bb6..18ef1187 100644
              if (c.isCreature()) {
                  desc += " (" + c.getNetPower() + "/" + c.getNetToughness() + ")";
              }
-@@ -269,25 +297,18 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -269,25 +297,20 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          Game game = getGame();
          PhaseHandler ph = game.getPhaseHandler();
 -        boolean isMyTurn = ph.isPlayerTurn(player);
@@ -1014,7 +1014,7 @@ index 0d731bb6..18ef1187 100644
  
          // Get activated abilities from permanents on the battlefield
          List<SpellAbility> activatedAbilities = getActivatedAbilities();
-@@ -296,6 +317,21 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -296,6 +319,21 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          int totalActions = landAbilities.size() + creatureAbilities.size() + artifactAbilities.size() +
                             instantAbilities.size() + sorceryAbilities.size() + activatedAbilities.size();
  
@@ -2067,7 +2067,7 @@ index 15b7a60f..0381e5b1 100644
          // Start the game
          System.out.println("Game starting...");
          System.out.println("=".repeat(60));
- 
+
          if (startStatePath != null) {
 -            // Game state was loaded, so the game is already set up
 -            // Just run the game loop
