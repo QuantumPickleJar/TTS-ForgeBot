@@ -45,3 +45,38 @@ bug: if white is attacking, we have to pass priority to advance even though it's
 Bug: pilot tokens are viable blockers, but for some reason don't get considered as such when blue attacks
 
 Flaw: blocking selection does not allow defenders to select which creature they wish to have it block, or multiples if they want it to block multiple creature.   Heavily lean on arena's gameplay solution to this
+
+Flaw: player is asked to discard to 7 cards BEFORE their end step
+
+- for multiplayer to work, UI code needs to be injected clientside
+
+- optional choices like pay 2 land to have a land enter untapped are  not presented to the player
+
+- bug: sagas and classes do not have a level counter on them (might be called loyalty by the encoder)
+
+- feature: use Arena-style "Card Carousel" in the UI.  Ideally this comes up in a new modal.  Main point is to mimic Arena's usage of card art within UI elements
+
+- bug: attackers can accidentally be stacked into a deck by placement during combat phase
+
+
+Bug: tokens from previous matches are not cleaned up between roundss
+
+bug: terramorphic expanse does not make it to the graveyard after being activated
+
+
+**
+
+bug: Mulligan of opening hands sstill places them on top of the library face-up
+
+bug: discard choices still fail
+
+CRITICAL BUG: attempting to play a land on your draw step results in skipping straight to combat phase
+
+bug: UI presents your next card before you should have access to this information (e.g before it reaches the hand)
+
+Bug: cannot cast sorceries before combat
+
+CRITICAL: sorceries with graveyard return is failing. the choice accepts but no functionality ensues and the card goes unconsumed despite it advancing the phases which is inappropriate--see logs using Tune Up
+
+Bug: lands can get misplacedin the creatures row 
+
