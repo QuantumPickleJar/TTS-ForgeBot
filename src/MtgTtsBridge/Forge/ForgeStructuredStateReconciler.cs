@@ -183,7 +183,9 @@ public sealed class ForgeStructuredStateReconciler
                     "player_state", seat.SeatId, null, null, null, null,
                     $"Authoritative player state changed for {seat.SeatId}.",
                     LifeTotal: seat.Life,
-                    PoisonCounters: seat.Poison));
+                    PoisonCounters: seat.Poison,
+                    Counters: new Dictionary<string, int>(seat.Counters, StringComparer.OrdinalIgnoreCase),
+                    Speed: seat.Speed));
             }
 
             if (beforeSeats.TryGetValue(seat.SeatId, out var beforeSeat)

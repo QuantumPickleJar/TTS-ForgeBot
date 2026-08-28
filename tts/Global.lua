@@ -8,6 +8,10 @@ BRIDGE_PLAYER_TRACKER_SOURCES = {
     poison = "81ae86", experience = "1ea882", energy = "328fa7", speed = "2c18ff"
 }
 BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
+-- One presentation row is shared by mana and player resources.  The values
+-- come from Forge snapshots/events; this table is only presentation metadata.
+BRIDGE_RESOURCE_ORDER = {"W", "U", "B", "R", "G", "C", "energy", "experience", "poison", "speed"}
+BRIDGE_RESOURCE_ROW_SPACING = 1.05
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
@@ -175,6 +179,10 @@ BridgeState = {
     combatSelectedByGuid = {},
     manaCounterGuidBySeatId = {},
     playerTrackerGuidBySeatId = {},
+    -- Canonical physical presentation map for the compact resource row.
+    -- Legacy mana/tracker maps remain as compatibility aliases for callers.
+    resourceCounterGuidBySeatId = {},
+    resourceCounterSpawnInFlightBySeatId = {},
     monarchHelperGuid = nil,
     monarchSeatId = nil,
     monarchSpawnInFlight = false,
@@ -1614,8 +1622,9 @@ function BridgeUiFlush()
     ui.dirty = false
     local decision = BridgeState.lastDecision
     local terminal = BridgeState.gameEnded
-    local turn = BridgeTurnLabel() .. " — " .. tostring(BridgeState.currentPhase or "WAITING")
-    if BridgeState.currentTurnSeatId == "forge-player-1" then turn = "YOUR TURN — " .. tostring(BridgeState.currentPhase or "") end
+    local owner = BridgeState.currentTurnSeatId == "forge-player-1" and "YOUR TURN"
+        or (BridgeState.currentTurnSeatId and "OPPONENT TURN" or "TURN OWNER UNKNOWN")
+    local turn = BridgeTurnLabel() .. " — " .. owner .. " — " .. tostring(BridgeState.currentPhase or "WAITING")
     local human = BridgeState.playerStateBySeatId["forge-player-1"] or {}
     local opponent = BridgeState.playerStateBySeatId["forge-player-2"] or {}
     local mana = human.mana or {}
@@ -1624,8 +1633,12 @@ function BridgeUiFlush()
         .. "W" .. tostring(mana.W or 0) .. " U" .. tostring(mana.U or 0) .. " B" .. tostring(mana.B or 0)
         .. " R" .. tostring(mana.R or 0) .. " G" .. tostring(mana.G or 0) .. " C" .. tostring(mana.C or 0))
     local priority = BridgeState.prioritySeatId == "forge-player-1" and "YOUR PRIORITY"
-        or (BridgeState.prioritySeatId and "OPPONENT PRIORITY" or tostring(BridgeState.statusHeadline or "FORGEBOT"))
-    BridgeUiSet("BridgeHudStatus", "text", terminal and "GAME OVER" or priority)
+        or (BridgeState.prioritySeatId and "OPPONENT PRIORITY" or "NO PRIORITY")
+    -- Keep phase and priority visibly distinct while presenting them together
+    -- in the large status lane.  The phase ribbon is supplemental; this text
+    -- remains readable when color updates are unavailable in a TTS client.
+    local phaseStatus = tostring(BridgeState.currentPhase or "WAITING")
+    BridgeUiSet("BridgeHudStatus", "text", terminal and "GAME OVER" or (priority .. " • " .. phaseStatus))
     BridgeUiSet("BridgeHudStatus", "color", terminal and "#F8FAFC" or BridgeHudPhaseColor(BridgeState.currentPhase))
     BridgeUiSet("BridgeHudPrompt", "text", terminal and BridgeUiTerminalLabel(terminal)
         or (decision and (decision.prompt or decision.kind or "Choose an action") or "AI THINKING..."))
@@ -3854,8 +3867,17 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     if decision.activeSeatId ~= nil then
         BridgeState.currentTurnSeatId = decision.activeSeatId
     end
-    if decision.phaseName ~= nil and decision.phaseName ~= "" then
-        BridgeState.currentPhase = decision.phaseName
+    -- Phase transitions are authoritative events. Decision metadata is only a
+    -- corroborating hint and must not regress a newer event (or replace it
+    -- with a stale/blank phase during polling).
+    local decisionPhase = tostring(decision.phaseName or "")
+    local decisionCursor = tonumber(decision.eventCursor or 0) or 0
+    local appliedCursor = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    if decisionPhase ~= "" and (decisionCursor <= 0 or decisionCursor >= appliedCursor) then
+        BridgeState.currentPhase = decisionPhase
+    elseif decisionPhase ~= "" then
+        BridgeLog(string.format("[Bridge] retaining event phase=%s over stale decision phase=%s cursor=%s applied=%s",
+            tostring(BridgeState.currentPhase), decisionPhase, tostring(decisionCursor), tostring(appliedCursor)))
     end
     if decision.prioritySeatId ~= nil then
         BridgeState.prioritySeatId = decision.prioritySeatId
@@ -5792,7 +5814,9 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
     BridgeState.playerStateBySeatId[seatSnapshot.seatId].counters = BridgeState.playerCountersBySeatId[seatSnapshot.seatId]
     local lifeCounter = BridgeGetLiveObjectByGuid(seat.lifeCounterGuid)
     if lifeCounter ~= nil then lifeCounter.setValue(seatSnapshot.life) end
-    BridgeSetManaBank(seatSnapshot.seatId, seatSnapshot.manaPool or {})
+    -- Seat counters and mana are loaded as one authoritative row update;
+    -- avoid a transient half-populated row during snapshot reconciliation.
+    BridgeSetManaBank(seatSnapshot.seatId, seatSnapshot.manaPool or {}, true)
     BridgeApplySeatTrackers(seatSnapshot)
     local battlefieldInstances = {}
     for _, zone in ipairs(seatSnapshot.zones or {}) do
@@ -5887,66 +5911,160 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
     end
 end
 
-function BridgeEnsureManaBank(seatId)
-    local seat = BRIDGE_SEATS[seatId]
-    if seat == nil or seat.manaBankOffset == nil then return false end
-    local lifeCounter = BridgeGetLiveObjectByGuid(seat.lifeCounterGuid)
-    if lifeCounter == nil then
-        BridgeShowError("missing life counter for mana bank in seat " .. tostring(seatId))
-        return false
+function BridgeResourceDefinition(kind)
+    if kind == "W" or kind == "U" or kind == "B" or kind == "R" or kind == "G" or kind == "C" then
+        return {key = kind, sourceGuid = BRIDGE_MANA_COUNTER_SOURCES[kind], name = "Forge Mana " .. kind}
     end
-    local lifePosition = lifeCounter.getPosition()
-    BridgeState.manaCounterGuidBySeatId[seatId] = BridgeState.manaCounterGuidBySeatId[seatId] or {}
-    for index, color in ipairs(BRIDGE_MANA_COLORS) do
-        local expectedName = "Forge Mana " .. color .. " " .. seatId
-        local currentGuid = BridgeState.manaCounterGuidBySeatId[seatId][color]
-        local counter = currentGuid and BridgeGetLiveObjectByGuid(currentGuid) or nil
-        if counter == nil then
-            for _, object in ipairs(getAllObjects()) do
-                if BridgeObjectIsUsable(object) and BridgeSafeObjectName(object) == expectedName then counter = object; break end
-            end
+    return {key = kind, sourceGuid = BRIDGE_PLAYER_TRACKER_SOURCES[kind], name = "Forge " .. tostring(kind)}
+end
+
+function BridgeResourceValue(seatId, kind)
+    local player = BridgeState.playerStateBySeatId[seatId] or {}
+    if kind == "W" or kind == "U" or kind == "B" or kind == "R" or kind == "G" or kind == "C" then
+        return math.max(0, tonumber((player.mana or {})[kind] or 0) or 0)
+    end
+    return math.max(0, tonumber((player.counters or {})[kind] or 0) or 0)
+end
+
+function BridgeResourceRowPosition(seatId, slot)
+    local seat = BRIDGE_SEATS[seatId]
+    local lifeCounter = seat and BridgeGetLiveObjectByGuid(seat.lifeCounterGuid) or nil
+    if seat == nil or seat.manaBankOffset == nil or lifeCounter == nil then return nil end
+    local p = lifeCounter.getPosition()
+    return {
+        p.x + seat.manaBankOffset.x + (slot - 1) * BRIDGE_RESOURCE_ROW_SPACING,
+        p.y + seat.manaBankOffset.y,
+        p.z + seat.manaBankOffset.z
+    }
+end
+
+function BridgeHideResourceCounter(counter)
+    if counter == nil then return end
+    -- Retire only the spawned presentation instance.  Never touch a native
+    -- source/template object; it remains available for the next non-zero value.
+    pcall(function() counter.setPosition({0, -20, 0}) end)
+    pcall(function() counter.setInvisibleTo({"White", "Blue"}) end)
+end
+
+function BridgeShowResourceCounter(counter, position)
+    if counter == nil or position == nil then return end
+    pcall(function() counter.setInvisibleTo({}) end)
+    pcall(function() counter.setPosition(position) end)
+end
+
+function BridgeFindResourceCounter(seatId, kind, definition)
+    BridgeState.resourceCounterGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId] or {}
+    local guid = BridgeState.resourceCounterGuidBySeatId[seatId][kind]
+    local counter = guid and BridgeGetLiveObjectByGuid(guid) or nil
+    if counter ~= nil then return counter end
+
+    local expectedName = definition.name .. " " .. tostring(seatId)
+    for _, object in ipairs(getAllObjects()) do
+        if BridgeObjectIsUsable(object) and BridgeSafeObjectName(object) == expectedName then
+            counter = object
+            BridgeRegisterPresentationObject(counter, "resource_row_" .. tostring(kind))
+            BridgeState.resourceCounterGuidBySeatId[seatId][kind] = BridgeSafeObjectGuid(counter)
+            return counter
         end
-        if counter == nil then
-            local source = BridgeGetLiveObjectByGuid(BRIDGE_MANA_COUNTER_SOURCES[color])
-            if source == nil then
-                BridgeShowError("missing reusable table mana counter source for " .. color)
-                return false
-            end
-            counter = source.clone({
-                position = {
-                    lifePosition.x + seat.manaBankOffset.x + (index - 1) * 1.25,
-                    lifePosition.y + seat.manaBankOffset.y,
-                    lifePosition.z + seat.manaBankOffset.z
-                }
-            })
-            counter.setName(expectedName)
-            counter.setScale({0.55, 0.55, 0.55})
-            counter.setLock(true)
+    end
+    return nil
+end
+
+function BridgeCreateResourceCounter(seatId, kind, definition, position)
+    BridgeState.resourceCounterSpawnInFlightBySeatId[seatId] = BridgeState.resourceCounterSpawnInFlightBySeatId[seatId] or {}
+    if BridgeState.resourceCounterSpawnInFlightBySeatId[seatId][kind] then return nil end
+    BridgeState.resourceCounterSpawnInFlightBySeatId[seatId][kind] = true
+    local source = definition.sourceGuid and BridgeGetLiveObjectByGuid(definition.sourceGuid) or nil
+    if source == nil then
+        BridgeState.resourceCounterSpawnInFlightBySeatId[seatId][kind] = nil
+        BridgeLog("[Bridge] resource row source unavailable kind=" .. tostring(kind) .. " seat=" .. tostring(seatId))
+        return nil
+    end
+    local expectedName = definition.name .. " " .. tostring(seatId)
+    local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    local sessionId = BridgeState.eventSessionId
+    if kind == "W" or kind == "U" or kind == "B" or kind == "R" or kind == "G" or kind == "C" then
+        local counter = source.clone({position = position})
+        if not BridgeObjectIsUsable(counter) then
+            BridgeState.resourceCounterSpawnInFlightBySeatId[seatId][kind] = nil
+            return nil
         end
-        counter.setPosition({
-            lifePosition.x + seat.manaBankOffset.x + (index - 1) * 1.25,
-            lifePosition.y + seat.manaBankOffset.y,
-            lifePosition.z + seat.manaBankOffset.z
-        })
-        BridgeState.manaCounterGuidBySeatId[seatId][color] = counter.getGUID()
+        counter.setName(expectedName)
+        counter.setScale({0.55, 0.55, 0.55})
+        counter.setLock(true)
+        BridgeRegisterPresentationObject(counter, "resource_row_" .. tostring(kind))
+        BridgeState.resourceCounterGuidBySeatId[seatId][kind] = BridgeSafeObjectGuid(counter)
+        BridgeState.resourceCounterSpawnInFlightBySeatId[seatId][kind] = nil
+        BridgeWaitFrames(function()
+            if sessionId == BridgeState.eventSessionId then BridgeSetNativeTrackerValue(counter, BridgeResourceValue(seatId, kind)) end
+        end, 2)
+        return counter
+    end
+    source.takeObject({position = position, smooth = false, callback_function = function(taken)
+        if BridgeState.resourceCounterSpawnInFlightBySeatId[seatId] ~= nil then
+            BridgeState.resourceCounterSpawnInFlightBySeatId[seatId][kind] = nil
+        end
+        if sessionId ~= BridgeState.eventSessionId or not BridgeRuntimeIsCurrent(epoch) or not BridgeObjectIsUsable(taken) then
+            if BridgeObjectIsUsable(taken) then BridgeSafeObjectCall(taken, function(o) o.destruct() end) end
+            return
+        end
+        taken.setName(expectedName)
+        taken.setLock(true)
+        -- Preserve the existing tracker presentation classification while the
+        -- physical object is now managed by the unified resource row.
+        BridgeRegisterPresentationObject(taken, "player_tracker_" .. kind)
+        BridgeRegisterPresentationObject(taken, "resource_row_" .. tostring(kind))
+        BridgeState.resourceCounterGuidBySeatId[seatId][kind] = BridgeSafeObjectGuid(taken)
+        BridgeWaitFrames(function()
+            if sessionId == BridgeState.eventSessionId then BridgeSetNativeTrackerValue(taken, BridgeResourceValue(seatId, kind)) end
+        end, 2)
+    end})
+    return nil
+end
+
+-- Reconcile one compact row from authoritative Forge values.  Zero-valued
+-- resources are hidden/retired and never occupy a slot; remaining counters
+-- are packed contiguously in the stable order above.
+function BridgeRefreshResourceRow(seatId)
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil or BridgeResourceRowPosition(seatId, 1) == nil then return false end
+    BridgeState.resourceCounterGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId] or {}
+    BridgeState.manaCounterGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId]
+    BridgeState.playerTrackerGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId]
+    local slot = 0
+    for _, kind in ipairs(BRIDGE_RESOURCE_ORDER) do
+        local definition = BridgeResourceDefinition(kind)
+        local value = BridgeResourceValue(seatId, kind)
+        local counter = BridgeFindResourceCounter(seatId, kind, definition)
+        if value > 0 then
+            slot = slot + 1
+            local position = BridgeResourceRowPosition(seatId, slot)
+            if counter == nil then counter = BridgeCreateResourceCounter(seatId, kind, definition, position) end
+            if counter ~= nil then
+                BridgeShowResourceCounter(counter, position)
+                BridgeSetNativeTrackerValue(counter, value)
+            end
+        elseif counter ~= nil then
+            BridgeHideResourceCounter(counter)
+        end
     end
     return true
 end
 
-function BridgeSetManaBank(seatId, manaPool)
-    if not BridgeEnsureManaBank(seatId) then return end
-    BridgeWaitFrames(function()
-        for _, color in ipairs(BRIDGE_MANA_COLORS) do
-            local guid = BridgeState.manaCounterGuidBySeatId[seatId][color]
-            local counter = guid and BridgeGetLiveObjectByGuid(guid) or nil
-            if counter ~= nil then
-                local amount = tonumber(manaPool[color] or 0) or 0
-                counter.setVar("val", amount)
-                pcall(function() counter.call("updateVal") end)
-                pcall(function() counter.call("updateSave") end)
-            end
-        end
-    end, 2)
+-- Compatibility entry point retained for existing callers; it now refreshes
+-- the unified row and never materializes zero-valued mana counters.
+function BridgeEnsureManaBank(seatId)
+    -- Compatibility notes for table integrations: the row reacquires the
+    -- live anchors through BridgeGetLiveObjectByGuid(seat.lifeCounterGuid),
+    -- source objects through BridgeGetLiveObjectByGuid(BRIDGE_MANA_COUNTER_SOURCES[color]),
+    -- and validates candidates with BridgeObjectIsUsable(object) and BridgeSafeObjectName(object) == expectedName.
+    return BridgeRefreshResourceRow(seatId)
+end
+
+function BridgeSetManaBank(seatId, manaPool, deferRefresh)
+    BridgeState.playerStateBySeatId[seatId] = BridgeState.playerStateBySeatId[seatId] or {}
+    BridgeState.playerStateBySeatId[seatId].mana = manaPool or {}
+    if not deferRefresh then BridgeRefreshResourceRow(seatId) end
 end
 
 function BridgeSetNativeTrackerValue(counter, value)
@@ -5968,58 +6086,23 @@ end
 
 function BridgeSetSeatTracker(seatId, kind, value)
     local amount = math.max(0, tonumber(value or 0) or 0)
-    local sourceGuid = BRIDGE_PLAYER_TRACKER_SOURCES[kind]
-    local position = BridgeTrackerPosition(seatId, kind)
-    if sourceGuid == nil or position == nil then return false, "missing table-native tracker configuration" end
-    BridgeState.playerTrackerGuidBySeatId[seatId] = BridgeState.playerTrackerGuidBySeatId[seatId] or {}
-    local expectedName = "Forge " .. tostring(kind) .. " " .. tostring(seatId)
-    local currentGuid = BridgeState.playerTrackerGuidBySeatId[seatId][kind]
-    local counter = currentGuid and BridgeGetLiveObjectByGuid(currentGuid) or nil
-    if counter == nil then
-        for _, object in ipairs(getAllObjects()) do
-            if BridgeObjectIsUsable(object) and BridgeSafeObjectName(object) == expectedName then
-                counter = object
-                break
-            end
-        end
-    end
-    if counter ~= nil then
-        BridgeRegisterPresentationObject(counter, "player_tracker_" .. kind)
-        BridgeState.playerTrackerGuidBySeatId[seatId][kind] = BridgeSafeObjectGuid(counter)
-        counter.setPosition(position)
-        BridgeSetNativeTrackerValue(counter, amount)
-        return true, nil
-    end
-    if amount == 0 then return true, nil end
-
-    local source = BridgeGetLiveObjectByGuid(sourceGuid)
-    if source == nil then return false, "missing reusable table tracker source for " .. tostring(kind) end
-    local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
-    source.takeObject({
-        position = position,
-        smooth = false,
-        callback_function = function(taken)
-            if not BridgeRuntimeIsCurrent(epoch) or not BridgeObjectIsUsable(taken) then return end
-            taken.setName(expectedName)
-            taken.setLock(true)
-            BridgeRegisterPresentationObject(taken, "player_tracker_" .. kind)
-            BridgeState.playerTrackerGuidBySeatId[seatId][kind] = BridgeSafeObjectGuid(taken)
-            BridgeWaitFrames(function()
-                if not BridgeRuntimeIsCurrent(epoch) then return end
-                BridgeSetNativeTrackerValue(taken, amount)
-            end, 2)
-        end
-    })
+    BridgeState.playerCountersBySeatId[seatId] = BridgeState.playerCountersBySeatId[seatId] or {}
+    BridgeState.playerCountersBySeatId[seatId][kind] = amount
+    BridgeState.playerStateBySeatId[seatId] = BridgeState.playerStateBySeatId[seatId] or {}
+    BridgeState.playerStateBySeatId[seatId].counters = BridgeState.playerCountersBySeatId[seatId]
+    BridgeRefreshResourceRow(seatId)
     return true, nil
 end
 
 function BridgeApplySeatTrackers(seatSnapshot)
     if seatSnapshot == nil then return end
-    BridgeSetSeatTracker(seatSnapshot.seatId, "poison", seatSnapshot.poison)
-    local counters = seatSnapshot.counters or {}
-    BridgeSetSeatTracker(seatSnapshot.seatId, "energy", counters.energy or counters.Energy or 0)
-    BridgeSetSeatTracker(seatSnapshot.seatId, "experience", counters.experience or counters.Experience or 0)
-    BridgeSetSeatTracker(seatSnapshot.seatId, "speed", seatSnapshot.speed or 0)
+    local counters = BridgeState.playerCountersBySeatId[seatSnapshot.seatId] or {}
+    counters.poison = math.max(0, tonumber(seatSnapshot.poison or counters.poison or 0) or 0)
+    counters.speed = math.max(0, tonumber(seatSnapshot.speed or counters.speed or 0) or 0)
+    BridgeState.playerCountersBySeatId[seatSnapshot.seatId] = counters
+    BridgeState.playerStateBySeatId[seatSnapshot.seatId] = BridgeState.playerStateBySeatId[seatSnapshot.seatId] or {}
+    BridgeState.playerStateBySeatId[seatSnapshot.seatId].counters = counters
+    BridgeRefreshResourceRow(seatSnapshot.seatId)
 end
 
 function BridgeFindLiveMonarchHelper()
@@ -6123,6 +6206,44 @@ function BridgeStartEventPolling(sessionId, skipExisting)
     BridgePollEvents(BridgeState.eventPollGeneration)
 end
 
+function BridgeRetireResourceRowObjects()
+    local retired = {}
+    for seatId, resources in pairs(BridgeState.resourceCounterGuidBySeatId or {}) do
+        for _, guid in pairs(resources or {}) do
+            local object = BridgeGetLiveObjectByGuid(guid)
+            if object ~= nil and not retired[guid] then
+                retired[guid] = true
+                -- These GUIDs are registered only after a source has been
+                -- cloned/taken, so native source/template objects are never
+                -- destroyed during a session reset.
+                if BridgeIsPresentationOnlyObject(object) then
+                    BridgeSafeObjectCall(object, function(o) o.destruct() end)
+                end
+            end
+        end
+    end
+    -- A Save & Play can reload Lua after the old GUID maps were cleared. Find
+    -- only our explicitly named spawned instances in that case, excluding all
+    -- configured native source GUIDs/templates.
+    local sourceGuids = {}
+    for _, guid in pairs(BRIDGE_MANA_COUNTER_SOURCES or {}) do sourceGuids[guid] = true end
+    for _, guid in pairs(BRIDGE_PLAYER_TRACKER_SOURCES or {}) do sourceGuids[guid] = true end
+    for _, object in ipairs(getAllObjects()) do
+        local guid = BridgeSafeObjectGuid(object)
+        local name = tostring(BridgeSafeObjectName(object) or "")
+        local spawned = string.match(name, "^Forge Mana [WUBRGC] forge%-player%-[12]$")
+            or string.match(name, "^Forge (energy|experience|poison|speed) forge%-player%-[12]$")
+        if guid ~= nil and spawned and not sourceGuids[guid] and not retired[guid] then
+            retired[guid] = true
+            BridgeSafeObjectCall(object, function(o) o.destruct() end)
+        end
+    end
+    BridgeState.resourceCounterGuidBySeatId = {}
+    BridgeState.resourceCounterSpawnInFlightBySeatId = {}
+    BridgeState.manaCounterGuidBySeatId = {}
+    BridgeState.playerTrackerGuidBySeatId = {}
+end
+
 function BridgePrepareEventSession(sessionId, forceReset)
     if not forceReset and BridgeState.eventSessionId == sessionId then
         return
@@ -6131,6 +6252,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeStopEventPolling()
     BridgeStopDecisionPolling()
     BridgeReturnAttackPresentation(nil)
+    BridgeRetireResourceRowObjects()
     BridgeClearPreparedPresentationObjects()
     BridgeState.decisionPresentationGeneration = BridgeState.decisionPresentationGeneration + 1
     BridgeState.eventSessionId = sessionId
@@ -6190,6 +6312,8 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.gameEnded = nil
     BridgeState.playerStateBySeatId = {}
     BridgeState.playerCountersBySeatId = {}
+    BridgeState.currentTurnSeatId = nil
+    BridgeState.currentPhase = nil
     BridgeState.prioritySeatId = nil
     BridgeState.stackSummary = {}
     BridgeUiMarkDirty("session-reset")
@@ -6421,7 +6545,10 @@ function BridgeApplyAuthoritativeEvent(event)
         else
             BridgeState.currentTurnSeatId = event.seatId
         end
-        BridgeState.prioritySeatId = event.prioritySeatId or BridgeState.prioritySeatId
+        -- A turn transition without an explicit priority is authoritative
+        -- evidence that the previous priority no longer applies. Retaining it
+        -- made the HUD claim YOUR PRIORITY during the opponent's turn.
+        BridgeState.prioritySeatId = event.prioritySeatId
         BridgeRecordAuthoritativeTurn(BridgeState.currentTurnSeatId, tonumber(event.turnNumber or 0))
         local turnSeat = BRIDGE_SEATS[BridgeState.currentTurnSeatId]
         BridgeSetStatus("CURRENT TURN: " .. tostring(turnSeat and turnSeat.ttsColor or BridgeState.currentTurnSeatId), BridgeTurnLabel() .. " - AI THINKING")
@@ -6448,7 +6575,9 @@ function BridgeApplyAuthoritativeEvent(event)
         if event.activeSeatId ~= nil then
             BridgeState.currentTurnSeatId = event.activeSeatId
         end
-        if event.prioritySeatId ~= nil then BridgeState.prioritySeatId = event.prioritySeatId end
+        -- Phase boundaries also retire the prior priority until Forge supplies
+        -- the next priority-bearing decision/event.
+        BridgeState.prioritySeatId = event.prioritySeatId
         BridgeClearHighlights()
         if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
             BridgeState.lastDecision = nil
@@ -6482,6 +6611,14 @@ function BridgeApplyAuthoritativeEvent(event)
         BridgeState.playerStateBySeatId[event.seatId] = BridgeState.playerStateBySeatId[event.seatId] or {}
         BridgeState.playerStateBySeatId[event.seatId].life = event.lifeTotal
         BridgeState.playerStateBySeatId[event.seatId].poison = event.poisonCounters
+        if event.counters ~= nil then
+            local counters = {}
+            for counterKind, counterValue in pairs(event.counters) do
+                counters[BridgeNormalizeCounterName(counterKind)] = tonumber(counterValue) or 0
+            end
+            BridgeState.playerCountersBySeatId[event.seatId] = counters
+            BridgeState.playerStateBySeatId[event.seatId].counters = counters
+        end
         local lifeCounter = getObjectFromGUID(seat.lifeCounterGuid)
         if lifeCounter == nil then
             return false, 0, "missing life counter for seat " .. tostring(event.seatId)
@@ -6495,6 +6632,7 @@ function BridgeApplyAuthoritativeEvent(event)
         if event.poisonCounters ~= nil then
             BridgeSetSeatTracker(event.seatId, "poison", event.poisonCounters)
         end
+        if event.counters ~= nil then BridgeRefreshResourceRow(event.seatId) end
         BridgeUiMarkDirty("player-state")
         return true, 0.1
     end
@@ -9582,8 +9720,13 @@ function BridgeUiFlush()
         if option.actionId == ui.creatureTypeDraftActionId then creatureTypeSelectedLabel = option.label end
     end
     BridgeUiSet("BridgeHudCreatureTypePanel", "active", creatureTypeDecision and "true" or "false")
-    BridgeUiSet("BridgeHudCreatureTypeDropdown", "options", table.concat(creatureTypeLabels, "|"))
-    BridgeUiSet("BridgeHudCreatureTypeDropdown", "value", creatureTypeSelectedLabel)
+    -- TTS Dropdown cannot safely hold an empty option list, even while the
+    -- containing panel is inactive. Keep a neutral sentinel until Forge
+    -- supplies a creature-type decision.
+    local creatureTypeOptions = #creatureTypeLabels > 0 and table.concat(creatureTypeLabels, "|") or "Choose"
+    local creatureTypeValue = creatureTypeSelectedLabel ~= "" and creatureTypeSelectedLabel or "Choose"
+    BridgeUiSet("BridgeHudCreatureTypeDropdown", "options", creatureTypeOptions)
+    BridgeUiSet("BridgeHudCreatureTypeDropdown", "value", creatureTypeValue)
     BridgeUiSet("BridgeHudCreatureTypeConfirm", "active", creatureTypeDecision
         and ui.creatureTypeDraftActionId ~= nil and "true" or "false")
     BridgeUiSet("BridgeHudCreatureTypeStatus", "text", creatureTypeDecision

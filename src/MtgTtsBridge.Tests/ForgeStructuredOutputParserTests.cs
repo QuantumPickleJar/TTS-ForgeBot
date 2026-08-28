@@ -295,6 +295,21 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void PlayerCounterChanges_AreCarriedOnAuthoritativePlayerStateEvents()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        reconciler.Apply("session-a", Parse(parser, Frame(1, Player())));
+
+        var events = reconciler.Apply("session-a", Parse(parser, Frame(2,
+            Player(counters: "{\"energy\":2,\"experience\":1}"))));
+
+        var playerState = Assert.Single(events, item => item.Kind == "player_state");
+        Assert.Equal(2, playerState.Counters!["energy"]);
+        Assert.Equal(1, playerState.Counters["experience"]);
+    }
+
+    [Fact]
     public void Reconciliation_TransportsForgeCharacteristicsControllerFacePhaseAndDesignations()
     {
         var parser = new ForgeStructuredOutputParser();
@@ -365,9 +380,10 @@ public sealed class ForgeStructuredOutputParserTests
         IReadOnlyList<string>? battlefield = null,
         IReadOnlyList<string>? graveyard = null,
         string manaPool = "{\"W\":0,\"U\":0,\"B\":0,\"R\":0,\"G\":0,\"C\":0}",
+        string counters = "{}",
         int speed = 0,
         string designations = "[]") =>
-        $$"""{"seatId":"forge-player-1","forgePlayerId":1,"displayName":"Player 1","life":20,"poison":0,"counters":{},"manaPool":{{manaPool}},"speed":{{speed}},"designations":{{designations}},"zones":[{"name":"library","cards":[{{string.Join(',', library ?? [])}}]},{"name":"hand","cards":[{{string.Join(',', hand ?? [])}}]},{"name":"battlefield","cards":[{{string.Join(',', battlefield ?? [])}}]},{"name":"graveyard","cards":[{{string.Join(',', graveyard ?? [])}}]},{"name":"exile","cards":[]}]}""";
+        $$"""{"seatId":"forge-player-1","forgePlayerId":1,"displayName":"Player 1","life":20,"poison":0,"counters":{{counters}},"manaPool":{{manaPool}},"speed":{{speed}},"designations":{{designations}},"zones":[{"name":"library","cards":[{{string.Join(',', library ?? [])}}]},{"name":"hand","cards":[{{string.Join(',', hand ?? [])}}]},{"name":"battlefield","cards":[{{string.Join(',', battlefield ?? [])}}]},{"name":"graveyard","cards":[{{string.Join(',', graveyard ?? [])}}]},{"name":"exile","cards":[]}]}""";
 
     private static string Card(
         int id,

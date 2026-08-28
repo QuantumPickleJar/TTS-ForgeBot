@@ -40,7 +40,8 @@ public sealed record AuthoritativeEventDto(
     string? MonarchSeatId = null,
     IReadOnlyList<string>? WinnerSeatIds = null,
     IReadOnlyList<string>? LoserSeatIds = null,
-    string? GameEndReason = null);
+    string? GameEndReason = null,
+    IReadOnlyDictionary<string, int>? Counters = null);
 
 public sealed record EventBatchDto(
     long RequestedAfterSequence,

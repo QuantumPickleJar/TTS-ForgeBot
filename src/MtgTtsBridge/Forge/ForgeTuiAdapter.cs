@@ -731,7 +731,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             MonarchSeatId: rawEvent.MonarchSeatId,
             WinnerSeatIds: rawEvent.WinnerSeatIds,
             LoserSeatIds: rawEvent.LoserSeatIds,
-            GameEndReason: rawEvent.GameEndReason);
+            GameEndReason: rawEvent.GameEndReason,
+            Counters: rawEvent.Counters);
         if (authoritativeEvent.Kind == "turn_changed")
         {
             _latestObservedTurnNumber = authoritativeEvent.TurnNumber ?? _latestObservedTurnNumber;

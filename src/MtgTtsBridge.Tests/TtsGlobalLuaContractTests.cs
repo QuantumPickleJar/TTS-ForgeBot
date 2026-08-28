@@ -778,6 +778,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeHudCreatureTypePanel", xml);
         Assert.Contains("id=\"BridgeHudCreatureTypePanel\" active=\"false\"", xml);
         Assert.Contains("Dropdown id=\"BridgeHudCreatureTypeDropdown\"", xml);
+        Assert.Contains("options=\"Choose\" value=\"Choose\"", xml);
         Assert.Contains("onValueChanged=\"BridgeHudCreatureTypeChanged\"", xml);
         Assert.Contains("BridgeHudCreatureTypeConfirm", xml);
         Assert.Contains("BridgeHudCreatureTypeCancel", xml);
@@ -794,6 +795,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeCreatureTypeClearDraft(\"decision-replaced\")", Script);
         Assert.Contains("BridgeCreatureTypeClearDraft(\"decision-retired\")", Script);
         Assert.Contains("BridgeCreatureTypeClearDraft(\"session-replaced\")", Script);
+        Assert.Contains("TTS Dropdown cannot safely hold an empty option list", Script);
     }
 
     [Fact]
@@ -1373,6 +1375,50 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void ResourceRowMaterializesOnlyPositiveAuthoritativeValuesAndRepacks()
+    {
+        Assert.Contains("BRIDGE_RESOURCE_ORDER = {\"W\", \"U\", \"B\", \"R\", \"G\", \"C\", \"energy\", \"experience\", \"poison\", \"speed\"}", Script);
+        Assert.Contains("function BridgeRefreshResourceRow(seatId)", Script);
+        Assert.Contains("if value > 0 then", Script);
+        Assert.Contains("slot = slot + 1", Script);
+        Assert.Contains("BridgeHideResourceCounter(counter)", Script);
+        Assert.Contains("BridgeResourceRowPosition(seatId, slot)", Script);
+        Assert.Contains("BridgeState.playerStateBySeatId[seatId].mana", Script);
+        Assert.Contains("BridgeState.playerCountersBySeatId[seatId][kind] = amount", Script);
+    }
+
+    [Fact]
+    public void ResourceRowNeverDestroysNativeTemplatesAndIsResetSafe()
+    {
+        Assert.Contains("source.clone({position = position})", Script);
+        Assert.Contains("source.takeObject({position = position", Script);
+        Assert.Contains("if BridgeIsPresentationOnlyObject(object) then", Script);
+        Assert.Contains("function BridgeRetireResourceRowObjects()", Script);
+        Assert.Contains("BridgeState.resourceCounterGuidBySeatId = {}", Script);
+        Assert.Contains("sessionId ~= BridgeState.eventSessionId", Script);
+    }
+
+    [Fact]
+    public void TurnHudSeparatesActiveTurnOwnerFromPriorityAndRetiresStalePriority()
+    {
+        Assert.Contains("local owner = BridgeState.currentTurnSeatId == \"forge-player-1\" and \"YOUR TURN\"", Script);
+        Assert.Contains("or (BridgeState.currentTurnSeatId and \"OPPONENT TURN\"", Script);
+        Assert.Contains("or \"NO PRIORITY\"", Script);
+        Assert.Contains("BridgeState.prioritySeatId = event.prioritySeatId", Script);
+        Assert.Contains("BridgeState.currentPhase = nil", Script);
+    }
+
+    [Fact]
+    public void TurnHudUsesAuthoritativePhaseAndOwnerTextInAdditionToRibbonColor()
+    {
+        Assert.Contains("BridgeTurnLabel() .. \" — \" .. owner .. \" — \"", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudTop\", \"text\", turn", Script);
+        Assert.Contains("BridgeHudRefreshPhaseRibbon()", Script);
+        Assert.Contains("BridgeUiMarkDirty(\"turn\")", Script);
+        Assert.Contains("BridgeUiMarkDirty(\"phase\")", Script);
+    }
+
+    [Fact]
     public void DuplicateSemanticLandPresentation_DefersWhenItsExactStructuredMoveIsPending()
     {
         Assert.Contains("pendingStructuredZoneTransitionByInstanceId", Script);
@@ -1432,6 +1478,14 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("ignoring combat decision before phase transition", Script);
         Assert.Contains("decision.kind == \"attacker_selection\"", Script);
         Assert.Contains("string.find(phase, \"COMBAT\", 1, true)", Script);
+    }
+
+    [Fact]
+    public void DecisionPhaseMetadataCannotRegressAuthoritativeEventPhase()
+    {
+        Assert.Contains("retaining event phase=%s over stale decision phase=%s", Script);
+        Assert.Contains("decisionCursor <= 0 or decisionCursor >= appliedCursor", Script);
+        Assert.Contains("BridgeState.currentPhase = decisionPhase", Script);
     }
 
     [Fact]
