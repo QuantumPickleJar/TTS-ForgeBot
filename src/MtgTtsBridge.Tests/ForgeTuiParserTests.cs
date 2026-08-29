@@ -914,4 +914,35 @@ public sealed class ForgeTuiParserTests
         Assert.Equal("pctx-21", Assert.IsType<ForgeTuiDecision>(first.ParsedDecision).Decision.PaymentContext?.PaymentContextId);
         Assert.Equal("pctx-22", Assert.IsType<ForgeTuiDecision>(second.ParsedDecision).Decision.PaymentContext?.PaymentContextId);
     }
+
+    [Fact]
+    public void LibrarySourceCastAction_PreservesExactForgeProvenance()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Cast creature: Youthful Valkyrie [id=321] - {1}{W} [bridge sourceZone=library actionKind=cast_spell abilityKind=spell castMode=normal costKind=printed paymentContextId=pctx-31]\n" +
+            "Enter choice (0-1): ");
+
+        var action = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions[1];
+        Assert.Equal("cast_spell", action.ActionKind);
+        Assert.Equal("library", action.SourceZone);
+        Assert.Equal("forge-object:321", action.SourceCardInstanceId);
+        Assert.Equal("pctx-31", action.Provenance?.PaymentContextId);
+    }
+
+    [Fact]
+    public void NonCastableTopLibraryCard_DoesNotEmitLibraryCastAction()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Play land: Plains [id=51]\n" +
+            "Enter choice (0-1): ");
+
+        var actions = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions;
+        Assert.DoesNotContain(actions, action => action.ActionKind == "cast_spell" && action.SourceZone == "library");
+    }
 }
