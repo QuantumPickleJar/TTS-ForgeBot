@@ -104,7 +104,8 @@ public sealed class ForgeStructuredStateReconciler
                 .Where(designation => !string.IsNullOrWhiteSpace(designation))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(designation => designation, StringComparer.Ordinal)
-                .ToArray()
+                .ToArray(),
+            IsToken = card.IsToken
         };
 
         static bool HasCreatureType(ForgeStructuredCard card) =>

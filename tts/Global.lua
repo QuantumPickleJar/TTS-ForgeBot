@@ -698,6 +698,39 @@ function BridgeFindLibraryDeckCandidatesForSeat(seatId)
     return candidates
 end
 
+function BridgeFindSingleCardLibraryCandidateForSeat(seatId)
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil then return nil end
+    local anchor = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
+    if anchor == nil then return nil end
+    local okAnchor, anchorPosition = pcall(function() return anchor.getPosition() end)
+    if not okAnchor or anchorPosition == nil then return nil end
+    local nearest = nil
+    local nearestDistance = nil
+    local radius = (seat.libraryAssetRadius or 4) + 0.75
+    for _, object in ipairs(getAllObjects()) do
+        if BridgeObjectIsUsable(object) and object.tag == "Card"
+            and not BridgeIsPresentationOnlyObject(object) then
+            local guid = BridgeSafeObjectGuid(object)
+            local mappedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
+            if guid ~= nil and (mappedZone == nil or mappedZone == "library") then
+                local okPosition, position = pcall(function() return object.getPosition() end)
+                if okPosition and position ~= nil then
+                    local dx = position.x - anchorPosition.x
+                    local dz = position.z - anchorPosition.z
+                    local distance = dx * dx + dz * dz
+                    if distance <= radius * radius
+                        and (nearestDistance == nil or distance < nearestDistance) then
+                        nearest = object
+                        nearestDistance = distance
+                    end
+                end
+            end
+        end
+    end
+    return nearest
+end
+
 function BridgeSelectNearestDeckCandidate(seat, candidates)
     if seat == nil or candidates == nil or #candidates == 0 then return nil end
     local libraryAnchor = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
@@ -756,7 +789,13 @@ function BridgeResolveSeatLibraryDeck(seatId)
         end
     end
     if #candidates == 0 then
-        return nil, candidates, "no deck candidates found near library anchor"
+        -- TTS collapses a one-card Deck into a loose Card.  That Card is still
+        -- the physical library, but it must only be promoted back to a Deck by
+        -- a verified insertion; proximity alone is never enough to clear a
+        -- Forge identity mapping.
+        local singleCard = BridgeFindSingleCardLibraryCandidateForSeat(seatId)
+        if singleCard ~= nil then return singleCard, candidates, nil end
+        return nil, candidates, "no deck or single-card library candidate found near library anchor"
     end
     return nil, candidates, "ambiguous deck candidates near library anchor"
 end
@@ -931,29 +970,40 @@ function BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat)
         local objectGuid = BridgeSafeObjectGuid(object)
         local deckGuid = BridgeSafeObjectGuid(deck)
         if objectGuid ~= nil and objectGuid == deckGuid then
-            BridgeLog("[Bridge] refused to stage a library deck into itself guid=" .. tostring(objectGuid)
+            BridgeLog("[Bridge] refused to stage a library card into itself guid=" .. tostring(objectGuid)
                 .. " seat=" .. tostring(seatId))
+            return false
+        end
+        if not BridgeRequireArtBearingLibraryCard(object, seatId, nil) then return false end
+        if deck.tag == "Card" then
+            -- TTS collapses a one-card Deck to a Card.  Form the next Deck
+            -- deterministically and let the post-bootstrap containment audit
+            -- decide whether the physical merge really happened.
+            local libraryPosition = deck.getPosition()
+            local inserted = BridgeSafeObjectCall(object, function(o)
+                o.setLock(false)
+                o.use_hands = false
+                BridgeSetPhysicalFaceDown(o, seat, true)
+                deck.setLock(false)
+                deck.use_hands = false
+                BridgeSetPhysicalFaceDown(deck, seat, true)
+                o.setPosition({libraryPosition.x, libraryPosition.y + 0.06, libraryPosition.z})
+                deck.setPosition(libraryPosition)
+            end)
+            if inserted then return true end
             return false
         end
         local inserted = BridgeSafeObjectCall(object, function(o)
             o.use_hands = false
+            o.setLock(false)
             BridgeSetPhysicalFaceDown(o, seat, true)
             deck.putObject(o)
         end)
         if inserted then return true end
     end
 
-    -- Retain a spatial fallback for unusual tables where the configured deck
-    -- cannot accept a loose card. The subsequent inventory retry will still
-    -- fail loudly if the card never becomes part of the physical library.
-    local staging = BridgeLibraryStagingPosition(seat, stagedBySeat, seatId)
-    if staging == nil then return false end
-    local staged = BridgeSafeObjectCall(object, function(o)
-        o.use_hands = false
-        BridgeSetPhysicalFaceDown(o, seat, true)
-        o.setPosition(staging)
-    end)
-    return staged
+    BridgeLog("[Bridge] refused spatial-only library staging seat=" .. tostring(seatId))
+    return false
 end
 
 function BridgeZoneAnchorCacheKey(seatId, zoneName)
@@ -1128,18 +1178,203 @@ function BridgeDeckContainsTrackedCardForSeat(deck, seatId)
     return false
 end
 
--- Insert at the container's explicit bottom index.  Rotating a TTS Deck is
--- only presentation geometry; it does not reverse the container's logical
--- getObjects/putObject order and previously left rejected hands on top.
--- The queue still serializes asynchronous merges.
-function BridgeInsertCardAtLibraryBottom(deck, object, seat)
-    if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" or not BridgeObjectIsUsable(object) then return nil end
-    local entries = deck.getObjects() or {}
-    BridgeSetPhysicalFaceDown(object, seat, true)
-    -- `getObjects` is one-based while TTS' insertion index is the slot after
-    -- the requested object. The final occupied slot is therefore `#entries +
-    -- 1`; using `#entries` left the rejected card ahead of the bottom card.
-    return deck.putObject(object, #entries + 1)
+function BridgeLibraryEntries(deck)
+    if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then return nil end
+    local entries = {}
+    local ok = pcall(function() entries = deck.getObjects() or {} end)
+    if not ok then return nil end
+    return entries
+end
+
+function BridgeLibraryContainsGuid(deck, guid)
+    if guid == nil then return false end
+    for _, entry in ipairs(BridgeLibraryEntries(deck) or {}) do
+        if tostring(entry.guid or entry.GUID or "") == tostring(guid) then return true end
+    end
+    return false
+end
+
+function BridgeAuditDuplicateLibraryGuids()
+    local looseByGuid = {}
+    for _, object in ipairs(getAllObjects()) do
+        if BridgeObjectIsUsable(object) and object.tag == "Card" then
+            local guid = BridgeSafeObjectGuid(object)
+            if guid ~= nil then
+                looseByGuid[guid] = object
+            end
+        end
+    end
+
+    local duplicates = 0
+    for _, deck in ipairs(getAllObjects()) do
+        if BridgeObjectIsUsable(deck) and deck.tag == "Deck" then
+            local deckGuid = BridgeSafeObjectGuid(deck)
+            for index, entry in ipairs(BridgeLibraryEntries(deck) or {}) do
+                local guid = entry and (entry.guid or entry.GUID) or nil
+                local loose = guid and looseByGuid[guid] or nil
+                if loose ~= nil then
+                    duplicates = duplicates + 1
+                    local identity = BridgeLibraryCardIdentity(loose) or {}
+                    BridgeLog(string.format(
+                        "[Bridge] DUPLICATE_PHYSICAL_GUID seat=%s guid=%s card=%s looseTag=%s looseCardID=%s containingDeck=%s containedIndex=%s forgeCardInstanceId=%s",
+                        tostring(BridgeSeatIdForObjectSide(loose)), tostring(guid), tostring(BridgeSafeObjectName(loose)),
+                        tostring(loose.tag), tostring(identity.cardId or -1), tostring(deckGuid), tostring(index),
+                        tostring(BridgeState.physicalInstanceIdByGuid[guid])))
+                end
+            end
+        end
+    end
+    return duplicates
+end
+
+function BridgeLibraryCardIdentity(object)
+    if not BridgeObjectIsUsable(object) or object.tag ~= "Card" then return nil end
+    local ok, data = pcall(function() return object.getData() end)
+    if not ok or type(data) ~= "table" then return nil end
+    local customDeck = data.CustomDeck
+    local hasFaceUrl = false
+    if type(customDeck) == "table" then
+        for _, deck in pairs(customDeck) do
+            if type(deck) == "table" and tostring(deck.FaceURL or "") ~= "" then
+                hasFaceUrl = true
+                break
+            end
+        end
+    end
+    return {
+        cardId = tonumber(data.CardID or data.cardID),
+        hasCustomDeck = type(customDeck) == "table" and next(customDeck) ~= nil,
+        hasFaceUrl = hasFaceUrl
+    }
+end
+
+function BridgeRequireArtBearingLibraryCard(object, seatId, cardInstanceId)
+    local identity = BridgeLibraryCardIdentity(object)
+    if identity ~= nil and identity.cardId ~= nil and identity.cardId >= 0
+        and identity.hasCustomDeck == true and identity.hasFaceUrl == true then
+        return true
+    end
+    local guid = BridgeSafeObjectGuid(object)
+    BridgeLog(string.format(
+        "[Bridge] CARD_ART_INTEGRITY_FAILURE seat=%s instance=%s guid=%s card=%s CardID=%s CustomDeck=%s FaceURL=%s",
+        tostring(seatId), tostring(cardInstanceId), tostring(guid), tostring(BridgeSafeObjectName(object)),
+        tostring(identity and identity.cardId or -1), tostring(identity and identity.hasCustomDeck or false),
+        tostring(identity and identity.hasFaceUrl or false)))
+    return false
+end
+
+function BridgeFindLibraryDeckContainingGuid(seatId, guid)
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil or guid == nil then return nil end
+    for _, deck in ipairs(BridgeFindLibraryDeckCandidatesForSeat(seatId)) do
+        if BridgeLibraryContainsGuid(deck, guid) then return deck end
+    end
+    return nil
+end
+
+function BridgeVerifyLibraryContainment(seatId, guid, callback, attempt)
+    attempt = attempt or 1
+    local library = BridgeResolveSeatLibraryDeck(seatId)
+    if library ~= nil and library.tag == "Deck" and BridgeLibraryContainsGuid(library, guid) then
+        callback(true, library, nil)
+        return
+    end
+    local containingDeck = BridgeFindLibraryDeckContainingGuid(seatId, guid)
+    if containingDeck ~= nil then
+        callback(true, containingDeck, nil)
+        return
+    end
+    if attempt >= 6 then
+        callback(false, nil, "TTS did not verify library containment for GUID " .. tostring(guid))
+        return
+    end
+    BridgeWaitFrames(function()
+        BridgeVerifyLibraryContainment(seatId, guid, callback, attempt + 1)
+    end, 2)
+end
+
+-- Every authoritative library insertion crosses this boundary.  The caller
+-- keeps its exact loose mapping until the callback proves that TTS has put the
+-- card into the physical library container.
+function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, callback, cardInstanceId)
+    callback = callback or function() end
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil then callback(false, "unknown seat"); return end
+    if not BridgeObjectIsUsable(object) or object.tag ~= "Card" then
+        callback(false, "library insertion requires a live Card object")
+        return
+    end
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then callback(false, "library insertion card has no GUID"); return end
+    if not BridgeRequireArtBearingLibraryCard(object, seatId, cardInstanceId) then
+        callback(false, "library insertion rejected an artless normal game card")
+        return
+    end
+
+    local library = BridgeResolveSeatLibraryDeck(seatId)
+    if library == nil then
+        callback(false, "no physical library container is available")
+        return
+    end
+    local mode = string.upper(tostring(placementMode or "NORMAL"))
+    local inserted = false
+    local insertError = nil
+    local ok = pcall(function()
+        object.setLock(false)
+        object.use_hands = false
+        BridgeSetPhysicalFaceDown(object, seat, true)
+        if library.tag == "Deck" then
+            local entries = BridgeLibraryEntries(library)
+            if entries == nil then error("could not inspect physical library before insertion") end
+            -- getObjects is one-based and putObject's final slot is the
+            -- explicit bottom. NORMAL intentionally leaves Forge's existing
+            -- physical order untouched; Forge remains authoritative for order.
+            if mode == "BOTTOM" then
+                library.putObject(object, #entries + 1)
+            else
+                library.putObject(object)
+            end
+            inserted = true
+        elseif library.tag == "Card" then
+            -- TTS represents a one-card Deck as a loose Card.  Stack the new
+            -- card deterministically, then require TTS to form a Deck before
+            -- publishing contained state.  This never creates or destroys a
+            -- second card.
+            local libraryPosition = library.getPosition()
+            library.setLock(false)
+            library.use_hands = false
+            BridgeSetPhysicalFaceDown(library, seat, true)
+            local yOffset = mode == "BOTTOM" and -0.06 or 0.06
+            object.setPosition({libraryPosition.x, libraryPosition.y + yOffset, libraryPosition.z})
+            library.setPosition(libraryPosition)
+            inserted = true
+        else
+            insertError = "library target is neither a Deck nor a one-card Card"
+        end
+    end)
+    if not ok then
+        callback(false, tostring(insertError or inserted))
+        return
+    end
+    if not inserted then callback(false, insertError or "physical library insertion failed"); return end
+
+    BridgeVerifyLibraryContainment(seatId, guid, function(verified, deck, verifyError)
+        if not verified then
+            BridgeLog(string.format("[Bridge] LIBRARY_CONTAINMENT_FAILURE seat=%s guid=%s reason=%s",
+                tostring(seatId), tostring(guid), tostring(verifyError)))
+            callback(false, verifyError)
+            return
+        end
+        local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids()
+        if duplicateGuidCount > 0 then
+            local duplicateError = "library insertion produced " .. tostring(duplicateGuidCount)
+                .. " loose/contained duplicate GUID(s)"
+            BridgeLog("[Bridge] " .. duplicateError)
+            callback(false, duplicateError)
+            return
+        end
+        callback(true, nil, deck)
+    end)
 end
 
 function BridgeProcessMulliganBottomQueue(seatId)
@@ -1159,37 +1394,16 @@ function BridgeProcessMulliganBottomQueue(seatId)
         BridgeProcessLibraryExtractionQueue(seatId)
     end
 
-    local deck = BridgeResolveSeatLibraryDeck(seatId)
-    if deck ~= nil and deck.tag == "Deck" and BridgeObjectIsUsable(item.object) then
-        local merged = BridgeInsertCardAtLibraryBottom(deck, item.object, BRIDGE_SEATS[seatId])
-        if merged == nil then
-            BridgeLog("[Bridge] mulligan bottom insertion returned no deck object seat=" .. tostring(seatId))
+    local guid = BridgeSafeObjectGuid(item.object)
+    local instanceId = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+    BridgeInsertPhysicalCardIntoLibrary(seatId, item.object, "BOTTOM", function(ok, err)
+        if not ok then
+            BridgeStopOnDesync("mulligan bottom library insertion failed: " .. tostring(err))
+        elseif instanceId ~= nil then
+            BridgeRecordLibraryContainedState(instanceId, seatId, BridgeState.cardNameByInstanceId[instanceId])
         end
-        BridgeWaitFrames(function()
-            complete()
-        end, 3)
-        return
-    end
-
-    -- A one-card library is not a TTS Deck yet. Put the selected card directly
-    -- beneath that one physical card, face down, so TTS can form the stack
-    -- without incorrectly leaving the mulligan card face up on top.
-    if deck ~= nil and deck.tag == "Card" and BridgeObjectIsUsable(item.object) then
-        local topPosition = deck.getPosition()
-        BridgeSetPhysicalFaceDown(item.object, BRIDGE_SEATS[seatId], true)
-        item.object.setPositionSmooth({topPosition.x, topPosition.y - 0.06, topPosition.z}, false, true)
-        BridgeWaitFrames(complete, 3)
-        return
-    end
-
-    local seat = BRIDGE_SEATS[seatId]
-    local libraryZone = seat and BridgeGetLiveObjectByGuid(seat.libraryZoneGuid) or nil
-    if BridgeObjectIsUsable(item.object) and libraryZone ~= nil then
-        BridgeSetPhysicalFaceDown(item.object, seat, true)
-        item.object.setPositionSmooth(libraryZone.getPosition(), false, true)
-    end
-    BridgeLog("[Bridge] mulligan bottom presentation degraded: no usable library deck for seat=" .. tostring(seatId))
-    complete()
+        complete()
+    end, instanceId)
 end
 
 function BridgeQueueMulliganBottomInsertion(seatId, object)
@@ -1299,15 +1513,19 @@ function BridgeReturnGraveyardPilesToLibraries(callback)
                     if cardGuid ~= nil and BridgeState.tokenPhysicalGuids[cardGuid] == true then
                         pcall(function() card.destruct() end)
                         BridgeState.tokenPhysicalGuids[cardGuid] = nil
+                        drained = drained + 1
+                        BridgeWaitFrames(nextCard, 1)
                     else
-                        local inserted = BridgeStagePhysicalCardForBootstrap(card, job.seatId, {})
-                        if not inserted then
-                            done(false, "could not return graveyard card " .. tostring(cardGuid) .. " to library")
-                            return
-                        end
+                        BridgeInsertPhysicalCardIntoLibrary(job.seatId, card, "NORMAL", function(inserted, insertError)
+                            if not inserted then
+                                done(false, "could not return graveyard card " .. tostring(cardGuid) .. " to library: " .. tostring(insertError))
+                                return
+                            end
+                            drained = drained + 1
+                            BridgeWaitFrames(nextCard, 1)
+                        end, BridgeState.physicalInstanceIdByGuid[cardGuid])
+                        return
                     end
-                    drained = drained + 1
-                    BridgeWaitFrames(nextCard, 1)
                 end
             }
             if entry.guid ~= nil then options.guid = entry.guid else options.index = entry.index end
@@ -1383,24 +1601,27 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
         end
         for _, object in ipairs(getAllObjects()) do addCandidate(object) end
 
-        local stagedBySeat = {}
-        for _, candidate in ipairs(candidates) do
-            if not BridgeStagePhysicalCardForBootstrap(candidate.object, candidate.seatId, stagedBySeat) then
-                BridgeLog("[Bridge] previous-game card return failed guid=" .. tostring(candidate.guid)
-                    .. " seat=" .. tostring(candidate.seatId) .. " zone=" .. tostring(candidate.zone))
-                if callback then callback(false, "could not return previous-game card " .. tostring(candidate.guid) .. " to library") end
+        local function insertCandidate(index)
+            if index > #candidates then
+                if #candidates > 0 then
+                    BridgeLog("[Bridge] returned " .. tostring(#candidates) .. " previous-game card(s) to libraries before reset")
+                end
+                if callback then callback(true, nil) end
                 return
             end
+            local candidate = candidates[index]
+            BridgeInsertPhysicalCardIntoLibrary(candidate.seatId, candidate.object, "NORMAL", function(inserted, insertError)
+                if not inserted then
+                    BridgeLog("[Bridge] previous-game card return failed guid=" .. tostring(candidate.guid)
+                        .. " seat=" .. tostring(candidate.seatId) .. " zone=" .. tostring(candidate.zone)
+                        .. " reason=" .. tostring(insertError))
+                    if callback then callback(false, "could not return previous-game card " .. tostring(candidate.guid) .. " to library") end
+                    return
+                end
+                insertCandidate(index + 1)
+            end, BridgeState.physicalInstanceIdByGuid[candidate.guid])
         end
-
-        if #candidates > 0 then
-            BridgeLog("[Bridge] returned " .. tostring(#candidates) .. " previous-game card(s) to libraries before reset")
-        end
-        -- Allow putObject physics/state propagation to settle before ConfigureDecks
-        -- snapshots the library contents.
-        BridgeWaitFrames(function()
-            if callback then callback(true, nil) end
-        end, 3)
+        insertCandidate(1)
     end
     BridgeReturnGraveyardPilesToLibraries(continueWithLooseCards)
 end
@@ -5266,6 +5487,15 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
                 callback(false, "snapshot session mismatch")
                 return
             end
+            local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids()
+            if duplicateGuidCount > 0 then
+                BridgeState.bootstrapping = false
+                local detail = "physical library identity audit found " .. tostring(duplicateGuidCount)
+                    .. " loose/contained duplicate GUID(s)"
+                BridgeLog("[Bridge] " .. detail)
+                callback(false, detail)
+                return
+            end
             BridgeTraceStart("START-12 physical-bootstrap-begin")
             local stagedOk, stagedError = BridgeStageSeatCardsForBootstrap(snapshot)
             if not stagedOk then
@@ -5279,6 +5509,15 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
             -- timing-based replacement for deterministic insertion above.
             BridgeTraceStart("START-13 library-settle")
             BridgeWaitFrames(function()
+                local postStageDuplicateCount = BridgeAuditDuplicateLibraryGuids()
+                if postStageDuplicateCount > 0 then
+                    BridgeState.bootstrapping = false
+                    local detail = "physical library identity audit found " .. tostring(postStageDuplicateCount)
+                        .. " loose/contained duplicate GUID(s) after staging"
+                    BridgeLog("[Bridge] " .. detail)
+                    callback(false, detail)
+                    return
+                end
                 BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
                     BridgeRunTraced("START annotate-callback", function()
                         if not annotated then
@@ -5419,6 +5658,10 @@ function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
     for _, object in ipairs(getAllObjects()) do
         if BridgeObjectIsUsable(object)
             and object.tag == "Card"
+            and (function()
+                local library = BridgeResolveSeatLibraryDeck(seatId)
+                return library == nil or BridgeSafeObjectGuid(library) ~= BridgeSafeObjectGuid(object)
+            end)()
             and IsGameCardCandidate(object, seatId, context) then
             local guid = BridgeSafeObjectGuid(object)
             local cardName = BridgePhysicalCanonicalCardName(object)
@@ -5454,9 +5697,18 @@ function BridgeBuildSeatLibraryLedger(seatSnapshot)
     end
 
     local containedCards = {}
-    local containedOk = pcall(function() containedCards = deck.getObjects() or {} end)
-    if not containedOk then
-        return nil, "library ledger could not inspect deck contents for seat " .. tostring(seatId)
+    if deck.tag == "Card" then
+        local guid = BridgeSafeObjectGuid(deck)
+        if guid == nil then return nil, "single-card library has no GUID for seat " .. tostring(seatId) end
+        if not BridgeRequireArtBearingLibraryCard(deck, seatId, nil) then
+            return nil, "single-card library contains an artless normal game card for seat " .. tostring(seatId)
+        end
+        table.insert(containedCards, {guid = guid, nickname = BridgePhysicalCanonicalCardName(deck), index = 1})
+    else
+        local containedOk = pcall(function() containedCards = deck.getObjects() or {} end)
+        if not containedOk then
+            return nil, "library ledger could not inspect deck contents for seat " .. tostring(seatId)
+        end
     end
 
     table.sort(containedCards, function(left, right)
@@ -5742,6 +5994,10 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
     local guid = BridgeState.physicalByInstanceId[card.cardInstanceId]
 
     local function continueWith(object)
+        if card.isToken ~= true and not BridgeRequireArtBearingLibraryCard(object, seatSnapshot.seatId, card.cardInstanceId) then
+            callback(false, "snapshot materialization rejected an artless normal game card")
+            return
+        end
         local actualGuid = object.getGUID()
         if guid ~= nil and actualGuid ~= guid then
             BridgeState.physicalSeatByGuid[guid] = nil
@@ -5766,6 +6022,10 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
     if object ~= nil then continueWith(object); return end
 
     local function tryTokenFallback(takeError)
+        if card.isToken ~= true then
+            callback(false, "ordinary deck card was not found in its authoritative physical zone: " .. tostring(takeError))
+            return true
+        end
         if zone.name ~= "battlefield" and zone.name ~= "graveyard" and zone.name ~= "exile" and zone.name ~= "command" then
             callback(false, takeError)
             return true
@@ -7712,6 +7972,11 @@ function BridgeApplyStructuredCardMove(event)
                     complete()
                     return
                 end
+                if not BridgeRequireArtBearingLibraryCard(drawn, event.seatId, event.cardInstanceId) then
+                    BridgeStopOnDesync(libraryDrawError("physical library returned an artless normal game card"))
+                    complete()
+                    return
+                end
                 BridgeRecordLooseCardIdentity(event.cardInstanceId, drawnGuid, event.seatId, event.destinationZone)
                 drawn.use_hands = true
                 BridgeSetPhysicalFaceDown(drawn, seat, event.faceDown == true)
@@ -7739,6 +8004,11 @@ function BridgeApplyStructuredCardMove(event)
                 function(taken, takeError)
                     if taken == nil then
                         BridgeStopOnDesync(libraryDrawError(takeError))
+                        complete()
+                        return
+                    end
+                    if not BridgeRequireArtBearingLibraryCard(taken, event.seatId, event.cardInstanceId) then
+                        BridgeStopOnDesync(libraryDrawError("physical library returned an artless normal game card"))
                         complete()
                         return
                     end
@@ -7844,7 +8114,7 @@ function BridgeApplyStructuredCardMove(event)
     end
 
     if object == nil and event.destinationZone == "battlefield"
-        and (event.sourceZone == nil or event.sourceZone == "" or event.sourceZone == "token" or event.sourceZone == "tokens") then
+        and (event.isToken == true or event.sourceZone == "token" or event.sourceZone == "tokens") then
         return moveFromTokenFetcherToBattlefield()
     end
 
@@ -7963,9 +8233,19 @@ function BridgeApplyStructuredCardMove(event)
             BridgeState.mulliganBottomInstanceIds[event.cardInstanceId] = nil
             BridgeQueueMulliganBottomInsertion(event.seatId, object)
         else
-            object.setPositionSmooth(libraryZone.getPosition(), false, true)
+            BridgeInsertPhysicalCardIntoLibrary(event.seatId, object, "NORMAL", function(inserted, insertError)
+                if not inserted then
+                    BridgeStopOnDesync(BridgePhysicalMappingError(
+                        event, "library", 0,
+                        "authoritative library move was not physically contained: " .. tostring(insertError),
+                        {mappedGuid = guid}))
+                    return
+                end
+                -- The exact loose GUID is retired only after Deck.getObjects()
+                -- proves that TTS absorbed this card.
+                BridgeRecordLibraryContainedState(event.cardInstanceId, event.seatId, event.cardName)
+            end, event.cardInstanceId)
         end
-        BridgeRecordLibraryContainedState(event.cardInstanceId, event.seatId, event.cardName)
         return true, nil
     end
 
@@ -7997,7 +8277,8 @@ end
 function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
     local seatId = BridgeSeatIdForSeatConfig(seat)
     local preferred = seatId and BridgeFindLibraryDeckForSeat(seatId) or nil
-    if preferred ~= nil and BridgeDeckContainsCardName(preferred, expectedName) then
+    if preferred ~= nil and ((preferred.tag == "Card" and BridgeCardNameMatches(BridgePhysicalCanonicalCardName(preferred), expectedName))
+        or BridgeDeckContainsCardName(preferred, expectedName)) then
         return preferred
     end
 
@@ -8032,6 +8313,8 @@ function BridgeTakeCardFromDeckByIdentity(deck, expectedName, position, smooth, 
             callback(nil, "physical single-card library mismatched authoritative identity")
             return
         end
+        deck.setLock(false)
+        deck.use_hands = true
         deck.setPositionSmooth(position, smooth == true, true)
         callback(deck, nil)
         return

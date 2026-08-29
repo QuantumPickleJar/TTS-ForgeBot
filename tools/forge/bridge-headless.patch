@@ -686,6 +686,9 @@ index 00000000..8f63342d
 +        json.append("\"currentTypes\":");
 +        appendCurrentTypes(json, card.getType());
 +        json.append(',');
++        // Printed deck cards and Forge-created tokens must never share the
++        // ordinary library-card materialization fallback in TTS.
++        property(json, "isToken", card.isToken() || card.isTokenCard()).append(',');
 +        json.append("\"cardDesignations\":[");
 +        if (card.isPrepared()) string(json, "prepared");
 +        if (card.isPrototyped()) {

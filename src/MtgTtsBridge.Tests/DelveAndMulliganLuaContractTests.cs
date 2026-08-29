@@ -66,8 +66,9 @@ public sealed class DelveAndMulliganLuaContractTests
         Assert.Contains("mulliganBottomInstanceIds", Script);
         Assert.Contains("function BridgeQueueMulliganBottomInsertion", Script);
         Assert.Contains("function BridgeProcessMulliganBottomQueue", Script);
-        Assert.Contains("function BridgeInsertCardAtLibraryBottom(deck, object, seat)", Script);
-        Assert.Contains("return deck.putObject(object, #entries + 1)", Script);
+        Assert.Contains("function BridgeInsertPhysicalCardIntoLibrary", Script);
+        Assert.Contains("library.putObject(object, #entries + 1)", Script);
+        Assert.Contains("BridgeVerifyLibraryContainment", Script);
         Assert.DoesNotContain("rotation.z + 180", Script);
     }
 

@@ -68,4 +68,7 @@ public sealed record GameCardSnapshotDto(
     public string? BattlefieldKind { get; init; }
     // Card-level designation data is Forge truth, not a counter or keyword.
     public IReadOnlyList<string> CardDesignations { get; init; } = [];
+    // Forge-created tokens are not printed deck inventory and must not use the
+    // ordinary library-card materialization fallback in TTS.
+    public bool IsToken { get; init; }
 }

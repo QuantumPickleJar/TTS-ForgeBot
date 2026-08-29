@@ -633,7 +633,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeTryGetSeatHandObjects(seatId)", Script);
         Assert.Contains("BridgeNearestSeatIdForPosition", Script);
         Assert.Contains("function BridgeLibraryStagingPosition", Script);
-        Assert.Contains("o.setPosition(staging)", Script);
+        Assert.Contains("refused spatial-only library staging", Script);
     }
 
     [Fact]
@@ -735,8 +735,9 @@ public sealed class TtsGlobalLuaContractTests
     public void SnapshotBootstrap_InsertsLooseCardsIntoTheResolvedDeckBeforeReadingTheLibraryLedger()
     {
         Assert.Contains("local deck = BridgeResolveSeatLibraryDeck(seatId)", Script);
-        Assert.Contains("refused to stage a library deck into itself", Script);
+        Assert.Contains("refused to stage a library card into itself", Script);
         Assert.Contains("deck.putObject(o)", Script);
+        Assert.Contains("BridgeAuditDuplicateLibraryGuids", Script);
         Assert.Contains("START-13 library-settle", Script);
         Assert.Contains("Wait.frames(function()", Script);
     }
@@ -747,7 +748,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgeReturnPreviousGameCardsToLibraries", Script);
         Assert.Contains("BridgeState.physicalSeatByGuid[guid]", Script);
         Assert.Contains("BridgeState.physicalZoneByGuid[guid]", Script);
-        Assert.Contains("BridgeStagePhysicalCardForBootstrap(candidate.object, candidate.seatId, stagedBySeat)", Script);
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(candidate.seatId, candidate.object, \"NORMAL\"", Script);
         Assert.Contains("TTS Deck-on-Deck operations", Script);
         Assert.Contains("if object.tag ~= \"Card\" then return false end", Script);
         Assert.Contains("object.tag ~= \"Card\" then return end", Script);
@@ -1515,10 +1516,10 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void MulliganBottomUsesExplicitDeckIndex_NotRotationHeuristic()
     {
-        Assert.Contains("function BridgeInsertCardAtLibraryBottom(deck, object, seat)", Script);
-        Assert.Contains("local entries = deck.getObjects() or {}", Script);
-        Assert.Contains("return deck.putObject(object, #entries + 1)", Script);
-        Assert.Contains("Rotating a TTS Deck is", Script);
+        Assert.Contains("function BridgeInsertPhysicalCardIntoLibrary", Script);
+        Assert.Contains("local entries = BridgeLibraryEntries(library)", Script);
+        Assert.Contains("library.putObject(object, #entries + 1)", Script);
+        Assert.Contains("BridgeVerifyLibraryContainment", Script);
         Assert.DoesNotContain("local inverted = {rotation.x, rotation.y, rotation.z + 180}", Script);
     }
 
@@ -1792,7 +1793,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeWaitFrames(function() done(true, nil) end, 2)", Script);
         Assert.Contains("local entry = entries[1]", Script);
         Assert.Contains("pile.takeObject(options)", Script);
-        Assert.Contains("BridgeStagePhysicalCardForBootstrap(card, job.seatId, {})", Script);
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(job.seatId, card, \"NORMAL\"", Script);
         Assert.Contains("BridgeReturnGraveyardPilesToLibraries(continueWithLooseCards)", Script);
         Assert.Contains("whole Deck-on-Deck merges are deliberately avoided", Script);
     }
@@ -1904,5 +1905,47 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("diagnostic report failed", Script);
         Assert.Contains("BridgeState.ui.reportStatus", Script);
         Assert.Contains("BridgeHudReportStatus", File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml")));
+    }
+    [Fact]
+    public void LibraryInsertion_RetiresIdentityOnlyAfterVerifiedContainment()
+    {
+        var start = Script.IndexOf("function BridgeInsertPhysicalCardIntoLibrary", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeProcessMulliganBottomQueue", start, StringComparison.Ordinal);
+        var insertion = Script[start..end];
+
+        Assert.Contains("object.setLock(false)", insertion);
+        Assert.Contains("library.putObject(object)", insertion);
+        Assert.Contains("BridgeVerifyLibraryContainment(seatId, guid", insertion);
+        Assert.Contains("TTS did not verify library containment", Script);
+        Assert.DoesNotContain("setPositionSmooth(libraryZone.getPosition()", insertion);
+    }
+
+    [Fact]
+    public void LibraryCorruptionCanary_DetectsLooseAndContainedGuidCollisionsWithPhysicalDetails()
+    {
+        Assert.Contains("function BridgeAuditDuplicateLibraryGuids", Script);
+        Assert.Contains("DUPLICATE_PHYSICAL_GUID", Script);
+        Assert.Contains("looseCardID", Script);
+        Assert.Contains("containingDeck", Script);
+        Assert.Contains("containedIndex", Script);
+        Assert.Contains("BridgeAuditDuplicateLibraryGuids()", Script);
+    }
+
+    [Fact]
+    public void NormalDeckCards_CannotFallThroughToTokenMaterialization()
+    {
+        var patch = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tools", "forge", "bridge-headless.patch"));
+        Assert.Contains("property(json, \"isToken\", card.isToken() || card.isTokenCard())", patch);
+        Assert.Contains("if card.isToken ~= true then", Script);
+        Assert.Contains("ordinary deck card was not found in its authoritative physical zone", Script);
+        Assert.Contains("CARD_ART_INTEGRITY_FAILURE", Script);
+    }
+
+    [Fact]
+    public void LibraryInsertion_UsesSamePrimitiveForMulliganGraveyardAndNewMatchPaths()
+    {
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(seatId, item.object, \"BOTTOM\"", Script);
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(job.seatId, card, \"NORMAL\"", Script);
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(candidate.seatId, candidate.object, \"NORMAL\"", Script);
     }
 }

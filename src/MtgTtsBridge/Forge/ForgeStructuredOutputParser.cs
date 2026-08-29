@@ -131,7 +131,8 @@ public sealed record ForgeStructuredCard(
     int? CurrentPower = null,
     int? CurrentToughness = null,
     IReadOnlyList<string>? CurrentTypes = null,
-    IReadOnlyList<string>? CardDesignations = null);
+    IReadOnlyList<string>? CardDesignations = null,
+    bool IsToken = false);
 
 public sealed class ForgeStructuredFrameException : InvalidOperationException
 {
