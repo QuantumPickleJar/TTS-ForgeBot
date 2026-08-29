@@ -439,7 +439,7 @@ public sealed class TtsGlobalLuaContractTests
     public void SnapshotBootstrap_MapsUniqueInstancesAndPreservesForgeLibraryPosition()
     {
         Assert.Contains("/api/v1/embodiment/snapshot", Script);
-        Assert.Contains("BridgeState.physicalByInstanceId[mapping.card.cardInstanceId] = guid", Script);
+        Assert.Contains("BridgeRecordLooseCardIdentity(mapping.card.cardInstanceId, guid", Script);
         Assert.Contains("count - card.zonePosition", Script);
         Assert.Contains("BridgeNormalizeCardName(card.cardName)", Script);
         Assert.Contains("hidden identities redacted", Script);
@@ -654,7 +654,7 @@ public sealed class TtsGlobalLuaContractTests
 
         var reconcile = Script.IndexOf("function BridgeReconcileSeatSnapshot", StringComparison.Ordinal);
         var collectMapping = Script.IndexOf("table.insert(mappings", reconcile, StringComparison.Ordinal);
-        var publishMapping = Script.IndexOf("BridgeState.physicalByInstanceId[mapping.card.cardInstanceId]", reconcile, StringComparison.Ordinal);
+        var publishMapping = Script.IndexOf("BridgeRecordLooseCardIdentity(mapping.card.cardInstanceId, guid", reconcile, StringComparison.Ordinal);
         Assert.True(collectMapping > reconcile);
         Assert.True(publishMapping > collectMapping);
     }
@@ -1850,7 +1850,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BLOCKING: ", Script);
         Assert.Contains("decision.contextCardName", Script);
 
-        var renderStart = Script.IndexOf("function BridgeRenderDecision(decision)", StringComparison.Ordinal);
+        var renderStart = Script.IndexOf("function BridgeRenderDecision(decision, force)", StringComparison.Ordinal);
         var renderEnd = Script.IndexOf("function BridgeShowError", renderStart, StringComparison.Ordinal);
         var renderer = Script[renderStart..renderEnd];
         Assert.Contains("BridgeClearHighlights()", renderer);
@@ -1931,7 +1931,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("presentedOwnerControllerByGuid", Script);
         Assert.Contains("BridgeState.presentedKeywordSignatureByGuid[guid] == signature", Script);
         Assert.Contains("if guid ~= nil and BridgeState.presentedCounterSignatureByGuid[guid] == signature then return true, nil end", Script);
-        Assert.Contains("presentationMetrics = {encoderRebuildCount", Script);
+        Assert.Contains("presentationMetrics = {", Script);
+        Assert.Contains("decisionRenderSkippedIdentical", Script);
         Assert.Contains("BridgePresentationMetric(\"encoderRebuildCount\")", Script);
     }
 
@@ -2039,5 +2040,64 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(seatId, item.object, \"BOTTOM\"", Script);
         Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(job.seatId, card, \"NORMAL\"", Script);
         Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(candidate.seatId, candidate.object, \"NORMAL\"", Script);
+    }
+
+    [Fact]
+    public void DecisionPresentation_UsesCompleteFingerprintAndPhysicalGenerationGuard()
+    {
+        var keyStart = Script.IndexOf("function BridgeDecisionPresentationKey", StringComparison.Ordinal);
+        var keyEnd = Script.IndexOf("function BridgeRecordDecisionPresentationRendered", keyStart, StringComparison.Ordinal);
+        var renderStart = Script.IndexOf("function BridgeRenderDecision", keyEnd, StringComparison.Ordinal);
+        var clear = Script.IndexOf("BridgeClearHighlights()", renderStart, StringComparison.Ordinal);
+        var guard = Script.IndexOf("key == BridgeState.renderedDecisionPresentationKey", renderStart, StringComparison.Ordinal);
+
+        Assert.True(keyStart >= 0 && keyEnd > keyStart && renderStart > keyEnd);
+        Assert.True(guard >= 0 && clear > guard);
+        Assert.Contains("selectedCount", Script[keyStart..keyEnd]);
+        Assert.Contains("selectedTotalPower", Script[keyStart..keyEnd]);
+        Assert.Contains("action.isSelected", Script[keyStart..keyEnd]);
+        Assert.Contains("currentPhysicalPresentationGeneration", Script);
+        Assert.Contains("decisionRenderSkippedIdentical", Script);
+    }
+
+    [Fact]
+    public void DecisionPresentation_SameIdStagedSelectionsRemainDistinct()
+    {
+        var keyStart = Script.IndexOf("function BridgeDecisionPresentationKey", StringComparison.Ordinal);
+        var keyEnd = Script.IndexOf("function BridgeRecordDecisionPresentationRendered", keyStart, StringComparison.Ordinal);
+        var key = Script[keyStart..keyEnd];
+
+        Assert.Contains("decisionId", key);
+        Assert.Contains("selectedCount", key);
+        Assert.Contains("selectedTotalPower", key);
+        Assert.Contains("action.isSelected", key);
+        Assert.Contains("action.actionId", key);
+        Assert.Contains("action.targetSeatId", key);
+    }
+
+    [Fact]
+    public void UiAttributeCache_CountsAttemptsWritesAndSkippedNoOps()
+    {
+        var start = Script.IndexOf("function BridgeUiSet", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeUiMarkDirty", start, StringComparison.Ordinal);
+        var setter = Script[start..end];
+
+        Assert.Contains("uiAttributeAttemptCount", setter);
+        Assert.Contains("uiAttributeWriteCount", setter);
+        Assert.Contains("uiAttributeSkippedCount", setter);
+        Assert.Contains("attributeCache[attribute] == nextValue", setter);
+        Assert.Contains("UI.setAttribute(id, attribute, nextValue)", setter);
+        Assert.Contains("uiAttributeUpdateCount = ui.uiAttributeWriteCount", setter);
+        Assert.True(setter.IndexOf("attributeCache[attribute] == nextValue", StringComparison.Ordinal)
+            < setter.IndexOf("UI.setAttribute(id, attribute, nextValue)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PresentationCaches_AreClearedForMountAndSessionReplacement()
+    {
+        Assert.Contains("BridgeState.ui.uiAttributeCache = {}", Script);
+        Assert.Contains("BridgeState.renderedDecisionPresentationKey = nil", Script);
+        Assert.Contains("BridgeState.renderedDecisionPhysicalGeneration = nil", Script);
+        Assert.Contains("BridgeAdvancePhysicalPresentationGeneration(\"session-replaced\")", Script);
     }
 }
