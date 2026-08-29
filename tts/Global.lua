@@ -4269,7 +4269,19 @@ function BridgeClearHighlights()
     local targetButtons = BridgeState.targetButtonIndexByGuid or {}
     for guid, buttonIndex in _pairs(targetButtons) do
         local object = BridgeGetLiveObjectByGuid(guid)
-        if object ~= nil then BridgeSafeObjectCall(object, function(o) o.removeButton(buttonIndex) end) end
+        if object ~= nil then
+            BridgeSafeObjectCall(object, function(o)
+                -- Verify button still exists before removal to avoid "Could not find matching button" errors.
+                -- TTS button indices can shift if buttons are removed during rapid decision redraws.
+                local buttons = o.getButtons() or {}
+                for _, btn in ipairs(buttons) do
+                    if btn.index == buttonIndex then
+                        o.removeButton(buttonIndex)
+                        return
+                    end
+                end
+            end)
+        end
     end
 
     BridgeState.highlightedGuids = {}
