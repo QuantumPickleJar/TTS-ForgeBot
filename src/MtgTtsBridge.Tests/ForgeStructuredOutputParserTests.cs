@@ -71,6 +71,39 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void Reconciliation_PreservesAuthoritativeBattlefieldRowForLandAndCreature()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        var initial = Parse(parser, Frame(1, Player(
+            battlefield: [
+                Card(12, "Forest", "battlefield", 0, currentTypes: "[\"basic\",\"land\"]"),
+                Card(19, "Hired Claw", "battlefield", 1, currentTypes: "[\"creature\"]")])));
+
+        Assert.Empty(reconciler.Apply("session-a", initial));
+
+        var battlefield = reconciler.Current!.Seats[0].Zones
+            .Single(zone => zone.Name == "battlefield").Cards;
+        Assert.Equal("land", battlefield.Single(card => card.ForgeCardId == 12).BattlefieldKind);
+        Assert.Equal("creature", battlefield.Single(card => card.ForgeCardId == 19).BattlefieldKind);
+    }
+
+    [Fact]
+    public void Reconciliation_CarriesBattlefieldRowOnZoneMoveEvents()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        reconciler.Apply("session-a", Parse(parser, Frame(1, Player(
+            hand: [Card(12, "Forest", "hand", 0)]))));
+
+        var events = reconciler.Apply("session-a", Parse(parser, Frame(2, Player(
+            battlefield: [Card(12, "Forest", "battlefield", 0, currentTypes: "[\"land\"]")]))) );
+
+        var moved = Assert.Single(events, item => item.Kind == "card_moved");
+        Assert.Equal("land", moved.BattlefieldKind);
+    }
+
+    [Fact]
     public void Reconciliation_DiffsLiveGameEventReasonsWithoutRequiringGameStartedReason()
     {
         var parser = new ForgeStructuredOutputParser();

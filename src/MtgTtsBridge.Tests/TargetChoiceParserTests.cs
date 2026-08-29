@@ -15,8 +15,12 @@ public sealed class TargetChoiceParserTests
             Enter choice (0-0):
             """);
 
-        var target = Assert.Single(Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions);
+        var target = Assert.Single(Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions,
+            action => action.Type == "choose_target");
         Assert.Equal("choose_target", target.Type);
         Assert.False(target.RequiresSelection);
+        var cancel = Assert.Single(Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions,
+            action => action.Type == "cancel_cast");
+        Assert.Equal("q", result.ParsedDecision.Inputs[cancel.ActionId]);
     }
 }

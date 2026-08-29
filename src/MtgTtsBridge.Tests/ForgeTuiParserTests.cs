@@ -185,7 +185,9 @@ public sealed class ForgeTuiParserTests
         var completed = parser.Append("  0. Player 1 (Life: 20)\n  1. AI-monored (Life: 20)\nEnter choice (0-1): ");
         var decision = Assert.IsType<ForgeTuiDecision>(completed.ParsedDecision);
         Assert.Equal("target_selection", decision.Decision.Kind);
-        Assert.Equal(2, decision.Decision.Actions.Count);
+        Assert.Equal(3, decision.Decision.Actions.Count);
+        var cancel = Assert.Single(decision.Decision.Actions, action => action.Type == "cancel_cast");
+        Assert.Equal("q", decision.Inputs[cancel.ActionId]);
     }
 
     [Fact]
@@ -302,7 +304,7 @@ public sealed class ForgeTuiParserTests
 
         var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
         Assert.Equal("defender_selection", decision.Kind);
-        var action = Assert.Single(decision.Actions);
+        var action = Assert.Single(decision.Actions, candidate => candidate.Type == "choose_target");
         Assert.Equal("choose_target", action.Type);
         Assert.Equal("Player 1 (Life: 20)", action.DisplayName);
         Assert.Equal(1, decision.MinSelections);
@@ -318,7 +320,7 @@ public sealed class ForgeTuiParserTests
         var result = parser.Append("Choose defender for Emberheart Challenger:\n  0. Player 1 (Life: 20)\nEnter choice (0-0): ");
 
         var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
-        var action = Assert.Single(decision.Actions);
+        var action = Assert.Single(decision.Actions, candidate => candidate.Type == "choose_target");
         Assert.Equal("choose_target", action.Type);
         Assert.Equal("player", action.TargetKind);
         Assert.Equal("forge-player-1", action.TargetSeatId);
@@ -410,8 +412,9 @@ public sealed class ForgeTuiParserTests
         var result = parser.Append("=== FORGE CHOICE ===\nChoose a player\n[kind=player_selection min=1 max=1 selected=0 ordered=false]\n  0. Player 1 (Life: 20)\n  1. AI-monored (Life: 18)\nEnter choice (0-1): ");
 
         var actions = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions;
-        Assert.Equal(["forge-player-1", "forge-player-2"], actions.Select(action => action.TargetSeatId));
-        Assert.All(actions, action =>
+        var targets = actions.Where(action => action.Type == "choose_target").ToArray();
+        Assert.Equal(["forge-player-1", "forge-player-2"], targets.Select(action => action.TargetSeatId));
+        Assert.All(targets, action =>
         {
             Assert.Equal("choose_target", action.Type);
             Assert.Equal("player", action.TargetKind);
@@ -428,7 +431,9 @@ public sealed class ForgeTuiParserTests
         var result = parser.Append("=== FORGE CHOICE ===\nChoose a player\n[kind=player_selection min=1 max=1 selected=0 ordered=false]\n  0. Player 1 (Life: 20)\n  1. AI-Legacy-Burn (Life: 20)\nEnter choice (0-1): ");
 
         var actions = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions;
-        Assert.Equal(["forge-player-1", "forge-player-2"], actions.Select(action => action.TargetSeatId));
+        Assert.Equal(["forge-player-1", "forge-player-2"], actions
+            .Where(action => action.Type == "choose_target")
+            .Select(action => action.TargetSeatId));
     }
 
     [Fact]

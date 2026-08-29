@@ -41,7 +41,8 @@ public sealed record AuthoritativeEventDto(
     IReadOnlyList<string>? WinnerSeatIds = null,
     IReadOnlyList<string>? LoserSeatIds = null,
     string? GameEndReason = null,
-    IReadOnlyDictionary<string, int>? Counters = null);
+    IReadOnlyDictionary<string, int>? Counters = null,
+    string? BattlefieldKind = null);
 
 public sealed record EventBatchDto(
     long RequestedAfterSequence,

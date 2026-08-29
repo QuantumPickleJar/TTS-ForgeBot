@@ -99,6 +99,9 @@ public sealed class ForgeStructuredStateReconciler
                 .OrderBy(type => type, StringComparer.Ordinal)
                 .ToArray())
         {
+            BattlefieldKind = string.Equals(card.Zone, "battlefield", StringComparison.OrdinalIgnoreCase)
+                ? (HasLandType(card) ? "land" : "creature")
+                : null,
             CardDesignations = (card.CardDesignations ?? [])
                 .Select(NormalizeDesignation)
                 .Where(designation => !string.IsNullOrWhiteSpace(designation))
@@ -110,6 +113,9 @@ public sealed class ForgeStructuredStateReconciler
 
         static bool HasCreatureType(ForgeStructuredCard card) =>
             card.CurrentTypes?.Any(type => string.Equals(type, "creature", StringComparison.OrdinalIgnoreCase)) == true;
+
+        static bool HasLandType(ForgeStructuredCard card) =>
+            card.CurrentTypes?.Any(type => string.Equals(type, "land", StringComparison.OrdinalIgnoreCase)) == true;
 
         var seats = source.Players.Select(player => new GameSeatSnapshotDto(
             player.SeatId,
@@ -234,7 +240,10 @@ public sealed class ForgeStructuredStateReconciler
                     sourceZone,
                     card.Zone,
                     isDraw ? $"Authoritative draw for {seatId}." : $"Authoritative zone change for card {card.ForgeCardId}.",
-                    ContainsHiddenIdentity: containsHiddenIdentity));
+                    ContainsHiddenIdentity: containsHiddenIdentity,
+                    BattlefieldKind: string.Equals(card.Zone, "battlefield", StringComparison.OrdinalIgnoreCase)
+                        ? (HasLandType(card.CurrentTypes) ? "land" : "creature")
+                        : null));
             }
 
             if (oldCard is not null && oldCard.Tapped != card.Tapped)
@@ -388,6 +397,12 @@ public sealed class ForgeStructuredStateReconciler
     private static string NormalizeType(string type) => (type ?? string.Empty).Trim().ToLowerInvariant();
 
     private static string NormalizeDesignation(string designation) => (designation ?? string.Empty).Trim().ToLowerInvariant();
+
+    private static bool HasLandType(ForgeStructuredCard card) =>
+        card.CurrentTypes?.Any(type => string.Equals(type, "land", StringComparison.OrdinalIgnoreCase)) == true;
+
+    private static bool HasLandType(IReadOnlyList<string>? types) =>
+        types?.Any(type => string.Equals(type, "land", StringComparison.OrdinalIgnoreCase)) == true;
 
     private static bool SetEqual(IReadOnlyList<string>? first, IReadOnlyList<string>? second) =>
         new HashSet<string>(first ?? [], StringComparer.OrdinalIgnoreCase)

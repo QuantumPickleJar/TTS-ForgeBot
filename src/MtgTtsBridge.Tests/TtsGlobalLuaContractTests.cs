@@ -565,6 +565,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgeAnnotateSnapshotBattlefieldKinds", Script);
         Assert.Contains("event.kind == \"land_played\"", Script);
         Assert.Contains("landByInstanceId[card.cardInstanceId]", Script);
+        Assert.Contains("local snapshotRow = zoneName == \"battlefield\"", Script);
+        Assert.Contains("ROW_PLACEMENT seat=", Script);
+        Assert.Contains("event.battlefieldKind", Script);
     }
 
     [Fact]

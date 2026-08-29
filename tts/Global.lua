@@ -1939,11 +1939,15 @@ function BridgeUiFlush()
     for _, action in ipairs(actions) do
         if action.type == "pass_priority" then hasPass = true; hasYield = true end
     end
+    local targetCanCancel = decision ~= nil and decision.allowsCancel == true
+        and (decision.kind == "target_selection" or decision.kind == "defender_selection"
+            or decision.kind == "player_selection")
     BridgeUiSet("BridgeHudPass", "active", hasPass and "true" or "false")
     BridgeUiSet("BridgeHudYield", "active", hasYield and "true" or "false")
     BridgeUiSet("BridgeHudConfirm", "active", decision and BridgeDecisionNeedsConfirmation(decision) and "true" or "false")
-    BridgeUiSet("BridgeHudCancel", "active", decision and BridgeDecisionNeedsConfirmation(decision)
-        and not BridgeIsStructuredForgeToggleChoice(decision) and "true" or "false")
+    BridgeUiSet("BridgeHudCancel", "active", decision and
+        ((BridgeDecisionNeedsConfirmation(decision) and not BridgeIsStructuredForgeToggleChoice(decision))
+            or targetCanCancel) and "true" or "false")
     BridgeUiSet("BridgeHudNewMatch", "active", terminal and "true" or "false")
     BridgeUiSet("BridgeHudNewMatch", "text", BridgeState.resetConfirmationArmed and "CONFIRM NEW MATCH" or "NEW MATCH")
     local footer = terminal and "NEW MATCH is available on the table."
@@ -3033,7 +3037,6 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     end
     BridgeUiMarkDirty("stack")
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
-        BridgeApplySeatSnapshotVisualState(seatSnapshot)
         for _, zone in ipairs(seatSnapshot.zones or {}) do
             local zoneName = string.lower(tostring(zone.name or ""))
             if BridgeZoneIsPublicForReconcile(zoneName) then
@@ -3041,7 +3044,11 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                     local mappedGuid = BridgeState.physicalByInstanceId[card.cardInstanceId]
                     local mappedObject = mappedGuid and getObjectFromGUID(mappedGuid) or nil
                     local mappedZone = mappedGuid and BridgeState.physicalZoneByGuid[mappedGuid] or nil
+                    local snapshotRow = zoneName == "battlefield"
+                        and (card.battlefieldKind == "land" and "land" or "creature") or nil
+                    local priorRow = BridgeState.battlefieldKindByInstanceId[card.cardInstanceId]
                     local mappedNeedsFix = mappedObject == nil or mappedObject.tag ~= "Card" or mappedZone ~= zoneName
+                        or (snapshotRow ~= nil and priorRow ~= nil and priorRow ~= snapshotRow)
                     if mappedNeedsFix then
                         -- The log intentionally omits cardName: a snapshot can
                         -- contain identities that should not be public chat.
@@ -3063,6 +3070,10 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                         else
                             BridgeLog("[Bridge] snapshot reconcile skipped a move: " .. tostring(moveError))
                         end
+                    end
+
+                    if snapshotRow ~= nil then
+                        BridgeState.battlefieldKindByInstanceId[card.cardInstanceId] = snapshotRow
                     end
 
                     local guid = BridgeState.physicalByInstanceId[card.cardInstanceId]
@@ -4905,7 +4916,14 @@ function BridgeEnsureSelectionControls(decision)
         or decision.kind == "blocker_selection" or decision.kind == "blocker_assignment") then
         return
     end
-    if not BridgeDecisionNeedsConfirmation(decision) or #(BridgeState.selectionControlGuids or {}) > 0 then return end
+    if not BridgeDecisionNeedsConfirmation(decision)
+        and not (decision ~= nil and decision.allowsCancel == true
+            and (decision.kind == "target_selection" or decision.kind == "defender_selection"
+                or decision.kind == "player_selection")) then return end
+    local targetCanCancel = decision ~= nil and decision.allowsCancel == true
+        and (decision.kind == "target_selection" or decision.kind == "defender_selection"
+            or decision.kind == "player_selection")
+    if #(BridgeState.selectionControlGuids or {}) > 0 then return end
     local seat = BRIDGE_SEATS[decision.seatId]
     if seat == nil then return end
     local function spawnSelectionControl(name, label, x, color, callback)
@@ -4933,8 +4951,12 @@ function BridgeEnsureSelectionControls(decision)
             end
         })
     end
-    spawnSelectionControl("Forge Confirm Selection", "DONE /\nCONFIRM", 2.0, {0.12, 0.52, 0.24}, "BridgeConfirmSelection")
-    if not BridgeIsStructuredForgeToggleChoice(decision) then
+    if BridgeDecisionNeedsConfirmation(decision) then
+        spawnSelectionControl("Forge Confirm Selection", "DONE /\nCONFIRM", 2.0, {0.12, 0.52, 0.24}, "BridgeConfirmSelection")
+    end
+    if targetCanCancel then
+        spawnSelectionControl("Forge Cancel Cast", "CANCEL /\nCAST", 7.5, {0.65, 0.2, 0.12}, "BridgeCancelSelection")
+    elseif not BridgeIsStructuredForgeToggleChoice(decision) then
         spawnSelectionControl("Forge Cancel Selection", "CANCEL /\nUNDO", 7.5, {0.65, 0.2, 0.12}, "BridgeCancelSelection")
     end
 end
@@ -5041,6 +5063,24 @@ function BridgeCancelSelection(object, playerColor, altClick)
         BridgeLog("[Bridge] STRUCTURED_CANCEL_BLOCKED decision=" .. tostring(decision.decisionId)
             .. " reason=no_forge_cancel_action")
         BridgeShowError("Forge-owned selection cannot be cancelled here; deselect cards through Forge choices")
+        return
+    end
+    if decision ~= nil and decision.allowsCancel == true then
+        local cancelAction = nil
+        for _, action in ipairs(decision.actions or {}) do
+            if action.type == "cancel_cast" then
+                cancelAction = action
+                break
+            end
+        end
+        if cancelAction == nil then
+            BridgeShowError("Forge supplied no current cast-cancel action")
+            return
+        end
+        BridgeClaimHumanTtsColor(decision.seatId, playerColor)
+        BridgeClearHighlights()
+        BridgeResetSelectionState()
+        BridgeSubmitChoice(decision.decisionId, cancelAction.actionId, "physical_cancel_cast")
         return
     end
     BridgeResetSelectionState()
@@ -6233,6 +6273,8 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
     for _, zone in ipairs(seatSnapshot.zones or {}) do
         if zone.name == "battlefield" then
             for _, card in ipairs(zone.cards or {}) do
+                BridgeState.battlefieldKindByInstanceId[card.cardInstanceId] = card.battlefieldKind == "land"
+                    and "land" or "creature"
                 battlefieldInstances[card.cardInstanceId] = true
                 local designations = {}
                 for _, designation in ipairs(card.cardDesignations or {}) do
@@ -9729,6 +9771,13 @@ function BridgePhysicalMappingError(event, expectedZone, candidateCount, detail,
 end
 
 function BridgeMoveToBattlefield(event, object, row)
+    row = row == "land" and "land" or "creature"
+    if event ~= nil and event.cardInstanceId ~= nil then
+        BridgeState.battlefieldKindByInstanceId[event.cardInstanceId] = row
+    end
+    BridgeLog(string.format("[Bridge] ROW_PLACEMENT seat=%s instance=%s row=%s source=%s destination=%s",
+        tostring(event and event.seatId), tostring(event and event.cardInstanceId), tostring(row),
+        tostring(event and event.sourceZone), tostring(event and event.destinationZone)))
     local destination, positionError = BridgeBattlefieldPosition(event.seatId, row)
     if destination == nil then
         return false, positionError

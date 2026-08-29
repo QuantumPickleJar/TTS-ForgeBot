@@ -128,7 +128,7 @@ public sealed partial class ForgeTuiParser
         var decisionId = reuseCollectionDecision
             ? _activeCollectionDecisionId!
             : $"forge-tui-{_decisionNumber}";
-        var bridgeActions = actions.Select(option => BuildAction(option, decisionId, kind)).ToArray();
+        var bridgeActions = actions.Select(option => BuildAction(option, decisionId, kind)).ToList();
         var mulliganStage = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["mulliganStage"].Value) : null;
         var selectionKind = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["selectionKind"].Value) : null;
         var forgeCollectionRequiresDone = selectionMetadata.Success
@@ -141,6 +141,30 @@ public sealed partial class ForgeTuiParser
                 AllowsCancel: true,
                 IsOrdered: string.Equals(selectionMetadata.Groups["ordered"].Value, "true", StringComparison.OrdinalIgnoreCase))
             : GetSelectionShape(kind, bridgeActions);
+
+        // Target selection is a cancellable follow-up to casting. Keep the
+        // cancel intent explicit in the same decision so the bridge can send
+        // Forge's supported textual cancel command instead of inventing a
+        // local rollback.
+        var cancelActionId = $"{decisionId}-cancel";
+        var targetDecision = kind is "target_selection" or "defender_selection" or "player_selection";
+        if (targetDecision && shape.AllowsCancel)
+        {
+            bridgeActions.Add(new LegalActionDto(
+                ActionId: cancelActionId,
+                Type: "cancel_cast",
+                DisplayName: "Cancel casting",
+                RequiresFollowup: false,
+                CardIdentity: null,
+                ObjectIdentity: null,
+                ActionKind: "cancel_cast",
+                ShortLabel: "Cancel casting"));
+        }
+        var inputMap = actions.ToDictionary(
+            option => $"{decisionId}-choice-{option.Number}",
+            option => GetInputValue(option, kind, prompt.Value),
+            StringComparer.Ordinal);
+        if (targetDecision && shape.AllowsCancel) inputMap[cancelActionId] = "q";
 
         return ForgeTuiParserResult.Decision(new ForgeTuiDecision(
             new DecisionDto(
@@ -174,10 +198,7 @@ public sealed partial class ForgeTuiParser
                 SelectedTotalPower = selectionMetadata.Success && selectionMetadata.Groups["selectedTotalPower"].Success
                     ? int.Parse(selectionMetadata.Groups["selectedTotalPower"].Value, CultureInfo.InvariantCulture) : null,
             },
-            actions.ToDictionary(
-                option => $"{decisionId}-choice-{option.Number}",
-                option => GetInputValue(option, kind, prompt.Value),
-                StringComparer.Ordinal)));
+             inputMap));
     }
 
     private static string GetInputValue(ForgeTuiMenuOption option, string kind, string inputPrompt)

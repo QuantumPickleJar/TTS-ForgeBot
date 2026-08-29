@@ -132,7 +132,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             if (snapshot is null) return Task.FromResult<GameSnapshotDto?>(null);
             GameCardSnapshotDto Annotate(GameCardSnapshotDto card) => card with
             {
-                BattlefieldKind = _landCardInstanceIds.Contains(card.CardInstanceId) ? "land" : null
+                // Preserve structured currentTypes for cards already known to
+                // be on the battlefield. The event-derived land set is only a
+                // compatibility fallback for older producer frames.
+                BattlefieldKind = card.BattlefieldKind
+                    ?? (_landCardInstanceIds.Contains(card.CardInstanceId) ? "land" : null)
             };
             return Task.FromResult<GameSnapshotDto?>(snapshot with
             {
@@ -737,7 +741,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             WinnerSeatIds: rawEvent.WinnerSeatIds,
             LoserSeatIds: rawEvent.LoserSeatIds,
             GameEndReason: rawEvent.GameEndReason,
-            Counters: rawEvent.Counters);
+            Counters: rawEvent.Counters,
+            BattlefieldKind: rawEvent.BattlefieldKind);
         if (authoritativeEvent.Kind == "turn_changed")
         {
             _latestObservedTurnNumber = authoritativeEvent.TurnNumber ?? _latestObservedTurnNumber;
