@@ -414,6 +414,7 @@ index 00000000..8f63342d
 +import com.google.common.collect.Multiset;
 +import com.google.common.eventbus.Subscribe;
 +import forge.card.MagicColor;
++import forge.card.CardType;
 +import forge.card.CardTypeView;
 +import forge.game.Game;
 +import forge.game.GameEntity;
@@ -723,7 +724,8 @@ index 00000000..8f63342d
 +        property(json, "currentManaValue", card.getCMC()).append(',');
 +        json.append("\"currentColors\":[");
 +        boolean firstColor = true;
-+        for (byte mask : card.getColor().getColor()) {
++        for (byte mask : forge.card.MagicColor.WUBRG) {
++            if (!card.getColor().hasAnyColor(mask)) continue;
 +            if (!firstColor) json.append(',');
 +            firstColor = false;
 +            string(json, forge.card.MagicColor.toLongString(mask).toLowerCase(java.util.Locale.ROOT));
@@ -1143,7 +1145,7 @@ index 0d731bb6..08ae9604 100644
 +    }
 +
 +    private String bridgeCostKind(forge.game.cost.CostPart part) {
-+        if (part instanceof forge.game.cost.CostPartMana || part instanceof forge.game.cost.CostPayMana) return "mana";
++        if (part instanceof forge.game.cost.CostPartMana) return "mana";
 +        if (part instanceof forge.game.cost.CostDiscard) return "discard";
 +        if (part instanceof forge.game.cost.CostSacrifice) return "sacrifice";
 +        if (part instanceof forge.game.cost.CostExile) return "exile";
@@ -1291,7 +1293,8 @@ index 0d731bb6..08ae9604 100644
 -                           uniqueInstants.size() + uniqueSorceries.size() + uniqueActivated.size();
 -
          // Show options to user with context-appropriate header
-         if (!isMyTurn) {
+-        if (!isMyTurn) {
++        if (!isActivePlayersTurn) {
              System.out.println("\n=== OPPONENT'S TURN ===");
 @@ -363,40 +537,43 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          // Show land options
