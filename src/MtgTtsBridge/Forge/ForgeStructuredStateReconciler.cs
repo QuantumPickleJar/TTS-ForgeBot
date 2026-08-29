@@ -63,6 +63,50 @@ public sealed class ForgeStructuredStateReconciler
 
     private static GameSnapshotDto ConvertSnapshot(string sessionId, ForgeStructuredSnapshot source)
     {
+        static CurrentCharacteristicsDto? ConvertCharacteristics(ForgeStructuredCard card)
+        {
+            if (card.Characteristics is null) return null;
+            var sourceCharacteristics = card.Characteristics;
+            return new CurrentCharacteristicsDto(
+                CurrentCardName: sourceCharacteristics.CurrentCardName,
+                CurrentManaCost: sourceCharacteristics.CurrentManaCost,
+                CurrentManaValue: sourceCharacteristics.CurrentManaValue,
+                CurrentColors: (sourceCharacteristics.CurrentColors ?? [])
+                    .Select(NormalizeColor)
+                    .Where(color => !string.IsNullOrWhiteSpace(color))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(color => color, StringComparer.Ordinal)
+                    .ToArray(),
+                CurrentSupertypes: (sourceCharacteristics.CurrentSupertypes ?? [])
+                    .Select(NormalizeType)
+                    .Where(type => !string.IsNullOrWhiteSpace(type))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(type => type, StringComparer.Ordinal)
+                    .ToArray(),
+                CurrentCardTypes: (sourceCharacteristics.CurrentCardTypes ?? [])
+                    .Select(NormalizeType)
+                    .Where(type => !string.IsNullOrWhiteSpace(type))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(type => type, StringComparer.Ordinal)
+                    .ToArray(),
+                CurrentSubtypes: (sourceCharacteristics.CurrentSubtypes ?? [])
+                    .Select(NormalizeType)
+                    .Where(type => !string.IsNullOrWhiteSpace(type))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(type => type, StringComparer.Ordinal)
+                    .ToArray(),
+                CurrentPower: sourceCharacteristics.CurrentPower,
+                CurrentToughness: sourceCharacteristics.CurrentToughness,
+                CurrentLoyalty: sourceCharacteristics.CurrentLoyalty,
+                CurrentDefense: sourceCharacteristics.CurrentDefense,
+                CurrentKeywords: (sourceCharacteristics.CurrentKeywords ?? [])
+                    .Select(NormalizeKeyword)
+                    .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(keyword => keyword, StringComparer.Ordinal)
+                    .ToArray());
+        }
+
         GameCardSnapshotDto ConvertCard(ForgeStructuredCard card) => new(
             CardInstanceId: $"forge:{sessionId}:{card.ForgeCardId}",
             ForgeCardId: card.ForgeCardId,
@@ -108,7 +152,8 @@ public sealed class ForgeStructuredStateReconciler
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(designation => designation, StringComparer.Ordinal)
                 .ToArray(),
-            IsToken = card.IsToken
+            IsToken = card.IsToken,
+            Characteristics = ConvertCharacteristics(card)
         };
 
         static bool HasCreatureType(ForgeStructuredCard card) =>
@@ -267,7 +312,8 @@ public sealed class ForgeStructuredStateReconciler
 
             if (oldCard is not null
                 && (!string.Equals(oldCard.CurrentCardName, card.CurrentCardName, StringComparison.Ordinal)
-                    || !SetEqual(oldCard.CurrentTypes, card.CurrentTypes)))
+                    || !SetEqual(oldCard.CurrentTypes, card.CurrentTypes)
+                    || !CharacteristicsEqual(oldCard.Characteristics, card.Characteristics)))
             {
                 events.Add(new ForgeTuiRawEvent(
                     "characteristic_changed", seatId, card.CardName, card.ForgeCardId,
@@ -275,7 +321,10 @@ public sealed class ForgeStructuredStateReconciler
                     CurrentCardName: card.CurrentCardName,
                     CurrentTypes: card.CurrentTypes,
                     CurrentPower: card.CurrentPower,
-                    CurrentToughness: card.CurrentToughness));
+                    CurrentToughness: card.CurrentToughness)
+                {
+                    Characteristics = card.Characteristics
+                });
             }
 
             if (oldCard is not null && oldCard.FaceDown != card.FaceDown)
@@ -396,6 +445,8 @@ public sealed class ForgeStructuredStateReconciler
 
     private static string NormalizeType(string type) => (type ?? string.Empty).Trim().ToLowerInvariant();
 
+    private static string NormalizeColor(string color) => (color ?? string.Empty).Trim().ToLowerInvariant();
+
     private static string NormalizeDesignation(string designation) => (designation ?? string.Empty).Trim().ToLowerInvariant();
 
     private static bool HasLandType(ForgeStructuredCard card) =>
@@ -421,6 +472,24 @@ public sealed class ForgeStructuredStateReconciler
         IReadOnlyDictionary<string, int> first,
         IReadOnlyDictionary<string, int> second) =>
         first.Count == second.Count && first.All(pair => second.TryGetValue(pair.Key, out var value) && value == pair.Value);
+
+    private static bool CharacteristicsEqual(CurrentCharacteristicsDto? first, CurrentCharacteristicsDto? second)
+    {
+        if (ReferenceEquals(first, second)) return true;
+        if (first is null || second is null) return false;
+        return string.Equals(first.CurrentCardName, second.CurrentCardName, StringComparison.Ordinal)
+            && string.Equals(first.CurrentManaCost, second.CurrentManaCost, StringComparison.Ordinal)
+            && first.CurrentManaValue == second.CurrentManaValue
+            && SetEqual(first.CurrentColors, second.CurrentColors)
+            && SetEqual(first.CurrentSupertypes, second.CurrentSupertypes)
+            && SetEqual(first.CurrentCardTypes, second.CurrentCardTypes)
+            && SetEqual(first.CurrentSubtypes, second.CurrentSubtypes)
+            && string.Equals(first.CurrentPower, second.CurrentPower, StringComparison.Ordinal)
+            && string.Equals(first.CurrentToughness, second.CurrentToughness, StringComparison.Ordinal)
+            && first.CurrentLoyalty == second.CurrentLoyalty
+            && first.CurrentDefense == second.CurrentDefense
+            && SetEqual(first.CurrentKeywords, second.CurrentKeywords);
+    }
 
     private static readonly IReadOnlyDictionary<string, int> EmptyManaPool =
         new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);

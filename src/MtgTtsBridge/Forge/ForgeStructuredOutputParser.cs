@@ -131,8 +131,23 @@ public sealed record ForgeStructuredCard(
     int? CurrentPower = null,
     int? CurrentToughness = null,
     IReadOnlyList<string>? CurrentTypes = null,
+    ForgeStructuredCharacteristics? Characteristics = null,
     IReadOnlyList<string>? CardDesignations = null,
     bool IsToken = false);
+
+public sealed record ForgeStructuredCharacteristics(
+    string CurrentCardName,
+    string? CurrentManaCost = null,
+    int? CurrentManaValue = null,
+    IReadOnlyList<string>? CurrentColors = null,
+    IReadOnlyList<string>? CurrentSupertypes = null,
+    IReadOnlyList<string>? CurrentCardTypes = null,
+    IReadOnlyList<string>? CurrentSubtypes = null,
+    string? CurrentPower = null,
+    string? CurrentToughness = null,
+    int? CurrentLoyalty = null,
+    int? CurrentDefense = null,
+    IReadOnlyList<string>? CurrentKeywords = null);
 
 public sealed class ForgeStructuredFrameException : InvalidOperationException
 {

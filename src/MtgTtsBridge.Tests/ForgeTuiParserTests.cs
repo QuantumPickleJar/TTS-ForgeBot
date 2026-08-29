@@ -826,4 +826,46 @@ public sealed class ForgeTuiParserTests
         Assert.Equal("forge-object:77", action.SourceCardInstanceId);
         Assert.DoesNotContain("Unearth", action.DisplayName, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void PaymentContextAndCostComponents_AreParsedFromBridgeRecords()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "Choose optional costs for Spell\n" +
+            "[bridge paymentContextId=pctx-7 originActionId=forge-tui-4-choice-1 sourceCardId=42 sourceZone=graveyard actionKind=cast_spell castMode=flashback paymentStage=optional_cost]\n" +
+            "[bridge costComponent paymentContextId=pctx-7 componentId=pctx-7-c0 kind=mana displayLabel=%7B2%7D%7BU%7D requiredValue=%7B2%7D%7BU%7D]\n" +
+            "[bridge costComponent paymentContextId=pctx-7 componentId=pctx-7-c1 kind=exile displayLabel=Exile+cards+from+graveyard sourceZone=graveyard selectionKind=cards minSelections=0 maxSelections=3]\n" +
+            "[kind=payment_option min=0 max=2 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Kicker\nEnter choice (0-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        var payment = Assert.IsType<MtgTtsBridge.Contracts.Actions.PaymentContextDto>(decision.PaymentContext);
+        Assert.Equal("pctx-7", payment.PaymentContextId);
+        Assert.Equal("forge-tui-4-choice-1", payment.OriginActionId);
+        Assert.Equal("forge-object:42", payment.SourceCardInstanceId);
+        Assert.Equal("graveyard", payment.SourceZone);
+        Assert.Equal("cast_spell", payment.ActionKind);
+        Assert.Equal("flashback", payment.CastMode);
+        Assert.Equal(2, payment.CostComponents!.Count);
+        Assert.Equal(["pctx-7-c0", "pctx-7-c1"], payment.CostComponents.Select(component => component.CostComponentId));
+        Assert.Equal("{2}{U}", payment.CostComponents[0].DisplayLabel);
+        Assert.Equal("Exile cards from graveyard", payment.CostComponents[1].DisplayLabel);
+    }
+
+    [Fact]
+    public void ActionProvenance_PreservesPaymentContextFromBridgeSuffix()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Cast instant: Think Twice [id=71] - {2}{U} [bridge sourceZone=graveyard actionKind=cast_spell abilityKind=spell castMode=flashback costKind=alternative displayManaCost={2}{U} paymentContextId=pctx-13]\n" +
+            "Enter choice (0-1): ");
+
+        var action = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions[1];
+        Assert.Equal("pctx-13", action.Provenance?.PaymentContextId);
+        Assert.Equal("flashback", action.Provenance?.CastMode);
+    }
 }
