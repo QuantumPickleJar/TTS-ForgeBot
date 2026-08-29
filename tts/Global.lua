@@ -1277,9 +1277,12 @@ function BridgeFindLibraryDeckContainingGuid(seatId, guid)
     return nil
 end
 
-function BridgeVerifyLibraryContainment(seatId, guid, callback, attempt)
+function BridgeVerifyLibraryContainment(seatId, guid, callback, attempt, preferredLibrary)
     attempt = attempt or 1
-    local library = BridgeResolveSeatLibraryDeck(seatId)
+    local library = preferredLibrary
+    if library == nil or not BridgeObjectIsUsable(library) or library.tag ~= "Deck" then
+        library = BridgeResolveSeatLibraryDeck(seatId)
+    end
     if library ~= nil and library.tag == "Deck" and BridgeLibraryContainsGuid(library, guid) then
         callback(true, library, nil)
         return
@@ -1294,6 +1297,9 @@ function BridgeVerifyLibraryContainment(seatId, guid, callback, attempt)
         return
     end
     BridgeWaitFrames(function()
+        -- A putObject operation may replace the physical Deck while TTS is
+        -- settling. Re-resolve the live container on every retry instead of
+        -- retaining a stale Deck reference from the previous frame.
         BridgeVerifyLibraryContainment(seatId, guid, callback, attempt + 1)
     end, 2)
 end
@@ -1324,6 +1330,7 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
     local mode = string.upper(tostring(placementMode or "NORMAL"))
     local inserted = false
     local insertError = nil
+    local resultingLibrary = nil
     local ok = pcall(function()
         object.setLock(false)
         object.use_hands = false
@@ -1335,16 +1342,17 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
             -- explicit bottom. NORMAL intentionally leaves Forge's existing
             -- physical order untouched; Forge remains authoritative for order.
             if mode == "BOTTOM" then
-                library.putObject(object, #entries + 1)
+                resultingLibrary = library.putObject(object, #entries + 1)
             else
-                library.putObject(object)
+                resultingLibrary = library.putObject(object)
             end
             inserted = true
         elseif library.tag == "Card" then
-            -- TTS represents a one-card Deck as a loose Card.  Stack the new
-            -- card deterministically, then require TTS to form a Deck before
-            -- publishing contained state.  This never creates or destroys a
-            -- second card.
+            -- TTS represents a one-card Deck as a loose Card.  Use the same
+            -- container insertion primitive as the normal path so TTS forms
+            -- the resulting Deck deterministically.  Merely positioning two
+            -- cards together is not containment and can leave both cards
+            -- loose after a reset or mulligan.
             local libraryPosition = library.getPosition()
             library.setLock(false)
             library.use_hands = false
@@ -1352,6 +1360,7 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
             local yOffset = mode == "BOTTOM" and -0.06 or 0.06
             object.setPosition({libraryPosition.x, libraryPosition.y + yOffset, libraryPosition.z})
             library.setPosition(libraryPosition)
+            resultingLibrary = library.putObject(object)
             inserted = true
         else
             insertError = "library target is neither a Deck nor a one-card Card"
@@ -1379,7 +1388,7 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
             return
         end
         callback(true, nil, deck)
-    end)
+    end, 1, resultingLibrary)
 end
 
 function BridgeProcessMulliganBottomQueue(seatId)

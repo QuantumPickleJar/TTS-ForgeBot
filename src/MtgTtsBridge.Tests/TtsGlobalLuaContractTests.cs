@@ -1975,7 +1975,10 @@ public sealed class TtsGlobalLuaContractTests
 
         Assert.Contains("object.setLock(false)", insertion);
         Assert.Contains("library.putObject(object)", insertion);
+        Assert.Contains("resultingLibrary = library.putObject(object)", insertion);
+        Assert.Contains("library.tag == \"Card\"", insertion);
         Assert.Contains("BridgeVerifyLibraryContainment(seatId, guid", insertion);
+        Assert.Contains("resultingLibrary)", insertion);
         Assert.Contains("TTS did not verify library containment", Script);
         Assert.DoesNotContain("setPositionSmooth(libraryZone.getPosition()", insertion);
     }
