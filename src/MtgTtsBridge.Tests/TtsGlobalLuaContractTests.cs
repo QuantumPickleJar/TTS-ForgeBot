@@ -148,7 +148,7 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgeEnsureContextualCompletionControl", Script);
         Assert.Contains("Combat declarations have an explicit Forge finish action", Script);
-        Assert.Contains("or decision.kind == \"blocker_assignment\") then\n        return\n    end\n    if not BridgeDecisionNeedsConfirmation(decision)", Script);
+        Assert.Contains("or decision.kind == \"blocker_selection\" or decision.kind == \"blocker_assignment\")", Script);
         Assert.Contains("DONE ATTACKING", Script);
         Assert.Contains("DONE BLOCKING", Script);
         Assert.Contains("finish_attacking", Script);
