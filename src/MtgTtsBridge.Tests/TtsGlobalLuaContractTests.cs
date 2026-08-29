@@ -172,6 +172,21 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void FreshCombatDecisionPhaseMetadataCannotBeSuppressedByLatePhaseEvent()
+    {
+        var staleGate = Script.IndexOf("function BridgeShouldIgnoreStaleDecision", StringComparison.Ordinal);
+        var nextFunction = Script.IndexOf("function BridgeShouldDeferDecision", staleGate, StringComparison.Ordinal);
+        Assert.True(staleGate >= 0);
+        Assert.True(nextFunction > staleGate);
+        var body = Script[staleGate..nextFunction];
+
+        Assert.Contains("local decisionPhase = string.upper(tostring(decision.phaseName or \"\"))", body);
+        Assert.Contains("local phase = decisionPhase ~= \"\" and decisionPhase", body);
+        Assert.Contains("decisionPhase=", body);
+        Assert.Contains("cachedPhase=", body);
+    }
+
+    [Fact]
     public void StaleDecision_IsIgnoredWhenAuthoritativeEventsAlreadyAdvanced()
     {
         Assert.Contains("function BridgeShouldIgnoreStaleDecision", Script);

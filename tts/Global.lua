@@ -2824,13 +2824,20 @@ function BridgeShouldIgnoreStaleDecision(decision)
     if eventCursor <= 0 or eventCursor >= applied then
         if decision ~= nil and (decision.kind == "attacker_selection"
             or decision.kind == "blocker_selection" or decision.kind == "blocker_assignment") then
-            local phase = string.upper(tostring(BridgeState.currentPhase or ""))
+            -- A valid combat decision can arrive in the same transport window
+            -- as its phase event. Prefer Forge's phase carried by this exact
+            -- decision so a late phase poll cannot suppress the decision before
+            -- BridgeRenderDecision has a chance to install its highlights.
+            local decisionPhase = string.upper(tostring(decision.phaseName or ""))
+            local phase = decisionPhase ~= "" and decisionPhase
+                or string.upper(tostring(BridgeState.currentPhase or ""))
             local combatPhase = string.find(phase, "COMBAT", 1, true) ~= nil
                 or string.find(phase, "ATTACK", 1, true) ~= nil
                 or string.find(phase, "BLOCK", 1, true) ~= nil
                 or string.find(phase, "DAMAGE", 1, true) ~= nil
             if not combatPhase then
-                BridgeLog("[Bridge] ignoring combat decision before phase transition phase=" .. tostring(BridgeState.currentPhase))
+                BridgeLog("[Bridge] ignoring combat decision before phase transition decisionPhase="
+                    .. tostring(decision.phaseName) .. " cachedPhase=" .. tostring(BridgeState.currentPhase))
                 return true, eventCursor, applied
             end
         end
