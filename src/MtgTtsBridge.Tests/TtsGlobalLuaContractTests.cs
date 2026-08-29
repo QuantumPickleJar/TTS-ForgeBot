@@ -119,7 +119,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("decision.maxSelections or 1", Script);
         Assert.Contains("DONE /\\nCONFIRM", Script);
         Assert.Contains("CANCEL /\\nUNDO", Script);
-        Assert.Contains("BridgeDecisionNeedsConfirmation(decision) or action.requiresSelection == true", Script);
+        Assert.Contains("BridgeDecisionNeedsConfirmation(decision)", Script);
+        Assert.Contains("action.requiresSelection == true", Script);
         Assert.Contains("function BridgeToggleSingleSelection(decision, actionId, guid)", Script);
         Assert.Contains("choose one card, confirm it, then Forge will request any remaining cards", Script);
         Assert.Contains("staged Forge selection decision=", Script);
@@ -1495,14 +1496,39 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void EmptyHumanPriorityWindows_AutoPassButLegalLandWindowsRemainVisible()
+    public void PassiveAutoPass_IsDisabledForHumanSeatToPreventPhaseSkipping()
     {
         Assert.Contains("function BridgeDecisionHasNonPassAction", Script);
         Assert.Contains("empty_priority_auto_pass", Script);
+        Assert.Contains("decision.seatId ~= \"forge-player-1\"", Script);
         Assert.Contains("not BridgeDecisionHasNonPassAction(decision)", Script);
-        Assert.Contains("legal land, spell, ability, target, or structured choice remains visible", Script);
+        Assert.Contains("Keep passive auto-pass off for the human seat", Script);
         Assert.Contains("Priority/active-seat fields are descriptive state, not ordering keys", Script);
         Assert.DoesNotContain("if stalePrioritySeat or activeMismatch then", Script);
+    }
+
+    [Fact]
+    public void UnboundHandDrags_AreRolledBackUnlessBackInHandZone()
+    {
+        Assert.Contains("function BridgeCaptureUnboundPickupIntent", Script);
+        Assert.Contains("function BridgeRejectUnboundDropIfIllegal", Script);
+        Assert.Contains("if intent.zone ~= \"hand\" then return end", Script);
+        Assert.Contains("if BridgeObjectNearSeatZone(object, intent.seatId, \"hand\") then return end", Script);
+        Assert.Contains("illegal physical move rejected; use a highlighted Forge action", Script);
+    }
+
+    [Fact]
+    public void CombatPickups_BypassSingleSelectionDraftLimit()
+    {
+        Assert.Contains("action.type ~= \"choose_attacker\"", Script);
+        Assert.Contains("action.type ~= \"choose_blocker\"", Script);
+    }
+
+    [Fact]
+    public void TwoPlayerDefenderSelection_SuppressesIllegalSelfTargetSurface()
+    {
+        Assert.Contains("suppressing illegal self-defender target in two-player match", Script);
+        Assert.Contains("decision.kind == \"defender_selection\"", Script);
     }
 
     [Fact]

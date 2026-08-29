@@ -195,6 +195,7 @@ BridgeState = {
     retiredChoiceDecisionIds = {},
     retiredChoiceDecisionOrder = {},
     pendingIntent = nil,
+    unboundPickupIntent = nil,
     pendingIntentControlGuids = {},
     pendingDecision = nil,
     pendingDecisionDeferredAt = nil,
@@ -5140,10 +5141,11 @@ function BridgeRenderDecision(decision)
         end
     end
 
-    -- With only Pass priority available, Forge has exposed no meaningful human
-    -- action. Advance upkeep/draw and other empty windows automatically. Any
-    -- legal land, spell, ability, target, or structured choice remains visible.
+    -- Keep passive auto-pass off for the human seat. This avoids skipping a
+    -- playable window when decision/action rendering lags a frame; explicit
+    -- PASS and END TURN controls still provide intentional progression.
     if decision.kind == "main_priority"
+        and decision.seatId ~= "forge-player-1"
         and BridgeDecisionOffersActionType(decision, "pass_priority")
         and not BridgeDecisionHasNonPassAction(decision) then
         for _, action in ipairs(decision.actions) do
@@ -5187,6 +5189,12 @@ function BridgeRenderDecision(decision)
             local isCandidate = decision.kind ~= "main_priority"
                 or mappedInDecisionHand
                 or observedInDecisionHand
+                or (guid ~= nil
+                    and BridgeState.physicalSeatByGuid[guid] == decision.seatId
+                    and (BridgeState.physicalZoneByGuid[guid] == "battlefield"
+                        or BridgeState.physicalZoneByGuid[guid] == "graveyard"
+                        or BridgeState.physicalZoneByGuid[guid] == "exile"
+                        or BridgeState.physicalZoneByGuid[guid] == "command"))
             if isCandidate then
                 table.insert(cards, object)
                 if guid ~= nil then
@@ -5198,18 +5206,28 @@ function BridgeRenderDecision(decision)
 
     for _, action in ipairs(decision.actions) do
         if action.targetKind == "player" and action.targetSeatId ~= nil then
-            local targetSeat = BRIDGE_SEATS[action.targetSeatId]
-            local targetObject = targetSeat and getObjectFromGUID(targetSeat.targetSurfaceGuid) or nil
-            if targetObject ~= nil then
-                local guid = targetObject.getGUID()
-                targetObject.highlightOn({1.0, 0.55, 0.0})
-                BridgeState.actionByGuid[guid] = action
+            local suppressSelfDefenderTarget = decision.kind == "defender_selection"
+                and action.targetSeatId == decision.seatId
+                and BRIDGE_SEATS["forge-player-1"] ~= nil
+                and BRIDGE_SEATS["forge-player-2"] ~= nil
+            if suppressSelfDefenderTarget then
                 representedActionIds[action.actionId] = true
-                table.insert(BridgeState.highlightedGuids, guid)
-                BridgeInstallTargetButton(targetObject, action.targetSeatId)
-                BridgeSpawnPlayerTargetControl(targetObject, action.targetSeatId, decision, action)
+                BridgeLog("[Bridge] suppressing illegal self-defender target in two-player match seat="
+                    .. tostring(action.targetSeatId))
             else
-                BridgeShowError("no physical target surface configured for seat " .. tostring(action.targetSeatId))
+                local targetSeat = BRIDGE_SEATS[action.targetSeatId]
+                local targetObject = targetSeat and getObjectFromGUID(targetSeat.targetSurfaceGuid) or nil
+                if targetObject ~= nil then
+                    local guid = targetObject.getGUID()
+                    targetObject.highlightOn({1.0, 0.55, 0.0})
+                    BridgeState.actionByGuid[guid] = action
+                    representedActionIds[action.actionId] = true
+                    table.insert(BridgeState.highlightedGuids, guid)
+                    BridgeInstallTargetButton(targetObject, action.targetSeatId)
+                    BridgeSpawnPlayerTargetControl(targetObject, action.targetSeatId, decision, action)
+                else
+                    BridgeShowError("no physical target surface configured for seat " .. tostring(action.targetSeatId))
+                end
             end
         end
 
@@ -5310,13 +5328,53 @@ function BridgeShowError(message)
     broadcastToAll(text, {1.0, 0.2, 0.2})
 end
 
+function BridgeCaptureUnboundPickupIntent(object)
+    if object == nil or object.tag ~= "Card" then return end
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then return end
+    local seatId = BridgeState.physicalSeatByGuid[guid]
+    local zone = BridgeState.physicalZoneByGuid[guid]
+    if seatId == nil or zone == nil then return end
+    BridgeState.unboundPickupIntent = {
+        guid = guid,
+        seatId = seatId,
+        zone = zone,
+        position = object.getPosition(),
+        rotation = object.getRotation(),
+        useHands = object.use_hands
+    }
+end
+
+function BridgeRejectUnboundDropIfIllegal(object)
+    local intent = BridgeState.unboundPickupIntent
+    BridgeState.unboundPickupIntent = nil
+    if intent == nil or object == nil then return end
+    if BridgeSafeObjectGuid(object) ~= intent.guid then return end
+    if intent.zone ~= "hand" then return end
+
+    local current = object.getPosition()
+    local dx = current.x - intent.position.x
+    local dz = current.z - intent.position.z
+    local movedSq = dx * dx + dz * dz
+    if movedSq < 1.0 then return end
+    if BridgeObjectNearSeatZone(object, intent.seatId, "hand") then return end
+
+    object.use_hands = intent.useHands
+    object.setPositionSmooth(intent.position, false, true)
+    object.setRotationSmooth(intent.rotation, false, true)
+    object.highlightOn({1.0, 0.1, 0.1}, 2)
+    BridgeShowError("illegal physical move rejected; use a highlighted Forge action")
+end
+
 function onObjectPickUp(playerColor, object)
     if object == nil or BridgeState.submitting then
         return
     end
 
+    BridgeState.unboundPickupIntent = nil
     local action = BridgeState.actionByGuid[object.getGUID()]
     if action == nil then
+        BridgeCaptureUnboundPickupIntent(object)
         return
     end
 
@@ -5405,7 +5463,10 @@ function onObjectPickUp(playerColor, object)
     }
     BridgeClearHighlights()
 
-    if object.tag == "Card" and (BridgeDecisionNeedsConfirmation(decision) or action.requiresSelection == true) then
+    if object.tag == "Card" and (BridgeDecisionNeedsConfirmation(decision)
+        or (action.requiresSelection == true
+            and action.type ~= "choose_attacker"
+            and action.type ~= "choose_blocker")) then
         local actionId = action.actionId
         if not BridgeToggleSingleSelection(decision, actionId, object.getGUID()) then
             BridgeRollbackPendingIntent()
@@ -5428,10 +5489,20 @@ function onObjectPickUp(playerColor, object)
 end
 
 function onObjectDrop(playerColor, object)
-    local intent = BridgeState.pendingIntent
-    if intent == nil or object == nil or object.getGUID() ~= intent.guid or BridgeState.submitting then
+    if object == nil or BridgeState.submitting then
+        BridgeState.unboundPickupIntent = nil
         return
     end
+
+    local intent = BridgeState.pendingIntent
+    if intent == nil then
+        BridgeRejectUnboundDropIfIllegal(object)
+        return
+    end
+    if object.getGUID() ~= intent.guid then
+        return
+    end
+    BridgeState.unboundPickupIntent = nil
 
     local decision = BridgeState.lastDecision
     if decision == nil or decision.decisionId ~= intent.decisionId then
