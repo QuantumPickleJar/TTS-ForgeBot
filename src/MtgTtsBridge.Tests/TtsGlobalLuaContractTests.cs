@@ -1458,6 +1458,17 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void DuplicateTurnPhasePriorityEvents_AreDeduplicatedBeforeUiResetWork()
+    {
+        Assert.Contains("lastTurnEventSignature", Script);
+        Assert.Contains("lastPhaseEventSignature", Script);
+        Assert.Contains("lastPriorityEventSignature", Script);
+        Assert.Contains("if BridgeState.lastPhaseEventSignature == phaseSignature then", Script);
+        Assert.Contains("if BridgeState.lastPriorityEventSignature == prioritySignature then", Script);
+        Assert.Contains("if BridgeState.lastTurnEventSignature == turnSignature then", Script);
+    }
+
+    [Fact]
     public void TurnHudUsesAuthoritativePhaseAndOwnerTextInAdditionToRibbonColor()
     {
         Assert.Contains("BridgeTurnLabel() .. \" — \" .. owner .. \" — \"", Script);

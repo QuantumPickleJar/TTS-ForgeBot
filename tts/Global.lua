@@ -13,7 +13,9 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 BRIDGE_RESOURCE_ORDER = {"W", "U", "B", "R", "G", "C", "energy", "experience", "poison", "speed"}
 BRIDGE_RESOURCE_ROW_SPACING = 1.05
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
-BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.12
+-- Slightly slower active polling reduces frequent full decision/highlight churn
+-- in TTS without materially affecting interactive responsiveness.
+BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.20
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
 BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
 -- Configuration, not rules: FREEFORM permits a player to arrange their own
@@ -276,6 +278,9 @@ BridgeState = {
     snapshotReconcileInFlight = false,
     snapshotReconcilePending = false,
     deferredSnapshotReconcile = nil,
+    lastTurnEventSignature = nil,
+    lastPhaseEventSignature = nil,
+    lastPriorityEventSignature = nil,
     -- A textual semantic event (such as land_played) can immediately follow
     -- the same exact structured card_moved event.  Keep the exact transition
     -- identity so the second renderer never treats a temporarily unresolved
@@ -6852,6 +6857,9 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.attackLaneGuidBySeatId = {}
     BridgeState.snapshotForgeSequence = 0
     BridgeState.deferredSnapshotReconcile = nil
+    BridgeState.lastTurnEventSignature = nil
+    BridgeState.lastPhaseEventSignature = nil
+    BridgeState.lastPriorityEventSignature = nil
     BridgeState.zoneAnchorGuidBySeatAndZone = {}
     BridgeState.yieldSeatId = nil
     BridgeState.gameEnded = nil
@@ -7080,6 +7088,15 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "turn_changed" then
+        local turnSignature = table.concat({
+            tostring(event.turnNumber or ""),
+            tostring(event.activeSeatId or event.seatId or ""),
+            tostring(event.prioritySeatId or "")
+        }, "|")
+        if BridgeState.lastTurnEventSignature == turnSignature then
+            return true, 0
+        end
+        BridgeState.lastTurnEventSignature = turnSignature
         BridgeReturnAttackPresentation(nil)
         local probe = BridgeState.latencyProbe
         if probe ~= nil and probe.acceptedAt ~= nil and probe.turnChangedAppliedAt == nil then
@@ -7112,6 +7129,16 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "phase_changed" then
+        local phaseSignature = table.concat({
+            tostring(event.turnNumber or ""),
+            tostring(event.activeSeatId or ""),
+            tostring(event.prioritySeatId or ""),
+            tostring(event.phase or "")
+        }, "|")
+        if BridgeState.lastPhaseEventSignature == phaseSignature then
+            return true, 0
+        end
+        BridgeState.lastPhaseEventSignature = phaseSignature
         BridgeState.currentPhase = event.phase or "Unknown phase"
         if event.turnNumber ~= nil and tonumber(event.turnNumber) ~= nil and tonumber(event.turnNumber) > 0 then
             BridgeState.tableTurnCount = tonumber(event.turnNumber)
@@ -7153,6 +7180,17 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "priority_changed" then
+        local prioritySignature = table.concat({
+            tostring(event.turnNumber or ""),
+            tostring(event.activeSeatId or ""),
+            tostring(event.seatId or ""),
+            tostring(event.prioritySeatId or ""),
+            tostring(event.phase or "")
+        }, "|")
+        if BridgeState.lastPriorityEventSignature == prioritySignature then
+            return true, 0
+        end
+        BridgeState.lastPriorityEventSignature = prioritySignature
         -- Priority is an independent Forge state transition. It may change
         -- while active turn and phase remain unchanged and must not depend on
         -- a decision menu being visible.
