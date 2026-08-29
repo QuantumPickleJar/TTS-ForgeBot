@@ -147,10 +147,16 @@ public sealed class TtsGlobalLuaContractTests
     public void CombatSelections_UsePhysicalDropPreviewAndExplicitForgeFinishActions()
     {
         Assert.Contains("function BridgeEnsureContextualCompletionControl", Script);
+        Assert.Contains("Combat declarations have an explicit Forge finish action", Script);
+        Assert.Contains("or decision.kind == \"blocker_assignment\") then\n        return\n    end\n    if not BridgeDecisionNeedsConfirmation(decision)", Script);
         Assert.Contains("DONE ATTACKING", Script);
         Assert.Contains("DONE BLOCKING", Script);
         Assert.Contains("finish_attacking", Script);
         Assert.Contains("finish_blocking", Script);
+        Assert.Contains("selectionControlDecisionId", Script);
+        Assert.Contains("selectionControlActionId", Script);
+        Assert.Contains("combat completion action is stale; waiting for Forge redraw", Script);
+        Assert.Contains("BridgeSubmitChoice(decisionId, currentAction.actionId, \"contextual_done\")", Script);
         Assert.Contains("BridgeMoveToAttackLane(intent.seatId, object)", Script);
         Assert.Contains("BridgeMoveToBlockerLane(intent.seatId, object)", Script);
         Assert.DoesNotContain("BridgeSubmitChoice(decision.decisionId, action.actionId)\n        return\n    end\n\n    if object.tag == \"Card\" and decision.requiresConfirmation", Script);

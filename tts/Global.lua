@@ -172,6 +172,8 @@ BridgeState = {
     selectedGuidByActionId = {},
     selectionDecisionId = nil,
     selectionControlGuids = {},
+    selectionControlDecisionId = nil,
+    selectionControlActionId = nil,
     optionControlGuids = {},
     optionControlDecisionId = nil,
     attackOriginByGuid = {},
@@ -853,6 +855,8 @@ function BridgeDestroyTransientControls()
     BridgeState.endTurnObjectGuidBySeatId = {}
     BridgeState.passObjectGuidBySeatId = {}
     BridgeState.selectionControlGuids = {}
+    BridgeState.selectionControlDecisionId = nil
+    BridgeState.selectionControlActionId = nil
     BridgeState.optionControlGuids = {}
     BridgeState.optionControlDecisionId = nil
     BridgeState.setupObjectGuidByKind = {}
@@ -4400,7 +4404,6 @@ end
 
 function BridgeEnsureContextualCompletionControl(decision)
     if decision == nil or (decision.kind ~= "attacker_selection" and decision.kind ~= "blocker_selection" and decision.kind ~= "blocker_assignment") then return end
-    if #(BridgeState.selectionControlGuids or {}) > 0 then return end
     local completionAction = nil
     for _, action in ipairs(decision.actions or {}) do
         if action.type == "finish_attacking" or action.type == "finish_blocking" or action.type == "choose_none" then
@@ -4409,15 +4412,35 @@ function BridgeEnsureContextualCompletionControl(decision)
         end
     end
     if completionAction == nil then return end
+    if #(BridgeState.selectionControlGuids or {}) > 0 then
+        if BridgeState.selectionControlDecisionId == decision.decisionId
+            and BridgeState.selectionControlActionId == completionAction.actionId then
+            return
+        end
+        for _, guid in ipairs(BridgeState.selectionControlGuids) do
+            local stale = BridgeGetLiveObjectByGuid(guid)
+            if stale ~= nil then BridgeSafeObjectCall(stale, function(o) o.destruct() end) end
+        end
+        BridgeState.selectionControlGuids = {}
+    end
     local seat = BRIDGE_SEATS[decision.seatId]
     if seat == nil then return end
     local isAttacking = completionAction.type == "finish_attacking"
     local label = isAttacking and "DONE ATTACKING\n(NO MORE ATTACKERS)" or "DONE BLOCKING\n(NO MORE BLOCKERS)"
+    BridgeState.selectionControlDecisionId = decision.decisionId
+    BridgeState.selectionControlActionId = completionAction.actionId
     spawnObject({
         type = "BlockSquare",
         position = {-2.0, 1.6, seat.tableSideZ * 10.0},
         scale = {4.0, 0.35, 1.45},
         callback_function = function(object)
+            if BridgeState.lastDecision == nil
+                or BridgeState.lastDecision.decisionId ~= decision.decisionId
+                or BridgeState.selectionControlDecisionId ~= decision.decisionId
+                or BridgeState.selectionControlActionId ~= completionAction.actionId then
+                if object ~= nil then BridgeSafeObjectCall(object, function(o) o.destruct() end) end
+                return
+            end
             object.setName("Forge Combat Completion " .. tostring(decision.decisionId))
             object.setLock(true)
             local color = isAttacking and {0.76, 0.3, 0.08} or {0.14, 0.42, 0.72}
@@ -4457,10 +4480,23 @@ function BridgeCompleteCombatSelection(object, playerColor, altClick)
         BridgeResetSelectionState()
         return
     end
+    local currentAction = nil
+    for _, candidate in ipairs(decision.actions or {}) do
+        if candidate.actionId == actionId
+            and (candidate.type == "finish_attacking" or candidate.type == "finish_blocking" or candidate.type == "choose_none") then
+            currentAction = candidate
+            break
+        end
+    end
+    if currentAction == nil then
+        BridgeShowError("combat completion action is stale; waiting for Forge redraw")
+        BridgeResetSelectionState()
+        return
+    end
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
     BridgeClearHighlights()
     BridgeResetSelectionState()
-    BridgeSubmitChoice(decisionId, actionId, "contextual_done")
+    BridgeSubmitChoice(decisionId, currentAction.actionId, "contextual_done")
 end
 
 function BridgeInstallTargetButton(object, targetSeatId)
@@ -4757,6 +4793,8 @@ function BridgeResetSelectionState()
         if object ~= nil then BridgeSafeObjectCall(object, function(o) o.destruct() end) end
     end
     BridgeState.selectionControlGuids = {}
+    BridgeState.selectionControlDecisionId = nil
+    BridgeState.selectionControlActionId = nil
     BridgeClearOptionControls()
     BridgeClearPendingIntentControls()
     BridgeUiMarkDirty("selection-reset")
@@ -4853,6 +4891,13 @@ end
 
 function BridgeEnsureSelectionControls(decision)
     if BridgeState.ui ~= nil and BridgeState.ui.mounted then return end
+    -- Combat declarations have an explicit Forge finish action and their own
+    -- contextual DONE ATTACKING/DONE BLOCKING control. They are not legacy
+    -- local selections, so never create the generic CONFIRM/CANCEL pair here.
+    if decision ~= nil and (decision.kind == "attacker_selection"
+        or decision.kind == "blocker_selection" or decision.kind == "blocker_assignment") then
+        return
+    end
     if not BridgeDecisionNeedsConfirmation(decision) or #(BridgeState.selectionControlGuids or {}) > 0 then return end
     local seat = BRIDGE_SEATS[decision.seatId]
     if seat == nil then return end
@@ -4894,6 +4939,23 @@ function BridgeConfirmSelection(object, playerColor, altClick)
         if not ok then return end
     end
     local decision = BridgeState.lastDecision
+
+    -- Keep an older/stale presentation safe if it invokes the generic
+    -- confirmation callback for a combat decision. Combat completion is always
+    -- an exact Forge finish action, never a local selection count.
+    if decision ~= nil and (decision.kind == "attacker_selection"
+        or decision.kind == "blocker_selection" or decision.kind == "blocker_assignment") then
+        for _, action in ipairs(decision.actions or {}) do
+            if action.type == "finish_attacking" or action.type == "finish_blocking" or action.type == "choose_none" then
+                BridgeClearHighlights()
+                BridgeResetSelectionState()
+                BridgeSubmitChoice(decision.decisionId, action.actionId, "contextual_done")
+                return
+            end
+        end
+        BridgeShowError("Forge supplied no current combat completion action")
+        return
+    end
 
     -- Structured Forge collections are already staged in Forge. Candidate
     -- clicks have been submitted individually and the redraw is the sole
