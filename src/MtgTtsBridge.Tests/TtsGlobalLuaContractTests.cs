@@ -1569,6 +1569,19 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void OrdinaryPriorityActions_AreNotRenderedAsMultiSelectCheckboxes()
+    {
+        var uiStart = Script.IndexOf("function BridgeUiFlush", StringComparison.Ordinal);
+        var uiEnd = Script.IndexOf("function BridgeUiMount", uiStart, StringComparison.Ordinal);
+        var uiBody = Script[uiStart..uiEnd];
+
+        Assert.Contains("Ordinary priority actions are immediate exact Forge inputs", uiBody);
+        Assert.Contains("local selectionPresentation = BridgeDecisionNeedsConfirmation(decision)", uiBody);
+        Assert.Contains("or decision.kind == \"attacker_selection\"", uiBody);
+        Assert.Contains("local prefix = \"\"", uiBody);
+    }
+
+    [Fact]
     public void UnboundHandDrags_AreRolledBackUnlessBackInHandZone()
     {
         Assert.Contains("function BridgeCaptureUnboundPickupIntent", Script);

@@ -2050,8 +2050,19 @@ function BridgeUiFlush()
             else
                 -- Structured Forge choices retain selection on the Forge side;
                 -- local draft state is only used by legacy single-card flows.
-                local prefix = (BridgeState.selectedActionIds[action.actionId] == true or action.isSelected == true)
-                    and "[x] " or "[ ] "
+                -- Ordinary priority actions are immediate exact Forge inputs,
+                -- not local checkbox selections. Reserve selection marks for
+                -- Forge collections and combat redraws so a draw/main menu
+                -- cannot misleadingly advertise multi-select behavior.
+                local selectionPresentation = BridgeDecisionNeedsConfirmation(decision)
+                    or decision.kind == "attacker_selection"
+                    or decision.kind == "blocker_selection"
+                    or decision.kind == "blocker_assignment"
+                local prefix = ""
+                if selectionPresentation then
+                    prefix = (BridgeState.selectedActionIds[action.actionId] == true or action.isSelected == true)
+                        and "[x] " or "[ ] "
+                end
                 BridgeUiSet("BridgeHudAction" .. tostring(i), "text", prefix .. BridgeUiActionLabel(action))
                 BridgeUiSet("BridgeHudAction" .. tostring(i), "tooltip", "Forge action: " .. BridgeUiActionLabel(action)
                     .. "\nKind: " .. tostring(action.actionKind or action.type or "choice")
