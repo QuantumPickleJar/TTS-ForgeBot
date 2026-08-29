@@ -1545,6 +1545,21 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void QueuedStateEvents_CannotEraseANewerAcceptedDecision()
+    {
+        var applyStart = Script.IndexOf("function BridgeApplyAuthoritativeEvent(event)", StringComparison.Ordinal);
+        var applyEnd = Script.IndexOf("function BridgeMoveToBattlefield", applyStart, StringComparison.Ordinal);
+        var applyBody = Script[applyStart..applyEnd];
+
+        Assert.Contains("function BridgeCurrentDecisionOutrunsEvent(event)", Script);
+        Assert.Contains("function BridgePhaseEventMatchesCurrentDecision(event)", Script);
+        Assert.Contains("retaining newer decision", applyBody);
+        Assert.Contains("local retainCurrentDecision = BridgePhaseEventMatchesCurrentDecision(event)", applyBody);
+        Assert.Contains("if not retainCurrentDecision then", applyBody);
+        Assert.Contains("BridgeRenderDecision(BridgeState.lastDecision, true)", applyBody);
+    }
+
+    [Fact]
     public void AuthoritativeDrawAndPhaseTransitionsRefreshTheCurrentDecision()
     {
         Assert.Contains("if event.kind == \"draw\" or event.kind == \"turn_changed\" or event.kind == \"phase_changed\" then", Script);

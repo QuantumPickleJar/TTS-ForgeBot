@@ -7316,6 +7316,29 @@ function BridgeProcessEventQueue()
     end, nextDelay)
 end
 
+-- Decisions are fetched from Forge independently of the animation queue.
+-- A decision can therefore already describe event N while TTS is still
+-- presenting an older event. Those older events must not erase the current
+-- decision or regress its authoritative phase/turn/priority mirror.
+function BridgeCurrentDecisionOutrunsEvent(event)
+    local decision = BridgeState.lastDecision
+    if decision == nil or event == nil then return false end
+    local decisionCursor = tonumber(decision.eventCursor or 0) or 0
+    local eventSequence = tonumber(event.sequence or 0) or 0
+    return decisionCursor > 0 and eventSequence > 0 and decisionCursor > eventSequence
+end
+
+function BridgePhaseEventMatchesCurrentDecision(event)
+    local decision = BridgeState.lastDecision
+    if decision == nil or event == nil then return false end
+    local decisionCursor = tonumber(decision.eventCursor or 0) or 0
+    local eventSequence = tonumber(event.sequence or 0) or 0
+    if decisionCursor ~= eventSequence or decisionCursor <= 0 then return false end
+    local decisionPhase = string.lower(tostring(decision.phaseName or ""))
+    local eventPhase = string.lower(tostring(event.phase or ""))
+    return decisionPhase ~= "" and decisionPhase == eventPhase
+end
+
 function BridgeApplyAuthoritativeEvent(event)
     BridgeUiRecordEvent(event)
     if event.containsHiddenIdentity == true then
@@ -7385,6 +7408,13 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "turn_changed" then
+        if BridgeCurrentDecisionOutrunsEvent(event) then
+            BridgeLog(string.format(
+                "[Bridge] retaining newer decision %s over queued turn event=%s decisionCursor=%s",
+                tostring(BridgeState.lastDecision.decisionId), tostring(event.sequence),
+                tostring(BridgeState.lastDecision.eventCursor)))
+            return true, 0
+        end
         local turnSignature = table.concat({
             tostring(event.turnNumber or ""),
             tostring(event.activeSeatId or event.seatId or ""),
@@ -7426,6 +7456,14 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "phase_changed" then
+        if BridgeCurrentDecisionOutrunsEvent(event) then
+            BridgeLog(string.format(
+                "[Bridge] retaining newer decision %s over queued phase event=%s decisionCursor=%s",
+                tostring(BridgeState.lastDecision.decisionId), tostring(event.sequence),
+                tostring(BridgeState.lastDecision.eventCursor)))
+            return true, 0
+        end
+        local retainCurrentDecision = BridgePhaseEventMatchesCurrentDecision(event)
         local phaseSignature = table.concat({
             tostring(event.turnNumber or ""),
             tostring(event.activeSeatId or ""),
@@ -7447,8 +7485,10 @@ function BridgeApplyAuthoritativeEvent(event)
         -- Phase and priority are independent authoritative values. Do not
         -- overwrite priority from a phase event that carries no priority.
         if event.prioritySeatId ~= nil then BridgeState.prioritySeatId = event.prioritySeatId end
-        BridgeClearHighlights()
-        if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
+        if not retainCurrentDecision then
+            BridgeClearHighlights()
+        end
+        if not retainCurrentDecision and BridgeState.lastDecision ~= nil and not BridgeState.submitting then
             BridgeState.lastDecision = nil
         end
         if BridgeState.pendingDecision ~= nil then
@@ -7460,8 +7500,10 @@ function BridgeApplyAuthoritativeEvent(event)
                 BridgeState.pendingDecisionDeferredApplied = 0
             end
         end
-        BridgeResetSelectionState()
-        BridgeHideMainPriorityControls()
+        if not retainCurrentDecision then
+            BridgeResetSelectionState()
+            BridgeHideMainPriorityControls()
+        end
         BridgeSetStatus(
             "CURRENT TURN: " .. tostring((BRIDGE_SEATS[BridgeState.currentTurnSeatId] or {}).ttsColor or BridgeState.currentTurnSeatId or "Unknown"),
             BridgeTurnLabel() .. " - PHASE: " .. tostring(BridgeState.currentPhase))
@@ -7472,11 +7514,24 @@ function BridgeApplyAuthoritativeEvent(event)
             BridgeReturnAttackPresentation(event.seatId)
         end
         BridgeTryPresentPendingDecision("phase-change")
+        if retainCurrentDecision and BridgeState.lastDecision ~= nil then
+            -- The exact same Forge cursor/phase remains actionable. Refresh
+            -- status and highlights after the phase ribbon update without
+            -- replacing its selection/cast-preview state.
+            BridgeRenderDecision(BridgeState.lastDecision, true)
+        end
         BridgeUiMarkDirty("phase")
         return true, 0.1
     end
 
     if event.kind == "priority_changed" then
+        if BridgeCurrentDecisionOutrunsEvent(event) then
+            BridgeLog(string.format(
+                "[Bridge] retaining newer decision %s over queued priority event=%s decisionCursor=%s",
+                tostring(BridgeState.lastDecision.decisionId), tostring(event.sequence),
+                tostring(BridgeState.lastDecision.eventCursor)))
+            return true, 0
+        end
         local prioritySignature = table.concat({
             tostring(event.turnNumber or ""),
             tostring(event.activeSeatId or ""),
