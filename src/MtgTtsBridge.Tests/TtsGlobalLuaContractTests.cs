@@ -1517,6 +1517,22 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void LibraryMill_UsesSerializedExactExtractionBeforeLaterDraws()
+    {
+        var moveStart = Script.IndexOf("function BridgeApplyStructuredCardMove(event)", StringComparison.Ordinal);
+        var moveEnd = Script.IndexOf("function BridgeMoveToGraveyard", moveStart, StringComparison.Ordinal);
+        var moveBody = Script[moveStart..moveEnd];
+
+        Assert.Contains("function moveFromLibraryDeckToGraveyard(deck)", moveBody);
+        Assert.Contains("BridgeQueueLibraryExtraction(event.seatId", moveBody);
+        Assert.Contains("BridgeTakeCardFromDeckByIdentity(liveDeck, expectedName", moveBody);
+        Assert.Contains("BridgeMoveToGraveyard(event, taken)", moveBody);
+        Assert.Contains("BridgeWaitTime(complete, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)", moveBody);
+        Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"graveyard\"", moveBody);
+        Assert.DoesNotContain("resolved object is a deck for non-library->hand move", moveBody);
+    }
+
+    [Fact]
     public void PassiveAutoPass_IsDisabledForHumanSeatToPreventPhaseSkipping()
     {
         Assert.Contains("function BridgeDecisionHasNonPassAction", Script);
@@ -1534,6 +1550,22 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("if event.kind == \"draw\" or event.kind == \"turn_changed\" or event.kind == \"phase_changed\" then", Script);
         Assert.Contains("BridgeStartDecisionPolling()", Script);
         Assert.Contains("newly available hand actions", Script);
+    }
+
+    [Fact]
+    public void CardContext_CannotHidePassYieldOrTheNextDecisionActions()
+    {
+        var uiStart = Script.IndexOf("function BridgeUiFlush", StringComparison.Ordinal);
+        var uiEnd = Script.IndexOf("function BridgeUiMount", uiStart, StringComparison.Ordinal);
+        var uiBody = Script[uiStart..uiEnd];
+        var acceptStart = Script.IndexOf("function BridgeAcceptDecision", StringComparison.Ordinal);
+        var acceptEnd = Script.IndexOf("function BridgeNormalizeCardName", acceptStart, StringComparison.Ordinal);
+        var acceptBody = Script[acceptStart..acceptEnd];
+
+        Assert.Contains("for _, action in ipairs(decision and decision.actions or {}) do", uiBody);
+        Assert.Contains("Pass/Yield are properties of the full", uiBody);
+        Assert.Contains("BridgeState.ui.contextInstanceId = nil", acceptBody);
+        Assert.Contains("Retaining it after Forge changes decisions", acceptBody);
     }
 
     [Fact]

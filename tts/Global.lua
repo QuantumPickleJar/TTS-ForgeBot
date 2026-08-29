@@ -2059,9 +2059,12 @@ function BridgeUiFlush()
             end
         end
     end
+    -- Card context may intentionally narrow the action rows, but it must not
+    -- hide Forge's priority controls. Pass/Yield are properties of the full
+    -- authoritative decision, not of a contextual HUD subset.
     local hasPass = false
     local hasYield = false
-    for _, action in ipairs(actions) do
+    for _, action in ipairs(decision and decision.actions or {}) do
         if action.type == "pass_priority" then hasPass = true; hasYield = true end
     end
     local targetCanCancel = decision ~= nil and decision.allowsCancel == true
@@ -4281,6 +4284,10 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     if BridgeState.lastDecision == nil or BridgeState.lastDecision.decisionId ~= decision.decisionId then
         BridgeCreatureTypeClearDraft("decision-replaced")
         BridgeGraveyardClear("decision-replaced")
+        -- A card context is only a convenience filter for the decision in
+        -- which it was opened. Retaining it after Forge changes decisions can
+        -- hide newly drawn legal cards and the next Main 1 action list.
+        if BridgeState.ui ~= nil then BridgeState.ui.contextInstanceId = nil end
     end
 
     BridgeRetireChoiceTransactionsForDecision(decision.decisionId)
@@ -8597,6 +8604,50 @@ function BridgeApplyStructuredCardMove(event)
         return true, nil
     end
 
+    -- Mill effects are authoritative library -> graveyard transitions. They
+    -- must use the same serialized Deck.takeObject path as draws so each
+    -- exact physical card is extracted, turned face-up, and placed in the
+    -- graveyard before a later queued draw can present the next hand card.
+    -- A Deck handle is never itself a card move.
+    local function moveFromLibraryDeckToGraveyard(deck)
+        local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
+        local libraryZone = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
+        if libraryZone == nil then
+            return false, "library zone is unavailable for authoritative library-to-graveyard move"
+        end
+        local staging = libraryZone.getPosition()
+        BridgeQueueLibraryExtraction(event.seatId, function(complete)
+            local liveDeck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName) or BridgeFindLibraryDeckForSeat(event.seatId)
+            if liveDeck == nil then
+                BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued graveyard extraction"))
+                complete()
+                return
+            end
+            BridgeTakeCardFromDeckByIdentity(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
+                function(taken, takeError)
+                    if taken == nil then
+                        BridgeStopOnDesync(libraryDrawError(takeError))
+                        complete()
+                        return
+                    end
+                    if not BridgeRequireArtBearingLibraryCard(taken, event.seatId, event.cardInstanceId) then
+                        BridgeStopOnDesync(libraryDrawError("physical library returned an artless normal game card"))
+                        complete()
+                        return
+                    end
+                    local moved, moveError = BridgeMoveToGraveyard(event, taken)
+                    if not moved then
+                        BridgeStopOnDesync(libraryDrawError(moveError))
+                    end
+                    -- Preserve event order in visible presentation: a mill
+                    -- must settle in the graveyard before the next queued
+                    -- library extraction (including its following draw).
+                    BridgeWaitTime(complete, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)
+                end)
+        end)
+        return true, nil
+    end
+
     local function moveFromTokenFetcherToBattlefield()
         local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
         local row = event.battlefieldKind
@@ -8687,6 +8738,21 @@ function BridgeApplyStructuredCardMove(event)
         return moveFromLibraryDeckToBattlefield(deck)
     end
 
+    if event.sourceZone == "library" and event.destinationZone == "graveyard" and (object == nil or object.tag == "Deck") then
+        local deck = object
+        if deck == nil then
+            local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
+            if expectedName ~= nil and expectedName ~= "" then
+                deck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
+            end
+            if deck == nil then deck = BridgeFindLibraryDeckForSeat(event.seatId) end
+        end
+        if deck == nil then
+            return false, libraryDrawError(resolveError or "physical library deck not found for authoritative library-to-graveyard move")
+        end
+        return moveFromLibraryDeckToGraveyard(deck)
+    end
+
     if object == nil and event.destinationZone == "battlefield"
         and (event.isToken == true or event.sourceZone == "token" or event.sourceZone == "tokens") then
         return moveFromTokenFetcherToBattlefield()
@@ -8729,7 +8795,7 @@ function BridgeApplyStructuredCardMove(event)
             event,
             event.sourceZone or "unknown",
             0,
-            "resolved object is a deck for non-library->hand move",
+            "resolved object is a deck for non-library extraction move",
             {mappedGuid = staleMappedGuid}
         )
     end

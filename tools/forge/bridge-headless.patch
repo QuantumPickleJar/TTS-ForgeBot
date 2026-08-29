@@ -1258,8 +1258,16 @@ index 0d731bb6..5f2ee29c 100644
 +
          // Smart auto-passing on opponent's turn
 -        if (!isMyTurn) {
-+        if (!hasPriority) {
++        // Forge may invoke this controller while PhaseHandler has not yet
++        // installed a priority holder for the new step.  The invocation is
++        // the authoritative request for this controller to choose; treating
++        // a null holder as an opponent's priority silently skips Main 1.
++        // Still respect an explicitly different priority player.
++        if (!hasPriority && ph.getPriorityPlayer() != null) {
 +            return null;
++        }
++        if (!hasPriority) {
++            System.out.println("[TUI-DIAG priority] priority holder unavailable; accepting controller invocation");
 +        }
 +        if (!isActivePlayersTurn) {
              // Only prompt on opponent's turn if:
