@@ -1745,6 +1745,51 @@ function BridgeUiSet(id, attribute, value)
     end
 end
 
+-- A resolved permanent can have two independent pieces of state in flight:
+-- Forge's public zone mapping and TTS's last physical transform.  Keep the
+-- diagnostic exact-id based so a stale semantic resolution can never make us
+-- move a same-name permanent.  Card names are deliberately omitted here;
+-- this trace is also emitted while a snapshot may contain private objects.
+function BridgeTracePermanentTransition(marker, event, object, sourceZone, detail)
+    local guid = object ~= nil and BridgeSafeObjectGuid(object) or nil
+    local trackedZone = guid ~= nil and BridgeState.physicalZoneByGuid[guid] or nil
+    local pending = event ~= nil and event.seatId ~= nil
+        and BridgeState.pendingCastBySeatId[event.seatId] or nil
+    local pendingForInstance = pending ~= nil and event ~= nil
+        and pending.cardInstanceId == event.cardInstanceId
+    local suffix = detail ~= nil and (" detail=" .. tostring(detail)) or ""
+    BridgeLog(string.format(
+        "[Bridge] %s instance=%s guid=%s sourceZone=%s destinationZone=%s trackedZone=%s pendingCast=%s eventSequence=%s snapshotSequence=%s%s",
+        tostring(marker), tostring(event and event.cardInstanceId), tostring(guid),
+        tostring(sourceZone or (event and event.sourceZone)),
+        tostring(event and event.destinationZone), tostring(trackedZone),
+        tostring(pendingForInstance == true), tostring(event and event.sequence),
+        tostring(BridgeState.snapshotForgeSequence), suffix))
+end
+
+function BridgePhysicalObjectAtStackAnchor(object)
+    if object == nil or type(object.getPosition) ~= "function" then return false end
+    local ok, position = pcall(function() return object.getPosition() end)
+    if not ok or position == nil then return false end
+    local x = tonumber(position.x or position[1])
+    local z = tonumber(position.z or position[3])
+    if x == nil or z == nil then return false end
+    local dx = x - BRIDGE_STACK_POSITION.x
+    local dz = z - BRIDGE_STACK_POSITION.z
+    return dx * dx + dz * dz < 0.75
+end
+
+function BridgeRetirePendingCastForInstance(seatId, cardInstanceId, guid, reason)
+    if seatId == nil or cardInstanceId == nil then return false end
+    local pending = BridgeState.pendingCastBySeatId[seatId]
+    if pending == nil or pending.cardInstanceId ~= cardInstanceId then return false end
+    if guid ~= nil and pending.guid ~= guid then return false end
+    BridgeState.pendingCastBySeatId[seatId] = nil
+    BridgeLog(string.format("[Bridge] retired exact pending cast instance=%s guid=%s reason=%s",
+        tostring(cardInstanceId), tostring(guid), tostring(reason)))
+    return true
+end
+
 function BridgeUiMarkDirty(reason)
     local ui = BridgeState.ui
     if ui == nil or not ui.mounted then return end
@@ -3147,8 +3192,22 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                     local snapshotRow = zoneName == "battlefield"
                         and (card.battlefieldKind == "land" and "land" or "creature") or nil
                     local priorRow = BridgeState.battlefieldKindByInstanceId[card.cardInstanceId]
+                    local strandedAtStack = zoneName == "battlefield"
+                        and mappedObject ~= nil and mappedObject.tag == "Card"
+                        and BridgePhysicalObjectAtStackAnchor(mappedObject)
                     local mappedNeedsFix = mappedObject == nil or mappedObject.tag ~= "Card" or mappedZone ~= zoneName
                         or (snapshotRow ~= nil and priorRow ~= snapshotRow)
+                        or strandedAtStack
+                    if strandedAtStack then
+                        BridgeTracePermanentTransition(
+                            "SNAPSHOT_ZONE battlefield", {
+                                cardInstanceId = card.cardInstanceId,
+                                seatId = seatSnapshot.seatId,
+                                sourceZone = mappedZone,
+                                destinationZone = zoneName,
+                                sequence = snapshot.forgeSequence
+                            }, mappedObject, mappedZone, "physical object remains at stack anchor")
+                    end
                     if mappedNeedsFix then
                         -- The log intentionally omits cardName: a snapshot can
                         -- contain identities that should not be public chat.
@@ -5716,6 +5775,20 @@ function onObjectDrop(playerColor, object)
             BridgeState.physicalZoneByGuid[intent.guid] = "stack"
             object.use_hands = false
             object.setPositionSmooth(BRIDGE_STACK_POSITION, false, true)
+            BridgeTracePermanentTransition("CAST_CONFIRM", {
+                cardInstanceId = intent.action.cardInstanceId,
+                seatId = intent.seatId,
+                sourceZone = intent.physicalZone,
+                destinationZone = "stack",
+                sequence = "intent:" .. tostring(intent.action.actionId)
+            }, object, intent.physicalZone)
+            BridgeTracePermanentTransition("STACK_MOVE", {
+                cardInstanceId = intent.action.cardInstanceId,
+                seatId = intent.seatId,
+                sourceZone = intent.physicalZone,
+                destinationZone = "stack",
+                sequence = "intent:" .. tostring(intent.action.actionId)
+            }, object, intent.physicalZone)
             BridgeEnsureCastPreviewControls(intent)
             BridgeAdvancePhysicalPresentationGeneration("cast-preview-entered")
             return
@@ -7841,6 +7914,12 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "spell_resolved" and event.destinationZone == "battlefield" then
+        local resolvedMappedGuid = event.cardInstanceId ~= nil
+            and BridgeState.physicalByInstanceId[event.cardInstanceId] or nil
+        local resolvedMappedObject = resolvedMappedGuid ~= nil
+            and BridgeGetLiveObjectByGuid(resolvedMappedGuid) or nil
+        BridgeTracePermanentTransition(
+            "SPELL_RESOLVED", event, resolvedMappedObject, event.sourceZone)
         -- Structured card_moved already moved this exact instance from stack to
         -- battlefield. The human-readable semantic line has no instance ID and
         -- must not attempt a second name-based move from an empty stack.
@@ -7864,10 +7943,14 @@ function BridgeApplyAuthoritativeEvent(event)
                     local resolvedEvent = {}
                     for key, value in pairs(event) do resolvedEvent[key] = value end
                     resolvedEvent.cardInstanceId = pendingCast.cardInstanceId
+                    BridgeTracePermanentTransition(
+                        "STACK_MOVE stack->battlefield", resolvedEvent, pendingObject, "stack")
                     local moved, moveError = BridgeMoveToBattlefield(
                         resolvedEvent, pendingObject, BridgeBattlefieldRowForEvent(resolvedEvent, "creature"))
                     if not moved then return false, 0, moveError end
-                    BridgeState.pendingCastBySeatId[event.seatId] = nil
+                    BridgeRetirePendingCastForInstance(
+                        event.seatId, resolvedEvent.cardInstanceId, pendingCast.guid,
+                        "semantic stack-to-battlefield")
                     BridgeLog(string.format(
                         "[Bridge] presented exact pending cast on semantic resolution event=%s instance=%s",
                         tostring(event.sequence), tostring(resolvedEvent.cardInstanceId)))
@@ -7876,10 +7959,28 @@ function BridgeApplyAuthoritativeEvent(event)
             end
             return true, 0.1
         end
+        if resolvedMappedObject ~= nil and resolvedMappedObject.tag == "Card"
+            and BridgeState.physicalZoneByGuid[resolvedMappedGuid] == "battlefield"
+            and BridgePhysicalObjectAtStackAnchor(resolvedMappedObject) then
+            BridgeTracePermanentTransition(
+                "STACK_MOVE stack->battlefield", event, resolvedMappedObject, "stack",
+                "semantic resolution repaired stranded exact mapping")
+            local corrected, correctionError = BridgeMoveToBattlefield(
+                event, resolvedMappedObject, BridgeBattlefieldRowForEvent(event, "creature"), false)
+            if not corrected then return false, 0, correctionError end
+            BridgeRetirePendingCastForInstance(
+                event.seatId, event.cardInstanceId, resolvedMappedGuid,
+                "semantic stack-to-battlefield correction")
+            return true, 0.1
+        end
         local object, resolveError = BridgeResolvePhysicalCard(event, "stack")
         if object == nil then return false, 0, resolveError end
+        BridgeTracePermanentTransition("STACK_MOVE stack->battlefield", event, object, "stack")
         local moved, moveError = BridgeMoveToBattlefield(event, object, BridgeBattlefieldRowForEvent(event, "creature"))
         if not moved then return false, 0, moveError end
+        BridgeRetirePendingCastForInstance(
+            event.seatId, event.cardInstanceId, BridgeSafeObjectGuid(object),
+            "semantic stack-to-battlefield")
         return true, 1.25
     end
 
@@ -7965,7 +8066,6 @@ function BridgeResolveResolvedSpellObject(event)
         if event.cardInstanceId ~= nil then
             BridgeRecordLooseCardIdentity(event.cardInstanceId, pendingCast.guid, event.seatId, "stack")
         end
-        pendingBySeat[event.seatId] = nil
         return pendingObject, nil
     end
 
@@ -8347,7 +8447,13 @@ function BridgeApplyStructuredCardMove(event)
             if event.destinationZone == "battlefield" then
                 local expectedRow = BridgeBattlefieldRowForEvent(event, "creature")
                 local priorRow = BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]
-                if priorRow ~= expectedRow then
+                local strandedAtStack = BridgePhysicalObjectAtStackAnchor(object)
+                if strandedAtStack then
+                    BridgeTracePermanentTransition(
+                        "STRUCTURED_MOVE stack->battlefield", event, object, mappedZone,
+                        "mapping said battlefield but physical object was at stack anchor")
+                end
+                if strandedAtStack or priorRow ~= expectedRow then
                     local corrected, correctionError = BridgeMoveToBattlefield(
                         event, object, expectedRow, false)
                     if not corrected then return false, correctionError end
@@ -8355,6 +8461,8 @@ function BridgeApplyStructuredCardMove(event)
                     BridgeLog(string.format(
                         "[Bridge] corrected existing battlefield row instance=%s row=%s",
                         tostring(event.cardInstanceId), tostring(expectedRow)))
+                    BridgeRetirePendingCastForInstance(
+                        event.seatId, event.cardInstanceId, guid, "structured stack-to-battlefield")
                     return true, nil
                 end
             end
@@ -8641,8 +8749,16 @@ function BridgeApplyStructuredCardMove(event)
         local row = event.battlefieldKind
             or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]
             or "creature"
+        local sourcePhysicalZone = BridgeState.physicalZoneByGuid[guid] or event.sourceZone
+        if sourcePhysicalZone == "stack" then
+            BridgeTracePermanentTransition("STRUCTURED_MOVE stack->battlefield", event, object, sourcePhysicalZone)
+        end
         local moved, moveError = BridgeMoveToBattlefield(event, object, row)
         if not moved then return false, moveError end
+        if sourcePhysicalZone == "stack" then
+            BridgeRetirePendingCastForInstance(
+                event.seatId, event.cardInstanceId, guid, "structured stack-to-battlefield")
+        end
     elseif event.destinationZone == "stack" then
         object.use_hands = false
         BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
@@ -10141,6 +10257,9 @@ function BridgeMoveToBattlefield(event, object, row, countAsNewPlacement)
         return false, positionError
     end
 
+    local sourcePhysicalZone = nil
+    local guidBeforeMove = BridgeSafeObjectGuid(object)
+    if guidBeforeMove ~= nil then sourcePhysicalZone = BridgeState.physicalZoneByGuid[guidBeforeMove] end
     local moved, movementError = pcall(function()
         BridgeCaptureCanonicalCardScale(object)
         object.use_hands = false
@@ -10152,11 +10271,35 @@ function BridgeMoveToBattlefield(event, object, row, countAsNewPlacement)
         return false, "event " .. tostring(event.sequence) .. " could not move physical card: " .. tostring(movementError)
     end
 
+    BridgeTracePermanentTransition(
+        "PHYSICAL_MOVE_TO_BATTLEFIELD", event, object, sourcePhysicalZone)
+
     -- TTS hand/Encoder presentation can apply a scale change on the frame in
     -- which the card leaves its prior container. Restore again after that
-    -- deferred work has run; this is visual only and retains the exact card.
+    -- deferred work has run. Also verify the exact object did not get put back
+    -- at the temporary stack anchor by a previously queued smooth movement.
     BridgeWaitFrames(function()
-        if BridgeObjectIsUsable(object) then BridgeRestoreCanonicalCardScale(object) end
+        if not BridgeObjectIsUsable(object) then return end
+        if guidBeforeMove == nil or BridgeState.physicalZoneByGuid[guidBeforeMove] ~= "battlefield" then return end
+        BridgeRestoreCanonicalCardScale(object)
+        if not BridgePhysicalObjectAtStackAnchor(object) then return end
+        local corrected = pcall(function() object.setPosition(destination) end)
+        BridgeTracePermanentTransition(
+            "PHYSICAL_MOVE_TO_BATTLEFIELD", event, object, "stack",
+            corrected and "deferred stack-anchor correction" or "deferred correction failed")
+        if corrected then
+            BridgeRestoreCanonicalCardScale(object)
+            BridgeWaitFrames(function()
+                if not BridgeObjectIsUsable(object) then return end
+                if BridgeState.physicalZoneByGuid[guidBeforeMove] ~= "battlefield" then return end
+                if BridgePhysicalObjectAtStackAnchor(object) then
+                    BridgeStopOnDesync(BridgePhysicalMappingError(
+                        event, "battlefield", 1,
+                        "exact battlefield card remained at the physical stack anchor",
+                        {mappedGuid = guidBeforeMove}))
+                end
+            end, 2)
+        end
     end, 2)
 
     local guid = object.getGUID()

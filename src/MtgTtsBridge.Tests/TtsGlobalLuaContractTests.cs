@@ -616,7 +616,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("cardInstanceId = intent.action.cardInstanceId", Script);
         Assert.Contains("BridgeResolveResolvedSpellObject", Script);
         Assert.Contains("BridgeRecordLooseCardIdentity(event.cardInstanceId, pendingCast.guid, event.seatId, \"stack\")", Script);
-        Assert.Contains("pendingBySeat[event.seatId] = nil", Script);
+        Assert.Contains("BridgeRetirePendingCastForInstance", Script);
         Assert.Contains("pendingCast ~= nil and pendingCast.guid ~= nil", Script);
         Assert.Contains("if pendingObject ~= nil and pendingName ~= nil and BridgeCardNameMatches(pendingName, event.cardName) then", Script);
     }
@@ -2118,6 +2118,49 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("local expectedRow = BridgeBattlefieldRowForEvent(event, \"creature\")", Script);
         Assert.Contains("BridgeMoveToBattlefield(\n                        event, object, expectedRow, false)", Script);
         Assert.Contains("if countAsNewPlacement ~= false then", Script);
+    }
+
+    [Fact]
+    public void ResolvedPermanent_RepairsExactCardStrandedAtPhysicalStackAnchor()
+    {
+        Assert.Contains("function BridgePhysicalObjectAtStackAnchor(object)", Script);
+        Assert.Contains("or strandedAtStack", Script);
+        Assert.Contains("STRUCTURED_MOVE stack->battlefield", Script);
+        Assert.Contains("SPELL_RESOLVED", Script);
+        Assert.Contains("PHYSICAL_MOVE_TO_BATTLEFIELD", Script);
+        Assert.Contains("deferred stack-anchor correction", Script);
+        Assert.Contains("exact battlefield card remained at the physical stack anchor", Script);
+    }
+
+    [Fact]
+    public void ResolvedPermanent_RetiresPendingCastOnlyAfterExactBattlefieldMove()
+    {
+        var move = Script.IndexOf("function BridgeMoveToBattlefield", StringComparison.Ordinal);
+        var retire = Script.IndexOf("function BridgeRetirePendingCastForInstance", StringComparison.Ordinal);
+        Assert.True(move >= 0);
+        Assert.True(retire >= 0);
+        Assert.Contains("BridgeRetirePendingCastForInstance(", Script);
+
+        var structured = Script.IndexOf("if event.kind == \"card_moved\"", StringComparison.Ordinal);
+        var structuredBattlefield = Script.IndexOf("sourcePhysicalZone == \"stack\"", structured, StringComparison.Ordinal);
+        Assert.True(structuredBattlefield > structured);
+        Assert.Contains("structured stack-to-battlefield", Script);
+        Assert.Contains("semantic stack-to-battlefield", Script);
+    }
+
+    [Fact]
+    public void ResolvedInstantOrSorcery_DoesNotUsePermanentBattlefieldRepair()
+    {
+        var graveyard = Script.IndexOf(
+            "if event.kind == \"spell_resolved\" and event.destinationZone == \"graveyard\" then",
+            StringComparison.Ordinal);
+        var graveyardEnd = Script.IndexOf(
+            "if event.kind == \"tap_changed\" then", graveyard, StringComparison.Ordinal);
+        Assert.True(graveyard >= 0);
+        Assert.True(graveyardEnd > graveyard);
+        var graveyardHandler = Script[graveyard..graveyardEnd];
+        Assert.DoesNotContain("BridgeMoveToBattlefield", graveyardHandler);
+        Assert.Contains("BridgeMoveToGraveyard", graveyardHandler);
     }
 
     [Fact]
