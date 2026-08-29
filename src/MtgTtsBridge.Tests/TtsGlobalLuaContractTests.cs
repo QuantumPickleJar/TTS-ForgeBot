@@ -1516,7 +1516,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function moveFromLibraryDeckToBattlefield(deck)", Script);
         Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"battlefield\"", Script);
         Assert.Contains("BridgeQueueLibraryExtraction(event.seatId", Script);
-        Assert.Contains("BridgeTakeCardFromDeckByIdentity(liveDeck, expectedName", Script);
+        Assert.Contains("BridgeTakeTopCardFromLibrary(liveDeck, expectedName", Script);
     }
 
     [Fact]
