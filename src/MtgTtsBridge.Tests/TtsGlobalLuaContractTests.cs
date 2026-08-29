@@ -2172,6 +2172,20 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void DrawDecisionWaitsForPhysicalExtractionBeforePresentingNewHandActions()
+    {
+        var deferStart = Script.IndexOf("function BridgeShouldDeferDecision", StringComparison.Ordinal);
+        var deferEnd = Script.IndexOf("function BridgeTryPresentPendingDecision", deferStart, StringComparison.Ordinal);
+        Assert.True(deferStart >= 0);
+        Assert.True(deferEnd > deferStart);
+        var deferBody = Script[deferStart..deferEnd];
+        Assert.Contains("libraryExtractionActiveBySeatId", deferBody);
+        Assert.Contains("libraryExtractionQueueBySeatId", deferBody);
+        Assert.Contains("BridgeTryPresentPendingDecision(\"library-extraction-complete\")", Script);
+        Assert.Contains("BridgeRenderDecision(BridgeState.lastDecision)", Script);
+    }
+
+    [Fact]
     public void ResourceClone_RetriesAuthoritativeValueAfterTtsRegistration()
     {
         var start = Script.IndexOf("function BridgeCreateResourceCounter", StringComparison.Ordinal);

@@ -167,6 +167,49 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
+    public async Task RepeatedMainPhaseOnLaterTurnIsNotDeduplicated()
+    {
+        await using var adapter = new ForgeTuiAdapter(
+            Options.Create(new ForgeTuiOptions { Executable = "unused" }),
+            NullLogger<ForgeTuiAdapter>.Instance);
+        var enqueue = typeof(ForgeTuiAdapter).GetMethod("EnqueueEvent", BindingFlags.Instance | BindingFlags.NonPublic);
+        var eventsField = typeof(ForgeTuiAdapter).GetField("_events", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(enqueue);
+        Assert.NotNull(eventsField);
+
+        var turnThreeMain = new ForgeTuiRawEvent(
+            "phase_changed", "forge-player-1", null, null, null, null, "Main 1",
+            Phase: "Main 1", TurnNumber: 3, ActiveSeatId: "forge-player-1");
+        var turnFourMain = turnThreeMain with { TurnNumber = 4 };
+        enqueue!.Invoke(adapter, [turnThreeMain]);
+        enqueue.Invoke(adapter, [turnFourMain]);
+
+        var events = Assert.IsAssignableFrom<System.Collections.ICollection>(eventsField!.GetValue(adapter));
+        Assert.Equal(2, events.Count);
+    }
+
+    [Fact]
+    public async Task SameTurnDuplicatePhaseIsStillDeduplicated()
+    {
+        await using var adapter = new ForgeTuiAdapter(
+            Options.Create(new ForgeTuiOptions { Executable = "unused" }),
+            NullLogger<ForgeTuiAdapter>.Instance);
+        var enqueue = typeof(ForgeTuiAdapter).GetMethod("EnqueueEvent", BindingFlags.Instance | BindingFlags.NonPublic);
+        var eventsField = typeof(ForgeTuiAdapter).GetField("_events", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(enqueue);
+        Assert.NotNull(eventsField);
+
+        var phase = new ForgeTuiRawEvent(
+            "phase_changed", "forge-player-1", null, null, null, null, "Main 1",
+            Phase: "Main 1", TurnNumber: 3, ActiveSeatId: "forge-player-1");
+        enqueue!.Invoke(adapter, [phase]);
+        enqueue.Invoke(adapter, [phase]);
+
+        var events = Assert.IsAssignableFrom<System.Collections.ICollection>(eventsField!.GetValue(adapter));
+        Assert.True(events.Count == 1);
+    }
+
+    [Fact]
     public async Task ExecutableNameOnPath_IsAcceptedForForgeLaunch()
     {
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-path-{Guid.NewGuid():N}.cmd");

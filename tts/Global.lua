@@ -3037,6 +3037,20 @@ function BridgeShouldIgnoreStaleDecision(decision)
 end
 
 function BridgeShouldDeferDecision(decision)
+    -- A draw is authoritative before its physical Deck extraction callback
+    -- completes. Do not expose a priority menu whose new hand card cannot yet
+    -- be embodied; otherwise the player can pass a stale menu and only then
+    -- see the card/action refresh. The extraction completion path releases
+    -- and rerenders the same Forge decision after the exact card is in hand.
+    if decision ~= nil and decision.seatId ~= nil then
+        local extractionQueue = BridgeState.libraryExtractionQueueBySeatId[decision.seatId]
+        if BridgeState.libraryExtractionActiveBySeatId[decision.seatId] == true
+            or (extractionQueue ~= nil and #extractionQueue > 0) then
+            return true, tonumber(decision.eventCursor or 0) or 0,
+                tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+        end
+    end
+
     -- Do not show KEEP/MULLIGAN until the authoritative opening-hand draws
     -- have all completed their serialized physical extraction. Otherwise a
     -- player can be asked to assess six visible cards while Forge has seven.

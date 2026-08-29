@@ -149,6 +149,25 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void InstantCastAction_FromMainPriorityMenuIsPhysicalAndUiAddressable()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Cast instant: Lightning Bolt [id=73] - {R} [bridge sourceZone=hand actionKind=cast_spell abilityKind=spell castMode=normal costKind=printed]\n" +
+            "Enter choice (0-1): ");
+
+        var action = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions[1];
+        Assert.Equal("cast_spell", action.Type);
+        Assert.Equal("cast_spell", action.ActionKind);
+        Assert.Equal("hand", action.SourceZone);
+        Assert.Equal("forge-object:73", action.CardInstanceId);
+        Assert.Equal("Lightning Bolt", action.CardIdentity);
+        Assert.Equal("1", Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Inputs[action.ActionId]);
+    }
+
+    [Fact]
     public void TargetMenu_BecomesSeparateDecision()
     {
         var seats = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
