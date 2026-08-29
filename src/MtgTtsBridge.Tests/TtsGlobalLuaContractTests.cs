@@ -1525,11 +1525,24 @@ public sealed class TtsGlobalLuaContractTests
 
         Assert.Contains("function moveFromLibraryDeckToGraveyard(deck)", moveBody);
         Assert.Contains("BridgeQueueLibraryExtraction(event.seatId", moveBody);
-        Assert.Contains("BridgeTakeCardFromDeckByIdentity(liveDeck, expectedName", moveBody);
+        Assert.Contains("BridgeTakeTopCardFromLibrary(liveDeck, expectedName", moveBody);
         Assert.Contains("BridgeMoveToGraveyard(event, taken)", moveBody);
         Assert.Contains("BridgeWaitTime(complete, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)", moveBody);
         Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"graveyard\"", moveBody);
         Assert.DoesNotContain("resolved object is a deck for non-library->hand move", moveBody);
+    }
+
+    [Fact]
+    public void AuthoritativeLibraryTransitions_ExtractTheTopCardRatherThanSelectingByName()
+    {
+        var topStart = Script.IndexOf("function BridgeTakeTopCardFromLibrary", StringComparison.Ordinal);
+        var topEnd = Script.IndexOf("function BridgeTakeNamedCardFromDeck", topStart, StringComparison.Ordinal);
+        var topBody = Script[topStart..topEnd];
+
+        Assert.Contains("local top = containedCards[1]", topBody);
+        Assert.Contains("index = top.index", topBody);
+        Assert.Contains("top order mismatched authoritative transition", topBody);
+        Assert.DoesNotContain("for _, contained in ipairs(containedCards) do", topBody);
     }
 
     [Fact]

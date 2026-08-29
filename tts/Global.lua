@@ -8601,13 +8601,13 @@ function BridgeApplyStructuredCardMove(event)
         if hand == nil then return false, handError end
         local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
-            local liveDeck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName) or BridgeFindLibraryDeckForSeat(event.seatId)
+            local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
             if liveDeck == nil then
                 BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued extraction"))
                 complete()
                 return
             end
-            BridgeTakeCardFromDeckByIdentity(liveDeck, expectedName, hand.position, true, function(drawn, takeError)
+            BridgeTakeTopCardFromLibrary(liveDeck, expectedName, hand.position, true, function(drawn, takeError)
                 if drawn == nil then
                     BridgeStopOnDesync(libraryDrawError(takeError))
                     complete()
@@ -8641,13 +8641,13 @@ function BridgeApplyStructuredCardMove(event)
         end
         local staging = libraryZone.getPosition()
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
-            local liveDeck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName) or BridgeFindLibraryDeckForSeat(event.seatId)
+            local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
             if liveDeck == nil then
                 BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued extraction"))
                 complete()
                 return
             end
-            BridgeTakeCardFromDeckByIdentity(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
+            BridgeTakeTopCardFromLibrary(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
                 function(taken, takeError)
                     if taken == nil then
                         BridgeStopOnDesync(libraryDrawError(takeError))
@@ -8683,13 +8683,13 @@ function BridgeApplyStructuredCardMove(event)
         end
         local staging = libraryZone.getPosition()
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
-            local liveDeck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName) or BridgeFindLibraryDeckForSeat(event.seatId)
+            local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
             if liveDeck == nil then
                 BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued graveyard extraction"))
                 complete()
                 return
             end
-            BridgeTakeCardFromDeckByIdentity(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
+            BridgeTakeTopCardFromLibrary(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
                 function(taken, takeError)
                     if taken == nil then
                         BridgeStopOnDesync(libraryDrawError(takeError))
@@ -8777,11 +8777,7 @@ function BridgeApplyStructuredCardMove(event)
     if event.sourceZone == "library" and event.destinationZone == "hand" and (object == nil or object.tag == "Deck") then
         local deck = object
         if deck == nil then
-            local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
-            if expectedName ~= nil and expectedName ~= "" then
-                deck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
-            end
-            if deck == nil then deck = BridgeFindLibraryDeckForSeat(event.seatId) end
+            deck = BridgeFindLibraryDeckForSeat(event.seatId)
         end
         if deck == nil then
             return false, libraryDrawError(resolveError or "physical library deck not found for authoritative draw")
@@ -8792,11 +8788,7 @@ function BridgeApplyStructuredCardMove(event)
     if event.sourceZone == "library" and event.destinationZone == "battlefield" and (object == nil or object.tag == "Deck") then
         local deck = object
         if deck == nil then
-            local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
-            if expectedName ~= nil and expectedName ~= "" then
-                deck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
-            end
-            if deck == nil then deck = BridgeFindLibraryDeckForSeat(event.seatId) end
+            deck = BridgeFindLibraryDeckForSeat(event.seatId)
         end
         if deck == nil then
             return false, libraryDrawError(resolveError or "physical library deck not found for authoritative library-to-battlefield move")
@@ -8807,11 +8799,7 @@ function BridgeApplyStructuredCardMove(event)
     if event.sourceZone == "library" and event.destinationZone == "graveyard" and (object == nil or object.tag == "Deck") then
         local deck = object
         if deck == nil then
-            local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
-            if expectedName ~= nil and expectedName ~= "" then
-                deck = BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
-            end
-            if deck == nil then deck = BridgeFindLibraryDeckForSeat(event.seatId) end
+            deck = BridgeFindLibraryDeckForSeat(event.seatId)
         end
         if deck == nil then
             return false, libraryDrawError(resolveError or "physical library deck not found for authoritative library-to-graveyard move")
@@ -9089,6 +9077,71 @@ function BridgeTakeCardFromDeckByIdentity(deck, expectedName, position, smooth, 
                     BridgeSafeObjectCall(liveDeck, function(d) d.putObject(taken) end)
                 end
                 callback(nil, "physical library extraction mismatched authoritative identity")
+                return
+            end
+            callback(taken, nil)
+        end
+    })
+end
+
+-- Forge's library event already identifies the exact instance and its order.
+-- For a live transition, take TTS's physical top card rather than selecting a
+-- later contained card by its display name. The name is checked only after
+-- selecting the top entry, to diagnose a physical-order desync without
+-- changing which object Forge's ordered transition embodies.
+function BridgeTakeTopCardFromLibrary(deck, expectedName, position, smooth, callback)
+    if not BridgeObjectIsUsable(deck) then
+        callback(nil, "physical library deck is no longer available")
+        return
+    end
+
+    if deck.tag == "Card" then
+        if expectedName ~= nil and expectedName ~= "" and not BridgeCardNameMatches(deck.getName(), expectedName) then
+            callback(nil, "physical single-card library top order mismatched authoritative transition")
+            return
+        end
+        deck.setLock(false)
+        deck.use_hands = true
+        deck.setPositionSmooth(position, smooth == true, true)
+        callback(deck, nil)
+        return
+    end
+
+    local containedCards = {}
+    local containedOk = pcall(function() containedCards = deck.getObjects() or {} end)
+    if not containedOk then
+        callback(nil, "could not inspect physical library deck contents")
+        return
+    end
+    if #containedCards == 0 then
+        callback(nil, "physical library deck is empty")
+        return
+    end
+    table.sort(containedCards, function(left, right)
+        local leftIndex = tonumber(left.index or -1) or -1
+        local rightIndex = tonumber(right.index or -1) or -1
+        if leftIndex == rightIndex then return tostring(left.guid or "") < tostring(right.guid or "") end
+        return leftIndex < rightIndex
+    end)
+
+    local top = containedCards[1]
+    local topName = top and (top.nickname or top.name) or nil
+    if top == nil or top.index == nil then
+        callback(nil, "physical library has no extractable top card")
+        return
+    end
+    if expectedName ~= nil and expectedName ~= "" and not BridgeCardNameMatches(topName, expectedName) then
+        callback(nil, "physical library top order mismatched authoritative transition")
+        return
+    end
+
+    deck.takeObject({
+        index = top.index,
+        position = position,
+        smooth = smooth,
+        callback_function = function(taken)
+            if not BridgeObjectIsUsable(taken) then
+                callback(nil, "physical library returned an unusable top card object")
                 return
             end
             callback(taken, nil)
