@@ -15,6 +15,6 @@ public sealed record CurrentCharacteristicsDto(
     IReadOnlyList<string>? CurrentSubtypes = null,
     string? CurrentPower = null,
     string? CurrentToughness = null,
-    int? CurrentLoyalty = null,
-    int? CurrentDefense = null,
+    string? CurrentLoyalty = null,
+    string? CurrentDefense = null,
     IReadOnlyList<string>? CurrentKeywords = null);

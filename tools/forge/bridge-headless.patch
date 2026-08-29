@@ -756,8 +756,16 @@ index 00000000..8f63342d
 +        property(json, "currentPower", card.isCreature() ? String.valueOf(card.getNetPower()) : null).append(',');
 +        property(json, "currentToughness", card.isCreature() ? String.valueOf(card.getNetToughness()) : null).append(',');
 +        // Loyalty/Defense semantics: current CardState characteristic values, not counter totals.
-+        property(json, "currentLoyalty", card.getCurrentState() == null ? null : card.getCurrentState().getBaseLoyalty()).append(',');
-+        property(json, "currentDefense", card.getCurrentState() == null ? null : card.getCurrentState().getBaseDefense()).append(',');
++        String loyalty = card.getCurrentState() == null ? null : card.getCurrentState().getBaseLoyalty();
++        if (loyalty != null && loyalty.isBlank()) {
++            loyalty = null;
++        }
++        String defense = card.getCurrentState() == null ? null : card.getCurrentState().getBaseDefense();
++        if (defense != null && defense.isBlank()) {
++            defense = null;
++        }
++        property(json, "currentLoyalty", loyalty).append(',');
++        property(json, "currentDefense", defense).append(',');
 +        json.append("\"currentKeywords\":[");
 +        boolean firstKeyword = true;
 +        for (String keyword : keywords) {
@@ -967,7 +975,7 @@ index 44aee4f4..959cd694 100644
          String version = BuildInfo.getVersionString().toLowerCase();
          if (version.contains("git") || version.contains("snapshot")) {
 diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-index 0d731bb6..08ae9604 100644
+index 0d731bb6..5f2ee29c 100644
 --- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 +++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 @@ -3,17 +3,34 @@ package forge.headless;
@@ -1265,7 +1273,7 @@ index 0d731bb6..08ae9604 100644
  
              if (!shouldPrompt) {
                  // Silently pass - don't spam output during opponent's turn
-@@ -315,26 +504,11 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -315,28 +504,13 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              if (totalActions == 0) {
                  return null;
              }
@@ -1296,6 +1304,8 @@ index 0d731bb6..08ae9604 100644
 -        if (!isMyTurn) {
 +        if (!isActivePlayersTurn) {
              System.out.println("\n=== OPPONENT'S TURN ===");
+             if (stackHasItems) {
+                 System.out.println("[Respond to spell on stack]");
 @@ -363,40 +537,43 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          // Show land options
          for (SpellAbility sa : uniqueLands) {
@@ -1731,9 +1741,7 @@ index 0d731bb6..08ae9604 100644
 +            "Discard to maximum hand size", false));
 +        return result;
 +    }
- 
--            String response = line.trim().toLowerCase();
--            boolean result = response.startsWith("y");
++
 +    private String formatDecisionEntity(GameEntity entity) {
 +        if (entity instanceof Card) {
 +            Card card = (Card) entity;
@@ -1759,9 +1767,7 @@ index 0d731bb6..08ae9604 100644
 +        String sourceName = bridgeDisplayCardName(sa.getHostCard());
 +        return title.replace("CARDNAME", sourceName).replace("NICKNAME", sourceName);
 +    }
- 
--            if (result) {
--                System.out.println(">> Trigger accepted\n");
++
 +    private <T extends GameEntity> List<T> chooseEntitiesThroughTui(
 +            String kind, FCollectionView<T> options, int min, int max, String title, boolean ordered) {
 +        return chooseEntitiesThroughTui(kind, options, min, max, title, ordered, "");
@@ -1772,7 +1778,9 @@ index 0d731bb6..08ae9604 100644
 +            String structuredMetadata) {
 +        return chooseEntitiesThroughTui(kind, options, min, max, title, ordered, structuredMetadata, 0, null);
 +    }
-+
+ 
+-            String response = line.trim().toLowerCase();
+-            boolean result = response.startsWith("y");
 +    private <T extends GameEntity> List<T> chooseEntitiesThroughTui(
 +            String kind, FCollectionView<T> options, int min, int max, String title, boolean ordered,
 +            String structuredMetadata, int requiredTotalPower, SpellAbility powerAbility) {
@@ -1783,7 +1791,9 @@ index 0d731bb6..08ae9604 100644
 +        String effectiveKind = "selectionKind=proliferate".equals(structuredMetadata)
 +            ? "entity_selection" : !candidates.isEmpty() && candidates.get(0) instanceof Player
 +            ? "player_selection" : kind;
-+
+ 
+-            if (result) {
+-                System.out.println(">> Trigger accepted\n");
 +        while (true) {
 +            System.out.println("\n=== FORGE CHOICE ===");
 +            System.out.println(title == null || title.isBlank() ? "Choose from Forge's legal candidates" : title);

@@ -366,18 +366,18 @@ public sealed class U2ProvenanceAndCharacteristicsContractTests
     {
         var planeswalker = new CurrentCharacteristicsDto(
             CurrentCardName: "Jace, the Mind Sculptor",
-            CurrentLoyalty: 3,
+            CurrentLoyalty: "3",
             CurrentDefense: null);
 
         var battle = new CurrentCharacteristicsDto(
             CurrentCardName: "Invasion of Zendikar",
             CurrentLoyalty: null,
-            CurrentDefense: 5);
+            CurrentDefense: "5");
 
-        Assert.Equal(3, planeswalker.CurrentLoyalty);
+        Assert.Equal("3", planeswalker.CurrentLoyalty);
         Assert.Null(planeswalker.CurrentDefense);
         Assert.Null(battle.CurrentLoyalty);
-        Assert.Equal(5, battle.CurrentDefense);
+        Assert.Equal("5", battle.CurrentDefense);
     }
 
     [Fact]

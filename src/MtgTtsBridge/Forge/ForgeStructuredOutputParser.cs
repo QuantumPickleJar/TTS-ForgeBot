@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
 
@@ -71,8 +72,29 @@ public sealed class ForgeStructuredOutputParser
         }
         catch (JsonException ex)
         {
-            throw new ForgeStructuredFrameException("Forge emitted malformed structured state JSON.", ex);
+            throw new ForgeStructuredFrameException(BuildMalformedJsonMessage(ex), ex);
         }
+    }
+
+    private static string BuildMalformedJsonMessage(JsonException ex)
+    {
+        var metadata = new List<string>();
+        if (!string.IsNullOrWhiteSpace(ex.Path))
+        {
+            metadata.Add($"path={ex.Path}");
+        }
+        if (ex.LineNumber.HasValue)
+        {
+            metadata.Add($"line={ex.LineNumber.Value}");
+        }
+        if (ex.BytePositionInLine.HasValue)
+        {
+            metadata.Add($"byte={ex.BytePositionInLine.Value}");
+        }
+
+        return metadata.Count == 0
+            ? "Forge emitted malformed structured state JSON."
+            : $"Forge emitted malformed structured state JSON ({string.Join(", ", metadata)}).";
     }
 }
 
@@ -145,8 +167,8 @@ public sealed record ForgeStructuredCharacteristics(
     IReadOnlyList<string>? CurrentSubtypes = null,
     string? CurrentPower = null,
     string? CurrentToughness = null,
-    int? CurrentLoyalty = null,
-    int? CurrentDefense = null,
+    string? CurrentLoyalty = null,
+    string? CurrentDefense = null,
     IReadOnlyList<string>? CurrentKeywords = null);
 
 public sealed class ForgeStructuredFrameException : InvalidOperationException

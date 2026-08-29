@@ -12,6 +12,10 @@ public sealed class ForgeProducerContractTests
     {
         Assert.Contains("\"currentPower\"", Patch);
         Assert.Contains("\"currentToughness\"", Patch);
+        Assert.Contains("\"currentLoyalty\"", Patch);
+        Assert.Contains("\"currentDefense\"", Patch);
+        Assert.Contains("loyalty != null && loyalty.isBlank()", Patch);
+        Assert.Contains("defense != null && defense.isBlank()", Patch);
         Assert.Contains("\\\"currentTypes\\\"", Patch);
         Assert.Contains("\"ownerSeatId\"", Patch);
         Assert.Contains("\"controllerSeatId\"", Patch);
