@@ -1880,7 +1880,13 @@ function BridgeUiFlush()
     local phaseStatus = tostring(BridgeState.currentPhase or "WAITING")
     BridgeUiSet("BridgeHudStatus", "text", terminal and "GAME OVER" or (priority .. " • " .. phaseStatus))
     BridgeUiSet("BridgeHudStatus", "color", terminal and "#F8FAFC" or BridgeHudPhaseColor(BridgeState.currentPhase))
+    local castPreviewPending = BridgeState.pendingIntent ~= nil
+        and BridgeState.pendingIntent.action ~= nil
+        and BridgeState.pendingIntent.action.type == "cast_spell"
     local prompt = decision and (decision.prompt or decision.kind or "Choose an action") or "AI THINKING..."
+    if castPreviewPending then
+        prompt = "CAST PREVIEW — press CAST / CONFIRM or CANCEL / RETURN"
+    end
     if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew" then
         prompt = "CREW — SELECT CREATURES"
     end
@@ -1959,10 +1965,16 @@ function BridgeUiFlush()
             or decision.kind == "player_selection")
     BridgeUiSet("BridgeHudPass", "active", hasPass and "true" or "false")
     BridgeUiSet("BridgeHudYield", "active", hasYield and "true" or "false")
-    BridgeUiSet("BridgeHudConfirm", "active", decision and BridgeDecisionNeedsConfirmation(decision) and "true" or "false")
-    BridgeUiSet("BridgeHudCancel", "active", decision and
+    BridgeUiSet("BridgeHudConfirm", "active", (decision and BridgeDecisionNeedsConfirmation(decision))
+        or castPreviewPending and "true" or "false")
+    BridgeUiSet("BridgeHudConfirm", "text", castPreviewPending and "CAST / CONFIRM" or "CONFIRM")
+    BridgeUiSet("BridgeHudConfirm", "tooltip", castPreviewPending
+        and "Submit this Forge-approved spell after reviewing the cast preview."
+        or "Submit the staged Forge selection when its required count is satisfied.")
+    BridgeUiSet("BridgeHudCancel", "active", (castPreviewPending or (decision and
         ((BridgeDecisionNeedsConfirmation(decision) and not BridgeIsStructuredForgeToggleChoice(decision))
-            or targetCanCancel) and "true" or "false")
+            or targetCanCancel))) and "true" or "false")
+    BridgeUiSet("BridgeHudCancel", "text", castPreviewPending and "CANCEL / RETURN" or "CANCEL")
     BridgeUiSet("BridgeHudNewMatch", "active", terminal and "true" or "false")
     BridgeUiSet("BridgeHudNewMatch", "text", BridgeState.resetConfirmationArmed and "CONFIRM NEW MATCH" or "NEW MATCH")
     local footer = terminal and "NEW MATCH is available on the table."
@@ -2065,11 +2077,21 @@ function BridgeHudGraveyardClose(player, value, id)
 end
 
 function BridgeHudConfirm(player, value, id)
+    if BridgeState.pendingIntent ~= nil and BridgeState.pendingIntent.action ~= nil
+        and BridgeState.pendingIntent.action.type == "cast_spell" then
+        BridgeConfirmCastPreview(nil, player, false)
+        return
+    end
     if BridgeState.lastDecision == nil or not BridgeDecisionNeedsConfirmation(BridgeState.lastDecision) then return end
     BridgeConfirmSelection(nil, player, false)
 end
 
 function BridgeHudCancel(player, value, id)
+    if BridgeState.pendingIntent ~= nil and BridgeState.pendingIntent.action ~= nil
+        and BridgeState.pendingIntent.action.type == "cast_spell" then
+        BridgeCancelCastPreview(nil, player, false)
+        return
+    end
     BridgeCancelSelection(nil, player, false)
 end
 
@@ -4856,6 +4878,7 @@ end
 function BridgeEnsureCastPreviewControls(intent)
     if intent == nil or intent.action == nil or intent.action.type ~= "cast_spell" then return end
     if #(BridgeState.pendingIntentControlGuids or {}) > 0 then return end
+    BridgeUiMarkDirty("cast-preview")
     local seat = BRIDGE_SEATS[intent.seatId]
     if seat == nil then return end
     local function spawnControl(name, label, x, color, callback)
@@ -4898,6 +4921,7 @@ function BridgeConfirmCastPreview(object, playerColor, altClick)
     end
     BridgeClaimHumanTtsColor(intent.seatId, playerColor)
     BridgeClearPendingIntentControls()
+    BridgeUiMarkDirty("cast-preview-confirm")
     BridgeSubmitChoice(intent.decisionId, intent.action.actionId, "cast_confirm")
 end
 
@@ -4905,6 +4929,7 @@ function BridgeCancelCastPreview(object, playerColor, altClick)
     local decision = BridgeState.lastDecision
     BridgeClearPendingIntentControls()
     BridgeRollbackPendingIntent()
+    BridgeUiMarkDirty("cast-preview-cancel")
     if decision ~= nil then BridgeRenderDecision(decision) end
 end
 
@@ -7004,6 +7029,16 @@ function BridgeProcessEventQueue()
     BridgeState.lastAppliedEventSequence = event.sequence
     BridgeTryApplyDeferredSnapshotReconcile("event " .. tostring(event.sequence))
     BridgeTryPresentPendingDecision("event-applied")
+    if event.kind == "draw" or event.kind == "turn_changed" or event.kind == "phase_changed" then
+        -- A draw/phase transition can invalidate the previously rendered
+        -- priority menu. If no replacement decision was already released,
+        -- fetch Forge's current menu so newly available hand actions (notably
+        -- a land drawn during upkeep) are rendered in the next window.
+        if BridgeState.lastDecision == nil and BridgeState.pendingDecision == nil
+            and not BridgeState.submitting then
+            BridgeStartDecisionPolling()
+        end
+    end
     if BridgeShouldReconcileAfterEvent(event) then
         BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence))
     end
@@ -10394,8 +10429,13 @@ function BridgeUiFlush()
     local terminal = BridgeState.gameEnded
     local requiresConfirm = decision ~= nil and BridgeDecisionNeedsConfirmation(decision)
     local creatureTypeDecision = decision ~= nil and decision.kind == "creature_type_selection"
-    BridgeUiSet("BridgeHudGameControls", "active", (terminal == nil and not requiresConfirm and not creatureTypeDecision) and "true" or "false")
-    BridgeUiSet("BridgeHudDecisionControls", "active", (terminal == nil and requiresConfirm) and "true" or "false")
+    local castPreviewPending = BridgeState.pendingIntent ~= nil
+        and BridgeState.pendingIntent.action ~= nil
+        and BridgeState.pendingIntent.action.type == "cast_spell"
+    local gameControlsActive = terminal == nil and not requiresConfirm and not creatureTypeDecision
+        and not castPreviewPending
+    BridgeUiSet("BridgeHudGameControls", "active", gameControlsActive and "true" or "false")
+    BridgeUiSet("BridgeHudDecisionControls", "active", (terminal == nil and (requiresConfirm or castPreviewPending)) and "true" or "false")
 
     -- Keep the fixed 24-row action transport intact.  The tray itself is now
     -- contextual and disappears when PASS/YIELD are the only available choice.

@@ -133,6 +133,22 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void EnchantmentCastAction_PreservesExactCardIdentity()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("""
+            What would you like to do?
+              0. Pass priority (do nothing)
+              1. Cast enchantment: Caretaker's Talent - {2}{W} [id=61]
+            Enter choice (0-1):
+            """);
+
+        var action = Assert.Single(result.ParsedDecision!.Decision.Actions, item => item.Type == "cast_spell");
+        Assert.Equal("Caretaker's Talent", action.CardIdentity);
+        Assert.Equal("forge-object:61", action.CardInstanceId);
+    }
+
+    [Fact]
     public void TargetMenu_BecomesSeparateDecision()
     {
         var seats = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

@@ -1310,6 +1310,16 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void CastPreview_IsReachableFromTheHudAndRemainsReversible()
+    {
+        Assert.Contains("CAST PREVIEW — press CAST / CONFIRM or CANCEL / RETURN", Script);
+        Assert.Contains("BridgeHudConfirm", Script);
+        Assert.Contains("BridgeConfirmCastPreview(nil, player, false)", Script);
+        Assert.Contains("BridgeCancelCastPreview(nil, player, false)", Script);
+        Assert.Contains("castPreviewPending", Script);
+    }
+
+    [Fact]
     public void CombatCandidates_AreOrangeFollowupChoices()
     {
         Assert.Contains("if decision.kind ~= \"main_priority\" then", Script);
@@ -1516,6 +1526,14 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("Keep passive auto-pass off for the human seat", Script);
         Assert.Contains("Priority/active-seat fields are descriptive state, not ordering keys", Script);
         Assert.DoesNotContain("if stalePrioritySeat or activeMismatch then", Script);
+    }
+
+    [Fact]
+    public void AuthoritativeDrawAndPhaseTransitionsRefreshTheCurrentDecision()
+    {
+        Assert.Contains("if event.kind == \"draw\" or event.kind == \"turn_changed\" or event.kind == \"phase_changed\" then", Script);
+        Assert.Contains("BridgeStartDecisionPolling()", Script);
+        Assert.Contains("newly available hand actions", Script);
     }
 
     [Fact]

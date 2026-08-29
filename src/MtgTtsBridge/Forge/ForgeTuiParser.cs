@@ -561,7 +561,7 @@ public sealed partial class ForgeTuiParser
     [GeneratedRegex(@"^Play land:\s*(?<name>.+)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PlayLandRegex();
 
-    [GeneratedRegex(@"^Cast (?:creature|artifact|sorcery|instant|spell):\s*(?<name>.+?)(?:\s+\([^)]*\))?\s+-\s+.+$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^Cast (?:creature|artifact|enchantment|sorcery|instant|spell):\s*(?<name>.+?)(?:\s+\([^)]*\))?\s+-\s+.+$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex CastSpellRegex();
 
     [GeneratedRegex(@"^(?<name>.+?):\s*.*\bAdd\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]

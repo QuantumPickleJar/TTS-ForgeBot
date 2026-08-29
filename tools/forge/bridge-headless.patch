@@ -1469,7 +1469,7 @@ index 0d731bb6..5f2ee29c 100644
      /**
       * Get castable creature or artifact spells from the player's hand.
       * @param creatures if true, get creatures; if false, get artifacts
-@@ -496,17 +750,22 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -496,17 +750,39 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              // Get the main spell ability (casting the card)
              for (SpellAbility sa : c.getAllPossibleAbilities(player, true)) {
                  // We want spell abilities that can be cast from hand
@@ -1489,6 +1489,23 @@ index 0d731bb6..5f2ee29c 100644
              }
          }
  
++        // Enchantments are permanent spells but are not artifacts. Keep them
++        // in the same generic permanent-spell menu so Forge's exact action
++        // identity reaches the bridge without a card-name special case.
++        if (!creatures) {
++            for (Card c : player.getCardsIn(ZoneType.Hand)) {
++                if (!c.isEnchantment()) continue;
++                for (SpellAbility sa : c.getAllPossibleAbilities(player, true)) {
++                    if (!sa.isSpell()) continue;
++                    sa.setActivatingPlayer(player);
++                    if (!sa.canPlay()) continue;
++                    if (!ComputerUtilMana.canPayManaCost(sa, player, 0, false)) continue;
++                    if (!hasValidTargets(sa)) continue;
++                    spells.add(sa);
++                }
++            }
++        }
++
 +        // U2 generic cast discovery: include every non-hand zone where Forge
 +        // currently exposes legal spell abilities.
 +        spells.addAll(getCastableSpellsFromAllZones(creatures ? "creature" : "artifact"));
