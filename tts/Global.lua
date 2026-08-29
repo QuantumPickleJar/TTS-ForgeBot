@@ -293,6 +293,10 @@ BridgeState = {
     keywordStateByInstanceId = {},
     cardDesignationsByInstanceId = {},
     untappedRotationByGuid = {},
+    -- Tap state is Forge-owned.  Keep it separately from the current face
+    -- orientation so a face-up/face-down update cannot accidentally restore
+    -- an otherwise tapped permanent to its untapped rotation.
+    physicalTappedByGuid = {},
     pendingCastBySeatId = {},
     snapshotForgeSequence = 0,
     snapshotReconcileInFlight = false,
@@ -518,6 +522,7 @@ function BridgeRecordLibraryContainedState(cardInstanceId, seatId, cardName)
         BridgeState.physicalInstanceIdByGuid[existingGuid] = nil
         BridgeState.physicalSeatByGuid[existingGuid] = nil
         BridgeState.physicalZoneByGuid[existingGuid] = nil
+        BridgeState.physicalTappedByGuid[existingGuid] = nil
         BridgeAdvancePhysicalPresentationGeneration("card-contained")
     end
     BridgeState.physicalByInstanceId[cardInstanceId] = nil
@@ -7132,6 +7137,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.preparedDesignationStateByInstanceId = {}
     BridgeState.preparedSpellControlGuids = {}
     BridgeState.untappedRotationByGuid = {}
+    BridgeState.physicalTappedByGuid = {}
     BridgeState.pendingCastBySeatId = {}
     BridgeState.attackOriginByGuid = {}
     BridgeState.attackLaneGuidBySeatId = {}
@@ -9582,24 +9588,26 @@ function BridgeSetPhysicalFaceDown(object, seat, faceDown)
     if not BridgeObjectIsUsable(object) then return end
     local faceUp = seat.faceUpRotation
     if faceUp == nil then return end
-    local rotation = {
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then return end
+    local baseRotation = {
         x = faceUp.x,
         y = faceUp.y,
         z = faceUp.z + (faceDown and 180 or 0)
     }
-    if not BridgeSafeObjectCall(object, function(o) o.setRotation(rotation) end) then return end
-    local guid = BridgeSafeObjectGuid(object)
-    if guid == nil then return end
-    BridgeState.untappedRotationByGuid[guid] = {
-        x = faceUp.x,
-        y = faceUp.y,
-        z = faceUp.z
+    local rotation = {
+        x = baseRotation.x,
+        y = baseRotation.y + (BridgeState.physicalTappedByGuid[guid] == true and 90 or 0),
+        z = baseRotation.z
     }
+    if not BridgeSafeObjectCall(object, function(o) o.setRotation(rotation) end) then return end
+    BridgeState.untappedRotationByGuid[guid] = baseRotation
 end
 
 function BridgeSetPhysicalTapped(object, tapped)
     local guid = BridgeSafeObjectGuid(object)
     if guid == nil then return end
+    BridgeState.physicalTappedByGuid[guid] = tapped == true
     local base = BridgeState.untappedRotationByGuid[guid]
     if base == nil then
         local ok, rotation = pcall(function() return object.getRotation() end)

@@ -709,6 +709,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("if event.kind == \"card_moved\"", Script);
         Assert.Contains("if event.kind == \"tap_changed\"", Script);
         Assert.Contains("BridgeSetPhysicalTapped(object, event.tapped == true)", Script);
+        Assert.Contains("physicalTappedByGuid = {}", Script);
+        Assert.Contains("BridgeState.physicalTappedByGuid[guid] = tapped == true", Script);
+        Assert.Contains("BridgeState.physicalTappedByGuid[guid] == true and 90 or 0", Script);
         Assert.Contains("local targetY = base.y + (tapped and 90 or 0)", Script);
         Assert.Contains("o.setRotationSmooth({base.x, targetY, base.z}", Script);
     }
