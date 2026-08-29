@@ -711,6 +711,58 @@ index 00000000..8f63342d
 +            firstKeyword = false;
 +            string(json, keyword);
 +        }
++        json.append("],");
++        appendCharacteristics(json, card, keywords);
++        json.append("}");
++    }
++
++    private void appendCharacteristics(final StringBuilder json, final Card card, final Set<String> keywords) {
++        json.append("\"characteristics\":{");
++        property(json, "currentCardName", card.getName()).append(',');
++        property(json, "currentManaCost", String.valueOf(card.getManaCost())).append(',');
++        property(json, "currentManaValue", card.getCMC()).append(',');
++        json.append("\"currentColors\":[");
++        boolean firstColor = true;
++        for (byte mask : card.getColor().getColor()) {
++            if (!firstColor) json.append(',');
++            firstColor = false;
++            string(json, forge.card.MagicColor.toLongString(mask).toLowerCase(java.util.Locale.ROOT));
++        }
++        json.append("],");
++        json.append("\"currentSupertypes\":[");
++        boolean first = true;
++        for (CardType.Supertype value : card.getType().getSupertypes()) {
++            if (!first) json.append(',');
++            first = false;
++            string(json, value.toString().toLowerCase(java.util.Locale.ROOT));
++        }
++        json.append("],\"currentCardTypes\":[");
++        first = true;
++        for (CardType.CoreType value : card.getType().getCoreTypes()) {
++            if (!first) json.append(',');
++            first = false;
++            string(json, value.toString().toLowerCase(java.util.Locale.ROOT));
++        }
++        json.append("],\"currentSubtypes\":[");
++        first = true;
++        for (String value : card.getType().getSubtypes()) {
++            if (!first) json.append(',');
++            first = false;
++            string(json, value.toLowerCase(java.util.Locale.ROOT));
++        }
++        json.append("],");
++        property(json, "currentPower", card.isCreature() ? String.valueOf(card.getNetPower()) : null).append(',');
++        property(json, "currentToughness", card.isCreature() ? String.valueOf(card.getNetToughness()) : null).append(',');
++        // Loyalty/Defense semantics: current CardState characteristic values, not counter totals.
++        property(json, "currentLoyalty", card.getCurrentState() == null ? null : card.getCurrentState().getBaseLoyalty()).append(',');
++        property(json, "currentDefense", card.getCurrentState() == null ? null : card.getCurrentState().getBaseDefense()).append(',');
++        json.append("\"currentKeywords\":[");
++        boolean firstKeyword = true;
++        for (String keyword : keywords) {
++            if (!firstKeyword) json.append(',');
++            firstKeyword = false;
++            string(json, keyword);
++        }
 +        json.append("]}");
 +    }
 +
@@ -1004,7 +1056,110 @@ index 0d731bb6..18ef1187 100644
 +    public boolean payManaCost(ManaCost toPay, CostPartMana costPartMana, SpellAbility sa,
 +            String prompt, ManaConversionMatrix matrix, boolean effect) {
 +        reportInheritedDecision("automatic_mana_payment");
++        stagePaymentContext("mana_payment");
 +        return super.payManaCost(toPay, costPartMana, sa, prompt, matrix, effect);
++    }
++
++    private String activePaymentContextId;
++    private int nextPaymentContextNumber = 1;
++    private final java.util.Map<String, java.util.List<String>> paymentComponentRegistry = new java.util.LinkedHashMap<>();
++
++    private String beginPaymentContext(String stage, SpellAbility sa) {
++        if (activePaymentContextId != null) {
++            System.err.println("[PAYMENT_CONTEXT_RETIRE] paymentContextId=" + activePaymentContextId + " reason=replaced");
++            activePaymentContextId = null;
++        }
++        activePaymentContextId = "P" + nextPaymentContextNumber++;
++        paymentComponentRegistry.put(activePaymentContextId, new java.util.ArrayList<>());
++        Card source = sa == null ? null : sa.getHostCard();
++        System.out.println("[PAYMENT_CONTEXT_CREATE] paymentContextId=" + activePaymentContextId
++            + " stage=" + stage
++            + " sourceCardId=" + (source == null ? "unknown" : source.getId()));
++        emitPaymentContextRecord(stage, sa);
++        return activePaymentContextId;
++    }
++
++    private void stagePaymentContext(String stage) {
++        if (activePaymentContextId == null) return;
++        System.out.println("[PAYMENT_CONTEXT_STAGE] paymentContextId=" + activePaymentContextId + " stage=" + stage);
++        emitPaymentContextRecord(stage, null);
++    }
++
++    private void retirePaymentContext(String reason, SpellAbility sa) {
++        if (activePaymentContextId == null) return;
++        emitPaymentContextRecord("retire_" + reason, sa);
++        System.out.println("[PAYMENT_CONTEXT_RETIRE] paymentContextId=" + activePaymentContextId + " reason=" + reason);
++        paymentComponentRegistry.remove(activePaymentContextId);
++        activePaymentContextId = null;
++    }
++
++    private void emitPaymentContextRecord(String stage, SpellAbility sa) {
++        if (activePaymentContextId == null) return;
++        Card source = sa == null ? null : sa.getHostCard();
++        ZoneType zone = source == null || source.getZone() == null ? null : source.getZone().getZoneType();
++        boolean prototypeSpell = sa != null && sa.hasParam("Prototype");
++        String castMode = source != null && source.getCurrentStateName() == CardStateName.PreparedSpell ? "prepare"
++            : prototypeSpell ? "prototype" : sa != null && sa.getAlternativeCost() != null
++            ? sa.getAlternativeCost().name().toLowerCase(java.util.Locale.ROOT) : "normal";
++        String actionKind = sa != null && sa.isAbility() ? "activate_ability" : "cast_spell";
++        String sourceZone = zone == null ? "unknown" : zone.name().toLowerCase(java.util.Locale.ROOT);
++        System.out.println("[bridge paymentContextId=" + activePaymentContextId
++            + " originActionId=" + activePaymentContextId + "-root"
++            + " sourceCardId=" + (source == null ? "" : source.getId())
++            + " sourceZone=" + sourceZone
++            + " actionKind=" + actionKind
++            + " castMode=" + castMode
++            + " paymentStage=" + stage + "]");
++    }
++
++    private void emitCostComponentsRecord(SpellAbility sa, String sourceZoneHint, int minSelections, int maxSelections) {
++        if (activePaymentContextId == null || sa == null || sa.getPayCosts() == null) return;
++        java.util.List<String> componentIds = paymentComponentRegistry.computeIfAbsent(activePaymentContextId, key -> new java.util.ArrayList<>());
++        java.util.List<forge.game.cost.CostPart> parts = new java.util.ArrayList<>(sa.getPayCosts().getCostParts());
++        for (int index = 0; index < parts.size(); index++) {
++            forge.game.cost.CostPart part = parts.get(index);
++            String componentId;
++            if (index < componentIds.size()) {
++                componentId = componentIds.get(index);
++            } else {
++                componentId = activePaymentContextId + "-C" + index;
++                componentIds.add(componentId);
++            }
++            String kind = bridgeCostKind(part);
++            String label = bridgeEncode(String.valueOf(part));
++            if ("other".equals(kind)) {
++                System.err.println("[U2 diagnostic] unknown cost component paymentContextId=" + activePaymentContextId
++                    + " class=" + part.getClass().getSimpleName() + " label=" + String.valueOf(part));
++            }
++            System.out.println("[bridge costComponent paymentContextId=" + activePaymentContextId
++                + " componentId=" + componentId
++                + " kind=" + kind
++                + " displayLabel=" + label
++                + " sourceZone=" + sourceZoneHint
++                + " minSelections=" + minSelections
++                + " maxSelections=" + maxSelections + "]");
++        }
++    }
++
++    private String bridgeCostKind(forge.game.cost.CostPart part) {
++        if (part instanceof forge.game.cost.CostPartMana || part instanceof forge.game.cost.CostPayMana) return "mana";
++        if (part instanceof forge.game.cost.CostDiscard) return "discard";
++        if (part instanceof forge.game.cost.CostSacrifice) return "sacrifice";
++        if (part instanceof forge.game.cost.CostExile) return "exile";
++        if (part instanceof forge.game.cost.CostTapType) return "tap-selection";
++        if (part instanceof forge.game.cost.CostTap) return "tap";
++        String amount = String.valueOf(part.getAmount());
++        if (amount.contains("X")) return "variable";
++        return "other";
++    }
++
++    private static String bridgeEncode(String value) {
++        try {
++            return java.net.URLEncoder.encode(value == null ? "" : value, java.nio.charset.StandardCharsets.UTF_8.toString())
++                .replace("+", "%20");
++        } catch (java.io.UnsupportedEncodingException ignored) {
++            return "";
++        }
 +    }
 +
      @Override
@@ -1290,7 +1445,15 @@ index 0d731bb6..18ef1187 100644
 +            // ordinary human controllers and can make Main 1 appear skipped.
 +            return super.playChosenSpellAbility(chosenSa);
 +        }
-+        return super.playChosenSpellAbility(chosenSa);
++        beginPaymentContext(chosenSa.isAbility() ? "activate_begin" : "cast_begin", chosenSa);
++        try {
++            boolean accepted = super.playChosenSpellAbility(chosenSa);
++            retirePaymentContext(accepted ? "success" : "failed", chosenSa);
++            return accepted;
++        } catch (RuntimeException ex) {
++            retirePaymentContext("failed_exception", chosenSa);
++            throw ex;
++        }
 +    }
  
      /**
@@ -1775,6 +1938,9 @@ index 0d731bb6..18ef1187 100644
 +    public CardCollectionView chooseCardsForCost(CardCollectionView optionList, SpellAbility sa,
 +            CostPartWithList costPart, int amount, boolean isOptional, String prompt) {
 +        CardCollection result = new CardCollection();
++        stagePaymentContext("nonmana_payment");
++        emitPaymentContextRecord("nonmana_payment", sa);
++        emitCostComponentsRecord(sa, costPart instanceof CostTapType ? "battlefield" : "unknown", isOptional ? 0 : amount, amount);
 +        if (costPart instanceof CostTapType tapCost && costPart.getType().contains("+withTotalPowerGE")) {
 +            System.out.println("[TUI-DIAG cost] controller=PlayerControllerTUI visitor=chooseCardsForCost costPart=CostTapType abilityIsCrew="
 +                + (sa != null && sa.isCrew()) + " candidateCount=" + optionList.size());
@@ -1818,6 +1984,8 @@ index 0d731bb6..18ef1187 100644
 +        // the exact cards the human selected; Forge performs the reduction and
 +        // authoritative graveyard-to-exile moves afterwards.
 +        CardCollection result = new CardCollection();
++        stagePaymentContext("nonmana_payment");
++        emitPaymentContextRecord("nonmana_payment", null);
 +        result.addAll(chooseEntitiesThroughTui("cost_selection", grave, 0, genericAmount,
 +            "Choose graveyard cards to exile for Delve", false,
 +            "costKind=delve sourceZone=graveyard"));
@@ -1909,6 +2077,8 @@ index 0d731bb6..18ef1187 100644
 +    @Override
 +    public int chooseNumberForKeywordCost(SpellAbility sa, forge.game.cost.Cost cost,
 +            forge.game.keyword.KeywordInterface keyword, String prompt, int max) {
++        stagePaymentContext("variable_choice");
++        emitPaymentContextRecord("variable_choice", sa);
 +        return chooseNumber(sa, prompt, 0, max);
 +    }
 +
@@ -1964,7 +2134,8 @@ index 0d731bb6..18ef1187 100644
 +                ? " prototypePower=" + sa.getParam("SetPower") : "")
 +            + (prototypeSpell && sa.getParam("SetToughness") != null
 +                ? " prototypeToughness=" + sa.getParam("SetToughness") : "")
-+            + (preparedSource == null ? "" : " preparedSourceCardId=" + preparedSource.getId()) + "]";
++            + (preparedSource == null ? "" : " preparedSourceCardId=" + preparedSource.getId())
++            + (activePaymentContextId == null ? "" : " paymentContextId=" + activePaymentContextId) + "]";
 +    }
  
 -            int choice = getIntInput(0, remaining.size() - 1);
@@ -2112,6 +2283,8 @@ index 0d731bb6..18ef1187 100644
 +    public List<forge.game.spellability.OptionalCostValue> chooseOptionalCosts(
 +            SpellAbility chosen, List<forge.game.spellability.OptionalCostValue> options) {
 +        List<forge.game.spellability.OptionalCostValue> selected = new ArrayList<>();
++        stagePaymentContext("optional_cost");
++        emitPaymentContextRecord("optional_cost", chosen);
 +        while (true) {
 +            System.out.println("\n=== FORGE CHOICE ===");
 +            System.out.println("Choose optional costs for " + chosen.getHostCard().getName());
@@ -2139,11 +2312,13 @@ index 0d731bb6..18ef1187 100644
 +    @Override
 +    public boolean confirmAction(SpellAbility sa, PlayerActionConfirmMode mode, String message,
 +            List<String> options, Card cardToShow, Map<String, Object> params) {
++        stagePaymentContext("confirm_action");
 +        return chooseYesNo(message);
 +    }
 +
 +    @Override
 +    public boolean confirmPayment(CostPart costPart, String prompt, SpellAbility sa) {
++        stagePaymentContext("confirm_payment");
 +        return chooseYesNo(prompt);
 +    }
 +
