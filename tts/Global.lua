@@ -7542,7 +7542,8 @@ function BridgeApplyAuthoritativeEvent(event)
                     local resolvedEvent = {}
                     for key, value in pairs(event) do resolvedEvent[key] = value end
                     resolvedEvent.cardInstanceId = pendingCast.cardInstanceId
-                    local moved, moveError = BridgeMoveToBattlefield(resolvedEvent, pendingObject, "creature")
+                    local moved, moveError = BridgeMoveToBattlefield(
+                        resolvedEvent, pendingObject, BridgeBattlefieldRowForEvent(resolvedEvent, "creature"))
                     if not moved then return false, 0, moveError end
                     BridgeState.pendingCastBySeatId[event.seatId] = nil
                     BridgeLog(string.format(
@@ -7555,7 +7556,7 @@ function BridgeApplyAuthoritativeEvent(event)
         end
         local object, resolveError = BridgeResolvePhysicalCard(event, "stack")
         if object == nil then return false, 0, resolveError end
-        local moved, moveError = BridgeMoveToBattlefield(event, object, "creature")
+        local moved, moveError = BridgeMoveToBattlefield(event, object, BridgeBattlefieldRowForEvent(event, "creature"))
         if not moved then return false, 0, moveError end
         return true, 1.25
     end
@@ -9768,6 +9769,21 @@ function BridgePhysicalMappingError(event, expectedZone, candidateCount, detail,
         tostring(mappedTag),
         candidateCount,
         tostring(detail))
+end
+
+function BridgeBattlefieldRowForEvent(event, defaultRow)
+    if event ~= nil then
+        if event.battlefieldKind == "land" or event.battlefieldKind == "creature" then
+            return event.battlefieldKind
+        end
+        for _, cardType in ipairs(event.currentTypes or {}) do
+            if string.lower(tostring(cardType)) == "land" then return "land" end
+        end
+        local knownRow = event.cardInstanceId ~= nil
+            and BridgeState.battlefieldKindByInstanceId[event.cardInstanceId] or nil
+        if knownRow == "land" or knownRow == "creature" then return knownRow end
+    end
+    return defaultRow == "land" and "land" or "creature"
 end
 
 function BridgeMoveToBattlefield(event, object, row)

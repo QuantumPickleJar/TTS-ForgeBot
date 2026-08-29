@@ -201,6 +201,58 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
+    public async Task OptionalTrigger_IsExposedAsStructuredYesNoDecision()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-optional-trigger-{Guid.NewGuid():N}.cmd");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo === FORGE CHOICE ===
+            echo Use optional trigger from Soul Warden?
+            echo Ability: You gain 1 life.
+            echo [kind=yes_no min=1 max=1 selected=0 ordered=false]
+            echo   0. No
+            echo   1. Yes
+            <nul set /p "=Enter choice (0-1): "
+            set /p choice=
+            if not "%choice%"=="1" exit /b 31
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """);
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                    DecisionTimeoutSeconds = 5,
+                }), NullLogger<ForgeTuiAdapter>.Instance);
+
+            var initial = await adapter.StartSessionAsync(CancellationToken.None);
+            var decision = Assert.IsType<DecisionDto>(initial.CurrentDecision);
+            Assert.Equal("yes_no", decision.Kind);
+            Assert.Contains(decision.Actions, action => action.DisplayName == "Yes");
+
+            var yes = Assert.Single(decision.Actions, action => action.DisplayName == "Yes");
+            var response = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(decision.DecisionId, yes.ActionId) { SessionId = initial.SessionId },
+                CancellationToken.None);
+            Assert.True(response.Accepted);
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
     public async Task ProcessExitDuringStartup_MarksAdapterAsFailed()
     {
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");

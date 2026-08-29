@@ -145,6 +145,15 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void OptionalTriggersUseTheStructuredChoiceTransport()
+    {
+        Assert.Contains("public boolean confirmTrigger", Patch);
+        Assert.Contains("return chooseYesNo(\"Use optional trigger from \"", Patch);
+        Assert.Contains("[kind=yes_no min=1 max=1 selected=0 ordered=false]", Patch);
+        Assert.DoesNotContain("+        System.out.print(\"Do you want to use this trigger? (y/n):\")", Patch);
+    }
+
+    [Fact]
     public void PrototypeActionsExposeTypedCastModeAndBothLegalAbilities()
     {
         Assert.Contains("boolean prototypeSpell", Patch);

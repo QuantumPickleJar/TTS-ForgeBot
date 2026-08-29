@@ -1522,7 +1522,62 @@ index 0d731bb6..18ef1187 100644
  
                      // Add the blocker
                      combat.addBlocker(attacker, blocker);
-@@ -1507,80 +1625,512 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1467,40 +1467,15 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+     @Override
+     public boolean confirmTrigger(forge.game.trigger.WrappedAbility wrapper) {
+-        // Mandatory triggers always fire
+-        if (wrapper.isMandatory()) {
+-            return true;
+-        }
+-
+-        // Optional triggers - ask the user
+-        SpellAbility sa = wrapper.getWrappedAbility();
+-        Card source = sa.getHostCard();
+-
+-        System.out.println();
+-        System.out.println("=".repeat(60));
+-        System.out.println("=== OPTIONAL TRIGGER ===");
+-        System.out.println("=".repeat(60));
+-        System.out.println("Source: " + source.getName());
+-        System.out.println("Ability: " + sa.getDescription());
+-        System.out.println();
+-        System.out.print("Do you want to use this trigger? (y/n): ");
+-
+-        try {
+-            String line = reader.readLine();
+-            if (line == null || line.trim().isEmpty()) {
+-                return false; // Default to no
+-            }
+-
+-            String response = line.trim().toLowerCase();
+-            boolean result = response.startsWith("y");
+-
+-            if (result) {
+-                System.out.println(">> Trigger accepted\n");
+-            } else {
+-                System.out.println(">> Trigger declined\n");
+-            }
+-
+-            return result;
+-        } catch (IOException e) {
+-            System.err.println("Error reading input: " + e.getMessage());
+-            return false; // Default to no on error
+-        }
+-    }
++        // Mandatory triggers do not require player input. Optional triggers
++        // use the same structured yes/no transport as other Forge choices so
++        // the bridge can present them in TTS and preserve the engine's pause.
++        if (wrapper.isMandatory()) {
++            return true;
++        }
++
++        SpellAbility sa = wrapper.getWrappedAbility();
++        Card source = sa.getHostCard();
++        return chooseYesNo("Use optional trigger from " + bridgeDisplayCardName(source)
++            + "?\n" + sa.getDescription());
++    }
+
+@@ -1507,80 +1600,512 @@ public class PlayerControllerTUI extends PlayerControllerAi {
  
      @Override
      public CardCollection chooseCardsToDiscardToMaximumHandSize(int numDiscard) {

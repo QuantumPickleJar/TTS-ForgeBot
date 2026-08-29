@@ -589,6 +589,16 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void SemanticBattlefieldResolution_PreservesAuthoritativeCardRow()
+    {
+        Assert.Contains("function BridgeBattlefieldRowForEvent(event, defaultRow)", Script);
+        Assert.Contains("event.battlefieldKind == \"land\"", Script);
+        Assert.Contains("event.currentTypes or {}", Script);
+        Assert.Contains("BridgeBattlefieldRowForEvent(resolvedEvent, \"creature\")", Script);
+        Assert.Contains("BridgeBattlefieldRowForEvent(event, \"creature\")", Script);
+    }
+
+    [Fact]
     public void BattlefieldCardMovesAreNotHeldBehindLongPresentationDelay()
     {
         Assert.Contains("local presentationDelay = (event.destinationZone == \"battlefield\"", Script);
