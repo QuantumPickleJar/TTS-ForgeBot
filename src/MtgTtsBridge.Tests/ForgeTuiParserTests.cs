@@ -868,4 +868,50 @@ public sealed class ForgeTuiParserTests
         Assert.Equal("pctx-13", action.Provenance?.PaymentContextId);
         Assert.Equal("flashback", action.Provenance?.CastMode);
     }
+
+    [Fact]
+    public void PaymentContext_SurvivesRedrawForSameCollectionTransaction()
+    {
+        var parser = new ForgeTuiParser();
+        var first = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "[bridge paymentContextId=pctx-9 originActionId=forge-tui-8-choice-1 sourceCardId=99 sourceZone=graveyard actionKind=cast_spell castMode=flashback paymentStage=nonmana_payment]\n" +
+            "[bridge costComponent paymentContextId=pctx-9 componentId=pctx-9-c0 kind=exile displayLabel=Exile+for+Delve sourceZone=graveyard selectionKind=cards minSelections=0 maxSelections=2]\n" +
+            "[kind=cost_selection costKind=delve sourceZone=graveyard min=0 max=2 selected=1 ordered=false]\n" +
+            "  0. Done\n  1. Card A [id=1] [SELECTED]\n  2. Card B [id=2]\nEnter choice (0-2): ");
+
+        var second = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "[bridge paymentContextId=pctx-9 originActionId=forge-tui-8-choice-1 sourceCardId=99 sourceZone=graveyard actionKind=cast_spell castMode=flashback paymentStage=nonmana_payment]\n" +
+            "[bridge costComponent paymentContextId=pctx-9 componentId=pctx-9-c0 kind=exile displayLabel=Exile+for+Delve sourceZone=graveyard selectionKind=cards minSelections=0 maxSelections=2]\n" +
+            "[kind=cost_selection costKind=delve sourceZone=graveyard min=0 max=2 selected=2 ordered=false]\n" +
+            "  0. Done\n  1. Card A [id=1] [SELECTED]\n  2. Card B [id=2] [SELECTED]\nEnter choice (0-2): ");
+
+        var firstDecision = Assert.IsType<ForgeTuiDecision>(first.ParsedDecision).Decision;
+        var secondDecision = Assert.IsType<ForgeTuiDecision>(second.ParsedDecision).Decision;
+        Assert.Equal(firstDecision.DecisionId, secondDecision.DecisionId);
+        Assert.Equal("pctx-9", firstDecision.PaymentContext?.PaymentContextId);
+        Assert.Equal("pctx-9", secondDecision.PaymentContext?.PaymentContextId);
+        Assert.Equal(["pctx-9-c0"], secondDecision.PaymentContext?.CostComponents?.Select(component => component.CostComponentId));
+    }
+
+    [Fact]
+    public void IndependentPaymentTransactions_UseDistinctContextIds()
+    {
+        var parser = new ForgeTuiParser();
+        var first = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "[bridge paymentContextId=pctx-21 originActionId=forge-tui-11-choice-1 sourceCardId=11 sourceZone=hand actionKind=cast_spell castMode=normal paymentStage=optional_cost]\n" +
+            "[kind=payment_option min=0 max=1 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Kicker\nEnter choice (0-1): ");
+        parser.CompleteCollectionDecision();
+        var second = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "[bridge paymentContextId=pctx-22 originActionId=forge-tui-12-choice-1 sourceCardId=12 sourceZone=hand actionKind=cast_spell castMode=normal paymentStage=optional_cost]\n" +
+            "[kind=payment_option min=0 max=1 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Kicker\nEnter choice (0-1): ");
+
+        Assert.Equal("pctx-21", Assert.IsType<ForgeTuiDecision>(first.ParsedDecision).Decision.PaymentContext?.PaymentContextId);
+        Assert.Equal("pctx-22", Assert.IsType<ForgeTuiDecision>(second.ParsedDecision).Decision.PaymentContext?.PaymentContextId);
+    }
 }
