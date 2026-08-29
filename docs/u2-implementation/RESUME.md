@@ -1,18 +1,31 @@
 # U2 Resume Quick-Start
 
-**Current Status**: Paused after designing Forge producer enhancements. Ready to implement.
+⚠️ **READ U2-ADDENDUM-REQUIREMENTS.md FIRST** ⚠️
+
+**Current Status**: Paused. Addendum requirements added. Implementation blockers identified.
 
 ## Where You Are
 
 - ✅ U2-A contracts complete (338 tests passing)
 - ✅ Rebased onto latest main @ 9fecfef
 - ✅ Forge producer design complete
-- 📋 Ready to implement ~280 lines of Java patch additions
+- ⚠️ **ADDENDUM REQUIREMENTS ADDED** - See U2-ADDENDUM-REQUIREMENTS.md
+- 🚨 **IMPLEMENTATION BLOCKERS IDENTIFIED** - Must resolve before proceeding
+- 📋 Ready to implement ~280 lines AFTER resolving blockers
 
 ## Resume Commands
 
+⚠️ **STOP: Read U2-ADDENDUM-REQUIREMENTS.md before implementing** ⚠️
+
+Critical blockers must be resolved first:
+1. SpellAbility identity stability (may need alternative to IdentityHashMap)
+2. Loyalty/Defense semantic clarification (base value vs counter quantity)
+
 ```bash
 cd C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot-U2
+
+# Read addendum requirements FIRST
+cat docs/u2-implementation/U2-ADDENDUM-REQUIREMENTS.md
 
 # Verify clean state
 git status
