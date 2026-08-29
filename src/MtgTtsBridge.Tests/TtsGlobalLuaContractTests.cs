@@ -2100,4 +2100,43 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeState.renderedDecisionPhysicalGeneration = nil", Script);
         Assert.Contains("BridgeAdvancePhysicalPresentationGeneration(\"session-replaced\")", Script);
     }
+
+    [Fact]
+    public void SequentialCombatRedraws_ReleaseSameDecisionTransaction()
+    {
+        Assert.Contains("body.currentDecision.decisionId == decisionId", Script);
+        Assert.Contains("body.currentDecision.kind == \"attacker_selection\"", Script);
+        Assert.Contains("body.currentDecision.kind == \"blocker_selection\"", Script);
+        Assert.Contains("body.currentDecision.kind == \"blocker_assignment\"", Script);
+        Assert.Contains("BridgeState.choiceTransactions[decisionId] = nil", Script);
+    }
+
+    [Fact]
+    public void BattlefieldSnapshot_CorrectsUnknownOrChangedPermanentRow()
+    {
+        Assert.Contains("snapshotRow ~= nil and priorRow ~= snapshotRow", Script);
+        Assert.Contains("local expectedRow = BridgeBattlefieldRowForEvent(event, \"creature\")", Script);
+        Assert.Contains("BridgeMoveToBattlefield(\n                        event, object, expectedRow, false)", Script);
+        Assert.Contains("if countAsNewPlacement ~= false then", Script);
+    }
+
+    [Fact]
+    public void DrawBurst_UsesSerializedExtractionWithoutBlockingPhaseCursor()
+    {
+        Assert.Contains("BRIDGE_DRAW_EVENT_PRESENTATION_DELAY = 0.25", Script);
+        Assert.Contains("return applied, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY, drawError", Script);
+        Assert.Contains("BridgeRenderDecision(BridgeState.lastDecision)", Script);
+    }
+
+    [Fact]
+    public void ResourceClone_RetriesAuthoritativeValueAfterTtsRegistration()
+    {
+        var start = Script.IndexOf("function BridgeCreateResourceCounter", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeRefreshResourceRow", start, StringComparison.Ordinal);
+        var body = Script[start..end];
+
+        Assert.Equal(2, body.Split("BridgeRefreshResourceRow(seatId)", StringSplitOptions.None).Length - 1);
+        Assert.Contains("BridgeSetNativeTrackerValue(counter, BridgeResourceValue(seatId, kind))", body);
+        Assert.Contains("BridgeSetNativeTrackerValue(taken, BridgeResourceValue(seatId, kind))", body);
+    }
 }

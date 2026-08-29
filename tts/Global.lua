@@ -17,6 +17,10 @@ BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 -- in TTS without materially affecting interactive responsiveness.
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.20
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
+-- Library extraction is serialized separately. Keep the event cursor moving
+-- promptly after a draw so a burst (for example, a draw per creature) cannot
+-- hold later authoritative phase/priority events behind animation delays.
+BRIDGE_DRAW_EVENT_PRESENTATION_DELAY = 0.25
 BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
 -- Configuration, not rules: FREEFORM permits a player to arrange their own
 -- lands after they enter. STRICT re-applies the persistent land row only on
@@ -1487,9 +1491,12 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         finished = true
         local current = BridgeState.libraryExtractionQueueBySeatId[seatId]
         if current ~= nil then table.remove(current, 1) end
-        BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
-        BridgeProcessLibraryExtractionQueue(seatId)
-        BridgeTryPresentPendingDecision("library-extraction-complete")
+    BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
+    BridgeProcessLibraryExtractionQueue(seatId)
+    BridgeTryPresentPendingDecision("library-extraction-complete")
+    if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
+        BridgeRenderDecision(BridgeState.lastDecision)
+    end
     end
     job(complete)
 end
@@ -2799,7 +2806,10 @@ function BridgeSubmitChoice(decisionId, actionId, source)
             -- next exact toggle can be submitted.
             if body.currentDecision.decisionId == decisionId
                 and (BridgeIsStructuredForgeToggleChoice(body.currentDecision)
-                    or BridgeIsDiscardChoice(body.currentDecision)) then
+                    or BridgeIsDiscardChoice(body.currentDecision)
+                    or body.currentDecision.kind == "attacker_selection"
+                    or body.currentDecision.kind == "blocker_selection"
+                    or body.currentDecision.kind == "blocker_assignment") then
                 BridgeState.choiceTransactions[decisionId] = nil
             end
             if body.currentDecision.decisionId == decisionId
@@ -3138,7 +3148,7 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                         and (card.battlefieldKind == "land" and "land" or "creature") or nil
                     local priorRow = BridgeState.battlefieldKindByInstanceId[card.cardInstanceId]
                     local mappedNeedsFix = mappedObject == nil or mappedObject.tag ~= "Card" or mappedZone ~= zoneName
-                        or (snapshotRow ~= nil and priorRow ~= nil and priorRow ~= snapshotRow)
+                        or (snapshotRow ~= nil and priorRow ~= snapshotRow)
                     if mappedNeedsFix then
                         -- The log intentionally omits cardName: a snapshot can
                         -- contain identities that should not be public chat.
@@ -6692,7 +6702,12 @@ function BridgeCreateResourceCounter(seatId, kind, definition, position)
         BridgeState.resourceCounterGuidBySeatId[seatId][kind] = BridgeSafeObjectGuid(counter)
         BridgeState.resourceCounterSpawnInFlightBySeatId[seatId][kind] = nil
         BridgeWaitFrames(function()
-            if sessionId == BridgeState.eventSessionId then BridgeSetNativeTrackerValue(counter, BridgeResourceValue(seatId, kind)) end
+            if sessionId == BridgeState.eventSessionId then
+                BridgeSetNativeTrackerValue(counter, BridgeResourceValue(seatId, kind))
+                -- Re-run once after TTS has registered the clone. This covers
+                -- resource events that arrive during the clone's first frame.
+                BridgeRefreshResourceRow(seatId)
+            end
         end, 2)
         return counter
     end
@@ -6712,7 +6727,10 @@ function BridgeCreateResourceCounter(seatId, kind, definition, position)
         BridgeRegisterPresentationObject(taken, "resource_row_" .. tostring(kind))
         BridgeState.resourceCounterGuidBySeatId[seatId][kind] = BridgeSafeObjectGuid(taken)
         BridgeWaitFrames(function()
-            if sessionId == BridgeState.eventSessionId then BridgeSetNativeTrackerValue(taken, BridgeResourceValue(seatId, kind)) end
+            if sessionId == BridgeState.eventSessionId then
+                BridgeSetNativeTrackerValue(taken, BridgeResourceValue(seatId, kind))
+                BridgeRefreshResourceRow(seatId)
+            end
         end, 2)
     end})
     return nil
@@ -7427,7 +7445,7 @@ function BridgeApplyAuthoritativeEvent(event)
 
     if event.kind == "draw" then
         local applied, drawError = BridgeApplyStructuredCardMove(event)
-        return applied, 1.25, drawError
+        return applied, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY, drawError
     end
 
     if event.kind == "card_moved" then
@@ -8325,6 +8343,20 @@ function BridgeApplyStructuredCardMove(event)
             if inverseInstanceId ~= nil and inverseInstanceId ~= event.cardInstanceId then
                 return false, BridgePhysicalMappingError(event, event.destinationZone, 0,
                     "mapped destination GUID belongs to a different Forge instance", {mappedGuid = guid})
+            end
+            if event.destinationZone == "battlefield" then
+                local expectedRow = BridgeBattlefieldRowForEvent(event, "creature")
+                local priorRow = BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]
+                if priorRow ~= expectedRow then
+                    local corrected, correctionError = BridgeMoveToBattlefield(
+                        event, object, expectedRow, false)
+                    if not corrected then return false, correctionError end
+                    BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
+                    BridgeLog(string.format(
+                        "[Bridge] corrected existing battlefield row instance=%s row=%s",
+                        tostring(event.cardInstanceId), tostring(expectedRow)))
+                    return true, nil
+                end
             end
             BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, event.destinationZone)
             if event.destinationZone == "battlefield" then
@@ -10096,7 +10128,7 @@ function BridgeBattlefieldRowForEvent(event, defaultRow)
     return defaultRow == "land" and "land" or "creature"
 end
 
-function BridgeMoveToBattlefield(event, object, row)
+function BridgeMoveToBattlefield(event, object, row, countAsNewPlacement)
     row = row == "land" and "land" or "creature"
     if event ~= nil and event.cardInstanceId ~= nil then
         BridgeState.battlefieldKindByInstanceId[event.cardInstanceId] = row
@@ -10134,7 +10166,9 @@ function BridgeMoveToBattlefield(event, object, row)
         BridgeState.landInsertionOrderByInstanceId[event.cardInstanceId] = BridgeState.nextLandInsertionOrder
     end
     local rowKey = event.seatId .. ":" .. row
-    BridgeState.battlefieldCounts[rowKey] = (BridgeState.battlefieldCounts[rowKey] or 0) + 1
+    if countAsNewPlacement ~= false then
+        BridgeState.battlefieldCounts[rowKey] = (BridgeState.battlefieldCounts[rowKey] or 0) + 1
+    end
     if row == "land" and BridgeLandPlacementMode() == "STRICT" then BridgeRelayoutStrictLandRow(event.seatId) end
     return true, nil
 end
@@ -10250,6 +10284,37 @@ function BridgeMoveToAttackLane(seatId, object)
     object.setPositionSmooth({x = position.x, y = math.max(position.y, 2.0), z = seat.attackLaneZ}, false, true)
 end
 
+function BridgeCombatLaneXAvailable(laneZ, candidateX, ignoredGuid)
+    for _, other in ipairs(getAllObjects()) do
+        if other.tag == "Card" then
+            local guid = BridgeSafeObjectGuid(other)
+            if guid ~= nil and guid ~= ignoredGuid then
+                local position = other.getPosition()
+                local dx = position.x - candidateX
+                local dz = position.z - laneZ
+                if dx * dx < 2.8 * 2.8 and dz * dz < 1.0 * 1.0 then
+                    return false
+                end
+            end
+        end
+    end
+    return true
+end
+
+function BridgeFindCombatLaneX(object, laneZ)
+    local position = object.getPosition()
+    local guid = BridgeSafeObjectGuid(object)
+    local candidates = {position.x}
+    for distance = 3.4, 20.4, 3.4 do
+        table.insert(candidates, position.x + distance)
+        table.insert(candidates, position.x - distance)
+    end
+    for _, candidateX in ipairs(candidates) do
+        if BridgeCombatLaneXAvailable(laneZ, candidateX, guid) then return candidateX end
+    end
+    return position.x
+end
+
 function BridgeMoveToBlockerLane(seatId, object)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then return end
@@ -10258,7 +10323,8 @@ function BridgeMoveToBlockerLane(seatId, object)
     if BridgeState.attackOriginByGuid[guid] == nil then
         BridgeState.attackOriginByGuid[guid] = {x = position.x, y = position.y, z = position.z}
     end
-    object.setPositionSmooth({x = position.x, y = math.max(position.y, 2.0), z = seat.blockerLaneZ}, false, true)
+    local laneX = BridgeFindCombatLaneX(object, seat.blockerLaneZ)
+    object.setPositionSmooth({x = laneX, y = math.max(position.y, 2.0), z = seat.blockerLaneZ}, false, true)
 end
 
 function BridgeGraveyardPosition(seatId)
