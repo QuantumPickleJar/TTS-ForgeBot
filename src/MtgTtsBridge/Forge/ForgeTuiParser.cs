@@ -322,7 +322,22 @@ public sealed partial class ForgeTuiParser
             PrototypeToughness: provenance.Success ? NullIfBlank(provenance.Groups["prototypeToughness"].Value) : null,
             DisplayManaCost: provenance.Success ? NullIfBlank(provenance.Groups["displayManaCost"].Value) : null,
             EntityKind: entityKind,
-            EntitySeatId: entitySeatId);
+            EntitySeatId: entitySeatId)
+        {
+            // U2: Populate structured action provenance when bridge metadata is present
+            Provenance = provenance.Success ? new ActionProvenanceDto(
+                ActionKind: provenance.Groups["actionKind"].Success ? provenance.Groups["actionKind"].Value : actionType,
+                SourceCardInstanceId: sourceInstanceId,
+                SourceZone: provenance.Groups["sourceZone"].Success ? provenance.Groups["sourceZone"].Value : null,
+                SourceSeatId: null, // Not yet emitted by Forge TUI
+                AbilityKind: provenance.Groups["abilityKind"].Success ? NullIfBlank(provenance.Groups["abilityKind"].Value) : null,
+                CastMode: provenance.Groups["castMode"].Success ? provenance.Groups["castMode"].Value : null,
+                CastFace: null, // Future: split/modal card face
+                DisplayLabel: label,
+                DisplayCost: provenance.Groups["displayManaCost"].Success ? NullIfBlank(provenance.Groups["displayManaCost"].Value) : null,
+                PaymentContextId: null) // Future: multi-step payment context
+            : null
+        };
     }
 
     /// <summary>Ends the current redraw-based collection transaction.</summary>
