@@ -1057,7 +1057,7 @@ index 0d731bb6..18ef1187 100644
  
          // Get activated abilities from permanents on the battlefield
          List<SpellAbility> activatedAbilities = getActivatedAbilities();
-@@ -296,6 +319,21 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -296,12 +319,33 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          int totalActions = landAbilities.size() + creatureAbilities.size() + artifactAbilities.size() +
                             instantAbilities.size() + sorceryAbilities.size() + activatedAbilities.size();
  
@@ -1077,9 +1077,22 @@ index 0d731bb6..18ef1187 100644
 +            sorceryAbilities, instantAbilities, activatedAbilities, totalActions, uniqueActions);
 +
          // Smart auto-passing on opponent's turn
++        // This method is called for a controller's priority window, but keep
++        // the check explicit: active-turn ownership and priority ownership are
++        // different. A human may have priority during the opponent's turn.
++        if (!hasPriority) {
++            return null;
++        }
          if (!isActivePlayersTurn) {
              // Only prompt on opponent's turn if:
-@@ -315,26 +351,17 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+             // 1. Stack has items (we might want to respond), OR
+             // 2. It's end step AND we have instants (classic "at the end of your turn" timing), OR
+             // 3. We have activated abilities
+ 
+             boolean hasInstantSpeedActions = !instantAbilities.isEmpty() || !activatedAbilities.isEmpty();
+-            boolean shouldPrompt = stackHasItems || (isEndStep && hasInstantSpeedActions);
++            boolean shouldPrompt = stackHasItems || hasInstantSpeedActions || isEndStep;
+@@ -315,26 +357,17 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              if (totalActions == 0) {
                  return null;
              }

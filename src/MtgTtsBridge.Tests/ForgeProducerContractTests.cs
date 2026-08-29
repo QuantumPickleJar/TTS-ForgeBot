@@ -133,6 +133,15 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void HumanPriorityPromptsForForgeLegalInstantSpeedActionsOffTurn()
+    {
+        Assert.Contains("if (!hasPriority)", Patch);
+        Assert.Contains("boolean shouldPrompt = stackHasItems || hasInstantSpeedActions || isEndStep", Patch);
+        Assert.Contains("boolean isActivePlayersTurn = ph.isPlayerTurn(player);", Patch);
+        Assert.Contains("boolean hasPriority = player.equals(ph.getPriorityPlayer());", Patch);
+    }
+
+    [Fact]
     public void PrototypeActionsExposeTypedCastModeAndBothLegalAbilities()
     {
         Assert.Contains("boolean prototypeSpell", Patch);

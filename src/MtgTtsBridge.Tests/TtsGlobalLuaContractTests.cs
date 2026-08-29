@@ -558,8 +558,18 @@ public sealed class TtsGlobalLuaContractTests
     public void StructuredBattlefieldMove_IsNotRepeatedByInstanceLessSemanticResolution()
     {
         Assert.Contains("event.kind == \"spell_resolved\"", Script);
-        Assert.Contains("if event.cardInstanceId == nil then return true, 0.1 end", Script);
+        Assert.Contains("presented exact pending cast on semantic resolution", Script);
+        Assert.Contains("resolvedEvent.cardInstanceId = pendingCast.cardInstanceId", Script);
+        Assert.Contains("if event.cardInstanceId == nil then", Script);
         Assert.Contains("BridgeResolvePhysicalCard(event, \"stack\")", Script);
+    }
+
+    [Fact]
+    public void BattlefieldCardMovesAreNotHeldBehindLongPresentationDelay()
+    {
+        Assert.Contains("local presentationDelay = (event.destinationZone == \"battlefield\"", Script);
+        Assert.Contains("or event.destinationZone == \"stack\") and 0.1 or 1.0", Script);
+        Assert.Contains("return applied, presentationDelay, moveError", Script);
     }
 
     [Fact]
@@ -568,6 +578,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("pendingCastBySeatId", Script);
         Assert.Contains("BridgeState.physicalZoneByGuid[intent.guid] = \"stack\"", Script);
         Assert.Contains("BridgeState.pendingCastBySeatId[intent.seatId]", Script);
+        Assert.Contains("cardInstanceId = intent.action.cardInstanceId", Script);
         Assert.Contains("BridgeResolveResolvedSpellObject", Script);
         Assert.Contains("BridgeRecordLooseCardIdentity(event.cardInstanceId, pendingCast.guid, event.seatId, \"stack\")", Script);
         Assert.Contains("pendingBySeat[event.seatId] = nil", Script);

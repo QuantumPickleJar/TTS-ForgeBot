@@ -5208,6 +5208,7 @@ function BridgeCommitPendingIntent()
         if intent.action.type == "cast_spell" then
             BridgeState.pendingCastBySeatId[intent.seatId] = {
                 guid = intent.guid,
+                cardInstanceId = intent.action.cardInstanceId,
                 cardIdentity = intent.action.cardIdentity,
                 actionId = intent.action.actionId,
                 decisionId = intent.decisionId,
@@ -6768,7 +6769,12 @@ function BridgeApplyAuthoritativeEvent(event)
             BridgeLog("[Bridge] structured move deferred to snapshot reconcile: " .. tostring(moveError))
             return true, 0.1
         end
-        return applied, 1.0, moveError
+        -- A stack/battlefield transition is already embodied by an exact
+        -- physical card. Do not hold it behind the long library/zone
+        -- presentation delay while Forge has already advanced its phase.
+        local presentationDelay = (event.destinationZone == "battlefield"
+            or event.destinationZone == "stack") and 0.1 or 1.0
+        return applied, presentationDelay, moveError
     end
 
     -- Some tested Forge TUI resolution lines do not have a second text event
@@ -7145,7 +7151,37 @@ function BridgeApplyAuthoritativeEvent(event)
         -- Structured card_moved already moved this exact instance from stack to
         -- battlefield. The human-readable semantic line has no instance ID and
         -- must not attempt a second name-based move from an empty stack.
-        if event.cardInstanceId == nil then return true, 0.1 end
+        if event.cardInstanceId == nil then
+            -- A human cast has an exact pending physical object even when the
+            -- TUI resolution line omits Forge's numeric object id. It is safe
+            -- to present that object immediately: the cast action selected its
+            -- exact CardInstanceId and the object is still tracked on stack.
+            -- AI casts have no pending physical intent and continue to wait for
+            -- the exact structured snapshot transition.
+            local pendingCast = event.seatId ~= nil
+                and BridgeState.pendingCastBySeatId[event.seatId] or nil
+            if pendingCast ~= nil and pendingCast.cardInstanceId ~= nil then
+                local pendingObject = getObjectFromGUID(pendingCast.guid)
+                local pendingName = pendingObject ~= nil and pendingObject.getName() or nil
+                local pendingZone = pendingObject ~= nil
+                    and BridgeState.physicalZoneByGuid[pendingCast.guid] or nil
+                if pendingObject ~= nil and pendingName ~= nil
+                    and BridgeCardNameMatches(pendingName, event.cardName)
+                    and pendingZone == "stack" then
+                    local resolvedEvent = {}
+                    for key, value in pairs(event) do resolvedEvent[key] = value end
+                    resolvedEvent.cardInstanceId = pendingCast.cardInstanceId
+                    local moved, moveError = BridgeMoveToBattlefield(resolvedEvent, pendingObject, "creature")
+                    if not moved then return false, 0, moveError end
+                    BridgeState.pendingCastBySeatId[event.seatId] = nil
+                    BridgeLog(string.format(
+                        "[Bridge] presented exact pending cast on semantic resolution event=%s instance=%s",
+                        tostring(event.sequence), tostring(resolvedEvent.cardInstanceId)))
+                    return true, 0.1
+                end
+            end
+            return true, 0.1
+        end
         local object, resolveError = BridgeResolvePhysicalCard(event, "stack")
         if object == nil then return false, 0, resolveError end
         local moved, moveError = BridgeMoveToBattlefield(event, object, "creature")
