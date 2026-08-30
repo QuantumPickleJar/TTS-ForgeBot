@@ -3341,7 +3341,7 @@ function BridgeShouldDeferDecision(decision)
             return true, tonumber(decision.eventCursor or 0) or 0,
                 tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
                 "opening_hand_readiness",
-                string.format("ready=%d expected=%d missing=%s", readyCount, expectedCount, readinessDetail))
+                string.format("ready=%d expected=%d missing=%s", readyCount, expectedCount, readinessDetail)
         end
     end
     local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
