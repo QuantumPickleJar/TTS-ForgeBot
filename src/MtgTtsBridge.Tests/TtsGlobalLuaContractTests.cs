@@ -2192,7 +2192,7 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("snapshotRow ~= nil and priorRow ~= snapshotRow", Script);
         Assert.Contains("local expectedRow = BridgeBattlefieldRowForEvent(event, \"creature\")", Script);
-        Assert.Contains("BridgeMoveToBattlefield(\n                        event, object, expectedRow, false)", Script);
+        Assert.Contains($"BridgeMoveToBattlefield({Environment.NewLine}                        event, object, expectedRow, false)", Script);
         Assert.Contains("if countAsNewPlacement ~= false then", Script);
     }
 
