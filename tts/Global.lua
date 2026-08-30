@@ -60,10 +60,12 @@ function BridgePresentationMetric(name)
 end
 
 -- Freeze-flight telemetry is deliberately local to this Lua runtime.  TTS's
--- standard Lua os.clock is available in the supported runtime and is cheap;
--- it is a process CPU clock, so the report labels it rather than pretending
--- it is wall time.  The bridge process sampler supplies wall-clock context.
+-- documented Time.time member is the game-runtime clock; probe it because
+-- MoonSharp-based test hosts and older/non-TTS runtimes may not expose Time.
+-- Keep os.clock as the deterministic CPU-time fallback and label both clocks.
 local BRIDGE_PERFORMANCE_CLOCK_KIND = "os.clock-cpu"
+local BRIDGE_PERFORMANCE_WALL_CLOCK_KIND = "Time.time-game"
+local BRIDGE_PERFORMANCE_WALL_CLOCK_FALLBACK_KIND = "os.clock-cpu-fallback"
 local BRIDGE_PERFORMANCE_CLOCK_OK = pcall(function() return os.clock() end)
 
 function BridgePerformanceNow()
@@ -71,16 +73,31 @@ function BridgePerformanceNow()
     return 0
 end
 
-function BridgePerformanceTrace(marker, durationMs, detail1, detail2)
+function BridgePerformanceWallNow()
+    local ok, value = pcall(function()
+        if Time == nil then return nil end
+        return Time.time
+    end)
+    if ok and type(value) == "number" then return value end
+    return nil
+end
+
+function BridgePerformanceTrace(marker, durationMs, detail1, detail2, wallDurationMs, wallClockKind)
     local trace = BridgeState.performanceTrace
     if trace == nil then return end
     local decision = BridgeState.lastDecision
+    local cpuDurationMs = durationMs ~= nil and tonumber(durationMs) or nil
     local record = {
         timestamp = BridgePerformanceNow(), marker = tostring(marker),
         decisionId = decision and decision.decisionId or nil,
         decisionKind = decision and decision.kind or nil,
         eventSequence = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
-        durationMs = durationMs ~= nil and tonumber(durationMs) or nil,
+        -- durationMs remains the CPU-time compatibility field for existing
+        -- diagnostic consumers; the explicit fields remove that ambiguity.
+        durationMs = cpuDurationMs,
+        cpuDurationMs = cpuDurationMs,
+        wallDurationMs = wallDurationMs ~= nil and tonumber(wallDurationMs) or nil,
+        wallClockKind = wallClockKind or BRIDGE_PERFORMANCE_WALL_CLOCK_KIND,
         detail1 = detail1 ~= nil and tonumber(detail1) or nil,
         detail2 = detail2 ~= nil and tonumber(detail2) or nil
     }
@@ -91,23 +108,43 @@ end
 
 function BridgePerformanceBegin(marker, detail1, detail2)
     BridgePerformanceTrace(marker, nil, detail1, detail2)
-    return {marker = tostring(marker), startedAt = BridgePerformanceNow()}
+    return {
+        marker = tostring(marker),
+        startedAt = BridgePerformanceNow(),
+        wallStartedAt = BridgePerformanceWallNow(),
+        wallClockKind = BRIDGE_PERFORMANCE_WALL_CLOCK_KIND
+    }
 end
 
 function BridgePerformanceEnd(token, marker, summaryKey, detail1, detail2)
     if token == nil then return end
-    local durationMs = math.max(0, (BridgePerformanceNow() - (token.startedAt or 0)) * 1000)
-    BridgePerformanceTrace(marker, durationMs, detail1, detail2)
+    local cpuDurationMs = math.max(0, (BridgePerformanceNow() - (token.startedAt or 0)) * 1000)
+    local wallDurationMs = nil
+    local wallClockKind = token.wallClockKind or BRIDGE_PERFORMANCE_WALL_CLOCK_KIND
+    if token.wallStartedAt ~= nil then
+        local wallNow = BridgePerformanceWallNow()
+        if wallNow ~= nil and wallNow >= token.wallStartedAt then
+            wallDurationMs = (wallNow - token.wallStartedAt) * 1000
+        end
+    end
+    if wallDurationMs == nil then
+        wallDurationMs = cpuDurationMs
+        wallClockKind = BRIDGE_PERFORMANCE_WALL_CLOCK_FALLBACK_KIND
+    end
+    token.cpuDurationMs = cpuDurationMs
+    token.wallDurationMs = wallDurationMs
+    token.wallClockKind = wallClockKind
+    BridgePerformanceTrace(marker, cpuDurationMs, detail1, detail2, wallDurationMs, wallClockKind)
     local summary = BridgeState.performanceSummary
     if summary == nil then return end
     if summaryKey ~= nil then
         local worstKey = "worst" .. string.upper(string.sub(summaryKey, 1, 1)) .. string.sub(summaryKey, 2) .. "DurationMs"
-        if durationMs > tonumber(summary[worstKey] or 0) then summary[worstKey] = durationMs end
+        if cpuDurationMs > tonumber(summary[worstKey] or 0) then summary[worstKey] = cpuDurationMs end
     end
-    if summaryKey ~= nil and durationMs >= BRIDGE_PERFORMANCE_SLOW_OPERATION_SECONDS * 1000 then
+    if summaryKey ~= nil and cpuDurationMs >= BRIDGE_PERFORMANCE_SLOW_OPERATION_SECONDS * 1000 then
         summary.slowRenderCount = (summary.slowRenderCount or 0) + 1
     end
-    return durationMs
+    return cpuDurationMs
 end
 
 function BridgeStartupStageBegin(marker)
@@ -184,6 +221,7 @@ function BridgePerformanceDiagnosticPayload()
     canary.lastTtsAppliedEventSequence = BridgeState.lastAppliedEventSequence
     summary.landActionCanary = canary
     summary.clockKind = BRIDGE_PERFORMANCE_CLOCK_KIND
+    summary.wallClockKind = BRIDGE_PERFORMANCE_WALL_CLOCK_KIND
     summary.startupObservableDurationMs = startup.observableDurationMs
     summary.startupTransientCleanupDurationMs = startup.transientCleanupDurationMs
     summary.startupUiDurationMs = startup.uiDurationMs

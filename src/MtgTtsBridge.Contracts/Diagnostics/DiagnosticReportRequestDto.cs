@@ -39,7 +39,8 @@ public sealed record DiagnosticPerformanceSummaryDto(
     int DecalWriteCount = 0,
     int FullSnapshotReconcileCount = 0,
     DiagnosticLandActionCanaryDto? LandActionCanary = null,
-    string? ClockKind = null);
+    string? ClockKind = null,
+    string? WallClockKind = null);
 
 /// <summary>Compact correlation data for the generic land-action canary.</summary>
 public sealed record DiagnosticLandActionCanaryDto(
@@ -68,7 +69,10 @@ public sealed record TtsPerformanceTraceRecordDto(
     long? EventSequence = null,
     double? DurationMs = null,
     int? Detail1 = null,
-    int? Detail2 = null);
+    int? Detail2 = null,
+    double? CpuDurationMs = null,
+    double? WallDurationMs = null,
+    string? WallClockKind = null);
 
 public sealed record DiagnosticReportResponseDto(
     bool Success,

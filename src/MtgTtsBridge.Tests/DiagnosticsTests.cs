@@ -198,8 +198,10 @@ public sealed class DiagnosticsTests
             var result = await collector.CaptureAsync(new DiagnosticReportRequestDto(
                 Category: "Performance / Freeze",
                 SessionId: state.SessionId,
-                PerformanceSummary: new DiagnosticPerformanceSummaryDto(DecisionRenderAttempts: 3),
-                RecentTtsTrace: [new TtsPerformanceTraceRecordDto(1.25, "decision_render_end", DurationMs: 321.5)]),
+                PerformanceSummary: new DiagnosticPerformanceSummaryDto(DecisionRenderAttempts: 3, WallClockKind: "Time.time-game"),
+                RecentTtsTrace: [new TtsPerformanceTraceRecordDto(
+                    1.25, "decision_render_end", DurationMs: 321.5, CpuDurationMs: 321.5,
+                    WallDurationMs: 500.25, WallClockKind: "Time.time-game")]),
                 CancellationToken.None);
 
             Assert.True(result.Success, result.Message);
@@ -219,6 +221,12 @@ public sealed class DiagnosticsTests
             var compact = await summaryReader.ReadToEndAsync();
             Assert.DoesNotContain("\n", compact);
             Assert.Contains("decisionRenderAttempts", compact);
+            Assert.Contains("wallClockKind", compact);
+            var trace = zip.GetEntry("perf/tts-trace.jsonl")!;
+            using var traceReader = new StreamReader(trace.Open());
+            var traceText = await traceReader.ReadToEndAsync();
+            Assert.Contains("cpuDurationMs", traceText);
+            Assert.Contains("wallDurationMs", traceText);
             var manifest = zip.GetEntry("report.json")!;
             using var manifestDocument = await JsonDocument.ParseAsync(manifest.Open());
             Assert.True(manifestDocument.RootElement.GetProperty("includedFiles").GetArrayLength() >= 13);

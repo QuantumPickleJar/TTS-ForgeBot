@@ -2184,6 +2184,10 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("performanceTrace = {capacity = BRIDGE_PERFORMANCE_TRACE_CAPACITY", Script);
         Assert.Contains("function BridgePerformanceTraceSnapshot()", Script);
         Assert.Contains("BRIDGE_PERFORMANCE_CLOCK_KIND = \"os.clock-cpu\"", Script);
+        Assert.Contains("BRIDGE_PERFORMANCE_WALL_CLOCK_KIND = \"Time.time-game\"", Script);
+        Assert.Contains("cpuDurationMs = cpuDurationMs", Script);
+        Assert.Contains("wallDurationMs = wallDurationMs", Script);
+        Assert.Contains("wallClockKind = wallClockKind", Script);
         Assert.Contains("performanceSummary = performance.performanceSummary", Script);
         Assert.Contains("recentTtsTrace = performance.recentTtsTrace", Script);
         Assert.DoesNotContain("BridgeHttp.requestJson", Script[Script.IndexOf("function BridgePerformanceTrace", StringComparison.Ordinal)..Script.IndexOf("function BridgePerformanceDiagnosticPayload", StringComparison.Ordinal)]);
@@ -2195,6 +2199,22 @@ public sealed class TtsGlobalLuaContractTests
             "ui_flush_begin", "ui_flush_end", "authoritative_event_begin", "authoritative_event_end",
             "physical_move_begin", "physical_move_end", "snapshot_reconcile_begin", "snapshot_reconcile_end"
         }) Assert.Contains(marker, Script);
+    }
+
+    [Fact]
+    public void FreezeFlightRecorder_UsesTtsWallClockAndFallsBackWithoutIt()
+    {
+        var start = Script.IndexOf("function BridgePerformanceWallNow", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgePerformanceTraceSnapshot", start, StringComparison.Ordinal);
+        var implementation = Script[start..end];
+
+        Assert.Contains("pcall(function()", implementation);
+        Assert.Contains("if Time == nil then return nil end", implementation);
+        Assert.Contains("return Time.time", implementation);
+        Assert.Contains("if wallDurationMs == nil", implementation);
+        Assert.Contains("wallDurationMs = cpuDurationMs", implementation);
+        Assert.Contains("BRIDGE_PERFORMANCE_WALL_CLOCK_FALLBACK_KIND = \"os.clock-cpu-fallback\"", Script);
+        Assert.DoesNotContain("os.time()", implementation);
     }
 
     [Fact]
