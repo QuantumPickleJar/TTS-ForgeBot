@@ -912,7 +912,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-30-u2-library-resync\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-30-u2-resync-mulligan-repair\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -1701,8 +1701,10 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgeInsertPhysicalCardIntoLibrary", Script);
         Assert.Contains("local entries = BridgeLibraryEntries(library)", Script);
-        Assert.Contains("library.putObject(object, #entries + 1)", Script);
+        Assert.Contains("library.putObject(object, #entries)", Script);
         Assert.Contains("BridgeVerifyLibraryContainment", Script);
+        Assert.Contains("attempt >= 30", Script);
+        Assert.Contains("end, 1, resultingLibrary)", Script);
         Assert.DoesNotContain("local inverted = {rotation.x, rotation.y, rotation.z + 180}", Script);
     }
 

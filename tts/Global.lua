@@ -30,7 +30,7 @@ BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
 -- lands after they enter. STRICT re-applies the persistent land row only on
 -- authoritative layout events or an explicit organize request.
 BRIDGE_LAND_PLACEMENT_MODE = BRIDGE_LAND_PLACEMENT_MODE or "FREEFORM"
-BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-library-resync"
+BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-resync-mulligan-repair"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -1479,7 +1479,7 @@ function BridgeVerifyLibraryContainment(seatId, guid, callback, attempt, preferr
         callback(true, containingDeck, nil)
         return
     end
-    if attempt >= 6 then
+    if attempt >= 30 then
         callback(false, nil, "TTS did not verify library containment for GUID " .. tostring(guid))
         return
     end
@@ -1529,7 +1529,9 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
             -- explicit bottom. NORMAL intentionally leaves Forge's existing
             -- physical order untouched; Forge remains authoritative for order.
             if mode == "BOTTOM" then
-                resultingLibrary = library.putObject(object, #entries + 1)
+                -- TTS deck entries use zero-based indices. The current card
+                -- count is therefore the explicit bottom insertion index.
+                resultingLibrary = library.putObject(object, #entries)
             else
                 resultingLibrary = library.putObject(object)
             end
@@ -6419,7 +6421,7 @@ function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
     if #libraryCards == 0 then callback(true, nil); return end
     table.sort(libraryCards, function(left, right)
         return (tonumber(left.zonePosition or 0) or 0) < (tonumber(right.zonePosition or 0) or 0)
-    end)
+    end, 1, resultingLibrary)
 
     local deck, _, deckError = BridgeResolveSeatLibraryDeck(seatSnapshot.seatId)
     if deck == nil then
@@ -11201,7 +11203,7 @@ end
 BRIDGE_DEV_UI_ENABLED = true
 BRIDGE_DEV_ANNOTATIONS_ENABLED = true
 BRIDGE_PHYSICAL_PRIORITY_CONTROLS_ENABLED = true
-BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-library-resync"
+BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-resync-mulligan-repair"
 
 BRIDGE_HUD_COLORS = {
     active = "#6DB5FF",
