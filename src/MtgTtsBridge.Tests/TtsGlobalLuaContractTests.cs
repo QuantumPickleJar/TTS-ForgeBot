@@ -1748,7 +1748,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("library.putObject(object, #entries)", Script);
         Assert.Contains("BridgeVerifyLibraryContainment", Script);
         Assert.Contains("attempt >= 30", Script);
-        Assert.Contains("return (tonumber(left.zonePosition or 0) or 0) < (tonumber(right.zonePosition or 0) or 0)\n    end)", Script);
+        Assert.Contains("return (tonumber(left.zonePosition or 0) or 0) < (tonumber(right.zonePosition or 0) or 0)\n    end)", Script.ReplaceLineEndings("\n"));
         Assert.DoesNotContain("local inverted = {rotation.x, rotation.y, rotation.z + 180}", Script);
     }
 
