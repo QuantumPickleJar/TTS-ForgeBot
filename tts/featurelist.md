@@ -78,7 +78,7 @@ Bug: the option to play a land does not get checked until  the next phase, it ne
 
 Bug: Crewing a creature from the UI fails, it does not initiate anythhing  (observed during combat:pre)
 
-bug: player is offered choices they should not have (instants and things with flash get this, but  not playing lands)
+bug: player is offered choices they should not have (instants and things with flash get this, but  not playing lands; after a mulligan their choices show before the cards are in the hand)
 
 bug: next card is revealed through choices presented from the UI
 
@@ -87,12 +87,36 @@ bug: you can only highlight one card max for attacker selection, multiple ones a
 BUG: main 1 phase is skipped on to combat turn 1
 BUG: valid choices are not presented until both are satisfied - A the combat step is reached and B - the user has clicked Done on the UI
 BUG: yield turn button has vanished almos entirely.  I only saw it once on turn 3 after I clicked confirm
+
 BUG: (turn 3) when i cast mental note, a land untapped. Not only that, I had to click "done" to get to the point where cards draw. 
 
 BUG: you can multi-select during times when it does not make sensse to be able to do so (draw step provided max  hand size is not forcing a discard)
 
-BUG: (turn 3) when casting mental note, the top two cards must be transported from the top of library to the  graveyard face-up before the draw triggers. 
+BUG:  when casting mental note, the top two cards must be transported from the top of library to the  graveyard face-up before the draw triggers. 
+FIXED as of 8-30-u2-gameplay-repair
+
+(Low priorty) Bug: mana counters are FUNCTIONING! but do not face the respective seat.  For white, counters sshould be rotaatedd 90  degrees clockwise
+
+Bug: mulliganing causes a desync followed by errors on each card  move (the cards still  move and the hand EVENTUALLY cycles)
+Seems fixed, confirmation testing required
+
+Bug: highlights fail to appear on a mulliganed hand
+FIXED 
+
+Critical: reporting a bug or capturing a freeze softlocks the process from progressing (suspected to be on a per-match basis)
+FIXED
+
+Bug: hands are not properly cleaned up when destructively requesting to start a new match
+
+Bug: cannot play lands already in hand on draw nor upkeep steps, must wait for main 1 to pass
+
+Bug: casting stitcher's suppplier failed to trigger the mill-adjacent effect that mental note shares
+
+Bug: passing priority on the upkeep step skips Main 1
+
+(high priority) Bug: if a player opts to keep the opening hand, it can sometimes still gets mulliganned
 
 bug: sacrifice cards say "sacrifice CARDNAME" instead of the actual card's name
 
-bug: application does not safely shut down, must be crtl+shift+c interruppted
+bug: application does not safely shut down, must be crtl+shift+c interrupted
+FIXED
