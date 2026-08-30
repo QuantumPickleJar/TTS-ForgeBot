@@ -2195,6 +2195,18 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("lastAppliedEventSequence = cursor", Script);
         Assert.Contains("lastReceivedEventSequence = cursor", Script);
         Assert.Contains("authoritative resync snapshot is missing a valid event cursor", Script);
+        Assert.Contains("BridgeState.submitting = false", resync);
+        Assert.Contains("BridgeResumeChoiceProtocol(\"authoritative_resync\")", resync);
+        Assert.Contains("resyncPresentationState", Script);
+    }
+
+    [Fact]
+    public void DevHud_HasOneRollingCaptureControlSoItCannotShadowChoiceButtons()
+    {
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+        var occurrences = System.Text.RegularExpressions.Regex.Matches(
+            xml, @"id=""BridgeHudRollingCapture""", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        Assert.Single(occurrences);
     }
 
     [Fact]

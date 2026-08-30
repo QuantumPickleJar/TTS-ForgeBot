@@ -6358,6 +6358,20 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
     -- polling must not clear the authoritative snapshot we just reconciled.
     BridgeTraceStart("START-09 event-session-prepare")
     BridgePrepareEventSession(sessionId, true)
+    -- A resync rebuilds physical embodiment, not the Forge match.  The card
+    -- snapshot intentionally does not carry the live phase/priority mirror,
+    -- so retain those last authoritative scalar values while the rebuild is
+    -- in flight.  This prevents the HUD from looking like a new match until
+    -- the resumed decision/event stream supplies its next update.
+    local preservedResyncPresentation = BridgeState.resyncPresentationState
+    BridgeState.resyncPresentationState = nil
+    if preservedResyncPresentation ~= nil then
+        BridgeState.currentTurnSeatId = preservedResyncPresentation.currentTurnSeatId
+        BridgeState.currentPhase = preservedResyncPresentation.currentPhase
+        BridgeState.prioritySeatId = preservedResyncPresentation.prioritySeatId
+        BridgeState.tableTurnCount = preservedResyncPresentation.tableTurnCount or BridgeState.tableTurnCount
+        BridgeUiMarkDirty("resync-state-preserved")
+    end
     BridgeState.bootstrapping = true
     BridgeTraceStart("START-10 snapshot-request")
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
@@ -6527,8 +6541,19 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeShowError("cannot resync before Forge has started a session")
         return
     end
+    BridgeState.resyncPresentationState = {
+        currentTurnSeatId = BridgeState.currentTurnSeatId,
+        currentPhase = BridgeState.currentPhase,
+        prioritySeatId = BridgeState.prioritySeatId,
+        tableTurnCount = BridgeState.tableTurnCount
+    }
     BridgeState.resyncInFlight = true
     if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = true end
+    -- Recovery is an explicit way out of a stale-choice/protocol pause.  Any
+    -- outstanding request belongs to the pre-rebuild presentation and must
+    -- not keep the replacement decision pipeline permanently blocked.
+    BridgeState.submitting = false
+    BridgeResumeChoiceProtocol("authoritative_resync")
     BridgeStopEventPolling()
     BridgeStopDecisionPolling()
     BridgeClearHighlights()
