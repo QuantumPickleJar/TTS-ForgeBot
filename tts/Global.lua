@@ -7536,11 +7536,20 @@ function BridgeSetManaBank(seatId, manaPool, deferRefresh)
 end
 
 function BridgeSetNativeTrackerValue(counter, value)
-    if counter == nil then return end
+    if counter == nil then return false end
     local amount = math.max(0, tonumber(value or 0) or 0)
-    counter.setVar("val", amount)
-    pcall(function() counter.call("updateVal") end)
-    pcall(function() counter.call("updateSave") end)
+    -- Native Counter objects expose setValue.  Do not call assumed helper
+    -- functions on cloned table assets: a missing updateVal/updateSave hook
+    -- produces a visible TTS error even when wrapped in pcall.
+    local nativeOk = pcall(function() counter.setValue(amount) end)
+    if nativeOk then return true end
+
+    -- Keep a quiet compatibility fallback for a non-native scripted tracker.
+    local setVarOk, setVarError = pcall(function() counter.setVar("val", amount) end)
+    if not setVarOk then
+        BridgeLog("[Bridge] tracker has no supported value update API: " .. tostring(setVarError))
+    end
+    return setVarOk
 end
 
 function BridgeTrackerPosition(seatId, kind)

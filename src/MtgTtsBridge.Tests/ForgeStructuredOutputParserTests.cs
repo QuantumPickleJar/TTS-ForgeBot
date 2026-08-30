@@ -382,6 +382,24 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void FloatingManaSequence_RemainsAbsoluteAcrossSpendAndNewManaSource()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        reconciler.Apply("session-a", Parse(parser, Frame(1, Player(manaPool: "{\"W\":0,\"U\":0,\"B\":0,\"R\":0,\"G\":0,\"C\":0}"))));
+
+        var ritual = reconciler.Apply("session-a", Parse(parser, Frame(2, Player(manaPool: "{\"W\":0,\"U\":0,\"B\":3,\"R\":0,\"G\":0,\"C\":0}"))));
+        Assert.Equal(3, Assert.Single(ritual, item => item.Kind == "mana_pool_changed").ManaPool!["B"]);
+
+        var spent = reconciler.Apply("session-a", Parse(parser, Frame(3, Player(manaPool: "{\"W\":0,\"U\":0,\"B\":1,\"R\":0,\"G\":0,\"C\":0}"))));
+        Assert.Equal(1, Assert.Single(spent, item => item.Kind == "mana_pool_changed").ManaPool!["B"]);
+
+        var replenished = reconciler.Apply("session-a", Parse(parser, Frame(4, Player(manaPool: "{\"W\":0,\"U\":0,\"B\":4,\"R\":0,\"G\":0,\"C\":0}"))));
+        Assert.Equal(4, Assert.Single(replenished, item => item.Kind == "mana_pool_changed").ManaPool!["B"]);
+        Assert.Equal(4, reconciler.Current!.Seats[0].ManaPool!["B"]);
+    }
+
+    [Fact]
     public void PlayerCounterChanges_AreCarriedOnAuthoritativePlayerStateEvents()
     {
         var parser = new ForgeStructuredOutputParser();

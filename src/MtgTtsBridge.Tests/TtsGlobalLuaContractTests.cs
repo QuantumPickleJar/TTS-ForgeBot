@@ -243,10 +243,25 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BRIDGE_MANA_COUNTER_SOURCES", Script);
         Assert.Contains("source.clone", Script);
         Assert.Contains("counter.setVar(\"val\", amount)", Script);
+        Assert.Contains("counter.setValue(amount)", Script);
         Assert.Contains("event.kind == \"mana_pool_changed\"", Script);
         Assert.Contains("seatSnapshot.manaPool", Script);
         Assert.Contains("lifeCounter.getPosition()", Script);
         Assert.Contains("seat.manaBankOffset", Script);
+    }
+
+    [Fact]
+    public void ManaTrackerUpdates_UseCounterApiWithoutCallingMissingFunctions()
+    {
+        var start = Script.IndexOf("function BridgeSetNativeTrackerValue", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeTrackerPosition", start, StringComparison.Ordinal);
+        var body = Script[start..end];
+
+        Assert.Contains("local nativeOk = pcall(function() counter.setValue(amount) end)", body);
+        Assert.Contains("local setVarOk, setVarError = pcall(function() counter.setVar(\"val\", amount) end)", body);
+        Assert.DoesNotContain("counter.call(\"updateVal\")", body);
+        Assert.DoesNotContain("counter.call(\"updateSave\")", body);
+        Assert.DoesNotContain("counter.call(functionName)", body);
     }
 
     [Fact]
