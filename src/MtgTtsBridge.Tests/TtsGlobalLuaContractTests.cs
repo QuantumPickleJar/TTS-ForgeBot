@@ -2299,6 +2299,48 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void LibraryInsertion_AllowsOnlyTheExpectedMovedGuidDuringTtsSourceSettle()
+    {
+        var auditStart = Script.IndexOf("function BridgeAuditDuplicateLibraryGuids", StringComparison.Ordinal);
+        var auditEnd = Script.IndexOf("function BridgeLibraryCardIdentity", auditStart, StringComparison.Ordinal);
+        var audit = Script[auditStart..auditEnd];
+        var stabilityStart = Script.IndexOf("function BridgeVerifyLibraryIdentityStability", StringComparison.Ordinal);
+        var stabilityEnd = Script.IndexOf("function BridgeInsertPhysicalCardIntoLibrary", stabilityStart, StringComparison.Ordinal);
+        var stability = Script[stabilityStart..stabilityEnd];
+
+        Assert.Contains("ignoredGuid", audit);
+        Assert.Contains("tostring(guid) ~= tostring(ignoredGuid or \"\")", audit);
+        Assert.Contains("BridgeAuditDuplicateLibraryGuids(expectedGuid)", stability);
+        Assert.Contains("BridgeVerifyLibraryIdentityStability(callback, attempt + 1, expectedGuid)", stability);
+    }
+
+    [Fact]
+    public void GraveyardCleanup_WaitsForTakeObjectSourcePileToSettleBeforeReinsertion()
+    {
+        var start = Script.IndexOf("function BridgeReturnGraveyardPilesToLibraries", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeReturnPreviousGameCardsToLibraries", start, StringComparison.Ordinal);
+        var cleanup = Script[start..end];
+
+        Assert.Contains("takeObject invokes its callback before TTS has", cleanup);
+        Assert.Contains("BridgeWaitFrames(function()", cleanup);
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(job.seatId, card, \"NORMAL\"", cleanup);
+    }
+
+    [Fact]
+    public void EventQueue_DoesNotRemoveAnEventAfterSessionReplacementOrQueueMutation()
+    {
+        var start = Script.IndexOf("function BridgeProcessEventQueue", StringComparison.Ordinal);
+        var end = Script.IndexOf("-- Decisions are fetched from Forge independently", start, StringComparison.Ordinal);
+        var processor = Script[start..end];
+
+        Assert.Contains("not BridgeState.eventPolling", processor);
+        Assert.Contains("local processingGeneration = BridgeState.eventPollGeneration", processor);
+        Assert.Contains("processingGeneration ~= BridgeState.eventPollGeneration", processor);
+        Assert.Contains("BridgeState.eventQueue[1] ~= event", processor);
+        Assert.Contains("event queue changed while applying event", processor);
+    }
+
+    [Fact]
     public void NormalDeckCards_CannotFallThroughToTokenMaterialization()
     {
         var patch = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tools", "forge", "bridge-headless.patch"));

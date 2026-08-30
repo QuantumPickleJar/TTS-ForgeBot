@@ -1479,12 +1479,17 @@ function BridgeLibraryContainsGuid(deck, guid)
     return false
 end
 
-function BridgeAuditDuplicateLibraryGuids()
+function BridgeAuditDuplicateLibraryGuids(ignoredGuid)
     local looseByGuid = {}
     for _, object in ipairs(getAllObjects()) do
         if BridgeObjectIsUsable(object) and object.tag == "Card" then
             local guid = BridgeSafeObjectGuid(object)
-            if guid ~= nil then
+            -- During a Deck.putObject/takeObject transaction TTS can retain
+            -- the exact moved Card in its old loose/source view while also
+            -- publishing it in the destination Deck ledger.  The insertion
+            -- caller supplies that one expected GUID; all other collisions
+            -- remain strict corruption canaries.
+            if guid ~= nil and tostring(guid) ~= tostring(ignoredGuid or "") then
                 looseByGuid[guid] = object
             end
         end
@@ -1589,9 +1594,9 @@ end
 -- as a container-settle window, not as physical corruption.  Keep retrying
 -- the real duplicate audit, and still fail loudly if the loose/contained
 -- collision survives the bounded window.
-function BridgeVerifyLibraryIdentityStability(callback, attempt)
+function BridgeVerifyLibraryIdentityStability(callback, attempt, expectedGuid)
     attempt = attempt or 1
-    local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids()
+    local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids(expectedGuid)
     if duplicateGuidCount == 0 then
         callback(true, nil)
         return
@@ -1605,7 +1610,7 @@ function BridgeVerifyLibraryIdentityStability(callback, attempt)
         BridgeLog("[Bridge] waiting for TTS library containment to settle before duplicate audit")
     end
     BridgeWaitFrames(function()
-        BridgeVerifyLibraryIdentityStability(callback, attempt + 1)
+        BridgeVerifyLibraryIdentityStability(callback, attempt + 1, expectedGuid)
     end, 2)
 end
 
@@ -1693,7 +1698,7 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
                 return
             end
             callback(true, nil, deck)
-        end)
+        end, 1, guid)
     end, 1, resultingLibrary)
 end
 
@@ -1848,14 +1853,20 @@ function BridgeReturnGraveyardPilesToLibraries(callback)
                         drained = drained + 1
                         BridgeWaitFrames(nextCard, 1)
                     else
-                        BridgeInsertPhysicalCardIntoLibrary(job.seatId, card, "NORMAL", function(inserted, insertError)
-                            if not inserted then
-                                done(false, "could not return graveyard card " .. tostring(cardGuid) .. " to library: " .. tostring(insertError))
-                                return
-                            end
-                            drained = drained + 1
-                            BridgeWaitFrames(nextCard, 1)
-                        end, BridgeState.physicalInstanceIdByGuid[cardGuid])
+                        -- takeObject invokes its callback before TTS has
+                        -- necessarily removed the entry from the source pile.
+                        -- Let that source-side ledger settle before putting the
+                        -- same physical GUID into the destination library.
+                        BridgeWaitFrames(function()
+                            BridgeInsertPhysicalCardIntoLibrary(job.seatId, card, "NORMAL", function(inserted, insertError)
+                                if not inserted then
+                                    done(false, "could not return graveyard card " .. tostring(cardGuid) .. " to library: " .. tostring(insertError))
+                                    return
+                                end
+                                drained = drained + 1
+                                BridgeWaitFrames(nextCard, 1)
+                            end, BridgeState.physicalInstanceIdByGuid[cardGuid])
+                        end, 2)
                         return
                     end
                 end
@@ -7925,10 +7936,11 @@ function BridgePollEvents(generation)
 end
 
 function BridgeProcessEventQueue()
-    if BridgeState.animationRunning or #BridgeState.eventQueue == 0 then
+    if BridgeState.animationRunning or not BridgeState.eventPolling or #BridgeState.eventQueue == 0 then
         return
     end
 
+    local processingGeneration = BridgeState.eventPollGeneration
     local event = BridgeState.eventQueue[1]
     local expected = BridgeState.lastAppliedEventSequence + 1
     if event.sequence ~= expected then
@@ -7941,6 +7953,19 @@ function BridgeProcessEventQueue()
     if not applied then
         BridgeState.animationRunning = false
         BridgeStopOnDesync(applyError or ("failed to apply event " .. tostring(event.sequence)))
+        return
+    end
+
+    -- Event application can schedule a session replacement or another
+    -- recovery path through a TTS callback.  Never remove position 1 from a
+    -- queue that was replaced while the event was being applied.
+    if processingGeneration ~= BridgeState.eventPollGeneration or not BridgeState.eventPolling then
+        BridgeState.animationRunning = false
+        return
+    end
+    if BridgeState.eventQueue[1] ~= event then
+        BridgeState.animationRunning = false
+        BridgeStopOnDesync("event queue changed while applying event " .. tostring(event.sequence))
         return
     end
 
