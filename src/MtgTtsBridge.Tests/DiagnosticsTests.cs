@@ -180,6 +180,93 @@ public sealed class DiagnosticsTests
         finally { TryDelete(blockingFile); }
     }
 
+    [Fact]
+    public async Task PerformanceCapture_WritesBoundedCompactDirectZipAndNoStagingDirectory()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var adapter = new MockForgeAdapter();
+            var state = await adapter.StartSessionAsync(CancellationToken.None);
+            var sampler = new ProcessSampler(4);
+            sampler.SampleOnce();
+            var collector = new DiagnosticReportCollector(
+                adapter, new DiagnosticTelemetryBuffer(), new DiagnosticSelfTestRunner(), new DiagnosticBundleWriter(),
+                new DiagnosticOptions { ReportDirectory = root, PerformanceReportMaxBytes = 32 * 1024 },
+                new BridgeProcessIdentity(), NullLogger<DiagnosticReportCollector>.Instance, sampler);
+
+            var result = await collector.CaptureAsync(new DiagnosticReportRequestDto(
+                Category: "Performance / Freeze",
+                SessionId: state.SessionId,
+                PerformanceSummary: new DiagnosticPerformanceSummaryDto(DecisionRenderAttempts: 3),
+                RecentTtsTrace: [new TtsPerformanceTraceRecordDto(1.25, "decision_render_end", DurationMs: 321.5)]),
+                CancellationToken.None);
+
+            Assert.True(result.Success, result.Message);
+            Assert.NotNull(result.ReportPath);
+            Assert.True(new FileInfo(result.ReportPath!).Length <= 32 * 1024);
+            Assert.DoesNotContain(Directory.EnumerateDirectories(root), path => Path.GetFileName(path).StartsWith(".capture-", StringComparison.Ordinal));
+            using var zip = ZipFile.OpenRead(result.ReportPath!);
+            foreach (var required in new[]
+            {
+                "report.json", "report.txt", "perf/summary.json", "perf/tts-trace.jsonl", "perf/process-samples.jsonl",
+                "state/bridge-health.json", "state/current-decision.json", "protocol/recent-events.jsonl",
+                "protocol/recent-choices.jsonl", "protocol/recent-requests.jsonl", "logs/recent-bridge.log",
+                "logs/recent-forge-stdout.log", "logs/recent-forge-stderr.log"
+            }) Assert.NotNull(zip.GetEntry(required));
+            var summary = zip.GetEntry("perf/summary.json")!;
+            using var summaryReader = new StreamReader(summary.Open());
+            var compact = await summaryReader.ReadToEndAsync();
+            Assert.DoesNotContain("\n", compact);
+            Assert.Contains("decisionRenderAttempts", compact);
+            var manifest = zip.GetEntry("report.json")!;
+            using var manifestDocument = await JsonDocument.ParseAsync(manifest.Open());
+            Assert.True(manifestDocument.RootElement.GetProperty("includedFiles").GetArrayLength() >= 13);
+        }
+        finally { TryDelete(root); }
+    }
+
+    [Fact]
+    public async Task PerformanceRetention_DeletesOnlyStrictCollectorOwnedReports()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var old = Path.Combine(root, "ForgeBot-Performance-20200101-010101-abcd.zip");
+            var newer = Path.Combine(root, "ForgeBot-Performance-20200102-010101-abce.zip");
+            await File.WriteAllTextAsync(old, "old");
+            await File.WriteAllTextAsync(newer, "newer");
+            File.SetLastWriteTimeUtc(old, DateTime.UtcNow.AddMinutes(-2));
+            File.SetLastWriteTimeUtc(newer, DateTime.UtcNow.AddMinutes(-1));
+            var unrelated = Path.Combine(root, "ForgeBot-Performance-user-export.zip");
+            await File.WriteAllTextAsync(unrelated, "keep");
+
+            var adapter = new MockForgeAdapter();
+            await adapter.StartSessionAsync(CancellationToken.None);
+            var collector = new DiagnosticReportCollector(
+                adapter, new DiagnosticTelemetryBuffer(), new DiagnosticSelfTestRunner(), new DiagnosticBundleWriter(),
+                new DiagnosticOptions { ReportDirectory = root, PerformanceReportRetentionCount = 2 },
+                new BridgeProcessIdentity(), NullLogger<DiagnosticReportCollector>.Instance);
+            var result = await collector.CaptureAsync(new DiagnosticReportRequestDto(Category: "Performance"), CancellationToken.None);
+
+            Assert.True(result.Success, result.Message);
+            Assert.False(File.Exists(old));
+            Assert.True(File.Exists(newer));
+            Assert.True(File.Exists(unrelated));
+        }
+        finally { TryDelete(root); }
+    }
+
+    [Fact]
+    public void ProcessSampler_RemainsUsableWhenExternalProcessesAreAbsent()
+    {
+        using var sampler = new ProcessSampler(3);
+        sampler.SampleOnce();
+        sampler.SampleOnce();
+        Assert.True(sampler.Snapshot().Count <= 3);
+        Assert.Contains(sampler.Snapshot(), sample => sample.Role == "bridge");
+    }
+
     private static string CreateTempDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), $"MtgTtsBridge-diagnostics-{Guid.NewGuid():N}");

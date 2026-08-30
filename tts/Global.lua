@@ -19,6 +19,8 @@ BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.20
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
 BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS = 8.0
 BRIDGE_OPENING_HAND_READINESS_RETRY_FRAMES = 2
+BRIDGE_PERFORMANCE_TRACE_CAPACITY = 384
+BRIDGE_PERFORMANCE_SLOW_OPERATION_SECONDS = 0.25
 -- Library extraction is serialized separately. Keep the event cursor moving
 -- promptly after a draw so a burst (for example, a draw per creature) cannot
 -- hold later authoritative phase/priority events behind animation delays.
@@ -55,6 +57,122 @@ end
 
 function BridgePresentationMetric(name)
     BridgeState.presentationMetrics[name] = (BridgeState.presentationMetrics[name] or 0) + 1
+end
+
+-- Freeze-flight telemetry is deliberately local to this Lua runtime.  TTS's
+-- standard Lua os.clock is available in the supported runtime and is cheap;
+-- it is a process CPU clock, so the report labels it rather than pretending
+-- it is wall time.  The bridge process sampler supplies wall-clock context.
+local BRIDGE_PERFORMANCE_CLOCK_KIND = "os.clock-cpu"
+local BRIDGE_PERFORMANCE_CLOCK_OK = pcall(function() return os.clock() end)
+
+function BridgePerformanceNow()
+    if BRIDGE_PERFORMANCE_CLOCK_OK then return os.clock() end
+    return 0
+end
+
+function BridgePerformanceTrace(marker, durationMs, detail1, detail2)
+    local trace = BridgeState.performanceTrace
+    if trace == nil then return end
+    local decision = BridgeState.lastDecision
+    local record = {
+        timestamp = BridgePerformanceNow(), marker = tostring(marker),
+        decisionId = decision and decision.decisionId or nil,
+        decisionKind = decision and decision.kind or nil,
+        eventSequence = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+        durationMs = durationMs ~= nil and tonumber(durationMs) or nil,
+        detail1 = detail1 ~= nil and tonumber(detail1) or nil,
+        detail2 = detail2 ~= nil and tonumber(detail2) or nil
+    }
+    trace.head = (trace.head % trace.capacity) + 1
+    trace.records[trace.head] = record
+    trace.count = math.min(trace.count + 1, trace.capacity)
+end
+
+function BridgePerformanceBegin(marker, detail1, detail2)
+    BridgePerformanceTrace(marker, nil, detail1, detail2)
+    return {marker = tostring(marker), startedAt = BridgePerformanceNow()}
+end
+
+function BridgePerformanceEnd(token, marker, summaryKey, detail1, detail2)
+    if token == nil then return end
+    local durationMs = math.max(0, (BridgePerformanceNow() - (token.startedAt or 0)) * 1000)
+    BridgePerformanceTrace(marker, durationMs, detail1, detail2)
+    local summary = BridgeState.performanceSummary
+    if summary == nil then return end
+    if summaryKey ~= nil then
+        local worstKey = "worst" .. string.upper(string.sub(summaryKey, 1, 1)) .. string.sub(summaryKey, 2) .. "DurationMs"
+        if durationMs > tonumber(summary[worstKey] or 0) then summary[worstKey] = durationMs end
+    end
+    if summaryKey ~= nil and durationMs >= BRIDGE_PERFORMANCE_SLOW_OPERATION_SECONDS * 1000 then
+        summary.slowRenderCount = (summary.slowRenderCount or 0) + 1
+    end
+end
+
+function BridgePerformanceTraceSnapshot()
+    local trace = BridgeState.performanceTrace or {capacity = BRIDGE_PERFORMANCE_TRACE_CAPACITY, head = 0, count = 0, records = {}}
+    local result = {}
+    local first = trace.count == trace.capacity and (trace.head % trace.capacity) + 1 or 1
+    for offset = 0, trace.count - 1 do
+        local index = ((first + offset - 1) % trace.capacity) + 1
+        if trace.records[index] ~= nil then table.insert(result, trace.records[index]) end
+    end
+    return result
+end
+
+function BridgePerformanceDiagnosticPayload()
+    local summary = BridgeState.performanceSummary or {}
+    local metrics = BridgeState.presentationMetrics or {}
+    local ui = BridgeState.ui or {}
+    local canary = {decisionPlayLandCount = 0, decisionCastSpellCount = 0, ttsRepresentedPlayLandCount = 0, ttsRepresentedCastSpellCount = 0}
+    local decision = BridgeState.lastDecision
+    for _, action in ipairs(decision and decision.actions or {}) do
+        if action.type == "play_land" then canary.decisionPlayLandCount = canary.decisionPlayLandCount + 1 end
+        if action.type == "cast_spell" then canary.decisionCastSpellCount = canary.decisionCastSpellCount + 1 end
+    end
+    canary.ttsRepresentedPlayLandCount = tonumber(summary.ttsRepresentedPlayLandCount or 0) or 0
+    canary.ttsRepresentedCastSpellCount = tonumber(summary.ttsRepresentedCastSpellCount or 0) or 0
+    summary.decisionRenderAttempts = tonumber(metrics.decisionRenderAttempts or 0) or 0
+    summary.decisionRenderExecuted = tonumber(metrics.decisionRenderExecuted or 0) or 0
+    summary.decisionRenderSkippedIdentical = tonumber(metrics.decisionRenderSkippedIdentical or 0) or 0
+    summary.uiAttributeAttempts = tonumber(ui.uiAttributeAttemptCount or 0) or 0
+    summary.uiAttributeWrites = tonumber(ui.uiAttributeWriteCount or 0) or 0
+    summary.uiAttributeSkippedIdentical = tonumber(ui.uiAttributeSkippedCount or 0) or 0
+    summary.encoderRebuildCount = tonumber(metrics.encoderRebuildCount or 0) or 0
+    summary.keywordPropWriteCount = tonumber(metrics.keywordPropWriteCount or 0) or 0
+    summary.decalWriteCount = tonumber(metrics.decalWriteCount or 0) or 0
+    summary.fullSnapshotReconcileCount = tonumber(metrics.fullSnapshotReconcileCount or 0) or 0
+    canary.turnNumber = tonumber(BridgeState.tableTurnCount or 0) or nil
+    canary.phase = BridgeState.currentPhase
+    canary.activeSeatId = BridgeState.currentTurnSeatId
+    canary.prioritySeatId = BridgeState.prioritySeatId
+    canary.decisionId = decision and decision.decisionId or nil
+    canary.decisionKind = decision and decision.kind or nil
+    canary.decisionPassPriorityPresent = false
+    for _, action in ipairs(decision and decision.actions or {}) do
+        if action.type == "pass_priority" then canary.decisionPassPriorityPresent = true end
+    end
+    canary.eventCursor = decision and decision.eventCursor or nil
+    canary.lastTtsAppliedEventSequence = BridgeState.lastAppliedEventSequence
+    summary.landActionCanary = canary
+    summary.clockKind = BRIDGE_PERFORMANCE_CLOCK_KIND
+    return {performanceSummary = summary, recentTtsTrace = BridgePerformanceTraceSnapshot()}
+end
+
+function BridgePerformanceRecordTtsActionRepresentation()
+    local summary = BridgeState.performanceSummary
+    if summary == nil then return end
+    local seen = {}
+    local lands, spells = 0, 0
+    for _, action in pairs(BridgeState.actionByGuid or {}) do
+        if action ~= nil and action.actionId ~= nil and not seen[action.actionId] then
+            seen[action.actionId] = true
+            if action.type == "play_land" then lands = lands + 1 end
+            if action.type == "cast_spell" then spells = spells + 1 end
+        end
+    end
+    summary.ttsRepresentedPlayLandCount = lands
+    summary.ttsRepresentedCastSpellCount = spells
 end
 
 function BridgeLogPresentationMetrics(label)
@@ -263,6 +381,19 @@ BridgeState = {
         decisionRenderAttempts = 0,
         decisionRenderExecuted = 0,
         decisionRenderSkippedIdentical = 0
+    },
+    performanceTrace = {capacity = BRIDGE_PERFORMANCE_TRACE_CAPACITY, head = 0, count = 0, records = {}},
+    performanceSummary = {
+        slowRenderCount = 0,
+        worstRenderDurationMs = 0,
+        worstClearHighlightsDurationMs = 0,
+        worstPreparedPresentationDurationMs = 0,
+        worstCandidateCollectionDurationMs = 0,
+        worstActionMatchingDurationMs = 0,
+        worstUiFlushDurationMs = 0,
+        worstSnapshotReconcileDurationMs = 0,
+        ttsRepresentedPlayLandCount = 0,
+        ttsRepresentedCastSpellCount = 0
     },
     physicalSeatByGuid = {},
     physicalZoneByGuid = {},
@@ -7236,6 +7367,19 @@ function BridgePrepareEventSession(sessionId, forceReset)
         decisionRenderExecuted = 0,
         decisionRenderSkippedIdentical = 0
     }
+    BridgeState.performanceTrace = {capacity = BRIDGE_PERFORMANCE_TRACE_CAPACITY, head = 0, count = 0, records = {}}
+    BridgeState.performanceSummary = {
+        slowRenderCount = 0,
+        worstRenderDurationMs = 0,
+        worstClearHighlightsDurationMs = 0,
+        worstPreparedPresentationDurationMs = 0,
+        worstCandidateCollectionDurationMs = 0,
+        worstActionMatchingDurationMs = 0,
+        worstUiFlushDurationMs = 0,
+        worstSnapshotReconcileDurationMs = 0,
+        ttsRepresentedPlayLandCount = 0,
+        ttsRepresentedCastSpellCount = 0
+    }
     BridgeState.physicalSeatByGuid = {}
     BridgeState.physicalZoneByGuid = {}
     BridgeState.tokenPhysicalGuids = {}
@@ -10933,7 +11077,7 @@ end
 
 BRIDGE_REPORT_CATEGORIES = {
     "Gameplay sync", "Combat", "Card movement", "Presentation/UI", "Decision/prompt",
-    "Mana/payment", "Performance", "Crash/error", "Other"
+    "Mana/payment", "Performance / Freeze", "Crash/error", "Other"
 }
 
 function BridgeHudReportOpen(player, value, id)
@@ -10983,6 +11127,7 @@ function BridgeHudReportCapture(player, value, id)
     BridgeUiMarkDirty("report-capture-start")
 
     local categoryIndex = tonumber(ui.reportCategoryIndex or 1) or 1
+    local performance = BridgePerformanceDiagnosticPayload()
     local request = {
         summary = BridgeHudReportSummaryText(),
         category = BRIDGE_REPORT_CATEGORIES[categoryIndex] or "Other",
@@ -10996,7 +11141,9 @@ function BridgeHudReportCapture(player, value, id)
         activePlayer = BridgeState.currentTurnSeatId,
         priorityPlayer = BridgeState.prioritySeatId,
         mappedCardInstanceIds = BridgeHudReportMappedCardInstanceIds(),
-        status = BridgeState.statusHeadline
+        status = BridgeState.statusHeadline,
+        performanceSummary = performance.performanceSummary,
+        recentTtsTrace = performance.recentTtsTrace
     }
     BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
         ui.reportCaptureInFlight = false
@@ -11313,4 +11460,82 @@ function BridgeEnsurePassButton(seatId)
             end
         end
     })
+end
+
+-- Flight-recorder wrappers keep the hot paths unchanged. They append a few
+-- scalar values to the bounded in-memory ring and never perform I/O.
+local BridgeAcceptDecisionFlightRecorderBase = BridgeAcceptDecision
+function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationGeneration)
+    local token = BridgePerformanceBegin("decision_accept_begin")
+    BridgeAcceptDecisionFlightRecorderBase(decision, origin, expectedSessionId, presentationGeneration)
+    BridgePerformanceEnd(token, "decision_accept_end")
+end
+
+local BridgeRenderDecisionFlightRecorderBase = BridgeRenderDecision
+function BridgeRenderDecision(decision, force)
+    local token = BridgePerformanceBegin("decision_render_begin")
+    local key = BridgeDecisionPresentationKey(decision)
+    local skipped = force ~= true and key == BridgeState.renderedDecisionPresentationKey
+        and BridgeState.renderedDecisionPhysicalGeneration == (BridgeState.currentPhysicalPresentationGeneration or 0)
+    if skipped then BridgePerformanceTrace("decision_render_skipped") end
+    local candidateToken = BridgePerformanceBegin("candidate_collection_begin")
+    local matchingToken = BridgePerformanceBegin("action_matching_begin")
+    BridgeRenderDecisionFlightRecorderBase(decision, force)
+    BridgePerformanceRecordTtsActionRepresentation()
+    BridgePerformanceEnd(matchingToken, "action_matching_end", "actionMatching")
+    BridgePerformanceEnd(candidateToken, "candidate_collection_end", "candidateCollection")
+    BridgePerformanceEnd(token, "decision_render_end", "render")
+end
+
+local BridgeClearHighlightsFlightRecorderBase = BridgeClearHighlights
+function BridgeClearHighlights()
+    local token = BridgePerformanceBegin("clear_highlights_begin")
+    BridgeClearHighlightsFlightRecorderBase()
+    BridgePerformanceEnd(token, "clear_highlights_end", "clearHighlights")
+end
+
+local BridgeRenderPreparedFlightRecorderBase = BridgeRenderPreparedSpellPresentations
+function BridgeRenderPreparedSpellPresentations(decision)
+    local token = BridgePerformanceBegin("prepared_presentation_begin")
+    BridgeRenderPreparedFlightRecorderBase(decision)
+    BridgePerformanceEnd(token, "prepared_presentation_end", "preparedPresentation")
+end
+
+local BridgeApplyEventFlightRecorderBase = BridgeApplyAuthoritativeEvent
+function BridgeApplyAuthoritativeEvent(event)
+    local token = BridgePerformanceBegin("authoritative_event_begin", event and event.sequence)
+    local applied, delay, errorMessage = BridgeApplyEventFlightRecorderBase(event)
+    BridgePerformanceEnd(token, "authoritative_event_end", nil, event and event.sequence)
+    return applied, delay, errorMessage
+end
+
+local BridgeSnapshotReconcileFlightRecorderBase = BridgeApplySafeSnapshotReconcile
+function BridgeApplySafeSnapshotReconcile(snapshot, reason)
+    local token = BridgePerformanceBegin("snapshot_reconcile_begin", snapshot and snapshot.eventCursor)
+    BridgeSnapshotReconcileFlightRecorderBase(snapshot, reason)
+    BridgePerformanceEnd(token, "snapshot_reconcile_end", "snapshotReconcile")
+end
+
+local BridgeMoveToBattlefieldFlightRecorderBase = BridgeMoveToBattlefield
+function BridgeMoveToBattlefield(event, object, row, countAsNewPlacement)
+    local token = BridgePerformanceBegin("physical_move_begin", event and event.sequence)
+    local moved, errorMessage = BridgeMoveToBattlefieldFlightRecorderBase(event, object, row, countAsNewPlacement)
+    BridgePerformanceEnd(token, "physical_move_end", nil, event and event.sequence)
+    return moved, errorMessage
+end
+
+local BridgeCollectSeatAssetsFlightRecorderBase = BridgeCollectSeatAssets
+function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
+    local token = BridgePerformanceBegin("candidate_collection_begin")
+    return BridgeCollectSeatAssetsFlightRecorderBase(seatId, seatSnapshot, function(ok, assets, errorMessage)
+        BridgePerformanceEnd(token, "candidate_collection_end", "candidateCollection", assets and #assets or 0)
+        callback(ok, assets, errorMessage)
+    end)
+end
+
+local BridgeUiFlushFlightRecorderBase = BridgeUiFlush
+function BridgeUiFlush()
+    local token = BridgePerformanceBegin("ui_flush_begin")
+    BridgeUiFlushFlightRecorderBase()
+    BridgePerformanceEnd(token, "ui_flush_end", "uiFlush")
 end

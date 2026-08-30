@@ -19,6 +19,7 @@ builder.Services.Configure<DiagnosticOptions>(builder.Configuration.GetSection("
 builder.Services.AddSingleton(serviceProvider => serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<DiagnosticOptions>>().Value);
 builder.Services.AddSingleton<DiagnosticSelfTestRunner>();
 builder.Services.AddSingleton<DiagnosticBundleWriter>();
+builder.Services.AddSingleton<ProcessSampler>();
 builder.Services.AddSingleton<DiagnosticReportCollector>();
 builder.Logging.AddProvider(new DiagnosticLoggerProvider(diagnosticTelemetry));
 
@@ -45,6 +46,9 @@ else
 }
 
 var app = builder.Build();
+var processSampler = app.Services.GetRequiredService<ProcessSampler>();
+processSampler.Start();
+app.Lifetime.ApplicationStopping.Register(processSampler.Dispose);
 
 app.MapGet("/health", async (IForgeAdapter adapter, BridgeProcessIdentity identity, CancellationToken cancellationToken) =>
 {

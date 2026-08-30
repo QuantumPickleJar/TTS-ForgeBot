@@ -2072,6 +2072,39 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeState.ui.reportStatus", Script);
         Assert.Contains("BridgeHudReportStatus", File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml")));
     }
+
+    [Fact]
+    public void FreezeFlightRecorder_IsBoundedCaptureOnlyAndUsesCompactScalarRecords()
+    {
+        Assert.Contains("BRIDGE_PERFORMANCE_TRACE_CAPACITY = 384", Script);
+        Assert.Contains("performanceTrace = {capacity = BRIDGE_PERFORMANCE_TRACE_CAPACITY", Script);
+        Assert.Contains("function BridgePerformanceTraceSnapshot()", Script);
+        Assert.Contains("BRIDGE_PERFORMANCE_CLOCK_KIND = \"os.clock-cpu\"", Script);
+        Assert.Contains("performanceSummary = performance.performanceSummary", Script);
+        Assert.Contains("recentTtsTrace = performance.recentTtsTrace", Script);
+        Assert.DoesNotContain("BridgeHttp.requestJson", Script[Script.IndexOf("function BridgePerformanceTrace", StringComparison.Ordinal)..Script.IndexOf("function BridgePerformanceDiagnosticPayload", StringComparison.Ordinal)]);
+        foreach (var marker in new[]
+        {
+            "decision_accept_begin", "decision_accept_end", "decision_render_begin", "decision_render_skipped", "decision_render_end",
+            "clear_highlights_begin", "clear_highlights_end", "prepared_presentation_begin", "prepared_presentation_end",
+            "candidate_collection_begin", "candidate_collection_end", "action_matching_begin", "action_matching_end",
+            "ui_flush_begin", "ui_flush_end", "authoritative_event_begin", "authoritative_event_end",
+            "physical_move_begin", "physical_move_end", "snapshot_reconcile_begin", "snapshot_reconcile_end"
+        }) Assert.Contains(marker, Script);
+    }
+
+    [Fact]
+    public void FreezeCapture_ExcludesCardNamesFromPerformancePayloadAndExposesLandCanaryCounts()
+    {
+        var start = Script.IndexOf("function BridgePerformanceDiagnosticPayload", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeWaitTime", start, StringComparison.Ordinal);
+        var payload = Script[start..end];
+        Assert.Contains("decisionPlayLandCount", payload);
+        Assert.Contains("ttsRepresentedPlayLandCount", payload);
+        Assert.Contains("eventCursor", payload);
+        Assert.DoesNotContain("cardName", payload);
+        Assert.Contains("Performance / Freeze", Script);
+    }
     [Fact]
     public void LibraryInsertion_RetiresIdentityOnlyAfterVerifiedContainment()
     {
