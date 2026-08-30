@@ -144,6 +144,7 @@
       <Text id="BridgeHudHelp" text="SMART: Forge auto-advances only when it has no meaningful human choice." minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="11" color="#AAB7C6" alignment="MiddleLeft" />
       <HorizontalLayout id="BridgeHudReportActions" minHeight="28" preferredHeight="28" flexibleHeight="0" spacing="5" childForceExpandWidth="false" childForceExpandHeight="true">
         <Button id="BridgeHudReportOpen" onClick="BridgeHudReportOpen" text="REPORT BUG" tooltip="Capture a local diagnostic ZIP without changing the Forge match." minWidth="135" preferredWidth="135" flexibleWidth="0" fontSize="11" color="#7F1D1DCC" textColor="#FFFFFF" />
+        <Button id="BridgeHudReportCategoryPrevious" active="false" onClick="BridgeHudReportCategoryPrevious" text="&lt;" tooltip="Previous diagnostic category." minWidth="28" preferredWidth="28" flexibleWidth="0" fontSize="13" color="#1E293BCC" textColor="#CBD5E1" />
         <Button id="BridgeHudReportCategory" active="false" onClick="BridgeHudReportCategory" text="Gameplay sync" tooltip="Cycle the diagnostic category." minWidth="145" preferredWidth="145" flexibleWidth="0" fontSize="10" color="#586880cc" textColor="#CBD5E1" />
       </HorizontalLayout>
       <VerticalLayout id="BridgeHudReportPanel" active="false" minHeight="64" preferredHeight="64" flexibleHeight="0" spacing="4" childForceExpandHeight="false" childForceExpandWidth="true" color="#0D1825EE">
