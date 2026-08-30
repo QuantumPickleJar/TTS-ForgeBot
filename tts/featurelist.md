@@ -29,6 +29,7 @@ sshould be able to toggle whether or not tapping is automatic or should require 
 - lands are still very freeform.   there sshould be a config ssetting to enforce strict land placement
 
 - one should not be able to crew a vehicle if its already been converted into an artifact creature, mount, or otherwise (unless game logic needs this for combos)
+NOT A BUG — Forge owns Crew legality; the bridge must not locally prohibit this action
 
 Bug: cannot select attackers  by clicking on card (UI button works), noticed on crewed vehicle
 
