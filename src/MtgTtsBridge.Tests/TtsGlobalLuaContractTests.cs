@@ -912,7 +912,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-30-u2-live-fixes\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-30-u2-rolling-capture\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -2073,9 +2073,11 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeHudReportSummary", xml);
         Assert.Contains("BridgeHudReportCapture", xml);
         Assert.Contains("BridgeHudReportCancel", xml);
-        Assert.Contains("BridgeHudReportCategory", xml);
-        Assert.Contains("BridgeHudReportCategoryPrevious", xml);
-        Assert.Contains("function BridgeHudReportCategoryPrevious", Script);
+        Assert.Contains("BridgeHudReportCategoryDropdown", xml);
+        Assert.Contains("BridgeHudRollingCapture", xml);
+        Assert.Contains("function BridgeHudReportCategoryChanged", Script);
+        Assert.Contains("function BridgeHudRollingCapture", Script);
+        Assert.Contains("Rolling freeze capture", Script);
         Assert.Contains("function BridgeHudReportCapture", Script);
         Assert.Contains("/api/v1/diagnostics/report", Script);
         Assert.Contains("mappedCardInstanceIds", Script);

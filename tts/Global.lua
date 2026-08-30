@@ -30,7 +30,7 @@ BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
 -- lands after they enter. STRICT re-applies the persistent land row only on
 -- authoritative layout events or an explicit organize request.
 BRIDGE_LAND_PLACEMENT_MODE = BRIDGE_LAND_PLACEMENT_MODE or "FREEFORM"
-BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-live-fixes"
+BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-rolling-capture"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -11147,7 +11147,7 @@ end
 BRIDGE_DEV_UI_ENABLED = true
 BRIDGE_DEV_ANNOTATIONS_ENABLED = true
 BRIDGE_PHYSICAL_PRIORITY_CONTROLS_ENABLED = true
-BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-live-fixes"
+BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-rolling-capture"
 
 BRIDGE_HUD_COLORS = {
     active = "#6DB5FF",
@@ -11182,22 +11182,15 @@ function BridgeHudReportCancel(player, value, id)
     BridgeUiMarkDirty("report-cancel")
 end
 
-function BridgeHudReportCategory(player, value, id)
+function BridgeHudReportCategoryChanged(player, value, id)
     if BridgeState.ui == nil or BridgeState.ui.reportCaptureInFlight then return end
-    local index = tonumber(BridgeState.ui.reportCategoryIndex or 1) or 1
-    index = index + 1
-    if index > #BRIDGE_REPORT_CATEGORIES then index = 1 end
-    BridgeState.ui.reportCategoryIndex = index
-    BridgeUiMarkDirty("report-category")
-end
-
-function BridgeHudReportCategoryPrevious(player, value, id)
-    if BridgeState.ui == nil or BridgeState.ui.reportCaptureInFlight then return end
-    local index = tonumber(BridgeState.ui.reportCategoryIndex or 1) or 1
-    index = index - 1
-    if index < 1 then index = #BRIDGE_REPORT_CATEGORIES end
-    BridgeState.ui.reportCategoryIndex = index
-    BridgeUiMarkDirty("report-category-previous")
+    for index, category in ipairs(BRIDGE_REPORT_CATEGORIES) do
+        if value == category then
+            BridgeState.ui.reportCategoryIndex = index
+            BridgeUiMarkDirty("report-category-dropdown")
+            return
+        end
+    end
 end
 
 function BridgeHudReportMappedCardInstanceIds()
@@ -11216,18 +11209,17 @@ function BridgeHudReportSummaryText()
     return value ~= "" and value or nil
 end
 
-function BridgeHudReportCapture(player, value, id)
+function BridgeHudSubmitReport(category, summary)
     local ui = BridgeState.ui
     if ui == nil or ui.reportCaptureInFlight then return end
     ui.reportCaptureInFlight = true
     ui.reportStatus = "Capturing..."
     BridgeUiMarkDirty("report-capture-start")
 
-    local categoryIndex = tonumber(ui.reportCategoryIndex or 1) or 1
     local performance = BridgePerformanceDiagnosticPayload()
     local request = {
-        summary = BridgeHudReportSummaryText(),
-        category = BRIDGE_REPORT_CATEGORIES[categoryIndex] or "Other",
+        summary = summary or BridgeHudReportSummaryText(),
+        category = category or BRIDGE_REPORT_CATEGORIES[tonumber(ui.reportCategoryIndex or 1) or 1] or "Other",
         sessionId = BridgeState.eventSessionId,
         decisionId = BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
         clientRuntimeId = BRIDGE_CLIENT_RUNTIME_ID,
@@ -11256,6 +11248,17 @@ function BridgeHudReportCapture(player, value, id)
         end
         BridgeUiMarkDirty("report-capture-result")
     end)
+end
+
+function BridgeHudReportCapture(player, value, id)
+    BridgeHudSubmitReport(nil, nil)
+end
+
+function BridgeHudRollingCapture(player, value, id)
+    local ui = BridgeState.ui
+    if ui == nil or ui.reportCaptureInFlight then return end
+    ui.reportPanelVisible = true
+    BridgeHudSubmitReport("Performance / Freeze", "Rolling freeze capture")
 end
 
 function BridgeHudPhaseElementId(phase)
@@ -11355,9 +11358,10 @@ function BridgeUiFlush()
     local reportCategoryIndex = tonumber(ui.reportCategoryIndex or 1) or 1
     BridgeUiSet("BridgeHudReportPanel", "active", reportVisible and "true" or "false")
     BridgeUiSet("BridgeHudReportOpen", "active", devEnabled and "true" or "false")
-    BridgeUiSet("BridgeHudReportCategoryPrevious", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
-    BridgeUiSet("BridgeHudReportCategory", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
-    BridgeUiSet("BridgeHudReportCategory", "text", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex] or "Other")
+    BridgeUiSet("BridgeHudRollingCapture", "active", devEnabled and (ui.reportCaptureInFlight and "false" or "true") or "false")
+    BridgeUiSet("BridgeHudReportCategoryDropdown", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
+    BridgeUiSet("BridgeHudReportCategoryDropdown", "options", table.concat(BRIDGE_REPORT_CATEGORIES, "|"))
+    BridgeUiSet("BridgeHudReportCategoryDropdown", "value", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex] or "Other")
     BridgeUiSet("BridgeHudReportCapture", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportCancel", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportStatus", "text", ui.reportStatus or "")

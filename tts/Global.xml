@@ -134,7 +134,7 @@
     </VerticalLayout>
 
     <!-- Host/Admin developer drawer. -->
-    <VerticalLayout id="BridgeHudDevRoot" active="false" visibility="Host|Admin" minHeight="194" preferredHeight="194" flexibleHeight="0" spacing="5" padding="7 7 7 7" childForceExpandHeight="false" childForceExpandWidth="true" color="#070C13F0">
+    <VerticalLayout id="BridgeHudDevRoot" active="false" visibility="Host|Admin" minHeight="225" preferredHeight="225" flexibleHeight="0" spacing="5" padding="7 7 7 7" childForceExpandHeight="false" childForceExpandWidth="true" color="#070C13F0">
       <HorizontalLayout minHeight="29" preferredHeight="29" flexibleHeight="0" spacing="5" childForceExpandWidth="false" childForceExpandHeight="true">
         <Button id="BridgeHudMode" onClick="BridgeHudMode" text="SMART" tooltip="Cycle SMART, YIELD, and MANUAL priority behavior." minWidth="105" preferredWidth="105" flexibleWidth="0" fontSize="11" color="#1E293BCC" textColor="#CBD5E1" />
         <Button id="BridgeHudFast" onClick="BridgeHudFast" text="FAST: OFF" tooltip="Fast Playtest shortens cosmetic movement and UI delays. It never skips Forge decisions or rules events." minWidth="105" preferredWidth="105" flexibleWidth="0" fontSize="11" color="#81a8e6cc" textColor="#CBD5E1" />
@@ -146,9 +146,11 @@
         <Button id="BridgeHudReportOpen" onClick="BridgeHudReportOpen" text="REPORT BUG" tooltip="Capture a local diagnostic ZIP without changing the Forge match." minWidth="135" preferredWidth="135" flexibleWidth="0" fontSize="11" color="#7F1D1DCC" textColor="#FFFFFF" />
         <Button id="BridgeHudReportCategoryPrevious" active="false" onClick="BridgeHudReportCategoryPrevious" text="&lt;" tooltip="Previous diagnostic category." minWidth="28" preferredWidth="28" flexibleWidth="0" fontSize="13" color="#1E293BCC" textColor="#CBD5E1" />
         <Button id="BridgeHudReportCategory" active="false" onClick="BridgeHudReportCategory" text="Gameplay sync" tooltip="Cycle the diagnostic category." minWidth="145" preferredWidth="145" flexibleWidth="0" fontSize="10" color="#586880cc" textColor="#CBD5E1" />
+        <Button id="BridgeHudRollingCapture" onClick="BridgeHudRollingCapture" text="ROLLING CAPTURE" tooltip="Immediately capture the bounded recent performance history. Nothing is written until pressed." minWidth="135" preferredWidth="135" flexibleWidth="0" fontSize="10" color="#166534DD" textColor="#FFFFFF" />
       </HorizontalLayout>
-      <VerticalLayout id="BridgeHudReportPanel" active="false" minHeight="64" preferredHeight="64" flexibleHeight="0" spacing="4" childForceExpandHeight="false" childForceExpandWidth="true" color="#0D1825EE">
+      <VerticalLayout id="BridgeHudReportPanel" active="false" minHeight="93" preferredHeight="93" flexibleHeight="0" spacing="4" childForceExpandHeight="false" childForceExpandWidth="true" color="#0D1825EE">
         <InputField id="BridgeHudReportSummary" text="" placeholder="Short description (optional)" characterLimit="240" minHeight="24" preferredHeight="24" flexibleHeight="0" fontSize="11" color="#172235" textColor="#F8FAFC" />
+        <Dropdown id="BridgeHudReportCategoryDropdown" options="Gameplay sync|Combat|Card movement|Presentation/UI|Decision/prompt|Mana/payment|Performance / Freeze|Crash/error|Other" value="Gameplay sync" onValueChanged="BridgeHudReportCategoryChanged" minHeight="25" preferredHeight="25" flexibleHeight="0" fontSize="10" color="#1E293BCC" textColor="#CBD5E1" />
         <HorizontalLayout minHeight="27" preferredHeight="27" flexibleHeight="0" spacing="5" childForceExpandWidth="false" childForceExpandHeight="true">
           <Button id="BridgeHudReportCapture" onClick="BridgeHudReportCapture" text="CAPTURE" minWidth="105" preferredWidth="105" flexibleWidth="0" fontSize="11" color="#166534DD" textColor="#FFFFFF" />
           <Button id="BridgeHudReportCancel" onClick="BridgeHudReportCancel" text="CANCEL" minWidth="90" preferredWidth="90" flexibleWidth="0" fontSize="11" color="#334155DD" textColor="#F8FAFC" />
