@@ -116,11 +116,10 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
-    public void HumanPriorityUsesForgeLegalityAndAutoPassesOnlyEmptyWindows()
+    public void HumanPriorityUsesForgeLegalityWithoutSilentlySkippingItsWindow()
     {
         Assert.Contains("List<SpellAbility> landAbilities = getPlayableLands();", Patch);
         Assert.Contains("getCastableCreaturesAndArtifacts(true)", Patch);
-        Assert.Contains("auto-passing empty human priority window", Patch);
         Assert.Contains("sa.setActivatingPlayer(player);", Patch);
         Assert.Contains("boolean isActivePlayersTurn = ph.isPlayerTurn(player);", Patch);
         Assert.Contains("boolean hasPriority = player.equals(ph.getPriorityPlayer());", Patch);
@@ -135,7 +134,7 @@ public sealed class ForgeProducerContractTests
         Assert.DoesNotContain("+            chosenSa.resolve();", Patch);
         Assert.Contains("return super.playChosenSpellAbility(chosenSa);", Patch);
         Assert.DoesNotContain("boolean sorcerySpeedWindow", Patch);
-        Assert.Contains("} else if (totalActions == 0) {", Patch);
+        Assert.DoesNotContain("auto-passing empty human priority window", Patch);
         Assert.True(Patch.IndexOf("sa.setActivatingPlayer(player);", StringComparison.Ordinal) < Patch.IndexOf("if (!sa.canPlay()) continue;", StringComparison.Ordinal));
         Assert.DoesNotContain("isMainPhase &&", Patch);
     }

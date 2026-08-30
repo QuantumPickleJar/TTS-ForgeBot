@@ -1291,10 +1291,6 @@ index 0d731bb6..5f2ee29c 100644
 -                System.out.println(">> Auto-passing priority (no actions available)...\n");
 -                return null;
 -            }
-+        } else if (totalActions == 0) {
-+            System.out.println("[TUI-DIAG priority] no non-pass actions; auto-passing empty human priority window");
-+            return null;
-         }
  
 -        // Deduplicate abilities - only show unique actions
 -        List<SpellAbility> uniqueLands = deduplicateByCardName(landAbilities);
