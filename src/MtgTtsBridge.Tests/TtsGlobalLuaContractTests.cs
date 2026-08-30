@@ -689,6 +689,20 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void SnapshotReconcile_RecoversUnmappedPublicCardsFromTheirAuthoritativeLibrary()
+    {
+        var reconcile = Script.IndexOf("function BridgeApplySafeSnapshotReconcile", StringComparison.Ordinal);
+        var next = Script.IndexOf("function BridgeTryApplyDeferredSnapshotReconcile", reconcile, StringComparison.Ordinal);
+        var body = Script[reconcile..next];
+
+        Assert.Contains("local snapshotSourceZone = mappedObject ~= nil", body);
+        Assert.Contains("and mappedObject.tag == \"Card\" and mappedZone or nil", body);
+        Assert.Contains("snapshotSourceZone = \"library\"", body);
+        Assert.Contains("sourceZone = snapshotSourceZone", body);
+        Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"graveyard\"", Script);
+    }
+
+    [Fact]
     public void SnapshotBootstrap_StagesLooseCardsNearLibrariesBeforeRemapping()
     {
         Assert.Contains("BridgeStageSeatCardsForBootstrap(snapshot)", Script);
@@ -698,6 +712,21 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeNearestSeatIdForPosition", Script);
         Assert.Contains("function BridgeLibraryStagingPosition", Script);
         Assert.Contains("refused spatial-only library staging", Script);
+    }
+
+    [Fact]
+    public void SnapshotBootstrap_PreservesLiveHandsWhileRebuildingThePublicEmbodiment()
+    {
+        var start = Script.IndexOf("function BridgeStageSeatCardsForBootstrap", StringComparison.Ordinal);
+        var end = Script.IndexOf("-- A destructive New Match", start, StringComparison.Ordinal);
+        var staging = Script[start..end];
+
+        Assert.Contains("context.handGuidsBySeat[seatId] = handGuids", staging);
+        Assert.Contains("local isInHand = handSeatId ~= nil", staging);
+        Assert.Contains("and not isInHand", staging);
+        Assert.Contains("local function addAsset(object)", Script);
+        Assert.Contains("BridgeTryGetSeatHandObjects(seatId)", Script);
+        Assert.Contains("TTS hand objects are not guaranteed to be present in getAllObjects()", Script);
     }
 
     [Fact]
