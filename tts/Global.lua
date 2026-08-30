@@ -1377,32 +1377,44 @@ function BridgeStageSeatCardsForBootstrap(snapshot)
         knownSeatIdSet[seatSnapshot.seatId] = true
     end
 
-    local stagedBySeat = {}
-    local stagedCount = 0
-    for seatId, seat in pairs(BRIDGE_SEATS) do
+    -- Keep cards in the live TTS hands during a resync.  Moving both hands into
+    -- the library before the authoritative rebuild made a slow or failed
+    -- bootstrap look like a hand loss, and left the player without a visible
+    -- recovery point.  Hand objects are explicitly collected below because TTS
+    -- does not consistently return them from getAllObjects().
+    for seatId, _ in pairs(BRIDGE_SEATS) do
         local handObjects, handError = BridgeTryGetSeatHandObjects(seatId)
-        if handObjects == nil then
-            return false, handError
+        if handObjects == nil then return false, handError end
+        local handGuids = {}
+        for _, handObject in ipairs(handObjects) do
+            local guid = BridgeSafeObjectGuid(handObject)
+            if guid ~= nil then handGuids[guid] = true end
         end
-        context.handGuidsBySeat[seatId] = BridgeBuildSeatHandGuidSet(seatId)
-        for _, object in ipairs(handObjects) do
-            if IsGameCardCandidate(object, seatId, context)
-                and BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat) then
-                stagedCount = stagedCount + 1
-            end
-        end
+        context.handGuidsBySeat[seatId] = handGuids
     end
 
+    local stagedBySeat = {}
+    local stagedCount = 0
     for _, object in ipairs(getAllObjects()) do
         if BridgeObjectIsUsable(object) and object.tag == "Card" then
-            local seatId = BridgeSeatIdForObjectSide(object)
+            local guid = BridgeSafeObjectGuid(object)
+            local handSeatId = nil
+            for candidateSeatId, handGuids in pairs(context.handGuidsBySeat or {}) do
+                if guid ~= nil and handGuids[guid] == true then
+                    handSeatId = candidateSeatId
+                    break
+                end
+            end
+            local seatId = handSeatId or BridgeSeatIdForObjectSide(object)
             if seatId == nil or not knownSeatIdSet[seatId] then
                 local ok, position = pcall(function() return object.getPosition() end)
                 if ok and position ~= nil then
                     seatId = BridgeNearestSeatIdForPosition(position, knownSeatIds)
                 end
             end
+            local isInHand = handSeatId ~= nil
             if seatId ~= nil
+                and not isInHand
                 and IsGameCardCandidate(object, seatId, context)
                 and BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat) then
                 stagedCount = stagedCount + 1
@@ -3580,6 +3592,23 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                     if mappedNeedsFix then
                         -- The log intentionally omits cardName: a snapshot can
                         -- contain identities that should not be public chat.
+                        -- A public card absent from the reverse mapping is still
+                        -- often physically contained in its seat library.  This
+                        -- is the normal recovery shape for mill effects: Forge
+                        -- emits the exact library->graveyard transition, but a
+                        -- TTS reload may have lost the mapping before the event
+                        -- is rendered.  Let the structured move extract the
+                        -- authoritative top card instead of silently skipping
+                        -- the new public card.
+                        -- A stale reverse mapping is not a usable source.  If
+                        -- the physical object disappeared during recovery,
+                        -- the card may still be in its authoritative library.
+                        local snapshotSourceZone = mappedObject ~= nil
+                            and mappedObject.tag == "Card" and mappedZone or nil
+                        if snapshotSourceZone == nil
+                            and (zoneName == "battlefield" or zoneName == "graveyard") then
+                            snapshotSourceZone = "library"
+                        end
                         BridgeLog(string.format(
                             "[Bridge] snapshot candidate instance=%s oldZone=%s destinationZone=%s",
                             tostring(card.cardInstanceId), tostring(mappedZone), tostring(zoneName)))
@@ -3587,7 +3616,7 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                             seatId = seatSnapshot.seatId,
                             cardInstanceId = card.cardInstanceId,
                             cardName = card.cardName,
-                            sourceZone = nil,
+                            sourceZone = snapshotSourceZone,
                             destinationZone = zoneName,
                             faceDown = card.faceDown,
                             battlefieldKind = card.battlefieldKind
@@ -6648,6 +6677,7 @@ end
 function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
     local seat = BRIDGE_SEATS[seatId]
     local assets = {}
+    local assetByGuid = {}
     local context = {
         expectedCardNamesBySeat = {},
         handGuidsBySeat = {}
@@ -6655,24 +6685,35 @@ function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
     context.expectedCardNamesBySeat[seatId] = BridgeExpectedCardNamesForSeatSnapshot(seatSnapshot)
     context.handGuidsBySeat[seatId] = BridgeBuildSeatHandGuidSet(seatId)
     BridgeTraceStart("START-14 library-indexing", tostring(seatId))
+
+    local function addAsset(object)
+        if not BridgeObjectIsUsable(object) or object.tag ~= "Card" then return end
+        local library = BridgeResolveSeatLibraryDeck(seatId)
+        if library ~= nil and BridgeSafeObjectGuid(library) == BridgeSafeObjectGuid(object) then return end
+        if not IsGameCardCandidate(object, seatId, context) then return end
+        local guid = BridgeSafeObjectGuid(object)
+        local cardName = BridgePhysicalCanonicalCardName(object)
+        if guid == nil or assetByGuid[guid] then return end
+        assetByGuid[guid] = true
+        table.insert(assets, {
+            guid = guid,
+            cardName = cardName,
+            object = object
+        })
+    end
+
+    -- TTS hand objects are not guaranteed to be present in getAllObjects().
+    -- Index them explicitly so preserving hands does not make the inventory
+    -- audit under-count the authoritative card set.
+    local handObjects, handError = BridgeTryGetSeatHandObjects(seatId)
+    if handObjects == nil then
+        callback(false, nil, handError)
+        return
+    end
+    for _, object in ipairs(handObjects) do addAsset(object) end
+
     for _, object in ipairs(getAllObjects()) do
-        if BridgeObjectIsUsable(object)
-            and object.tag == "Card"
-            and (function()
-                local library = BridgeResolveSeatLibraryDeck(seatId)
-                return library == nil or BridgeSafeObjectGuid(library) ~= BridgeSafeObjectGuid(object)
-            end)()
-            and IsGameCardCandidate(object, seatId, context) then
-            local guid = BridgeSafeObjectGuid(object)
-            local cardName = BridgePhysicalCanonicalCardName(object)
-            if guid ~= nil then
-                table.insert(assets, {
-                    guid = guid,
-                    cardName = cardName,
-                    object = object
-                })
-            end
-        end
+        addAsset(object)
     end
     callback(true, assets, nil)
 end
