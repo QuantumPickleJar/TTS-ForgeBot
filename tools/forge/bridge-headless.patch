@@ -1446,17 +1446,12 @@ index 0d731bb6..5f2ee29c 100644
 +        }
 +        chosenSa.setActivatingPlayer(player);
 +        if (chosenSa.isLandAbility()) {
-+            Card land = chosenSa.getHostCard();
-+            // Revalidate at commit time. A stale land menu must be rejected,
-+            // never silently treated as a successful action/pass that lets the
-+            // game advance through later priority windows.
-+            if (!player.canPlayLand(land, false, chosenSa)) {
-+                System.out.println("[TUI-DIAG priority] rejected stale land action id=" + land.getId());
-+                return false;
-+            }
-+            // Keep land plays on Forge's normal priority-loop path. Directly
-+            // resolving here bypasses the same post-action bookkeeping used by
-+            // ordinary human controllers and can make Main 1 appear skipped.
++            // This menu is synchronous: no rules event can advance Forge
++            // between presenting this exact ability and receiving its input.
++            // Let PlayerControllerAi invoke LandAbility.canPlay()/resolve on
++            // that exact object. A second Player.canPlayLand gate here has
++            // rejected an action Forge just offered, including legal Main-1
++            // land plays, due to transient controller bookkeeping.
 +            return super.playChosenSpellAbility(chosenSa);
 +        }
 +        beginPaymentContext(chosenSa.isAbility() ? "activate_begin" : "cast_begin", chosenSa);

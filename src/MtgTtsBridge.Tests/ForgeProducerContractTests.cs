@@ -130,8 +130,8 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("+ \" hasPriority=\" + hasPriority", Patch);
         Assert.Contains("sa.isLandAbility() && player.canPlayLand(c, false, sa)", Patch);
         Assert.DoesNotContain("sa.isLandAbility() && sa.canPlay() && player.canPlayLand(c, false, sa)", Patch);
-        Assert.Contains("if (!player.canPlayLand(land, false, chosenSa))", Patch);
-        Assert.Contains("rejected stale land action", Patch);
+        Assert.DoesNotContain("if (!player.canPlayLand(land, false, chosenSa))", Patch);
+        Assert.DoesNotContain("rejected stale land action", Patch);
         Assert.Contains("getOptionalTargetInput", Patch);
         Assert.DoesNotContain("+            chosenSa.resolve();", Patch);
         Assert.Contains("return super.playChosenSpellAbility(chosenSa);", Patch);
