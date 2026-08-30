@@ -941,7 +941,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-30-u2-resync-mulligan-repair\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-30-u2-gameplay-repair\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -1283,6 +1283,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("mappedPhysicalZone == \"battlefield\"", binding);
         Assert.Contains("mappedPhysicalZone == \"graveyard\"", binding);
         Assert.Contains("mappedSourceZoneMatches", binding);
+        Assert.Contains("exactMappingContradictsActionSource", binding);
+        Assert.Contains("suppressing stale exact action", binding);
     }
 
     [Fact]
@@ -1562,6 +1564,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeWaitTime(complete, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)", moveBody);
         Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"graveyard\"", moveBody);
         Assert.DoesNotContain("resolved object is a deck for non-library->hand move", moveBody);
+        Assert.Contains("BridgeRecoverFromLibraryOrderMismatch(takeError)", moveBody);
     }
 
     [Fact]
@@ -1575,6 +1578,18 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("index = top.index", topBody);
         Assert.Contains("top order mismatched authoritative transition", topBody);
         Assert.DoesNotContain("for _, contained in ipairs(containedCards) do", topBody);
+    }
+
+    [Fact]
+    public void LibraryOrderMismatch_RequestsAuthoritativeRecoveryInsteadOfStoppingTheMatch()
+    {
+        var start = Script.IndexOf("function BridgeRecoverFromLibraryOrderMismatch", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeApplyStructuredCardMove", start, StringComparison.Ordinal);
+        var recovery = Script[start..end];
+
+        Assert.Contains("library top order mismatched", recovery);
+        Assert.Contains("BridgeResyncFromAuthoritativeSnapshot(\"library order mismatch\")", recovery);
+        Assert.Contains("consecutive mill transitions", recovery);
     }
 
     [Fact]
@@ -1733,7 +1748,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("library.putObject(object, #entries)", Script);
         Assert.Contains("BridgeVerifyLibraryContainment", Script);
         Assert.Contains("attempt >= 30", Script);
-        Assert.Contains("end, 1, resultingLibrary)", Script);
+        Assert.Contains("return (tonumber(left.zonePosition or 0) or 0) < (tonumber(right.zonePosition or 0) or 0)\n    end)", Script);
         Assert.DoesNotContain("local inverted = {rotation.x, rotation.y, rotation.z + 180}", Script);
     }
 

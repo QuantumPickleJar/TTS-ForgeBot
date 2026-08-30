@@ -30,7 +30,7 @@ BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
 -- lands after they enter. STRICT re-applies the persistent land row only on
 -- authoritative layout events or an explicit organize request.
 BRIDGE_LAND_PLACEMENT_MODE = BRIDGE_LAND_PLACEMENT_MODE or "FREEFORM"
-BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-resync-mulligan-repair"
+BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-gameplay-repair"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -5856,7 +5856,21 @@ function BridgeRenderDecision(decision, force)
         local mappedZoneMatches = decision.kind ~= "main_priority"
             or candidateGuid[mappedGuid] == true
             or mappedSourceZoneMatches
-        if mappedSeatMatches and mappedZoneMatches then
+        local exactMappingContradictsActionSource = mappedObject ~= nil
+            and action.cardInstanceId ~= nil
+            and ((actionSourceZone ~= "" and not mappedSourceZoneMatches)
+                or not mappedSeatMatches)
+        if exactMappingContradictsActionSource then
+            -- The exact Forge instance is still live, but it is no longer in
+            -- the action's declared source zone (for example, Lotus Petal has
+            -- already been sacrificed into the graveyard). Never recover a
+            -- stale action by matching another card with the same name.
+            BridgeLog(string.format(
+                "[Bridge] suppressing stale exact action instance=%s card=%s sourceZone=%s mappedZone=%s mappedSeat=%s decisionSeat=%s",
+                tostring(action.cardInstanceId), tostring(action.cardIdentity or action.type),
+                tostring(actionSourceZone), tostring(mappedPhysicalZone),
+                tostring(BridgeState.physicalSeatByGuid[mappedGuid]), tostring(decision.seatId)))
+        elseif mappedSeatMatches and mappedZoneMatches then
             table.insert(matches, mappedObject)
         else
             local fallbackMatches = {}
@@ -6491,7 +6505,7 @@ function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
     if #libraryCards == 0 then callback(true, nil); return end
     table.sort(libraryCards, function(left, right)
         return (tonumber(left.zonePosition or 0) or 0) < (tonumber(right.zonePosition or 0) or 0)
-    end, 1, resultingLibrary)
+    end)
 
     local deck, _, deckError = BridgeResolveSeatLibraryDeck(seatSnapshot.seatId)
     if deck == nil then
@@ -8971,6 +8985,22 @@ function BridgeClearPreparedSpellControls()
     if hadControls then BridgeAdvancePhysicalPresentationGeneration("prepared-controls-changed") end
 end
 
+function BridgeRecoverFromLibraryOrderMismatch(detail)
+    local message = tostring(detail or "")
+    local isOrderMismatch = string.find(message, "library top order mismatched", 1, true) ~= nil
+        or string.find(message, "single-card library top order mismatched", 1, true) ~= nil
+    if not isOrderMismatch then return false end
+
+    -- The physical deck is no longer a trustworthy embodiment of Forge's
+    -- ordered library. Rebuild it from the current authoritative snapshot;
+    -- this also absorbs any consecutive mill transitions into the graveyard.
+    -- Do not select a later contained card by name, which would preserve the
+    -- wrong order and make the next draw another synchronization failure.
+    BridgeLog("[Bridge] library order mismatch; requesting authoritative resync: " .. message)
+    BridgeResyncFromAuthoritativeSnapshot("library order mismatch")
+    return true
+end
+
 function BridgeApplyStructuredCardMove(event)
     if event.cardInstanceId == nil then return false, "structured zone change has no cardInstanceId" end
     local seat = BRIDGE_SEATS[event.seatId]
@@ -9104,6 +9134,7 @@ function BridgeApplyStructuredCardMove(event)
             end
             BridgeTakeTopCardFromLibrary(liveDeck, expectedName, hand.position, true, function(drawn, takeError)
                 if drawn == nil then
+                    if BridgeRecoverFromLibraryOrderMismatch(takeError) then complete(); return end
                     BridgeStopOnDesync(libraryDrawError(takeError))
                     complete()
                     return
@@ -9145,6 +9176,7 @@ function BridgeApplyStructuredCardMove(event)
             BridgeTakeTopCardFromLibrary(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
                 function(taken, takeError)
                     if taken == nil then
+                        if BridgeRecoverFromLibraryOrderMismatch(takeError) then complete(); return end
                         BridgeStopOnDesync(libraryDrawError(takeError))
                         complete()
                         return
@@ -9187,6 +9219,7 @@ function BridgeApplyStructuredCardMove(event)
             BridgeTakeTopCardFromLibrary(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
                 function(taken, takeError)
                     if taken == nil then
+                        if BridgeRecoverFromLibraryOrderMismatch(takeError) then complete(); return end
                         BridgeStopOnDesync(libraryDrawError(takeError))
                         complete()
                         return
@@ -11273,7 +11306,7 @@ end
 BRIDGE_DEV_UI_ENABLED = true
 BRIDGE_DEV_ANNOTATIONS_ENABLED = true
 BRIDGE_PHYSICAL_PRIORITY_CONTROLS_ENABLED = true
-BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-resync-mulligan-repair"
+BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-gameplay-repair"
 
 BRIDGE_HUD_COLORS = {
     active = "#6DB5FF",
