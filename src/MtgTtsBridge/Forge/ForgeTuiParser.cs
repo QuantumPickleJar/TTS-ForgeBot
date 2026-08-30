@@ -61,8 +61,10 @@ public sealed partial class ForgeTuiParser
         // Only consume a contiguous, complete block of numeric lines directly
         // after the prompt.  A non-option line terminates that block so a later
         // unrelated menu cannot be greedily folded into this decision.
-        var trailingMenu = ParseTrailingMenuOptions(text, prompt);
-        if (definition is not null && trailingMenu.Options.Count > 0)
+        var trailingMenu = definition is not null
+            ? ParseTrailingMenuOptions(text, prompt)
+            : new TrailingMenuParse(Array.Empty<ForgeTuiMenuOption>(), prompt.Index + prompt.Length);
+        if (trailingMenu.Options.Count > 0)
         {
             actions.AddRange(trailingMenu.Options);
         }
