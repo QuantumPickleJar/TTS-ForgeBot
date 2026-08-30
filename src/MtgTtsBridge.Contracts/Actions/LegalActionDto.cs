@@ -37,6 +37,13 @@ public sealed record LegalActionDto(
     string? EntitySeatId = null)
 {
     /// <summary>
+    /// Whether Forge explicitly authorized revealing this action's card identity
+    /// to the human player. This is a presentation boundary, not a legality
+    /// decision: ActionId remains the sole authority for legal input.
+    /// </summary>
+    public bool IsPresentationAuthorized { get; init; } = true;
+
+    /// <summary>
     /// Generic structured action provenance. When present, provides richer context
     /// about the action's origin, mode, and payment requirements. Flat fields above
     /// are preserved for backward compatibility. ActionId remains canonical.

@@ -207,6 +207,15 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void HiddenZoneCastDiscovery_RequiresForgeIdentityAuthorization()
+    {
+        Assert.Contains("isBridgeIdentityPresentationAuthorized", Patch);
+        Assert.Contains("zone.isHidden() && !isBridgeIdentityPresentationAuthorized(c, zone)", Patch);
+        Assert.Contains("card.mayPlayerLook(player)", Patch);
+        Assert.Contains("visibility=\" + visibility", Patch);
+    }
+
+    [Fact]
     public void OptionalTriggersUseTheStructuredChoiceTransport()
     {
         Assert.Contains("public boolean confirmTrigger", Patch);

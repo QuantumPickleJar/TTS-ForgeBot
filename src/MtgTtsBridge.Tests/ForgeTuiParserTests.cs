@@ -1007,6 +1007,24 @@ public sealed class ForgeTuiParserTests
         Assert.Equal("library", action.SourceZone);
         Assert.Equal("forge-object:321", action.SourceCardInstanceId);
         Assert.Equal("pctx-31", action.Provenance?.PaymentContextId);
+        Assert.False(action.IsPresentationAuthorized);
+        Assert.False(action.Provenance?.IsPresentationAuthorized);
+    }
+
+    [Fact]
+    public void ForgeAuthorizedTopLibraryCast_IsSafeToPresentWithoutPhysicalExtraction()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Cast creature: Youthful Valkyrie [id=321] - {1}{W} [bridge sourceZone=library visibility=authorized actionKind=cast_spell abilityKind=spell castMode=normal costKind=printed]\n" +
+            "Enter choice (0-1): ");
+
+        var action = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions[1];
+        Assert.True(action.IsPresentationAuthorized);
+        Assert.True(action.Provenance?.IsPresentationAuthorized);
+        Assert.Equal("forge-object:321", action.CardInstanceId);
     }
 
     [Fact]

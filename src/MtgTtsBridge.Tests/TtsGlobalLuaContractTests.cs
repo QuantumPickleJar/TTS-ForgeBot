@@ -1718,6 +1718,17 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void HiddenLibraryIdentityCanary_FailsClosedUnlessForgeExplicitlyAuthorizesPresentation()
+    {
+        Assert.Contains("function BridgeActionPresentationAuthorized(action)", Script);
+        Assert.Contains("sourceZone == \"library\"", Script);
+        Assert.Contains("action.isPresentationAuthorized == true", Script);
+        Assert.Contains("BridgeDecisionHasUnauthorizedPresentationAction(decision)", Script);
+        Assert.Contains("Forge supplied an unapproved hidden-zone action", Script);
+        Assert.Contains("suppressed unauthorized hidden-zone option control", Script);
+    }
+
+    [Fact]
     public void OrdinaryPriorityActions_AreNotRenderedAsMultiSelectCheckboxes()
     {
         var uiStart = Script.IndexOf("function BridgeUiFlush", StringComparison.Ordinal);

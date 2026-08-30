@@ -2350,7 +2350,12 @@ function BridgeUiFlush()
         or (ui.autoAdvanceMode == "YIELD" and "YIELD: keep passing Forge priority until a meaningful choice interrupts it."
             or "MANUAL: use PASS for each Forge priority window.")
     BridgeUiSet("BridgeHudHelp", "text", help)
-    local actions = terminal and {} or (decision and decision.actions or {})
+    local actions = {}
+    for _, action in ipairs(terminal and {} or (decision and decision.actions or {})) do
+        if BridgeActionPresentationAuthorized(action) then
+            table.insert(actions, action)
+        end
+    end
     BridgeCreatureTypePrepare(decision)
     if decision ~= nil and decision.kind == "creature_type_selection" then actions = {} end
     actions = BridgeGraveyardPrepareDecision(decision, actions)
@@ -3321,9 +3326,31 @@ function BridgeDecisionOffersActionType(decision, actionType)
     return false
 end
 
+function BridgeActionPresentationAuthorized(action)
+    if action == nil then return false end
+    if action.isPresentationAuthorized == false then return false end
+    local provenance = action.provenance or {}
+    if provenance.isPresentationAuthorized == false then return false end
+    -- Older producers did not carry authorization metadata. Library identity
+    -- is hidden by default, so never render it without an explicit grant.
+    local sourceZone = string.lower(tostring(action.sourceZone or provenance.sourceZone or ""))
+    if sourceZone == "library" then
+        return action.isPresentationAuthorized == true
+            or provenance.isPresentationAuthorized == true
+    end
+    return true
+end
+
+function BridgeDecisionHasUnauthorizedPresentationAction(decision)
+    for _, action in ipairs((decision and decision.actions) or {}) do
+        if not BridgeActionPresentationAuthorized(action) then return true end
+    end
+    return false
+end
+
 function BridgeDecisionHasNonPassAction(decision)
     for _, action in ipairs((decision and decision.actions) or {}) do
-        if action.type ~= "pass_priority" then return true end
+        if action.type ~= "pass_priority" and BridgeActionPresentationAuthorized(action) then return true end
     end
     return false
 end
@@ -4754,6 +4781,15 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         return
     end
 
+    -- The producer must never turn Forge's private library inspection into a
+    -- human-visible option. Fail safely before action rows, tooltips, or
+    -- physical controls can expose an unapproved identity.
+    if BridgeDecisionHasUnauthorizedPresentationAction(decision) then
+        BridgeLog("[Bridge] stopped: Forge supplied an unapproved hidden-zone action")
+        BridgeStopOnDesync("Forge supplied an unapproved hidden-zone action; presentation paused safely")
+        return
+    end
+
     local deferDecision, deferCursor, deferApplied, deferReason = BridgeShouldDeferDecision(decision)
     if deferDecision then
         BridgeState.pendingDecision = decision
@@ -4987,7 +5023,9 @@ function BridgeEnsureDecisionOptionControls(decision, representedActionIds)
     local unbound = {}
     local filters = representedActionIds or {}
     for _, action in _ip(decision.actions or {}) do
-        local skip = filters[action.actionId] == true
+        local skip = not BridgeActionPresentationAuthorized(action)
+        if skip then BridgeLog("[Bridge] suppressed unauthorized hidden-zone option control") end
+        if not skip then skip = filters[action.actionId] == true end
         if not skip and decision.kind == "main_priority" and action.type == "pass_priority" then
             skip = true
         end

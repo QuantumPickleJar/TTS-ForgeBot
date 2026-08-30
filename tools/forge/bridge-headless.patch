@@ -1620,6 +1620,13 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..006a742909581af966cb6ed3c89c5089
 +        spells.addAll(getCastableSpellsFromAllZones(creatures ? "creature" : "artifact"));
          return spells;
      }
++
++    private boolean isBridgeIdentityPresentationAuthorized(final Card card, final ZoneType zone) {
++        // A player's own hand is inherently known to that player. Other hidden
++        // zones (notably Library) need Forge's per-card authorization.
++        return card == null || zone == null || zone == ZoneType.Hand
++            || !zone.isHidden() || card.mayPlayerLook(player);
++    }
  
 @@ -522,20 +823,22 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              // Get the main spell ability (casting the card)
@@ -1678,6 +1685,11 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..006a742909581af966cb6ed3c89c5089
 +        for (ZoneType zone : ZoneType.values()) {
 +            if (zone == ZoneType.Hand) continue;
 +            for (Card c : player.getCardsIn(zone)) {
++                // Forge can inspect every library card internally. That must
++                // never make an ordinary unknown card presentable to the human.
++                // A hidden-zone card is eligible only when Forge has granted
++                // this player explicit look permission for its identity.
++                if (zone.isHidden() && !isBridgeIdentityPresentationAuthorized(c, zone)) continue;
 +                if ("creature".equals(category) && (!c.isCreature() || c.isLand())) continue;
 +                if ("artifact".equals(category) && (!c.isArtifact() || c.isLand())) continue;
 +                if ("sorcery".equals(category) && !c.isSorcery()) continue;
@@ -2235,6 +2247,7 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..006a742909581af966cb6ed3c89c5089
 +        ZoneType zone = source == null || source.getZone() == null
 +            ? null : source.getZone().getZoneType();
 +        String sourceZone = zone == null ? "unknown" : zone.name().toLowerCase(java.util.Locale.ROOT);
++        String visibility = isBridgeIdentityPresentationAuthorized(source, zone) ? "authorized" : "redacted";
 +        String keywordName = sa != null && sa.getKeyword() != null && sa.getKeyword().getKeyword() != null
 +            ? sa.getKeyword().getKeyword().toString().toLowerCase(java.util.Locale.ROOT) : null;
 +        String abilityKind = keywordName != null ? keywordName
@@ -2252,6 +2265,7 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..006a742909581af966cb6ed3c89c5089
              }
 +        }
 +        return " [bridge sourceZone=" + sourceZone
++            + " visibility=" + visibility
 +            + " actionKind=" + actionKind
 +            + " abilityKind=" + abilityKind
 +            + " castMode=" + castMode

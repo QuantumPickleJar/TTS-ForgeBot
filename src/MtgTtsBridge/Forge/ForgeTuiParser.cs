@@ -371,6 +371,15 @@ public sealed partial class ForgeTuiParser
             ?? (forgeCardId.Success ? $"forge-object:{forgeCardId.Groups["id"].Value}" : null);
         var sourceName = string.Equals(entityKind, "player", StringComparison.OrdinalIgnoreCase)
             ? null : GetCardIdentity(label, kind);
+        var sourceZone = entityProvenance.Success && entityProvenance.Groups["sourceZone"].Success
+            ? entityProvenance.Groups["sourceZone"].Value
+            : provenance.Success ? provenance.Groups["sourceZone"].Value : null;
+        // A legacy producer did not emit visibility metadata. Its only
+        // actionable hidden-zone source was library, so fail closed for that
+        // source while preserving existing hand/graveyard/exile contracts.
+        var presentationAuthorized = !string.Equals(sourceZone, "library", StringComparison.OrdinalIgnoreCase)
+            || provenance.Success
+                && string.Equals(provenance.Groups["visibility"].Value, "authorized", StringComparison.OrdinalIgnoreCase);
         return new LegalActionDto(
             ActionId: $"{decisionId}-choice-{option.Number}",
             Type: actionType,
@@ -392,9 +401,7 @@ public sealed partial class ForgeTuiParser
             // highlighted target is selected, not staged behind the collection
             // confirmation control used for discard/sacrifice menus.
             RequiresSelection: kind is "card_selection" or "attacker_selection" or "blocker_selection" or "blocker_assignment",
-            SourceZone: entityProvenance.Success && entityProvenance.Groups["sourceZone"].Success
-                ? entityProvenance.Groups["sourceZone"].Value
-                : provenance.Success ? provenance.Groups["sourceZone"].Value : null,
+            SourceZone: sourceZone,
             AbilityKind: provenance.Success ? provenance.Groups["abilityKind"].Value : null,
             CastMode: provenance.Success ? provenance.Groups["castMode"].Value : null,
             CostKind: provenance.Success ? provenance.Groups["costKind"].Value : null,
@@ -406,6 +413,7 @@ public sealed partial class ForgeTuiParser
             EntityKind: entityKind,
             EntitySeatId: entitySeatId)
         {
+            IsPresentationAuthorized = presentationAuthorized,
             // U2: Populate structured action provenance when bridge metadata is present
             Provenance = provenance.Success ? new ActionProvenanceDto(
                 ActionKind: provenance.Groups["actionKind"].Success ? provenance.Groups["actionKind"].Value : actionType,
@@ -419,7 +427,8 @@ public sealed partial class ForgeTuiParser
                 DisplayCost: provenance.Groups["displayManaCost"].Success ? NullIfBlank(provenance.Groups["displayManaCost"].Value) : null,
                 PaymentContextId: provenance.Groups["paymentContextId"].Success
                     ? NullIfBlank(provenance.Groups["paymentContextId"].Value)
-                    : null)
+                    : null,
+                IsPresentationAuthorized: presentationAuthorized)
             : null
         };
     }
@@ -608,7 +617,7 @@ public sealed partial class ForgeTuiParser
 
     // Forge emits this additive machine-readable suffix while constructing
     // numeric choices. Display labels remain presentation-only.
-    [GeneratedRegex(@"\[bridge\s+sourceZone=(?<sourceZone>[A-Za-z_]+)(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+abilityKind=(?<abilityKind>[A-Za-z0-9_$]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+costKind=(?<costKind>[A-Za-z0-9_-]+))?(?:\s+displayManaCost=(?<displayManaCost>[A-Za-z0-9{}+*/-]+))?(?:\s+prototypePower=(?<prototypePower>[A-Za-z0-9+*/-]+))?(?:\s+prototypeToughness=(?<prototypeToughness>[A-Za-z0-9+*/-]+))?(?:\s+preparedSourceCardId=(?<preparedSourceId>\d+))?(?:\s+paymentContextId=(?<paymentContextId>[A-Za-z0-9:_-]+))?\]", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\[bridge\s+sourceZone=(?<sourceZone>[A-Za-z_]+)(?:\s+visibility=(?<visibility>authorized|redacted))?(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+abilityKind=(?<abilityKind>[A-Za-z0-9_$]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+costKind=(?<costKind>[A-Za-z0-9_-]+))?(?:\s+displayManaCost=(?<displayManaCost>[A-Za-z0-9{}+*/-]+))?(?:\s+prototypePower=(?<prototypePower>[A-Za-z0-9+*/-]+))?(?:\s+prototypeToughness=(?<prototypeToughness>[A-Za-z0-9+*/-]+))?(?:\s+preparedSourceCardId=(?<preparedSourceId>\d+))?(?:\s+paymentContextId=(?<paymentContextId>[A-Za-z0-9:_-]+))?\]", RegexOptions.CultureInvariant)]
     private static partial Regex ActionProvenanceRegex();
 
     [GeneratedRegex(@"\[bridge\s+paymentContextId=(?<paymentContextId>[A-Za-z0-9:_-]+)(?:\s+originActionId=(?<originActionId>[A-Za-z0-9:_-]+))?(?:\s+sourceCardId=(?<sourceCardId>\d+))?(?:\s+sourceZone=(?<sourceZone>[A-Za-z_]+))?(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+paymentStage=(?<paymentStage>[A-Za-z0-9_-]+))?\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
