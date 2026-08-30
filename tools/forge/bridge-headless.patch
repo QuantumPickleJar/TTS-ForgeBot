@@ -1143,6 +1143,14 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..006a742909581af966cb6ed3c89c5089
 +    @Override
 +    public boolean payManaCost(ManaCost toPay, CostPartMana costPartMana, SpellAbility sa,
 +            String prompt, ManaConversionMatrix matrix, boolean effect) {
++        // Forge also routes automatic payments for triggered abilities through
++        // the controller.  That path is not a human payment interaction and
++        // must retain the inherited AI payment behavior after the original
++        // cast transaction has been retired.
++        if (activePaymentContextId == null) {
++            reportInheritedDecision("automatic_mana_payment_without_scope");
++            return super.payManaCost(toPay, costPartMana, sa, prompt, matrix, effect);
++        }
 +        requireActivePaymentScope("mana_payment");
 +        reportInheritedDecision("automatic_mana_payment");
 +        stagePaymentContext("mana_payment");

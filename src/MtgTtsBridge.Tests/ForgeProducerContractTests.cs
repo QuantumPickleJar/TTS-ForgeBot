@@ -155,6 +155,23 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void AutomaticTriggeredPayments_BypassHumanPaymentScopeWithoutOpeningAChoice()
+    {
+        var start = Patch.IndexOf("public boolean payManaCost(ManaCost toPay", StringComparison.Ordinal);
+        var end = Patch.IndexOf("private String activePaymentContextId", start, StringComparison.Ordinal);
+        Assert.True(start >= 0);
+        Assert.True(end > start);
+        var body = Patch[start..end];
+
+        var bypass = body.IndexOf("if (activePaymentContextId == null)", StringComparison.Ordinal);
+        var scope = body.IndexOf("requireActivePaymentScope(\"mana_payment\")", StringComparison.Ordinal);
+        Assert.True(bypass >= 0);
+        Assert.True(scope > bypass);
+        Assert.Contains("automatic_mana_payment_without_scope", body);
+        Assert.Contains("return super.payManaCost(toPay, costPartMana, sa, prompt, matrix, effect);", body);
+    }
+
+    [Fact]
     public void HumanPriorityUsesForgeLegalityWithoutSilentlySkippingItsWindow()
     {
         Assert.Contains("List<SpellAbility> landAbilities = getPlayableLands();", Patch);
