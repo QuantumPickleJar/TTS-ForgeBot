@@ -11313,6 +11313,11 @@ end
 function BridgeHudRollingCapture(player, value, id)
     local ui = BridgeState.ui
     if ui == nil or ui.reportCaptureInFlight then return end
+    -- This button is intentionally visible outside the developer drawer so a
+    -- recovered freeze can be captured without first navigating another UI.
+    -- Open the drawer after the one-click request so the result path/status is
+    -- still visible to the host.
+    ui.diagnosticsVisible = true
     ui.reportPanelVisible = true
     BridgeHudSubmitReport("Performance / Freeze", "Rolling freeze capture")
 end
@@ -11420,8 +11425,10 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudReportPanel", "active", reportVisible and "true" or "false")
     BridgeUiSet("BridgeHudReportOpen", "active", devEnabled and "true" or "false")
     BridgeUiSet("BridgeHudRollingCapture", "active", devEnabled and (ui.reportCaptureInFlight and "false" or "true") or "false")
-    BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and BridgeState.eventSessionId ~= nil
-        and not ui.resyncInFlight and "true" or "false")
+    -- Keep recovery available after BridgeStopOnDesync.  The handler gives a
+    -- diagnostic error if no Forge session exists; hiding it here made the
+    -- recovery control disappear exactly when a library mismatch needed it.
+    BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not ui.resyncInFlight and "true" or "false")
     BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
     BridgeUiSet("BridgeHudReportCategoryDropdown", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportCategoryDropdown", "options", table.concat(BRIDGE_REPORT_CATEGORIES, "|"))

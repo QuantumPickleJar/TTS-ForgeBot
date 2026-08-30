@@ -2078,8 +2078,17 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeHudReportCategoryDropdown", xml);
         Assert.Contains("BridgeHudRollingCapture", xml);
         Assert.Contains("BridgeHudResyncFromForge", xml);
+        var gamePanelStart = xml.IndexOf("id=\"BridgeHudGamePanel\"", StringComparison.Ordinal);
+        var choiceTrayStart = xml.IndexOf("id=\"BridgeHudChoiceTray\"", StringComparison.Ordinal);
+        Assert.True(gamePanelStart >= 0 && choiceTrayStart > gamePanelStart);
+        var gamePanel = xml[gamePanelStart..choiceTrayStart];
+        Assert.Contains("id=\"BridgeHudRollingCapture\"", gamePanel);
+        Assert.Contains("visibility=\"Host|Admin\"", gamePanel);
         Assert.Contains("function BridgeHudReportCategoryChanged", Script);
         Assert.Contains("function BridgeHudRollingCapture", Script);
+        var rollingStart = Script.IndexOf("function BridgeHudRollingCapture", StringComparison.Ordinal);
+        var rollingEnd = Script.IndexOf("function BridgeHudResyncFromForge", rollingStart, StringComparison.Ordinal);
+        Assert.Contains("diagnosticsVisible = true", Script[rollingStart..rollingEnd]);
         Assert.Contains("function BridgeHudResyncFromForge", Script);
         Assert.Contains("Rolling freeze capture", Script);
         Assert.Contains("function BridgeHudReportCapture", Script);
@@ -2088,6 +2097,15 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("lastAppliedEventSequence", Script);
         Assert.DoesNotContain("ZipFile", Script);
         Assert.DoesNotContain("screenshot.png", Script);
+    }
+
+    [Fact]
+    public void ResyncControl_RemainsAvailableWhenSessionIsStopped()
+    {
+        Assert.Contains("BridgeStopOnDesync", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudResyncFromForge\", \"active\", devEnabled and not ui.resyncInFlight", Script);
+        Assert.Contains("if sessionId == nil then", Script);
+        Assert.Contains("cannot resync before Forge has started a session", Script);
     }
 
     [Fact]
