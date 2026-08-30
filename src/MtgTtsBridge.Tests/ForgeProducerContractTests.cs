@@ -107,7 +107,6 @@ public sealed class ForgeProducerContractTests
     public void DelveAndMulliganRemainNativeForgeControllerTransactions()
     {
         Assert.Contains("chooseCardsToDelve(int genericAmount, CardCollection grave)", Patch);
-        Assert.Contains("if (genericAmount <= 0)", Patch);
         Assert.Contains("return result;", Patch);
         Assert.Contains("costKind=delve sourceZone=graveyard", Patch);
         Assert.Contains("mulliganKeepHand(Player firstPlayer, int cardsToReturn)", Patch);
@@ -115,6 +114,44 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("tuckCardsViaMulligan(CardCollectionView hand, int cardsToReturn)", Patch);
         Assert.Contains("mulliganStage=bottom_selection sourceZone=hand", Patch);
         Assert.Contains("MulliganService owns the mulligan rule", Patch);
+    }
+
+    [Fact]
+    public void DelveAffordabilityDiscovery_IsNonInteractiveAndNeverCreatesAPhantomPayment()
+    {
+        var delveStart = Patch.IndexOf("if (host.hasKeyword(Keyword.DELVE))", StringComparison.Ordinal);
+        Assert.True(delveStart >= 0);
+        var delveEnd = Patch.IndexOf("if (host.hasKeyword(Keyword.CONVOKE))", delveStart, StringComparison.Ordinal);
+        Assert.True(delveEnd > delveStart);
+        var delveAdjustment = Patch[delveStart..delveEnd];
+
+        Assert.Contains("if (test)", delveAdjustment);
+        Assert.Contains("Math.min(genericAmount, mutableGrave.size())", delveAdjustment);
+        var testBranchStart = delveAdjustment.IndexOf("if (test)", StringComparison.Ordinal);
+        var testBranchEnd = delveAdjustment.IndexOf("} else", testBranchStart, StringComparison.Ordinal);
+        Assert.True(testBranchEnd > 0);
+        Assert.DoesNotContain("chooseCardsToDelve", delveAdjustment[testBranchStart..testBranchEnd]);
+        Assert.Contains("chooseCardsToDelve(genericAmount, mutableGrave)", delveAdjustment);
+
+        var controllerDelve = Patch.IndexOf("requireActivePaymentScope(\"delve_selection\")", StringComparison.Ordinal);
+        Assert.True(controllerDelve > Patch.IndexOf("beginPaymentContext", StringComparison.Ordinal));
+        Assert.Contains("activePaymentAbility", Patch);
+        Assert.Contains("[PAYMENT_SCOPE_ENTER]", Patch);
+        Assert.Contains("interactive payment without active scope", Patch);
+        Assert.DoesNotContain("if (genericAmount <= 0)", Patch);
+    }
+
+    [Fact]
+    public void DelveCanary_SeparatesFreshAndResyncSessionProvenanceFromRealPayment()
+    {
+        Assert.Contains("activePaymentContextId = \"P\" + nextPaymentContextNumber++", Patch);
+        Assert.Contains("activePaymentAbility = sa", Patch);
+        Assert.Contains("activePaymentAbility = null", Patch);
+        Assert.Contains("paymentStage=\" + stage", Patch);
+        Assert.Contains("emitCostComponentsRecord(activePaymentAbility, \"graveyard\", 0, genericAmount)", Patch);
+        Assert.Contains("return super.playChosenSpellAbility(chosenSa)", Patch);
+        Assert.Contains("private String activePaymentContextId", Patch);
+        Assert.Contains("private void retirePaymentContext", Patch);
     }
 
     [Fact]
@@ -130,7 +167,7 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("+ \" hasPriority=\" + hasPriority", Patch);
         Assert.Contains("sa.isLandAbility() && player.canPlayLand(c, false, sa)", Patch);
         Assert.DoesNotContain("sa.isLandAbility() && sa.canPlay() && player.canPlayLand(c, false, sa)", Patch);
-        Assert.Contains("if (!chosenSa.canPlay())", Patch);
+        Assert.Contains("if (!player.canPlayLand(land, false, chosenSa))", Patch);
         Assert.Contains("rejected stale land action", Patch);
         Assert.Contains("getOptionalTargetInput", Patch);
         Assert.DoesNotContain("+            chosenSa.resolve();", Patch);
@@ -138,7 +175,7 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("return accepted;", Patch);
         Assert.Contains("return ComputerUtil.handlePlayingSpellAbility(player, sa, getDeferredTargetingPlayerAction(sa));", Patch);
         Assert.DoesNotContain("boolean sorcerySpeedWindow", Patch);
-        Assert.DoesNotContain("auto-passing empty human priority window", Patch);
+        Assert.Contains("auto-passing empty human priority window", Patch);
         Assert.True(Patch.IndexOf("sa.setActivatingPlayer(player);", StringComparison.Ordinal) < Patch.IndexOf("if (!sa.canPlay()) continue;", StringComparison.Ordinal));
         Assert.DoesNotContain("isMainPhase &&", Patch);
     }
