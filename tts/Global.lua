@@ -9408,9 +9408,7 @@ function BridgeApplyStructuredCardMove(event)
                         complete()
                         return
                     end
-                    local row = event.battlefieldKind
-                        or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]
-                        or "creature"
+                    local row = BridgeBattlefieldRowForEvent(event, "creature")
                     local moved, moveError = BridgeMoveToBattlefield(event, taken, row)
                     if not moved then BridgeStopOnDesync(libraryDrawError(moveError)) end
                     BridgeWaitFrames(complete, 1)
@@ -9466,9 +9464,7 @@ function BridgeApplyStructuredCardMove(event)
 
     local function moveFromTokenFetcherToBattlefield()
         local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
-        local row = event.battlefieldKind
-            or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]
-            or "creature"
+        local row = BridgeBattlefieldRowForEvent(event, "creature")
         local sessionId = BridgeState.eventSessionId
         local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
         local started, state = BridgeBeginTokenMaterialization(event.cardInstanceId)
@@ -9630,9 +9626,7 @@ function BridgeApplyStructuredCardMove(event)
         object.setPositionSmooth(hand.position, false, true)
     elseif event.destinationZone == "battlefield" then
         object.use_hands = false
-        local row = event.battlefieldKind
-            or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]
-            or "creature"
+        local row = BridgeBattlefieldRowForEvent(event, "creature")
         local sourcePhysicalZone = BridgeState.physicalZoneByGuid[guid] or event.sourceZone
         if sourcePhysicalZone == "stack" then
             BridgeTracePermanentTransition("STRUCTURED_MOVE stack->battlefield", event, object, sourcePhysicalZone)
@@ -9720,7 +9714,12 @@ function BridgeMoveToGraveyard(event, object)
     end)
     if not moved then return false, "could not move card to graveyard: " .. tostring(movementError) end
     local guid = object.getGUID()
-    BridgeState.pendingCastBySeatId[event.seatId] = nil
+    -- Retire only the exact cast that reached the graveyard. Clearing the
+    -- seat-wide slot here can discard a different pending physical cast when
+    -- an older semantic resolution event is delivered after the next cast has
+    -- already been previewed.
+    BridgeRetirePendingCastForInstance(
+        event.seatId, event.cardInstanceId, guid, "graveyard-move")
     BridgeClearCardDesignationPresentation(event.cardInstanceId, object)
     BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "graveyard")
     return true, nil
@@ -9903,26 +9902,26 @@ function BridgeTakeNamedCardFromDeck(deck, expectedName, position, smooth, callb
     BridgeTakeCardFromDeckByIdentity(deck, expectedName, position, smooth, callback)
 end
 
+function BridgeTokenNameKey(name)
+    local normalized = BridgeNormalizeCardName(name)
+    normalized = string.gsub(normalized, "[,%./%-]", " ")
+    normalized = string.gsub(normalized, "%f[%a]token%f[%A]", " ")
+    normalized = string.gsub(normalized, "^%s+", "")
+    normalized = string.gsub(normalized, "%s+$", "")
+    normalized = string.gsub(normalized, "%s+", " ")
+    return normalized
+end
+
 function BridgeTokenNameMatches(ttsName, forgeName)
-    if BridgeCardNameMatches(ttsName, forgeName) or BridgeCardNameMatches(forgeName, ttsName) then
-        return true
-    end
-
-    local function normalizeTokenName(name)
-        local normalized = BridgeNormalizeCardName(name)
-        normalized = string.gsub(normalized, "[,%./%-]", " ")
-        normalized = string.gsub(normalized, "%f[%a]token%f[%A]", " ")
-        normalized = string.gsub(normalized, "^%s+", "")
-        normalized = string.gsub(normalized, "%s+$", "")
-        normalized = string.gsub(normalized, "%s+", " ")
-        return normalized
-    end
-
-    local left = normalizeTokenName(ttsName)
-    local right = normalizeTokenName(forgeName)
+    -- Token materialization has no safe fallback from a partial name.  A
+    -- fuzzy match can bind a similarly named token (or the source permanent)
+    -- and is especially dangerous when the utility deck is searched first.
+    -- Treat the normalized token name as the reusable visual identity; Forge's
+    -- exact CardInstanceId still owns the spawned object's session identity.
+    local left = BridgeTokenNameKey(ttsName)
+    local right = BridgeTokenNameKey(forgeName)
     if left == "" or right == "" then return false end
-    if left == right then return true end
-    return string.find(left, right, 1, true) ~= nil or string.find(right, left, 1, true) ~= nil
+    return left == right
 end
 
 function BridgeMarkTokenPhysicalObject(object)
@@ -10194,6 +10193,7 @@ function BridgeFindDeckWithContainedCardName(expectedName, excludeDeckGuidSet)
     if expectedName == nil or expectedName == "" then return nil, nil end
     local preferredUtilityDeck = BridgeGetLiveObjectByGuid("946716")
     local candidates = {}
+    local expectedTokenKey = BridgeTokenNameKey(expectedName)
 
     local function addCandidate(container)
         if not BridgeObjectIsUsable(container) then return end
@@ -10217,8 +10217,9 @@ function BridgeFindDeckWithContainedCardName(expectedName, excludeDeckGuidSet)
         for _, item in ipairs(contained) do
             local containedName = item.nickname or item.name or ""
             local exact = BridgeNormalizeCardName(containedName) == BridgeNormalizeCardName(expectedName)
-            if exact or BridgeCardNameMatches(containedName, expectedName) or BridgeTokenNameMatches(containedName, expectedName) then
-                local entryScore = scoreBase + (exact and 50 or 0)
+            local tokenExact = expectedTokenKey ~= "" and BridgeTokenNameKey(containedName) == expectedTokenKey
+            if exact or tokenExact then
+                local entryScore = scoreBase + (exact and 50 or 0) + (tokenExact and 25 or 0)
                 table.insert(candidates, {deck = container, entry = item, score = entryScore})
                 return
             end
@@ -11182,11 +11183,20 @@ end
 
 function BridgeBattlefieldRowForEvent(event, defaultRow)
     if event ~= nil then
+        local hasCurrentType = false
+        for _, cardType in ipairs(event.currentTypes or {}) do
+            local normalizedType = string.lower(tostring(cardType))
+            if normalizedType ~= "" then hasCurrentType = true end
+            if normalizedType == "land" then return "land" end
+        end
+        -- CurrentTypes is the live Forge characteristic state. Prefer it
+        -- whenever present so a stale event-level BattlefieldKind cannot put
+        -- a land into the permanent row (or vice versa).
+        if hasCurrentType then
+            return "creature"
+        end
         if event.battlefieldKind == "land" or event.battlefieldKind == "creature" then
             return event.battlefieldKind
-        end
-        for _, cardType in ipairs(event.currentTypes or {}) do
-            if string.lower(tostring(cardType)) == "land" then return "land" end
         end
         local knownRow = event.cardInstanceId ~= nil
             and BridgeState.battlefieldKindByInstanceId[event.cardInstanceId] or nil

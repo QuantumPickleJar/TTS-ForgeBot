@@ -1347,8 +1347,7 @@ public sealed class TtsGlobalLuaContractTests
     public void SnapshotBattlefieldRepair_PreservesForgeRowKindAndTapDoesNotReflow()
     {
         Assert.Contains("battlefieldKind = card.battlefieldKind", Script);
-        Assert.Contains("local row = event.battlefieldKind", Script);
-        Assert.Contains("or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]", Script);
+        Assert.Contains("function BridgeBattlefieldRowForEvent(event, defaultRow)", Script);
         var tapStart = Script.IndexOf("if event.kind == \"tap_changed\" then", StringComparison.Ordinal);
         var tapEnd = Script.IndexOf("if event.kind == \"counter_changed\" then", tapStart, StringComparison.Ordinal);
         var tapBlock = Script[tapStart..tapEnd];
@@ -2008,6 +2007,25 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void TokenReuse_RequiresExactNormalizedTokenIdentity()
+    {
+        var keyStart = Script.IndexOf("function BridgeTokenNameKey", StringComparison.Ordinal);
+        var keyEnd = Script.IndexOf("function BridgeMarkTokenPhysicalObject", keyStart, StringComparison.Ordinal);
+        var key = Script[keyStart..keyEnd];
+        Assert.Contains("function BridgeTokenNameKey(name)", key);
+        Assert.Contains("string.gsub(normalized, \"%f[%a]token%f[%A]\", \" \")", key);
+        Assert.Contains("return left == right", key);
+        Assert.DoesNotContain("string.find(left, right, 1, true)", key);
+
+        var lookupStart = Script.IndexOf("function BridgeFindDeckWithContainedCardName", StringComparison.Ordinal);
+        var lookupEnd = Script.IndexOf("function BridgeTakeCardFromTokenFetcher", lookupStart, StringComparison.Ordinal);
+        var lookup = Script[lookupStart..lookupEnd];
+        Assert.Contains("local expectedTokenKey = BridgeTokenNameKey(expectedName)", lookup);
+        Assert.Contains("BridgeTokenNameKey(containedName) == expectedTokenKey", lookup);
+        Assert.DoesNotContain("BridgeCardNameMatches(containedName, expectedName)", lookup);
+    }
+
+    [Fact]
     public void Presentation_PreservesCanonicalCardScaleAndSeparatesLandPlacementModes()
     {
         Assert.Contains("canonicalCardScaleByGuid", Script);
@@ -2476,6 +2494,20 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void BattlefieldMoves_DeriveFallbackRowFromForgeCurrentTypes()
+    {
+        var moveStart = Script.IndexOf("function BridgeApplyStructuredCardMove", StringComparison.Ordinal);
+        var moveEnd = Script.IndexOf("function BridgeMoveToGraveyard", moveStart, StringComparison.Ordinal);
+        var move = Script[moveStart..moveEnd];
+
+        Assert.Contains("local row = BridgeBattlefieldRowForEvent(event, \"creature\")", move);
+        Assert.DoesNotContain("local row = event.battlefieldKind\n            or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]", move);
+        Assert.Contains("for _, cardType in ipairs(event.currentTypes or {}) do", Script);
+        Assert.Contains("local normalizedType = string.lower(tostring(cardType))", Script);
+        Assert.Contains("if normalizedType == \"land\" then return \"land\" end", Script);
+    }
+
+    [Fact]
     public void ResolvedPermanent_RepairsExactCardStrandedAtPhysicalStackAnchor()
     {
         Assert.Contains("function BridgePhysicalObjectAtStackAnchor(object)", Script);
@@ -2516,6 +2548,18 @@ public sealed class TtsGlobalLuaContractTests
         var graveyardHandler = Script[graveyard..graveyardEnd];
         Assert.DoesNotContain("BridgeMoveToBattlefield", graveyardHandler);
         Assert.Contains("BridgeMoveToGraveyard", graveyardHandler);
+    }
+
+    [Fact]
+    public void GraveyardMove_RetiresOnlyTheExactPendingCast()
+    {
+        var start = Script.IndexOf("function BridgeMoveToGraveyard", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeFindSeatLibraryDeckWithCard", start, StringComparison.Ordinal);
+        var move = Script[start..end];
+
+        Assert.Contains("BridgeRetirePendingCastForInstance(", move);
+        Assert.Contains("event.cardInstanceId, guid, \"graveyard-move\"", move);
+        Assert.DoesNotContain("BridgeState.pendingCastBySeatId[event.seatId] = nil", move);
     }
 
     [Fact]
