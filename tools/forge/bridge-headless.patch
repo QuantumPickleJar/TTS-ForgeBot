@@ -974,6 +974,24 @@ index 44aee4f4..959cd694 100644
          // For development builds (git or SNAPSHOT), look for resources in the forge-gui module
          String version = BuildInfo.getVersionString().toLowerCase();
          if (version.contains("git") || version.contains("snapshot")) {
+diff --git a/forge-ai/src/main/java/forge/ai/PlayerControllerAi.java b/forge-ai/src/main/java/forge/ai/PlayerControllerAi.java
+index 659674c8..87a07c62 100644
+--- a/forge-ai/src/main/java/forge/ai/PlayerControllerAi.java
++++ b/forge-ai/src/main/java/forge/ai/PlayerControllerAi.java
+@@ -837,11 +837,12 @@ public class PlayerControllerAi extends PlayerController {
+         if (sa.isLandAbility()) {
+             if (sa.canPlay()) {
+                 sa.resolve();
++                return true;
+             }
++            return false;
+         } else {
+-            ComputerUtil.handlePlayingSpellAbility(player, sa, getDeferredTargetingPlayerAction(sa));
++            return ComputerUtil.handlePlayingSpellAbility(player, sa, getDeferredTargetingPlayerAction(sa));
+         }
+-        return true;
+     }
+
 diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 index 0d731bb6..5f2ee29c 100644
 --- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
@@ -1434,7 +1452,7 @@ index 0d731bb6..5f2ee29c 100644
                          lands.add(sa);
                          break; // Only need one land ability per land
                      }
-@@ -479,6 +701,38 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -479,6 +701,39 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          return lands;
      }
  
@@ -1446,18 +1464,24 @@ index 0d731bb6..5f2ee29c 100644
 +        }
 +        chosenSa.setActivatingPlayer(player);
 +        if (chosenSa.isLandAbility()) {
-+            // This menu is synchronous: no rules event can advance Forge
-+            // between presenting this exact ability and receiving its input.
-+            // Let PlayerControllerAi invoke LandAbility.canPlay()/resolve on
-+            // that exact object. A second Player.canPlayLand gate here has
-+            // rejected an action Forge just offered, including legal Main-1
-+            // land plays, due to transient controller bookkeeping.
++            // PlayerControllerAi returns true even when LandAbility.canPlay()
++            // is false. PhaseHandler treats true as a committed action, so a
++            // stale/illegal land could consume the remaining priority passes
++            // and advance the phase. Revalidate with Forge before delegating.
++            if (!chosenSa.canPlay()) {
++                System.out.println("[TUI-DIAG priority] rejected stale land action id="
++                    + chosenSa.getHostCard().getId());
++                return false;
++            }
 +            return super.playChosenSpellAbility(chosenSa);
 +        }
 +        beginPaymentContext(chosenSa.isAbility() ? "activate_begin" : "cast_begin", chosenSa);
 +        try {
 +            boolean accepted = super.playChosenSpellAbility(chosenSa);
 +            retirePaymentContext(accepted ? "success" : "failed", chosenSa);
++            // PlayerControllerAi now returns ComputerUtil's actual result, so
++            // PhaseHandler can distinguish a committed play from a rejected
++            // payment/targeting attempt.
 +            return accepted;
 +        } catch (RuntimeException ex) {
 +            retirePaymentContext("failed_exception", chosenSa);
