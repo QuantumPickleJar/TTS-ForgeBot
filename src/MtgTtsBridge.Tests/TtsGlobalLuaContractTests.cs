@@ -912,7 +912,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-30-u2-rolling-capture\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-30-u2-library-resync\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -1558,7 +1558,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("table.sort(libraryCards", alignment);
         Assert.Contains("local nextIndex = #libraryCards", alignment);
         Assert.Contains("BridgeTakeCardFromDeckByIdentity", alignment);
-        Assert.Contains("current.putObject(taken)", alignment);
+        Assert.Contains("current.putObject(taken, 0)", alignment);
         var bootstrapStart = Script.IndexOf("function BridgeTryBootstrapSeatSnapshot", StringComparison.Ordinal);
         var bootstrapEnd = Script.IndexOf("function BridgeCollectSeatAssets", bootstrapStart, StringComparison.Ordinal);
         var bootstrap = Script[bootstrapStart..bootstrapEnd];
@@ -2075,8 +2075,10 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeHudReportCancel", xml);
         Assert.Contains("BridgeHudReportCategoryDropdown", xml);
         Assert.Contains("BridgeHudRollingCapture", xml);
+        Assert.Contains("BridgeHudResyncFromForge", xml);
         Assert.Contains("function BridgeHudReportCategoryChanged", Script);
         Assert.Contains("function BridgeHudRollingCapture", Script);
+        Assert.Contains("function BridgeHudResyncFromForge", Script);
         Assert.Contains("Rolling freeze capture", Script);
         Assert.Contains("function BridgeHudReportCapture", Script);
         Assert.Contains("/api/v1/diagnostics/report", Script);
@@ -2084,6 +2086,22 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("lastAppliedEventSequence", Script);
         Assert.DoesNotContain("ZipFile", Script);
         Assert.DoesNotContain("screenshot.png", Script);
+    }
+
+    [Fact]
+    public void AuthoritativeResync_RebuildsFromSnapshotAndResumesAtItsEventCursor()
+    {
+        var start = Script.IndexOf("function BridgeResyncFromAuthoritativeSnapshot", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeAlignLibraryOrderForSnapshot", start, StringComparison.Ordinal);
+        var resync = Script[start..end];
+
+        Assert.Contains("BridgeBootstrapCurrentSnapshot(sessionId", resync);
+        Assert.Contains("end, true)", resync);
+        Assert.Contains("BridgeStartEventPolling(sessionId, false)", resync);
+        Assert.Contains("BridgeStartDecisionPolling()", resync);
+        Assert.Contains("lastAppliedEventSequence = cursor", Script);
+        Assert.Contains("lastReceivedEventSequence = cursor", Script);
+        Assert.Contains("authoritative resync snapshot is missing a valid event cursor", Script);
     }
 
     [Fact]

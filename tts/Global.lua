@@ -30,7 +30,7 @@ BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
 -- lands after they enter. STRICT re-applies the persistent land row only on
 -- authoritative layout events or an explicit organize request.
 BRIDGE_LAND_PLACEMENT_MODE = BRIDGE_LAND_PLACEMENT_MODE or "FREEFORM"
-BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-rolling-capture"
+BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-library-resync"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -477,7 +477,7 @@ BridgeState = {
         gameLog = {},
         diagnosticsVisible = false, reportPanelVisible = false, reportCategoryIndex = 1,
         creatureTypeDecisionId = nil, creatureTypeDraftActionId = nil, creatureTypeOptions = {},
-        reportStatus = "", reportCaptureInFlight = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
+        reportStatus = "", reportCaptureInFlight = false, resyncInFlight = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
         uiAttributeCache = {}, uiAttributeAttemptCount = 0, uiAttributeWriteCount = 0,
         uiAttributeSkippedCount = 0,
         actionPanelRenderCount = 0, candidatePanelRenderCount = 0, ephemeralPhysicalControlSpawnCount = 0},
@@ -6196,7 +6196,7 @@ function BridgeRollbackPendingIntent()
     end
 end
 
-function BridgeBootstrapCurrentSnapshot(sessionId, callback)
+function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotCursor)
     if BridgeState.bootstrapping then
         callback(false, "an embodiment bootstrap is already in progress")
         return
@@ -6264,6 +6264,21 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
                                 BridgeState.bootstrapping = false
                                 if not seatsOk then callback(false, seatsError); return end
                                 BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
+                                if resumeFromSnapshotCursor == true then
+                                    local cursor = tonumber(snapshot.eventCursor)
+                                    if cursor == nil or cursor < 0 then
+                                        BridgeState.bootstrapping = false
+                                        callback(false, "authoritative resync snapshot is missing a valid event cursor")
+                                        return
+                                    end
+                                    -- The snapshot is coherent through this bridge event cursor.
+                                    -- Resume polling after it so no pre-snapshot transition is
+                                    -- replayed over the just-rebuilt physical embodiment.
+                                    BridgeState.lastReceivedEventSequence = cursor
+                                    BridgeState.lastAppliedEventSequence = cursor
+                                    BridgeState.eventQueue = {}
+                                    BridgeState.skipExistingEventsOnAttach = false
+                                end
                                 BridgeLog(string.format(
                                     "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
                                     #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
@@ -6348,12 +6363,51 @@ function BridgeBootstrapSeats(snapshot, seatIndex, callback)
     end)
 end
 
+-- A recovery is a controlled, Forge-authoritative rebuild of TTS embodiment.
+-- It never infers a card, replays a stale event, or changes Forge state. The
+-- snapshot's bridge event cursor becomes the new resume point only after every
+-- seat has been materially reconciled.
+function BridgeResyncFromAuthoritativeSnapshot(origin)
+    if BridgeState.resyncInFlight == true then return end
+    local sessionId = BridgeState.eventSessionId
+    if sessionId == nil then
+        BridgeShowError("cannot resync before Forge has started a session")
+        return
+    end
+    BridgeState.resyncInFlight = true
+    if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = true end
+    BridgeStopEventPolling()
+    BridgeStopDecisionPolling()
+    BridgeClearHighlights()
+    BridgeResetSelectionState()
+    BridgeHideMainPriorityControls()
+    BridgeSetStatus("RESYNCING FROM FORGE", "Rebuilding physical cards from the authoritative snapshot...")
+    BridgeUiMarkDirty("resync-start")
+    BridgeLog("[Bridge] authoritative resync requested origin=" .. tostring(origin or "unknown")
+        .. " session=" .. tostring(sessionId))
+    BridgeBootstrapCurrentSnapshot(sessionId, function(ok, err)
+        BridgeState.resyncInFlight = false
+        if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
+        if not ok then
+            BridgeStopOnDesync("authoritative resync failed: " .. tostring(err))
+            BridgeUiMarkDirty("resync-failed")
+            return
+        end
+        BridgeStartEventPolling(sessionId, false)
+        BridgeStartDecisionPolling()
+        BridgeSetStatus("MATCH ACTIVE", "Physical table resynced from Forge.")
+        BridgeUiMarkDirty("resync-complete")
+        BridgeLog("[Bridge] authoritative resync complete at event cursor="
+            .. tostring(BridgeState.lastAppliedEventSequence))
+    end, true)
+end
+
 -- Forge's snapshot is the only authoritative library order after its shuffle.
 -- The physical importer deck begins in its own order, so merely matching card
 -- names is insufficient: the first later draw can otherwise reveal a valid
--- but wrong physical card.  Reinsert each expected card from bottom to top;
--- Deck.putObject without an index places the card on top, producing Forge's
--- exact top-to-bottom order without choosing a later card during live draws.
+-- but wrong physical card. Reinsert each expected card from bottom to top at
+-- TTS's explicit top index (0). Do not rely on putObject's default insertion
+-- behavior: that default is not an ordering contract across Deck/Card merges.
 function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
     local libraryCards = {}
     for _, zone in ipairs(seatSnapshot.zones or {}) do
@@ -6417,7 +6471,7 @@ function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
                 end
                 local inserted = BridgeSafeObjectCall(target, function(current)
                     current.setLock(false)
-                    current.putObject(taken)
+                    current.putObject(taken, 0)
                 end)
                 if not inserted then
                     callback(false, "library order alignment could not reinsert " .. tostring(expected.cardName))
@@ -11147,7 +11201,7 @@ end
 BRIDGE_DEV_UI_ENABLED = true
 BRIDGE_DEV_ANNOTATIONS_ENABLED = true
 BRIDGE_PHYSICAL_PRIORITY_CONTROLS_ENABLED = true
-BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-rolling-capture"
+BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-library-resync"
 
 BRIDGE_HUD_COLORS = {
     active = "#6DB5FF",
@@ -11261,6 +11315,11 @@ function BridgeHudRollingCapture(player, value, id)
     BridgeHudSubmitReport("Performance / Freeze", "Rolling freeze capture")
 end
 
+function BridgeHudResyncFromForge(player, value, id)
+    if BridgeState.ui == nil or BridgeState.ui.resyncInFlight == true then return end
+    BridgeResyncFromAuthoritativeSnapshot("hud")
+end
+
 function BridgeHudPhaseElementId(phase)
     local value = string.upper(tostring(phase or ""))
     if string.find(value, "UNTAP", 1, true) then return "BridgePhaseUntap" end
@@ -11359,6 +11418,9 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudReportPanel", "active", reportVisible and "true" or "false")
     BridgeUiSet("BridgeHudReportOpen", "active", devEnabled and "true" or "false")
     BridgeUiSet("BridgeHudRollingCapture", "active", devEnabled and (ui.reportCaptureInFlight and "false" or "true") or "false")
+    BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and BridgeState.eventSessionId ~= nil
+        and not ui.resyncInFlight and "true" or "false")
+    BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
     BridgeUiSet("BridgeHudReportCategoryDropdown", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportCategoryDropdown", "options", table.concat(BRIDGE_REPORT_CATEGORIES, "|"))
     BridgeUiSet("BridgeHudReportCategoryDropdown", "value", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex] or "Other")
