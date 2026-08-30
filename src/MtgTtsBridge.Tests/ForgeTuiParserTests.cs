@@ -190,6 +190,48 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void TargetMenu_OptionsPrintedAfterPrompt_AreBufferedAndParsed()
+    {
+        var parser = new ForgeTuiParser(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Player 1"] = "forge-player-1",
+            ["AI-tts-ai"] = "forge-player-2",
+        });
+
+        var first = parser.Append(
+            "=== Choose Target for Swords to Plowshares ===\n" +
+            "Select a target:\n" +
+            "Enter target (0-0, or q to cancel):\n");
+        Assert.Null(first.ParsedDecision);
+        Assert.Null(first.ErrorCode);
+
+        var second = parser.Append("  0. Glissa Sunslayer [id=76] (3/3) [AI-tts-ai]\n");
+        var decision = Assert.IsType<ForgeTuiDecision>(second.ParsedDecision);
+        var target = Assert.Single(decision.Decision.Actions, action => action.Type == "choose_target");
+        Assert.Equal("Glissa Sunslayer", target.CardIdentity);
+        Assert.Equal("forge-object:76", target.CardInstanceId);
+        Assert.Equal("0", decision.Inputs[target.ActionId]);
+        var cancel = Assert.Single(decision.Decision.Actions, action => action.Type == "cancel_cast");
+        Assert.Equal("q", decision.Inputs[cancel.ActionId]);
+    }
+
+    [Fact]
+    public void TargetMenu_OptionSplitAcrossChunks_WaitsForCompleteLine()
+    {
+        var parser = new ForgeTuiParser();
+        var first = parser.Append(
+            "Choose target for Swords to Plowshares:\n" +
+            "Enter target (0-0, or q to cancel):\n" +
+            "  0. Glissa Sunslayer [id=76]");
+        Assert.Null(first.ParsedDecision);
+        Assert.Null(first.ErrorCode);
+
+        var second = parser.Append(" (3/3)\n");
+        var decision = Assert.IsType<ForgeTuiDecision>(second.ParsedDecision);
+        Assert.Contains(decision.Decision.Actions, action => action.CardIdentity == "Glissa Sunslayer");
+    }
+
+    [Fact]
     public void AlternateTargetHeader_ParsesCardAndPlayerTargets()
     {
         var seats = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

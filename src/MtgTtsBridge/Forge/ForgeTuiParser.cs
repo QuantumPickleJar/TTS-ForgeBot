@@ -53,7 +53,19 @@ public sealed partial class ForgeTuiParser
             .Select(match => new ForgeTuiMenuOption(
                 int.Parse(match.Groups["number"].Value, CultureInfo.InvariantCulture),
                 match.Groups["label"].Value.Trim()))
-            .ToArray();
+            .ToList();
+
+        // PlayerControllerTUI writes the target prompt with print(), then the
+        // numbered targets with println().  stdout chunking can therefore put
+        // the prompt in one Append call and the menu options in the next one.
+        // Only consume a contiguous, complete block of numeric lines directly
+        // after the prompt.  A non-option line terminates that block so a later
+        // unrelated menu cannot be greedily folded into this decision.
+        var trailingMenu = ParseTrailingMenuOptions(text, prompt);
+        if (definition is not null && trailingMenu.Options.Count > 0)
+        {
+            actions.AddRange(trailingMenu.Options);
+        }
 
         var selectionMetadata = SelectionMetadataRegex().Match(promptContext);
         var decisionProvenance = DecisionProvenanceRegex().Matches(promptContext).Cast<Match>().LastOrDefault();
@@ -68,21 +80,23 @@ public sealed partial class ForgeTuiParser
         var promptKind = selectionMetadata.Success
             ? selectionMetadata.Groups["kind"].Value
             : definition?.Definition.Kind ?? inferredKind;
-        if (actions.Length == 0 && promptKind is "blocker_selection" or "attacker_selection"
+        if (actions.Count == 0 && promptKind is "blocker_selection" or "attacker_selection"
             && prompt.Value.Contains("done", StringComparison.OrdinalIgnoreCase))
         {
-            actions = [new ForgeTuiMenuOption(0, "done")];
+            actions.Add(new ForgeTuiMenuOption(0, "done"));
         }
 
-        if (actions.Length == 0)
+        if (actions.Count == 0)
         {
-            var trailing = text[(prompt.Index + prompt.Length)..];
             var promptLooksLikeFinalInput = ExplicitNumericInputPromptRegex().IsMatch(prompt.Value);
-            if (string.IsNullOrWhiteSpace(trailing) && !promptLooksLikeFinalInput)
+            var trailing = text[(prompt.Index + prompt.Length)..];
+            if (definition is not null
+                || (!promptLooksLikeFinalInput && string.IsNullOrWhiteSpace(trailing)))
             {
                 // Forge frequently streams prompt headers and numbered options in
-                // separate stdout chunks. Preserve the current buffer so parsing
-                // can complete once the numeric options arrive.
+                // separate stdout chunks. Preserve the current buffer whenever
+                // a supported menu is incomplete; certainty is preferable to
+                // killing a live session on a transient framing boundary.
                 return ForgeTuiParserResult.None;
             }
 
@@ -99,7 +113,12 @@ public sealed partial class ForgeTuiParser
             return ForgeTuiParserResult.Error("unrecognized_tui_menu", "Forge printed a supported menu header without numeric actions.");
         }
 
-        _buffer.Remove(0, prompt.Index + prompt.Length);
+        var consumedLength = prompt.Index + prompt.Length;
+        if (trailingMenu.ConsumedThrough > consumedLength)
+        {
+            consumedLength = trailingMenu.ConsumedThrough;
+        }
+        _buffer.Remove(0, consumedLength);
 
         var kind = promptKind ?? "generic_numeric_selection";
         // A collection choice is a single Forge transaction even though the
@@ -219,6 +238,47 @@ public sealed partial class ForgeTuiParser
                         CostComponents: paymentCostComponents)
             },
              inputMap));
+    }
+
+    private static TrailingMenuParse ParseTrailingMenuOptions(string text, Match prompt)
+    {
+        var options = new List<ForgeTuiMenuOption>();
+        var cursor = prompt.Index + prompt.Length;
+        var consumedThrough = cursor;
+
+        while (cursor < text.Length)
+        {
+            var newline = text.IndexOf('\n', cursor);
+            var hasCompleteLine = newline >= 0;
+            var lineEnd = hasCompleteLine ? newline : text.Length;
+            var line = text[cursor..lineEnd].TrimEnd('\r');
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                if (!hasCompleteLine) break;
+                cursor = newline + 1;
+                continue;
+            }
+
+            var match = MenuOptionRegex().Match(line);
+            if (!match.Success || match.Index != 0 || match.Length != line.Length)
+            {
+                break;
+            }
+
+            // A final line without its newline may still be receiving bytes in
+            // the next stdout chunk. Do not expose a partial or prematurely
+            // truncated menu as a Forge decision.
+            if (!hasCompleteLine) break;
+
+            options.Add(new ForgeTuiMenuOption(
+                int.Parse(match.Groups["number"].Value, CultureInfo.InvariantCulture),
+                match.Groups["label"].Value.Trim()));
+            consumedThrough = newline + 1;
+            cursor = consumedThrough;
+        }
+
+        return new TrailingMenuParse(options, consumedThrough);
     }
 
     private static string GetInputValue(ForgeTuiMenuOption option, string kind, string inputPrompt)
@@ -613,6 +673,10 @@ public sealed partial class ForgeTuiParser
         new("=== FORGE CHOICE ===", "generic_numeric_selection"),
     ];
 }
+
+internal readonly record struct TrailingMenuParse(
+    IReadOnlyList<ForgeTuiMenuOption> Options,
+    int ConsumedThrough);
 
 public sealed record ForgeTuiMenuOption(int Number, string Label);
 
