@@ -107,6 +107,33 @@ function BridgePerformanceEnd(token, marker, summaryKey, detail1, detail2)
     if summaryKey ~= nil and durationMs >= BRIDGE_PERFORMANCE_SLOW_OPERATION_SECONDS * 1000 then
         summary.slowRenderCount = (summary.slowRenderCount or 0) + 1
     end
+    return durationMs
+end
+
+function BridgeStartupStageBegin(marker)
+    return BridgePerformanceBegin(marker)
+end
+
+function BridgeStartupStageEnd(token, marker, summaryField)
+    local durationMs = BridgePerformanceEnd(token, marker)
+    local startup = BridgeState.startupTrace
+    if startup ~= nil and summaryField ~= nil and durationMs ~= nil then
+        startup[summaryField] = durationMs
+    end
+    return durationMs
+end
+
+function BridgeLogStartupSummary()
+    local startup = BridgeState.startupTrace
+    if startup == nil or startup.summaryLogged == true then return end
+    startup.summaryLogged = true
+    BridgeLog(string.format(
+        "[Bridge perf] startup observable=%.0fms cleanup=%.0fms ui=%.0fms discovery=%.0fms dispatch=%.0fms",
+        tonumber(startup.observableDurationMs or 0),
+        tonumber(startup.transientCleanupDurationMs or 0),
+        tonumber(startup.uiDurationMs or 0),
+        tonumber(startup.objectDiscoveryDurationMs or 0),
+        tonumber(startup.healthDispatchDurationMs or 0)))
 end
 
 function BridgePerformanceTraceSnapshot()
@@ -124,6 +151,7 @@ function BridgePerformanceDiagnosticPayload()
     local summary = BridgeState.performanceSummary or {}
     local metrics = BridgeState.presentationMetrics or {}
     local ui = BridgeState.ui or {}
+    local startup = BridgeState.startupTrace or {}
     local canary = {decisionPlayLandCount = 0, decisionCastSpellCount = 0, ttsRepresentedPlayLandCount = 0, ttsRepresentedCastSpellCount = 0}
     local decision = BridgeState.lastDecision
     for _, action in ipairs(decision and decision.actions or {}) do
@@ -156,6 +184,11 @@ function BridgePerformanceDiagnosticPayload()
     canary.lastTtsAppliedEventSequence = BridgeState.lastAppliedEventSequence
     summary.landActionCanary = canary
     summary.clockKind = BRIDGE_PERFORMANCE_CLOCK_KIND
+    summary.startupObservableDurationMs = startup.observableDurationMs
+    summary.startupTransientCleanupDurationMs = startup.transientCleanupDurationMs
+    summary.startupUiDurationMs = startup.uiDurationMs
+    summary.startupObjectDiscoveryDurationMs = startup.objectDiscoveryDurationMs
+    summary.startupHealthDispatchDurationMs = startup.healthDispatchDurationMs
     return {performanceSummary = summary, recentTtsTrace = BridgePerformanceTraceSnapshot()}
 end
 
@@ -394,6 +427,16 @@ BridgeState = {
         worstSnapshotReconcileDurationMs = 0,
         ttsRepresentedPlayLandCount = 0,
         ttsRepresentedCastSpellCount = 0
+    },
+    startupTrace = {
+        healthDispatchRecorded = false,
+        objectDiscoveryRecorded = false,
+        summaryLogged = false,
+        observableDurationMs = nil,
+        transientCleanupDurationMs = nil,
+        uiDurationMs = nil,
+        objectDiscoveryDurationMs = nil,
+        healthDispatchDurationMs = nil
     },
     physicalSeatByGuid = {},
     physicalZoneByGuid = {},
@@ -1858,7 +1901,12 @@ function BridgeHttp.handleResponse(request, callback)
 end
 
 function onLoad()
+    -- TTS file read and Lua compilation happen before this function executes;
+    -- this first marker deliberately measures only observable runtime startup.
+    local startupToken = BridgeStartupStageBegin("onLoad_enter")
     BridgeOnLoad()
+    BridgeState.startupTrace.observableDurationMs = BridgeStartupStageEnd(
+        startupToken, "BridgeOnLoad_return")
 end
 
 function onUpdate()
@@ -3703,6 +3751,12 @@ function BridgeDoctor(done)
         companionOk = false
     }
 
+    local startup = BridgeState.startupTrace
+    local healthDispatchToken = nil
+    if startup ~= nil and not startup.healthDispatchRecorded then
+        startup.healthDispatchRecorded = true
+        healthDispatchToken = BridgeStartupStageBegin("startup_bridge_health_begin")
+    end
     BridgeGetHealth(function(ok, body, err)
         if ok and body ~= nil then
             report.companionOk = true
@@ -3722,21 +3776,36 @@ function BridgeDoctor(done)
             BridgeDoctorAddCheck(report, "companion.session", "WARN", "unknown while offline")
         end
 
+        local discoveryToken = nil
+        if startup ~= nil and not startup.objectDiscoveryRecorded then
+            startup.objectDiscoveryRecorded = true
+            discoveryToken = BridgeStartupStageBegin("startup_object/bootstrap_discovery_begin")
+        end
         BridgeDoctorCheckTable(report, body)
+        BridgeStartupStageEnd(discoveryToken, "startup_object/bootstrap_discovery_end",
+            "objectDiscoveryDurationMs")
         BridgeDoctorPrintReport(report)
         if done ~= nil then done(report) end
     end)
+    BridgeStartupStageEnd(healthDispatchToken, "startup_bridge_health_dispatched",
+        "healthDispatchDurationMs")
 end
 
 function BridgeInitializeInteractiveUi()
     if BridgeState.doctorInitializedUi then return end
     BridgeState.doctorInitializedUi = true
+    local startupUiToken = BridgeStartupStageBegin("startup_ui_begin")
     BridgeWaitFrames(function()
+        local cleanupToken = BridgeStartupStageBegin("startup_transient_cleanup_begin")
         BridgeTryStartupStep("destroy_transient_controls", BridgeDestroyTransientControls)
+        BridgeStartupStageEnd(cleanupToken, "startup_transient_cleanup_end",
+            "transientCleanupDurationMs")
         BridgeTryStartupStep("ensure_setup_controls", BridgeEnsureSetupControls)
         BridgeTryStartupStep("ensure_turn_counters", BridgeEnsureTurnCounters)
         BridgeTryStartupStep("ensure_status_panel", BridgeEnsureStatusPanel)
         BridgeTryStartupStep("show_preparation_readiness", BridgeShowPreparationReadiness)
+        BridgeStartupStageEnd(startupUiToken, "startup_ui_end", "uiDurationMs")
+        BridgeLogStartupSummary()
     end, 30)
 end
 
@@ -3776,6 +3845,7 @@ function BridgeRetryCompanion()
 end
 
 function BridgeOnLoad()
+    BridgePerformanceTrace("BridgeOnLoad_enter")
     BridgeUiMount()
     BridgeLog("[Bridge] ForgeBot integration loaded. revision=" .. tostring(BRIDGE_SCRIPT_REVISION)
         .. " runtimeId=" .. tostring(BRIDGE_CLIENT_RUNTIME_ID)

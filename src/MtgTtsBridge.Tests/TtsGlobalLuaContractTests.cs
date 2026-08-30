@@ -277,6 +277,35 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void StartupTrace_RecordsBoundedMarkersAtExistingStartupBoundaries()
+    {
+        var requiredMarkers = new[]
+        {
+            "onLoad_enter",
+            "BridgeOnLoad_enter",
+            "startup_transient_cleanup_begin",
+            "startup_transient_cleanup_end",
+            "startup_ui_begin",
+            "startup_ui_end",
+            "startup_object/bootstrap_discovery_begin",
+            "startup_object/bootstrap_discovery_end",
+            "startup_bridge_health_begin",
+            "startup_bridge_health_dispatched",
+            "BridgeOnLoad_return"
+        };
+
+        foreach (var marker in requiredMarkers)
+        {
+            Assert.Contains($"\"{marker}\"", Script);
+        }
+
+        Assert.Contains("BridgeState.startupTrace.observableDurationMs", Script);
+        Assert.Contains("function BridgePerformanceTraceSnapshot()", Script);
+        Assert.Contains("TTS file read and Lua compilation happen before this function executes", Script);
+        Assert.DoesNotContain("File.Write", Script);
+    }
+
+    [Fact]
     public void SetupCallbacks_DeferLifecycleWorkToInternalHandlers()
     {
         var newMatchStart = Script.IndexOf("function BridgePressNewMatch", StringComparison.Ordinal);
