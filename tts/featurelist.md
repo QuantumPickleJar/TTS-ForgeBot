@@ -58,39 +58,53 @@ bug: terramorphic expanse does not make it to the graveyard after being activate
 
 
 bug: Mulligan of opening hands sstill places them on top of the library face-up
+NEEDS LIVE CONFIRMATION
 
 CRITICAL BUG: attempting to play a land on your draw step results in skipping straight to combat phase
+NOT A BUG — lands are normally illegal during Draw; verify the subsequent Main 1 decision instead
 
 Bug: lands can get misplacedin the creatures row, vice versa for  blue seats
 
 bug: UI presents your next card before you should have access to this information (e.g before it reaches the hand)
+FIXED 122d25d
 
 Bug: cannot cast sorceries before combat
+NEEDS LIVE CONFIRMATION
 
 CRITICAL: sorceries with graveyard return is failing. the choice accepts but no functionality ensues and the card goes unconsumed despite it advancing the phases which is inappropriate--see logs using Tune Up
+NEEDS LIVE CONFIRMATION
 
 
 Bug: Casting a creature can  take up to an entire  turn for it to move from this weird area I call the "cast zone"   to its correct place on the battlefiedl
+NEEDS LIVE CONFIRMATION
 
 Bug: Main 1 still gets skipped 
+NEEDS LIVE CONFIRMATION
 
 Bug: the option to play a land does not get checked until  the next phase, it needs to be checked on every relevant choice
+NEEDS LIVE CONFIRMATION
 
 Bug: Crewing a creature from the UI fails, it does not initiate anythhing  (observed during combat:pre)
 
 bug: player is offered choices they should not have (instants and things with flash get this, but  not playing lands; after a mulligan their choices show before the cards are in the hand)
+NEEDS LIVE CONFIRMATION
 
 bug: next card is revealed through choices presented from the UI
+FIXED 122d25d
 
 bug: you can only highlight one card max for attacker selection, multiple ones are available if done through the UI
 
 BUG: main 1 phase is skipped on to combat turn 1
+NEEDS LIVE CONFIRMATION
 BUG: valid choices are not presented until both are satisfied - A the combat step is reached and B - the user has clicked Done on the UI
+NEEDS LIVE CONFIRMATION
 BUG: yield turn button has vanished almos entirely.  I only saw it once on turn 3 after I clicked confirm
+NEEDS LIVE CONFIRMATION
 
 BUG: (turn 3) when i cast mental note, a land untapped. Not only that, I had to click "done" to get to the point where cards draw. 
 
 BUG: you can multi-select during times when it does not make sensse to be able to do so (draw step provided max  hand size is not forcing a discard)
+NEEDS LIVE CONFIRMATION
 
 BUG:  when casting mental note, the top two cards must be transported from the top of library to the  graveyard face-up before the draw triggers. 
 FIXED as of 8-30-u2-gameplay-repair
@@ -98,7 +112,7 @@ FIXED as of 8-30-u2-gameplay-repair
 (Low priorty) Bug: mana counters are FUNCTIONING! but do not face the respective seat.  For white, counters sshould be rotaatedd 90  degrees clockwise
 
 Bug: mulliganing causes a desync followed by errors on each card  move (the cards still  move and the hand EVENTUALLY cycles)
-Seems fixed, confirmation testing required
+NEEDS LIVE CONFIRMATION
 
 Bug: highlights fail to appear on a mulliganed hand
 FIXED 
@@ -107,14 +121,19 @@ Critical: reporting a bug or capturing a freeze softlocks the process from progr
 FIXED
 
 Bug: hands are not properly cleaned up when destructively requesting to start a new match
+NEEDS LIVE CONFIRMATION
 
 Bug: cannot play lands already in hand on draw nor upkeep steps, must wait for main 1 to pass
+NOT A BUG — lands are normally illegal during Draw/Upkeep; Main 1 action freshness is tracked above
 
 Bug: casting stitcher's suppplier failed to trigger the mill-adjacent effect that mental note shares
+NEEDS LIVE CONFIRMATION
 
 Bug: passing priority on the upkeep step skips Main 1
+NEEDS LIVE CONFIRMATION
 
 (high priority) Bug: if a player opts to keep the opening hand, it can sometimes still gets mulliganned
+NEEDS LIVE CONFIRMATION
 
 bug: sacrifice cards say "sacrifice CARDNAME" instead of the actual card's name
 
