@@ -34,18 +34,24 @@ NOT A BUG — Forge owns Crew legality; the bridge must not locally prohibit thi
 Bug: cannot select attackers  by clicking on card (UI button works), noticed on crewed vehicle
 
 Bug: token fetching fails to resolve to the proper token when the attack ability of prodigy's prototype activates. 
+FIXED GENERICALLY — exact normalized token identity is required; LIVE CONFIRMATION PENDING
 
 bug: an additional token  is created when only one shuold be spawned during prodigy's prototype activation
+LIVE CONFIRMATION PENDING — exactly-once materialization guard is present; no card-name special case added
 
 Bug: lita, mechanical engineer does not fetch the appropriate card when activating her mana ability
+FIXED GENERICALLY — token/card lookup no longer accepts fuzzy name collisions; LIVE CONFIRMATION PENDING
 
 Bug: when crewing, player cannot select creature to tap, it is chosen for them (NOTE: this could be an artifact of SMART play, this sshould not be considered smart behavior and must collect a human choice before proceeding to tap anything)
+IMPLEMENTED GENERICALLY — TUI cost-decision seam exposes Forge-valid aggregate candidates; LIVE CONFIRMATION PENDING
 
 bug: if white is attacking, we have to pass priority to advance even though it's blue selectting blockers that would ideally be where priority passess from them to us, rather than us gating progresssion 
 
 Bug: pilot tokens are viable blockers, but for some reason don't get considered as such when blue attacks
+LIVE CONFIRMATION PENDING — Forge producer path includes Forge-valid creature tokens; exact physical mapping still needs canary
 
 Flaw: blocking selection does not allow defenders to select which creature they wish to have it block, or multiples if they want it to block multiple creature.   Heavily lean on arena's gameplay solution to this
+DEFERRED TO U4 — new generalized multi-blocker/assignment relationship architecture is out of U2 scope
 
 - for multiplayer to work, UI code needs to be injected clientside
 
@@ -56,6 +62,7 @@ bug: sagas and classes do not have a level counter on them (might be called loya
 - feature: use Arena-style "Card Carousel" in the UI.  Ideally this comes up in a new modal.  Main point is to mimic Arena's usage of card art within UI elements
 
 bug: terramorphic expanse does not make it to the graveyard after being activated
+FIXED GENERICALLY IN EMBODIMENT PATH — follows authoritative battlefield-to-graveyard transition; LIVE CONFIRMATION PENDING
 
 
 bug: Mulligan of opening hands sstill places them on top of the library face-up
@@ -65,6 +72,7 @@ CRITICAL BUG: attempting to play a land on your draw step results in skipping st
 NOT A BUG — lands are normally illegal during Draw; verify the subsequent Main 1 decision instead
 
 Bug: lands can get misplacedin the creatures row, vice versa for  blue seats
+FIXED GENERICALLY — battlefield row fallback derives from Forge current types; LIVE CONFIRMATION PENDING
 
 bug: UI presents your next card before you should have access to this information (e.g before it reaches the hand)
 FIXED 122d25d
