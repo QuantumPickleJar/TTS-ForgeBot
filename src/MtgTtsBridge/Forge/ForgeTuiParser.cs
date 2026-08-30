@@ -58,6 +58,13 @@ public sealed partial class ForgeTuiParser
         var selectionMetadata = SelectionMetadataRegex().Match(promptContext);
         var decisionProvenance = DecisionProvenanceRegex().Matches(promptContext).Cast<Match>().LastOrDefault();
         var decisionContext = DecisionContextRegex().Matches(promptContext).Cast<Match>().LastOrDefault();
+        var paymentContext = PaymentContextRegex().Matches(promptContext).Cast<Match>().LastOrDefault();
+        var paymentContextId = paymentContext is { Success: true }
+            ? NullIfBlank(paymentContext.Groups["paymentContextId"].Value)
+            : null;
+        var paymentCostComponents = paymentContextId is null
+            ? Array.Empty<CostComponentDto>()
+            : ParseCostComponents(promptContext, paymentContextId);
         var promptKind = selectionMetadata.Success
             ? selectionMetadata.Groups["kind"].Value
             : definition?.Definition.Kind ?? inferredKind;
@@ -197,6 +204,19 @@ public sealed partial class ForgeTuiParser
                     ? int.Parse(selectionMetadata.Groups["requiredTotalPower"].Value, CultureInfo.InvariantCulture) : null,
                 SelectedTotalPower = selectionMetadata.Success && selectionMetadata.Groups["selectedTotalPower"].Success
                     ? int.Parse(selectionMetadata.Groups["selectedTotalPower"].Value, CultureInfo.InvariantCulture) : null,
+                PaymentContext = paymentContextId is null
+                    ? null
+                    : new PaymentContextDto(
+                        OriginActionId: paymentContext is { Success: true } && paymentContext.Groups["originActionId"].Success
+                            ? paymentContext.Groups["originActionId"].Value
+                            : decisionId,
+                        PaymentContextId: paymentContextId,
+                        SourceCardInstanceId: paymentContext is { Success: true } && paymentContext.Groups["sourceCardId"].Success
+                            ? $"forge-object:{paymentContext.Groups["sourceCardId"].Value}" : null,
+                        SourceZone: paymentContext is { Success: true } ? NullIfBlank(paymentContext.Groups["sourceZone"].Value) : null,
+                        ActionKind: paymentContext is { Success: true } ? NullIfBlank(paymentContext.Groups["actionKind"].Value) : null,
+                        CastMode: paymentContext is { Success: true } ? NullIfBlank(paymentContext.Groups["castMode"].Value) : null,
+                        CostComponents: paymentCostComponents)
             },
              inputMap));
     }
@@ -322,7 +342,61 @@ public sealed partial class ForgeTuiParser
             PrototypeToughness: provenance.Success ? NullIfBlank(provenance.Groups["prototypeToughness"].Value) : null,
             DisplayManaCost: provenance.Success ? NullIfBlank(provenance.Groups["displayManaCost"].Value) : null,
             EntityKind: entityKind,
-            EntitySeatId: entitySeatId);
+            EntitySeatId: entitySeatId)
+        {
+            // U2: Populate structured action provenance when bridge metadata is present
+            Provenance = provenance.Success ? new ActionProvenanceDto(
+                ActionKind: provenance.Groups["actionKind"].Success ? provenance.Groups["actionKind"].Value : actionType,
+                SourceCardInstanceId: sourceInstanceId,
+                SourceZone: provenance.Groups["sourceZone"].Success ? provenance.Groups["sourceZone"].Value : null,
+                SourceSeatId: null, // Not yet emitted by Forge TUI
+                AbilityKind: provenance.Groups["abilityKind"].Success ? NullIfBlank(provenance.Groups["abilityKind"].Value) : null,
+                CastMode: provenance.Groups["castMode"].Success ? provenance.Groups["castMode"].Value : null,
+                CastFace: null, // Future: split/modal card face
+                DisplayLabel: label,
+                DisplayCost: provenance.Groups["displayManaCost"].Success ? NullIfBlank(provenance.Groups["displayManaCost"].Value) : null,
+                PaymentContextId: provenance.Groups["paymentContextId"].Success
+                    ? NullIfBlank(provenance.Groups["paymentContextId"].Value)
+                    : null)
+            : null
+        };
+    }
+
+    private static IReadOnlyList<CostComponentDto> ParseCostComponents(string context, string paymentContextId)
+    {
+        var components = new List<CostComponentDto>();
+        foreach (Match match in CostComponentRegex().Matches(context))
+        {
+            if (!match.Success || !string.Equals(match.Groups["paymentContextId"].Value, paymentContextId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            int? minSelections = match.Groups["minSelections"].Success
+                ? int.Parse(match.Groups["minSelections"].Value, CultureInfo.InvariantCulture)
+                : null;
+            int? maxSelections = match.Groups["maxSelections"].Success
+                ? int.Parse(match.Groups["maxSelections"].Value, CultureInfo.InvariantCulture)
+                : null;
+            components.Add(new CostComponentDto(
+                CostComponentId: match.Groups["componentId"].Value,
+                Kind: match.Groups["kind"].Value,
+                DisplayLabel: DecodeBridgeToken(match.Groups["displayLabel"].Value),
+                RequiredValue: DecodeBridgeToken(match.Groups["requiredValue"].Value),
+                SelectedValue: DecodeBridgeToken(match.Groups["selectedValue"].Value),
+                SourceZone: NullIfBlank(match.Groups["sourceZone"].Value),
+                SelectionKind: NullIfBlank(match.Groups["selectionKind"].Value),
+                MinSelections: minSelections,
+                MaxSelections: maxSelections));
+        }
+
+        return components;
+    }
+
+    private static string? DecodeBridgeToken(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        return Uri.UnescapeDataString(value.Replace('+', ' '));
     }
 
     /// <summary>Ends the current redraw-based collection transaction.</summary>
@@ -461,7 +535,7 @@ public sealed partial class ForgeTuiParser
 
     private static string StripAnsi(string text) => AnsiEscapeRegex().Replace(text, string.Empty);
 
-    [GeneratedRegex(@"(?im)^(?:.*?(?:Enter|Select|Choose|Pick|Type|Press)[ \t]+(?:an?[ \t]+)?(?:[A-Za-z]+[ \t]+)?(?:choice|selection|option|number|answer|decision|assignment)\b.*?(?:\:|\?)|.*?(?:Choose|Select|Pick|Type)[ \t]+(?:one|(?:an?[ \t]+)?(?:option|choice|selection|number|assignment))[ \t]*[:\-])[ \t]*\r?$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?im)^(?:.*?(?:Enter|Select|Choose|Pick|Type|Press)[ \t]+(?:an?[ \t]+)?(?:[A-Za-z]+[ \t]+)?(?:choice|selection|option|number|answer|decision|assignment|target)\b.*?(?:\:|\?)|.*?(?:Choose|Select|Pick|Type)[ \t]+(?:one|(?:an?[ \t]+)?(?:option|choice|selection|number|assignment|target))[ \t]*[:\-])[ \t]*\r?$", RegexOptions.CultureInvariant)]
     private static partial Regex InputPromptRegex();
 
     [GeneratedRegex(@"(?i)\b(?:Enter|Type|Press)\b.*\b(?:choice|selection|option|target|number|answer|decision|assignment)\b|\bSelect\b.*\b(?:option|choice|number)\b", RegexOptions.CultureInvariant)]
@@ -472,8 +546,14 @@ public sealed partial class ForgeTuiParser
 
     // Forge emits this additive machine-readable suffix while constructing
     // numeric choices. Display labels remain presentation-only.
-    [GeneratedRegex(@"\[bridge\s+sourceZone=(?<sourceZone>[A-Za-z_]+)(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+abilityKind=(?<abilityKind>[A-Za-z0-9_$]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+costKind=(?<costKind>[A-Za-z0-9_-]+))?(?:\s+displayManaCost=(?<displayManaCost>[A-Za-z0-9{}+*/-]+))?(?:\s+prototypePower=(?<prototypePower>[A-Za-z0-9+*/-]+))?(?:\s+prototypeToughness=(?<prototypeToughness>[A-Za-z0-9+*/-]+))?(?:\s+preparedSourceCardId=(?<preparedSourceId>\d+))?\]", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\[bridge\s+sourceZone=(?<sourceZone>[A-Za-z_]+)(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+abilityKind=(?<abilityKind>[A-Za-z0-9_$]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+costKind=(?<costKind>[A-Za-z0-9_-]+))?(?:\s+displayManaCost=(?<displayManaCost>[A-Za-z0-9{}+*/-]+))?(?:\s+prototypePower=(?<prototypePower>[A-Za-z0-9+*/-]+))?(?:\s+prototypeToughness=(?<prototypeToughness>[A-Za-z0-9+*/-]+))?(?:\s+preparedSourceCardId=(?<preparedSourceId>\d+))?(?:\s+paymentContextId=(?<paymentContextId>[A-Za-z0-9:_-]+))?\]", RegexOptions.CultureInvariant)]
     private static partial Regex ActionProvenanceRegex();
+
+    [GeneratedRegex(@"\[bridge\s+paymentContextId=(?<paymentContextId>[A-Za-z0-9:_-]+)(?:\s+originActionId=(?<originActionId>[A-Za-z0-9:_-]+))?(?:\s+sourceCardId=(?<sourceCardId>\d+))?(?:\s+sourceZone=(?<sourceZone>[A-Za-z_]+))?(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+paymentStage=(?<paymentStage>[A-Za-z0-9_-]+))?\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex PaymentContextRegex();
+
+    [GeneratedRegex(@"\[bridge\s+costComponent\s+paymentContextId=(?<paymentContextId>[A-Za-z0-9:_-]+)\s+componentId=(?<componentId>[A-Za-z0-9:_-]+)\s+kind=(?<kind>[A-Za-z0-9_-]+)(?:\s+displayLabel=(?<displayLabel>[^\s\]]+))?(?:\s+requiredValue=(?<requiredValue>[^\s\]]+))?(?:\s+selectedValue=(?<selectedValue>[^\s\]]+))?(?:\s+sourceZone=(?<sourceZone>[A-Za-z_]+))?(?:\s+selectionKind=(?<selectionKind>[A-Za-z0-9_-]+))?(?:\s+minSelections=(?<minSelections>\d+))?(?:\s+maxSelections=(?<maxSelections>\d+))?\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex CostComponentRegex();
 
     [GeneratedRegex(@"\[bridge\s+entityKind=(?<entityKind>[A-Za-z_]+)(?:\s+cardInstanceId=(?<cardInstanceId>\d+))?(?:\s+seatId=(?<seatId>[A-Za-z0-9_-]+))?(?:\s+sourceZone=(?<sourceZone>[A-Za-z_]+))?\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex EntityProvenanceRegex();
@@ -481,7 +561,7 @@ public sealed partial class ForgeTuiParser
     [GeneratedRegex(@"^Play land:\s*(?<name>.+)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PlayLandRegex();
 
-    [GeneratedRegex(@"^Cast (?:creature|artifact|sorcery|instant|spell):\s*(?<name>.+?)(?:\s+\([^)]*\))?\s+-\s+.+$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^Cast (?:creature|artifact|enchantment|sorcery|instant|spell):\s*(?<name>.+?)(?:\s+\([^)]*\))?\s+-\s+.+$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex CastSpellRegex();
 
     [GeneratedRegex(@"^(?<name>.+?):\s*.*\bAdd\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]

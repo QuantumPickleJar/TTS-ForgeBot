@@ -133,6 +133,41 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void EnchantmentCastAction_PreservesExactCardIdentity()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append("""
+            What would you like to do?
+              0. Pass priority (do nothing)
+              1. Cast enchantment: Caretaker's Talent - {2}{W} [id=61]
+            Enter choice (0-1):
+            """);
+
+        var action = Assert.Single(result.ParsedDecision!.Decision.Actions, item => item.Type == "cast_spell");
+        Assert.Equal("Caretaker's Talent", action.CardIdentity);
+        Assert.Equal("forge-object:61", action.CardInstanceId);
+    }
+
+    [Fact]
+    public void InstantCastAction_FromMainPriorityMenuIsPhysicalAndUiAddressable()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Cast instant: Lightning Bolt [id=73] - {R} [bridge sourceZone=hand actionKind=cast_spell abilityKind=spell castMode=normal costKind=printed]\n" +
+            "Enter choice (0-1): ");
+
+        var action = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions[1];
+        Assert.Equal("cast_spell", action.Type);
+        Assert.Equal("cast_spell", action.ActionKind);
+        Assert.Equal("hand", action.SourceZone);
+        Assert.Equal("forge-object:73", action.CardInstanceId);
+        Assert.Equal("Lightning Bolt", action.CardIdentity);
+        Assert.Equal("1", Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Inputs[action.ActionId]);
+    }
+
+    [Fact]
     public void TargetMenu_BecomesSeparateDecision()
     {
         var seats = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -825,5 +860,124 @@ public sealed class ForgeTuiParserTests
         Assert.Equal("graveyard", action.SourceZone);
         Assert.Equal("forge-object:77", action.SourceCardInstanceId);
         Assert.DoesNotContain("Unearth", action.DisplayName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PaymentContextAndCostComponents_AreParsedFromBridgeRecords()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "Choose optional costs for Spell\n" +
+            "[bridge paymentContextId=pctx-7 originActionId=forge-tui-4-choice-1 sourceCardId=42 sourceZone=graveyard actionKind=cast_spell castMode=flashback paymentStage=optional_cost]\n" +
+            "[bridge costComponent paymentContextId=pctx-7 componentId=pctx-7-c0 kind=mana displayLabel=%7B2%7D%7BU%7D requiredValue=%7B2%7D%7BU%7D]\n" +
+            "[bridge costComponent paymentContextId=pctx-7 componentId=pctx-7-c1 kind=exile displayLabel=Exile+cards+from+graveyard sourceZone=graveyard selectionKind=cards minSelections=0 maxSelections=3]\n" +
+            "[kind=payment_option min=0 max=2 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Kicker\nEnter choice (0-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        var payment = Assert.IsType<MtgTtsBridge.Contracts.Actions.PaymentContextDto>(decision.PaymentContext);
+        Assert.Equal("pctx-7", payment.PaymentContextId);
+        Assert.Equal("forge-tui-4-choice-1", payment.OriginActionId);
+        Assert.Equal("forge-object:42", payment.SourceCardInstanceId);
+        Assert.Equal("graveyard", payment.SourceZone);
+        Assert.Equal("cast_spell", payment.ActionKind);
+        Assert.Equal("flashback", payment.CastMode);
+        Assert.Equal(2, payment.CostComponents!.Count);
+        Assert.Equal(["pctx-7-c0", "pctx-7-c1"], payment.CostComponents.Select(component => component.CostComponentId));
+        Assert.Equal("{2}{U}", payment.CostComponents[0].DisplayLabel);
+        Assert.Equal("Exile cards from graveyard", payment.CostComponents[1].DisplayLabel);
+    }
+
+    [Fact]
+    public void ActionProvenance_PreservesPaymentContextFromBridgeSuffix()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Cast instant: Think Twice [id=71] - {2}{U} [bridge sourceZone=graveyard actionKind=cast_spell abilityKind=spell castMode=flashback costKind=alternative displayManaCost={2}{U} paymentContextId=pctx-13]\n" +
+            "Enter choice (0-1): ");
+
+        var action = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions[1];
+        Assert.Equal("pctx-13", action.Provenance?.PaymentContextId);
+        Assert.Equal("flashback", action.Provenance?.CastMode);
+    }
+
+    [Fact]
+    public void PaymentContext_SurvivesRedrawForSameCollectionTransaction()
+    {
+        var parser = new ForgeTuiParser();
+        var first = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "[bridge paymentContextId=pctx-9 originActionId=forge-tui-8-choice-1 sourceCardId=99 sourceZone=graveyard actionKind=cast_spell castMode=flashback paymentStage=nonmana_payment]\n" +
+            "[bridge costComponent paymentContextId=pctx-9 componentId=pctx-9-c0 kind=exile displayLabel=Exile+for+Delve sourceZone=graveyard selectionKind=cards minSelections=0 maxSelections=2]\n" +
+            "[kind=cost_selection costKind=delve sourceZone=graveyard min=0 max=2 selected=1 ordered=false]\n" +
+            "  0. Done\n  1. Card A [id=1] [SELECTED]\n  2. Card B [id=2]\nEnter choice (0-2): ");
+
+        var second = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "[bridge paymentContextId=pctx-9 originActionId=forge-tui-8-choice-1 sourceCardId=99 sourceZone=graveyard actionKind=cast_spell castMode=flashback paymentStage=nonmana_payment]\n" +
+            "[bridge costComponent paymentContextId=pctx-9 componentId=pctx-9-c0 kind=exile displayLabel=Exile+for+Delve sourceZone=graveyard selectionKind=cards minSelections=0 maxSelections=2]\n" +
+            "[kind=cost_selection costKind=delve sourceZone=graveyard min=0 max=2 selected=2 ordered=false]\n" +
+            "  0. Done\n  1. Card A [id=1] [SELECTED]\n  2. Card B [id=2] [SELECTED]\nEnter choice (0-2): ");
+
+        var firstDecision = Assert.IsType<ForgeTuiDecision>(first.ParsedDecision).Decision;
+        var secondDecision = Assert.IsType<ForgeTuiDecision>(second.ParsedDecision).Decision;
+        Assert.Equal(firstDecision.DecisionId, secondDecision.DecisionId);
+        Assert.Equal("pctx-9", firstDecision.PaymentContext?.PaymentContextId);
+        Assert.Equal("pctx-9", secondDecision.PaymentContext?.PaymentContextId);
+        Assert.Equal(["pctx-9-c0"], secondDecision.PaymentContext?.CostComponents?.Select(component => component.CostComponentId));
+    }
+
+    [Fact]
+    public void IndependentPaymentTransactions_UseDistinctContextIds()
+    {
+        var parser = new ForgeTuiParser();
+        var first = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "[bridge paymentContextId=pctx-21 originActionId=forge-tui-11-choice-1 sourceCardId=11 sourceZone=hand actionKind=cast_spell castMode=normal paymentStage=optional_cost]\n" +
+            "[kind=payment_option min=0 max=1 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Kicker\nEnter choice (0-1): ");
+        parser.CompleteCollectionDecision();
+        var second = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "[bridge paymentContextId=pctx-22 originActionId=forge-tui-12-choice-1 sourceCardId=12 sourceZone=hand actionKind=cast_spell castMode=normal paymentStage=optional_cost]\n" +
+            "[kind=payment_option min=0 max=1 selected=0 ordered=false]\n" +
+            "  0. Done\n  1. Kicker\nEnter choice (0-1): ");
+
+        Assert.Equal("pctx-21", Assert.IsType<ForgeTuiDecision>(first.ParsedDecision).Decision.PaymentContext?.PaymentContextId);
+        Assert.Equal("pctx-22", Assert.IsType<ForgeTuiDecision>(second.ParsedDecision).Decision.PaymentContext?.PaymentContextId);
+    }
+
+    [Fact]
+    public void LibrarySourceCastAction_PreservesExactForgeProvenance()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Cast creature: Youthful Valkyrie [id=321] - {1}{W} [bridge sourceZone=library actionKind=cast_spell abilityKind=spell castMode=normal costKind=printed paymentContextId=pctx-31]\n" +
+            "Enter choice (0-1): ");
+
+        var action = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions[1];
+        Assert.Equal("cast_spell", action.ActionKind);
+        Assert.Equal("library", action.SourceZone);
+        Assert.Equal("forge-object:321", action.SourceCardInstanceId);
+        Assert.Equal("pctx-31", action.Provenance?.PaymentContextId);
+    }
+
+    [Fact]
+    public void NonCastableTopLibraryCard_DoesNotEmitLibraryCastAction()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Play land: Plains [id=51]\n" +
+            "Enter choice (0-1): ");
+
+        var actions = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions;
+        Assert.DoesNotContain(actions, action => action.ActionKind == "cast_spell" && action.SourceZone == "library");
     }
 }

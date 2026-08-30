@@ -318,4 +318,7 @@ public sealed record ForgeTuiRawEvent(
     IReadOnlyList<string>? LoserSeatIds = null,
     string? GameEndReason = null,
     IReadOnlyDictionary<string, int>? Counters = null,
-    string? BattlefieldKind = null);
+    string? BattlefieldKind = null)
+{
+    public MtgTtsBridge.Contracts.State.CurrentCharacteristicsDto? Characteristics { get; init; }
+};

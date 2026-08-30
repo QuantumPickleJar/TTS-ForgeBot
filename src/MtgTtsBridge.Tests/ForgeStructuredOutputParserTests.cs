@@ -1,4 +1,5 @@
 using MtgTtsBridge.Forge;
+using MtgTtsBridge.Contracts.State;
 
 namespace MtgTtsBridge.Tests;
 
@@ -385,6 +386,20 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void MalformedFrame_IncludesSafeJsonExceptionMetadata()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var frame = ForgeStructuredOutputParser.Sentinel
+            + """{"version":1,"type":"snapshot","sequence":1,"reason":"test","players":[{"seatId":"forge-player-1","forgePlayerId":1,"displayName":"Player 1","life":20,"poison":0,"counters":{},"manaPool":{"W":0},"speed":0,"designations":[],"zones":[{"name":"battlefield","cards":[{"forgeCardId":10,"cardName":"Jace","currentCardName":"Jace","zone":"battlefield","zonePosition":0,"ownerSeatId":"forge-player-1","controllerSeatId":"forge-player-1","tapped":false,"faceDown":false,"phasedOut":false,"counters":{},"keywords":[],"characteristics":{"currentCardName":"Jace","currentManaCost":"{2}{U}{U}","currentManaValue":"oops","currentColors":["blue"],"currentSupertypes":["legendary"],"currentCardTypes":["planeswalker"],"currentSubtypes":["jace"],"currentPower":null,"currentToughness":null,"currentLoyalty":"4","currentDefense":null,"currentKeywords":[]}}]},{"name":"library","cards":[]},{"name":"hand","cards":[]},{"name":"graveyard","cards":[]},{"name":"exile","cards":[]}]}],"stack":[]}""" + "\n";
+
+        var exception = Assert.Throws<ForgeStructuredFrameException>(() => parser.Append(frame));
+        Assert.Contains("Forge emitted malformed structured state JSON", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("path=", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("line=", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("byte=", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Reset_DropsPartialFrameAndPreviousSnapshotState()
     {
         var parser = new ForgeStructuredOutputParser();
@@ -433,4 +448,73 @@ public sealed class ForgeStructuredOutputParserTests
         bool phasedOut = false,
         string currentTypes = "[]") =>
         $$"""{"forgeCardId":{{id}},"cardName":"{{name}}","currentCardName":"{{name}}","zone":"{{zone}}","zonePosition":{{position}},"ownerSeatId":"forge-player-1","controllerSeatId":"{{controllerSeatId}}","tapped":{{tapped.ToString().ToLowerInvariant()}},"faceDown":{{faceDown.ToString().ToLowerInvariant()}},"phasedOut":{{phasedOut.ToString().ToLowerInvariant()}},"netPower":{{(netPower?.ToString() ?? "null")}},"netToughness":{{(netToughness?.ToString() ?? "null")}},"currentPower":{{(netPower?.ToString() ?? "null")}},"currentToughness":{{(netToughness?.ToString() ?? "null")}},"currentTypes":{{currentTypes}},"counters":{{counters}},"keywords":{{keywords}}}""";
+
+    [Fact]
+    public void SnapshotReconstruction_UsesForgeStructuredCharacteristicsPayload()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        var frame = Frame(1, Player(
+            battlefield:
+            [
+                """{"forgeCardId":10,"cardName":"Prototype Vehicle","currentCardName":"Prototype Vehicle","zone":"battlefield","zonePosition":0,"ownerSeatId":"forge-player-1","controllerSeatId":"forge-player-1","tapped":false,"faceDown":false,"phasedOut":false,"netPower":3,"netToughness":3,"currentPower":3,"currentToughness":3,"currentTypes":["artifact","creature","vehicle"],"counters":{"loyalty":2},"keywords":["Flying"],"characteristics":{"currentCardName":"Prototype Vehicle","currentManaCost":"{1}{U}","currentManaValue":2,"currentColors":["blue"],"currentSupertypes":["legendary"],"currentCardTypes":["artifact","creature"],"currentSubtypes":["vehicle"],"currentPower":"3","currentToughness":"3","currentLoyalty":"4","currentDefense":null,"currentKeywords":["Flying"]}}"""
+            ]));
+
+        _ = reconciler.Apply("session-a", Parse(parser, frame));
+        var card = Assert.Single(reconciler.Current!.Seats[0].Zones.Single(zone => zone.Name == "battlefield").Cards);
+        var characteristics = Assert.IsType<CurrentCharacteristicsDto>(card.Characteristics);
+        Assert.Equal("{1}{U}", characteristics.CurrentManaCost);
+        Assert.Equal(2, characteristics.CurrentManaValue);
+        Assert.Equal(["blue"], characteristics.CurrentColors);
+        Assert.Equal(["legendary"], characteristics.CurrentSupertypes);
+        Assert.Equal(["artifact", "creature"], characteristics.CurrentCardTypes);
+        Assert.Equal(["vehicle"], characteristics.CurrentSubtypes);
+        Assert.Equal("3", characteristics.CurrentPower);
+        Assert.Equal("3", characteristics.CurrentToughness);
+        Assert.Equal("4", characteristics.CurrentLoyalty);
+        Assert.Contains("Flying", characteristics.CurrentKeywords!);
+    }
+
+    [Fact]
+    public void CharacteristicChangedEvent_CarriesStructuredCharacteristics()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        _ = reconciler.Apply("session-a", Parse(parser, Frame(1, Player(
+            battlefield:
+            [
+                """{"forgeCardId":11,"cardName":"Adaptive Form","currentCardName":"Adaptive Form","zone":"battlefield","zonePosition":0,"ownerSeatId":"forge-player-1","controllerSeatId":"forge-player-1","tapped":false,"faceDown":false,"phasedOut":false,"netPower":2,"netToughness":2,"currentPower":2,"currentToughness":2,"currentTypes":["creature"],"counters":{},"keywords":[],"characteristics":{"currentCardName":"Adaptive Form","currentManaCost":"{1}{G}","currentManaValue":2,"currentColors":["green"],"currentSupertypes":[],"currentCardTypes":["creature"],"currentSubtypes":["shapeshifter"],"currentPower":"2","currentToughness":"2","currentLoyalty":null,"currentDefense":null,"currentKeywords":[]}}"""
+            ]))));
+
+        var events = reconciler.Apply("session-a", Parse(parser, Frame(2, Player(
+            battlefield:
+            [
+                """{"forgeCardId":11,"cardName":"Adaptive Form","currentCardName":"Adaptive Form","zone":"battlefield","zonePosition":0,"ownerSeatId":"forge-player-1","controllerSeatId":"forge-player-1","tapped":false,"faceDown":false,"phasedOut":false,"netPower":4,"netToughness":4,"currentPower":4,"currentToughness":4,"currentTypes":["creature"],"counters":{},"keywords":["Trample"],"characteristics":{"currentCardName":"Adaptive Form","currentManaCost":"{1}{G}","currentManaValue":2,"currentColors":["green","red"],"currentSupertypes":[],"currentCardTypes":["creature"],"currentSubtypes":["shapeshifter"],"currentPower":"4","currentToughness":"4","currentLoyalty":null,"currentDefense":null,"currentKeywords":["Trample"]}}"""
+            ]))));
+
+        var characteristic = Assert.Single(events, item => item.Kind == "characteristic_changed");
+        var payload = Assert.IsType<CurrentCharacteristicsDto>(characteristic.Characteristics);
+        Assert.Equal(["green", "red"], payload.CurrentColors);
+        Assert.Equal("4", payload.CurrentPower);
+        Assert.Contains("Trample", payload.CurrentKeywords!);
+    }
+
+    [Fact]
+    public void CharacteristicsLoyaltyAndDefense_UseForgeStringShapeAcrossCardKinds()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var snapshot = Parse(parser, Frame(1, Player(
+            battlefield:
+            [
+                """{"forgeCardId":21,"cardName":"Grizzly Bears","currentCardName":"Grizzly Bears","zone":"battlefield","zonePosition":0,"ownerSeatId":"forge-player-1","controllerSeatId":"forge-player-1","tapped":false,"faceDown":false,"phasedOut":false,"netPower":2,"netToughness":2,"currentPower":2,"currentToughness":2,"currentTypes":["creature"],"counters":{},"keywords":[],"characteristics":{"currentCardName":"Grizzly Bears","currentManaCost":"{1}{G}","currentManaValue":2,"currentColors":["green"],"currentSupertypes":[],"currentCardTypes":["creature"],"currentSubtypes":["bear"],"currentPower":"2","currentToughness":"2","currentLoyalty":null,"currentDefense":null,"currentKeywords":[]}}""",
+                """{"forgeCardId":22,"cardName":"Jace","currentCardName":"Jace","zone":"battlefield","zonePosition":1,"ownerSeatId":"forge-player-1","controllerSeatId":"forge-player-1","tapped":false,"faceDown":false,"phasedOut":false,"netPower":null,"netToughness":null,"currentPower":null,"currentToughness":null,"currentTypes":["planeswalker"],"counters":{"loyalty":2},"keywords":[],"characteristics":{"currentCardName":"Jace","currentManaCost":"{2}{U}{U}","currentManaValue":4,"currentColors":["blue"],"currentSupertypes":["legendary"],"currentCardTypes":["planeswalker"],"currentSubtypes":["jace"],"currentPower":null,"currentToughness":null,"currentLoyalty":"4","currentDefense":null,"currentKeywords":[]}}""",
+                """{"forgeCardId":23,"cardName":"Invasion of Zendikar","currentCardName":"Invasion of Zendikar","zone":"battlefield","zonePosition":2,"ownerSeatId":"forge-player-1","controllerSeatId":"forge-player-1","tapped":false,"faceDown":false,"phasedOut":false,"netPower":null,"netToughness":null,"currentPower":null,"currentToughness":null,"currentTypes":["battle"],"counters":{"defense":3},"keywords":[],"characteristics":{"currentCardName":"Invasion of Zendikar","currentManaCost":"{3}{G}","currentManaValue":4,"currentColors":["green"],"currentSupertypes":[],"currentCardTypes":["battle"],"currentSubtypes":["siege"],"currentPower":null,"currentToughness":null,"currentLoyalty":null,"currentDefense":"5","currentKeywords":[]}}"""
+            ])));
+
+        var cards = snapshot.Players[0].Zones.Single(zone => zone.Name == "battlefield").Cards;
+        Assert.Null(cards.Single(card => card.ForgeCardId == 21).Characteristics?.CurrentLoyalty);
+        Assert.Null(cards.Single(card => card.ForgeCardId == 21).Characteristics?.CurrentDefense);
+        Assert.Equal("4", cards.Single(card => card.ForgeCardId == 22).Characteristics?.CurrentLoyalty);
+        Assert.Equal("5", cards.Single(card => card.ForgeCardId == 23).Characteristics?.CurrentDefense);
+    }
 }

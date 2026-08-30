@@ -12,6 +12,10 @@ public sealed class ForgeProducerContractTests
     {
         Assert.Contains("\"currentPower\"", Patch);
         Assert.Contains("\"currentToughness\"", Patch);
+        Assert.Contains("\"currentLoyalty\"", Patch);
+        Assert.Contains("\"currentDefense\"", Patch);
+        Assert.Contains("loyalty != null && loyalty.isBlank()", Patch);
+        Assert.Contains("defense != null && defense.isBlank()", Patch);
         Assert.Contains("\\\"currentTypes\\\"", Patch);
         Assert.Contains("\"ownerSeatId\"", Patch);
         Assert.Contains("\"controllerSeatId\"", Patch);
@@ -69,7 +73,8 @@ public sealed class ForgeProducerContractTests
     {
         Assert.Contains("bridgeChoiceMetadata", Patch);
         Assert.Contains("sourceZone=", Patch);
-        Assert.Contains("getCastableSpellsFromZone(ZoneType.Graveyard", Patch);
+        Assert.Contains("getCastableSpellsFromAllZones", Patch);
+        Assert.Contains("for (ZoneType zone : ZoneType.values())", Patch);
         Assert.Contains("getZone().getZoneType()", Patch);
         Assert.Contains("getKeyword().getKeyword()", Patch);
         Assert.Contains("getAlternativeCost()", Patch);
@@ -111,11 +116,10 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
-    public void HumanPriorityUsesForgeLegalityAndAutoPassesOnlyEmptyWindows()
+    public void HumanPriorityUsesForgeLegalityWithoutSilentlySkippingItsWindow()
     {
         Assert.Contains("List<SpellAbility> landAbilities = getPlayableLands();", Patch);
         Assert.Contains("getCastableCreaturesAndArtifacts(true)", Patch);
-        Assert.Contains("auto-passing empty human priority window", Patch);
         Assert.Contains("sa.setActivatingPlayer(player);", Patch);
         Assert.Contains("boolean isActivePlayersTurn = ph.isPlayerTurn(player);", Patch);
         Assert.Contains("boolean hasPriority = player.equals(ph.getPriorityPlayer());", Patch);
@@ -130,7 +134,7 @@ public sealed class ForgeProducerContractTests
         Assert.DoesNotContain("+            chosenSa.resolve();", Patch);
         Assert.Contains("return super.playChosenSpellAbility(chosenSa);", Patch);
         Assert.DoesNotContain("boolean sorcerySpeedWindow", Patch);
-        Assert.Contains("} else if (totalActions == 0) {", Patch);
+        Assert.DoesNotContain("auto-passing empty human priority window", Patch);
         Assert.True(Patch.IndexOf("sa.setActivatingPlayer(player);", StringComparison.Ordinal) < Patch.IndexOf("if (!sa.canPlay()) continue;", StringComparison.Ordinal));
         Assert.DoesNotContain("isMainPhase &&", Patch);
     }

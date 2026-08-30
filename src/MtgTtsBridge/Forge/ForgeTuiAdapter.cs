@@ -742,7 +742,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             LoserSeatIds: rawEvent.LoserSeatIds,
             GameEndReason: rawEvent.GameEndReason,
             Counters: rawEvent.Counters,
-            BattlefieldKind: rawEvent.BattlefieldKind);
+            BattlefieldKind: rawEvent.BattlefieldKind)
+        {
+            Characteristics = rawEvent.Characteristics
+        };
         if (authoritativeEvent.Kind == "turn_changed")
         {
             _latestObservedTurnNumber = authoritativeEvent.TurnNumber ?? _latestObservedTurnNumber;
@@ -796,8 +799,17 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         return rawEvent.Kind switch
         {
             "turn_changed" => rawEvent.TurnNumber == previous.TurnNumber,
-            "phase_changed" => string.Equals(rawEvent.Phase, previous.Phase, StringComparison.Ordinal),
-            "priority_changed" => rawEvent.TurnNumber == previous.TurnNumber
+            // A phase repeats on every turn (Main 1 is the important case),
+            // so the phase alone is not a transition identity. Raw legacy
+            // phase lines do not carry a turn number and must remain visible
+            // rather than being guessed to be duplicates.
+            "phase_changed" => rawEvent.TurnNumber is not null
+                && previous.TurnNumber is not null
+                && rawEvent.TurnNumber == previous.TurnNumber
+                && string.Equals(rawEvent.Phase, previous.Phase, StringComparison.Ordinal),
+            "priority_changed" => rawEvent.TurnNumber is not null
+                && previous.TurnNumber is not null
+                && rawEvent.TurnNumber == previous.TurnNumber
                 && string.Equals(rawEvent.Phase, previous.Phase, StringComparison.Ordinal)
                 && string.Equals(rawEvent.PrioritySeatId, previous.PrioritySeatId, StringComparison.Ordinal),
             _ => false,

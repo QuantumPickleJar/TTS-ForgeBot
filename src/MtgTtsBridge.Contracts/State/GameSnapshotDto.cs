@@ -71,4 +71,10 @@ public sealed record GameCardSnapshotDto(
     // Forge-created tokens are not printed deck inventory and must not use the
     // ordinary library-card materialization fallback in TTS.
     public bool IsToken { get; init; }
+    /// <summary>
+    /// Complete Forge-authoritative current characteristics. When present, provides
+    /// full structured type-line, mana cost/value, colors, loyalty, defense, etc.
+    /// Flat fields above are preserved for backward compatibility.
+    /// </summary>
+    public CurrentCharacteristicsDto? Characteristics { get; init; }
 }
