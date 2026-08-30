@@ -48,12 +48,16 @@ public sealed class ProcessSampler : IDisposable
     public void SampleOnce()
     {
         if (_disposed) return;
-        AddProcess("bridge", Process.GetCurrentProcess());
 
         foreach (var process in FindProcesses("Tabletop Simulator", "TabletopSimulator", "Tabletop Simulator_x64"))
             AddProcess("tts", process);
         foreach (var process in FindProcesses("java", "javaw"))
             AddProcess("forge-java", process);
+
+        // Keep the bridge sample in a bounded buffer even when several
+        // external processes are present.  It identifies the recorder's own
+        // health and is more useful than letting discovery order evict it.
+        AddProcess("bridge", Process.GetCurrentProcess());
     }
 
     private void AddProcess(string role, Process process)
