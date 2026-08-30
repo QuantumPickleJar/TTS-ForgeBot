@@ -107,6 +107,8 @@ public sealed class ForgeProducerContractTests
     public void DelveAndMulliganRemainNativeForgeControllerTransactions()
     {
         Assert.Contains("chooseCardsToDelve(int genericAmount, CardCollection grave)", Patch);
+        Assert.Contains("if (genericAmount <= 0)", Patch);
+        Assert.Contains("return result;", Patch);
         Assert.Contains("costKind=delve sourceZone=graveyard", Patch);
         Assert.Contains("mulliganKeepHand(Player firstPlayer, int cardsToReturn)", Patch);
         Assert.Contains("mulliganStage=keep_or_mulligan", Patch);

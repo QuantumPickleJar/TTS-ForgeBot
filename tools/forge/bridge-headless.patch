@@ -1990,6 +1990,13 @@ index 0d731bb6..5f2ee29c 100644
 +        // the exact cards the human selected; Forge performs the reduction and
 +        // authoritative graveyard-to-exile moves afterwards.
 +        CardCollection result = new CardCollection();
++        // Forge may ask this hook after cost adjustment even when Delve cannot
++        // reduce any remaining generic cost. There is no legal or meaningful
++        // human choice in that case, and presenting a zero-option "Done" menu
++        // blocks the following normal priority evaluation.
++        if (genericAmount <= 0) {
++            return result;
++        }
 +        stagePaymentContext("nonmana_payment");
 +        emitPaymentContextRecord("nonmana_payment", null);
 +        result.addAll(chooseEntitiesThroughTui("cost_selection", grave, 0, genericAmount,
