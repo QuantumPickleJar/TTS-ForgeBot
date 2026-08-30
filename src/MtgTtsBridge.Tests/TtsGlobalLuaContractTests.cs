@@ -885,6 +885,16 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void HudLayout_DoesNotLetNestedLayoutExpandGlobalHudToTheScreen()
+    {
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+
+        Assert.Contains("width=\"700\"", xml);
+        Assert.Contains("height=\"630\"", xml);
+        Assert.DoesNotContain("<VerticalLayout width=\"100%\" height=\"100%\"", xml);
+    }
+
+    [Fact]
     public void F2cHud_UsesBoundedRowsAndSuppressesNormalPathPhysicalOptionSpawns()
     {
         Assert.Contains("for i = 1, 24 do", Script);
