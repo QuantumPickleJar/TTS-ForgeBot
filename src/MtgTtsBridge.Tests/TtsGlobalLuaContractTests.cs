@@ -912,7 +912,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-27-f2c-v14-delve-mulligan\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-30-u2-live-fixes\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -1549,6 +1549,24 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void BootstrapAlignsThePhysicalLibraryToForgeSnapshotOrderBeforeLiveDraws()
+    {
+        var alignmentStart = Script.IndexOf("function BridgeAlignLibraryOrderForSnapshot", StringComparison.Ordinal);
+        var alignmentEnd = Script.IndexOf("function BridgeTryBootstrapSeatSnapshot", alignmentStart, StringComparison.Ordinal);
+        var alignment = Script[alignmentStart..alignmentEnd];
+
+        Assert.Contains("table.sort(libraryCards", alignment);
+        Assert.Contains("local nextIndex = #libraryCards", alignment);
+        Assert.Contains("BridgeTakeCardFromDeckByIdentity", alignment);
+        Assert.Contains("current.putObject(taken)", alignment);
+        var bootstrapStart = Script.IndexOf("function BridgeTryBootstrapSeatSnapshot", StringComparison.Ordinal);
+        var bootstrapEnd = Script.IndexOf("function BridgeCollectSeatAssets", bootstrapStart, StringComparison.Ordinal);
+        var bootstrap = Script[bootstrapStart..bootstrapEnd];
+        Assert.Contains("BridgeMaterializeSeatSnapshot", bootstrap);
+        Assert.Contains("BridgeAlignLibraryOrderForSnapshot(seatSnapshot", bootstrap);
+    }
+
+    [Fact]
     public void PassiveAutoPass_IsDisabledForHumanSeatToPreventPhaseSkipping()
     {
         Assert.Contains("function BridgeDecisionHasNonPassAction", Script);
@@ -2056,6 +2074,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeHudReportCapture", xml);
         Assert.Contains("BridgeHudReportCancel", xml);
         Assert.Contains("BridgeHudReportCategory", xml);
+        Assert.Contains("BridgeHudReportCategoryPrevious", xml);
+        Assert.Contains("function BridgeHudReportCategoryPrevious", Script);
         Assert.Contains("function BridgeHudReportCapture", Script);
         Assert.Contains("/api/v1/diagnostics/report", Script);
         Assert.Contains("mappedCardInstanceIds", Script);

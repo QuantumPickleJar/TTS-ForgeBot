@@ -30,7 +30,7 @@ BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
 -- lands after they enter. STRICT re-applies the persistent land row only on
 -- authoritative layout events or an explicit organize request.
 BRIDGE_LAND_PLACEMENT_MODE = BRIDGE_LAND_PLACEMENT_MODE or "FREEFORM"
-BRIDGE_SCRIPT_REVISION = "2026-08-27-f2c-v14-delve-mulligan"
+BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-live-fixes"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -6348,6 +6348,88 @@ function BridgeBootstrapSeats(snapshot, seatIndex, callback)
     end)
 end
 
+-- Forge's snapshot is the only authoritative library order after its shuffle.
+-- The physical importer deck begins in its own order, so merely matching card
+-- names is insufficient: the first later draw can otherwise reveal a valid
+-- but wrong physical card.  Reinsert each expected card from bottom to top;
+-- Deck.putObject without an index places the card on top, producing Forge's
+-- exact top-to-bottom order without choosing a later card during live draws.
+function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
+    local libraryCards = {}
+    for _, zone in ipairs(seatSnapshot.zones or {}) do
+        if zone.name == "library" then
+            for _, card in ipairs(zone.cards or {}) do table.insert(libraryCards, card) end
+            break
+        end
+    end
+    if #libraryCards == 0 then callback(true, nil); return end
+    table.sort(libraryCards, function(left, right)
+        return (tonumber(left.zonePosition or 0) or 0) < (tonumber(right.zonePosition or 0) or 0)
+    end)
+
+    local deck, _, deckError = BridgeResolveSeatLibraryDeck(seatSnapshot.seatId)
+    if deck == nil then
+        callback(false, "library order alignment could not resolve library: " .. tostring(deckError))
+        return
+    end
+    if deck.tag == "Card" then
+        if #libraryCards ~= 1 or not BridgeCardNameMatches(deck.getName(), libraryCards[1].cardName) then
+            callback(false, "library order alignment found a single-card library that disagrees with Forge")
+            return
+        end
+        callback(true, nil)
+        return
+    end
+    local entries = BridgeLibraryEntries(deck)
+    if entries == nil or #entries ~= #libraryCards then
+        callback(false, string.format("library order alignment count mismatch: physical=%d authoritative=%d",
+            #(entries or {}), #libraryCards))
+        return
+    end
+    local seat = BRIDGE_SEATS[seatSnapshot.seatId]
+    local libraryZone = seat and BridgeGetLiveObjectByGuid(seat.libraryZoneGuid) or nil
+    if libraryZone == nil then
+        callback(false, "library order alignment has no library zone")
+        return
+    end
+    local position = libraryZone.getPosition()
+    local nextIndex = #libraryCards
+    local function reinsertNext()
+        if nextIndex < 1 then callback(true, nil); return end
+        local expected = libraryCards[nextIndex]
+        local liveDeck, _, liveError = BridgeResolveSeatLibraryDeck(seatSnapshot.seatId)
+        if liveDeck == nil then
+            callback(false, "library order alignment lost physical library: " .. tostring(liveError))
+            return
+        end
+        BridgeTakeCardFromDeckByIdentity(liveDeck, expected.cardName,
+            {position.x, position.y + 2, position.z}, false,
+            function(taken, takeError)
+                if taken == nil then
+                    callback(false, "library order alignment could not take " .. tostring(expected.cardName)
+                        .. ": " .. tostring(takeError))
+                    return
+                end
+                local target, _, targetError = BridgeResolveSeatLibraryDeck(seatSnapshot.seatId)
+                if target == nil then
+                    callback(false, "library order alignment lost remaining deck: " .. tostring(targetError))
+                    return
+                end
+                local inserted = BridgeSafeObjectCall(target, function(current)
+                    current.setLock(false)
+                    current.putObject(taken)
+                end)
+                if not inserted then
+                    callback(false, "library order alignment could not reinsert " .. tostring(expected.cardName))
+                    return
+                end
+                nextIndex = nextIndex - 1
+                BridgeWaitFrames(reinsertNext, 2)
+            end)
+    end
+    reinsertNext()
+end
+
 function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback)
     BridgeCollectSeatAssets(seatSnapshot.seatId, seatSnapshot, function(ok, assets, collectError)
         if not ok then callback(false, collectError); return end
@@ -6371,10 +6453,16 @@ function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback)
         end
         BridgeMaterializeSeatSnapshot(seatSnapshot, 1, 1, function(materialized, materializeError)
             if not materialized then callback(false, materializeError); return end
-            BridgeWaitFrames(function()
-                BridgeApplySeatSnapshotVisualState(seatSnapshot)
-                callback(true, nil)
-            end, 30)
+            -- Materialization removes the snapshot hand and public-zone cards
+            -- from the imported deck first. Only then does the remaining deck
+            -- exactly correspond to Forge's library and become safe to order.
+            BridgeAlignLibraryOrderForSnapshot(seatSnapshot, function(aligned, alignmentError)
+                if not aligned then callback(false, alignmentError); return end
+                BridgeWaitFrames(function()
+                    BridgeApplySeatSnapshotVisualState(seatSnapshot)
+                    callback(true, nil)
+                end, 30)
+            end)
         end)
     end)
 end
@@ -11059,7 +11147,7 @@ end
 BRIDGE_DEV_UI_ENABLED = true
 BRIDGE_DEV_ANNOTATIONS_ENABLED = true
 BRIDGE_PHYSICAL_PRIORITY_CONTROLS_ENABLED = true
-BRIDGE_SCRIPT_REVISION = "2026-08-27-f2c-v14-delve-mulligan"
+BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-live-fixes"
 
 BRIDGE_HUD_COLORS = {
     active = "#6DB5FF",
@@ -11101,6 +11189,15 @@ function BridgeHudReportCategory(player, value, id)
     if index > #BRIDGE_REPORT_CATEGORIES then index = 1 end
     BridgeState.ui.reportCategoryIndex = index
     BridgeUiMarkDirty("report-category")
+end
+
+function BridgeHudReportCategoryPrevious(player, value, id)
+    if BridgeState.ui == nil or BridgeState.ui.reportCaptureInFlight then return end
+    local index = tonumber(BridgeState.ui.reportCategoryIndex or 1) or 1
+    index = index - 1
+    if index < 1 then index = #BRIDGE_REPORT_CATEGORIES end
+    BridgeState.ui.reportCategoryIndex = index
+    BridgeUiMarkDirty("report-category-previous")
 end
 
 function BridgeHudReportMappedCardInstanceIds()
@@ -11258,6 +11355,7 @@ function BridgeUiFlush()
     local reportCategoryIndex = tonumber(ui.reportCategoryIndex or 1) or 1
     BridgeUiSet("BridgeHudReportPanel", "active", reportVisible and "true" or "false")
     BridgeUiSet("BridgeHudReportOpen", "active", devEnabled and "true" or "false")
+    BridgeUiSet("BridgeHudReportCategoryPrevious", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportCategory", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportCategory", "text", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex] or "Other")
     BridgeUiSet("BridgeHudReportCapture", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
