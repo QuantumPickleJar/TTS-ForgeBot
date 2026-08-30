@@ -1584,6 +1584,31 @@ function BridgeVerifyLibraryContainment(seatId, guid, callback, attempt, preferr
     end, 2)
 end
 
+-- TTS can report a newly returned card in Deck.getObjects() for a short period
+-- while getAllObjects() still exposes the pre-put Card userdata.  Treat that
+-- as a container-settle window, not as physical corruption.  Keep retrying
+-- the real duplicate audit, and still fail loudly if the loose/contained
+-- collision survives the bounded window.
+function BridgeVerifyLibraryIdentityStability(callback, attempt)
+    attempt = attempt or 1
+    local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids()
+    if duplicateGuidCount == 0 then
+        callback(true, nil)
+        return
+    end
+    if attempt >= 30 then
+        callback(false, "library insertion produced " .. tostring(duplicateGuidCount)
+            .. " loose/contained duplicate GUID(s)")
+        return
+    end
+    if attempt == 1 then
+        BridgeLog("[Bridge] waiting for TTS library containment to settle before duplicate audit")
+    end
+    BridgeWaitFrames(function()
+        BridgeVerifyLibraryIdentityStability(callback, attempt + 1)
+    end, 2)
+end
+
 -- Every authoritative library insertion crosses this boundary.  The caller
 -- keeps its exact loose mapping until the callback proves that TTS has put the
 -- card into the physical library container.
@@ -1661,15 +1686,14 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
             callback(false, verifyError)
             return
         end
-        local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids()
-        if duplicateGuidCount > 0 then
-            local duplicateError = "library insertion produced " .. tostring(duplicateGuidCount)
-                .. " loose/contained duplicate GUID(s)"
-            BridgeLog("[Bridge] " .. duplicateError)
-            callback(false, duplicateError)
-            return
-        end
-        callback(true, nil, deck)
+        BridgeVerifyLibraryIdentityStability(function(stable, stabilityError)
+            if not stable then
+                BridgeLog("[Bridge] " .. tostring(stabilityError))
+                callback(false, stabilityError)
+                return
+            end
+            callback(true, nil, deck)
+        end)
     end, 1, resultingLibrary)
 end
 
@@ -1695,7 +1719,16 @@ function BridgeProcessMulliganBottomQueue(seatId)
     BridgeInsertPhysicalCardIntoLibrary(seatId, item.object, "BOTTOM", function(ok, err)
         if not ok then
             BridgeStopOnDesync("mulligan bottom library insertion failed: " .. tostring(err))
-        elseif instanceId ~= nil then
+            -- Do not drain the remaining rejected-hand queue after a physical
+            -- failure.  Continuing here was the source of one desync report per
+            -- mulligan card and could issue more TTS mutations after the bridge
+            -- had already declared synchronization unsafe.  Resync/reset owns
+            -- recovery and recreates these queues.
+            BridgeState.mulliganBottomQueueBySeatId[seatId] = nil
+            BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] = nil
+            return
+        end
+        if instanceId ~= nil then
             BridgeRecordLibraryContainedState(instanceId, seatId, BridgeState.cardNameByInstanceId[instanceId])
         end
         complete()
@@ -5832,40 +5865,51 @@ function BridgeRenderDecision(decision, force)
     if decision.kind == "main_priority" and decisionSeat ~= nil then
         seatHandGuids = BridgeBuildSeatHandGuidSet(decision.seatId)
     end
-    for _, object in ipairs(getAllObjects()) do
-        if object.tag == "Card" then
-            local guid = BridgeSafeObjectGuid(object)
-            local mappedInDecisionHand = guid ~= nil
+    local function addDecisionCandidate(object)
+        if object == nil or object.tag ~= "Card" then return end
+        local guid = BridgeSafeObjectGuid(object)
+        if guid ~= nil and candidateGuid[guid] == true then return end
+        if guid ~= nil then candidateGuid[guid] = true end
+        local mappedInDecisionHand = guid ~= nil
+            and BridgeState.physicalSeatByGuid[guid] == decision.seatId
+            and BridgeState.physicalZoneByGuid[guid] == "hand"
+            and decisionSeat ~= nil
+            and BridgeObjectIsOnSeatSide(object, decisionSeat)
+        local observedInDecisionHand = guid ~= nil and seatHandGuids[guid] == true
+        if observedInDecisionHand then
+            -- Keep the authoritative mapping sticky to the live hand object so
+            -- legal hand actions remain interactable even if zone bookkeeping
+            -- lags a frame behind physical hand ownership.
+            local handMappingChanged = BridgeState.physicalSeatByGuid[guid] ~= decision.seatId
+                or BridgeState.physicalZoneByGuid[guid] ~= "hand"
+            BridgeState.physicalSeatByGuid[guid] = decision.seatId
+            BridgeState.physicalZoneByGuid[guid] = "hand"
+            if handMappingChanged then BridgeAdvancePhysicalPresentationGeneration("hand-mapping-repaired") end
+        end
+        local isCandidate = decision.kind ~= "main_priority"
+            or mappedInDecisionHand
+            or observedInDecisionHand
+            or (guid ~= nil
                 and BridgeState.physicalSeatByGuid[guid] == decision.seatId
-                and BridgeState.physicalZoneByGuid[guid] == "hand"
-                and decisionSeat ~= nil
-                and BridgeObjectIsOnSeatSide(object, decisionSeat)
-            local observedInDecisionHand = guid ~= nil and seatHandGuids[guid] == true
-            if observedInDecisionHand then
-                -- Keep the authoritative mapping sticky to the live hand object so
-                -- legal hand actions remain interactable even if zone bookkeeping
-                -- lags a frame behind physical hand ownership.
-                local handMappingChanged = BridgeState.physicalSeatByGuid[guid] ~= decision.seatId
-                    or BridgeState.physicalZoneByGuid[guid] ~= "hand"
-                BridgeState.physicalSeatByGuid[guid] = decision.seatId
-                BridgeState.physicalZoneByGuid[guid] = "hand"
-                if handMappingChanged then BridgeAdvancePhysicalPresentationGeneration("hand-mapping-repaired") end
-            end
-            local isCandidate = decision.kind ~= "main_priority"
-                or mappedInDecisionHand
-                or observedInDecisionHand
-                or (guid ~= nil
-                    and BridgeState.physicalSeatByGuid[guid] == decision.seatId
-                    and (BridgeState.physicalZoneByGuid[guid] == "battlefield"
-                        or BridgeState.physicalZoneByGuid[guid] == "graveyard"
-                        or BridgeState.physicalZoneByGuid[guid] == "exile"
-                        or BridgeState.physicalZoneByGuid[guid] == "command"))
-            if isCandidate then
-                table.insert(cards, object)
-                if guid ~= nil then
-                    candidateGuid[guid] = true
-                end
-            end
+                and (BridgeState.physicalZoneByGuid[guid] == "battlefield"
+                    or BridgeState.physicalZoneByGuid[guid] == "graveyard"
+                    or BridgeState.physicalZoneByGuid[guid] == "exile"
+                    or BridgeState.physicalZoneByGuid[guid] == "command"))
+        if isCandidate then
+            table.insert(cards, object)
+        end
+    end
+    for _, object in ipairs(getAllObjects()) do
+        addDecisionCandidate(object)
+    end
+    -- TTS does not guarantee that cards held in a hand are returned by
+    -- getAllObjects().  This is especially visible after mulligan replacement
+    -- cards arrive through a hand callback, so include the authoritative
+    -- decision seat's live hand as an explicit candidate source.
+    if decisionSeat ~= nil then
+        local handObjects = BridgeTryGetSeatHandObjects(decision.seatId)
+        for _, object in ipairs(handObjects or {}) do
+            addDecisionCandidate(object)
         end
     end
 

@@ -102,6 +102,52 @@ public sealed class DelveAndMulliganLuaContractTests
     }
 
     [Fact]
+    public void MulliganLibraryInsertion_AllowsTtsContainmentToSettleBeforeFailingDuplicateAudit()
+    {
+        var start = Script.IndexOf("function BridgeVerifyLibraryIdentityStability", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeInsertPhysicalCardIntoLibrary", start, StringComparison.Ordinal);
+        var stability = Script[start..end];
+        var insertionStart = end;
+        var insertionEnd = Script.IndexOf("function BridgeProcessMulliganBottomQueue", insertionStart, StringComparison.Ordinal);
+        var insertion = Script[insertionStart..insertionEnd];
+
+        Assert.Contains("BridgeAuditDuplicateLibraryGuids()", stability);
+        Assert.Contains("attempt >= 30", stability);
+        Assert.Contains("BridgeWaitFrames(function()", stability);
+        Assert.Contains("waiting for TTS library containment to settle", stability);
+        Assert.Contains("BridgeVerifyLibraryIdentityStability(function(stable, stabilityError)", insertion);
+        Assert.DoesNotContain("local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids()", insertion);
+    }
+
+    [Fact]
+    public void MulliganBottomFailure_DoesNotContinueMutatingTheRemainingQueue()
+    {
+        var start = Script.IndexOf("function BridgeProcessMulliganBottomQueue", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeQueueMulliganBottomInsertion", start, StringComparison.Ordinal);
+        var processor = Script[start..end];
+        var failure = processor.IndexOf("if not ok then", StringComparison.Ordinal);
+        var success = processor.IndexOf("if instanceId ~= nil then", failure, StringComparison.Ordinal);
+
+        Assert.True(failure >= 0 && success > failure);
+        Assert.Contains("BridgeStopOnDesync", processor[failure..success]);
+        Assert.Contains("mulliganBottomQueueBySeatId[seatId] = nil", processor[failure..success]);
+        Assert.DoesNotContain("complete()", processor[failure..success]);
+    }
+
+    [Fact]
+    public void DecisionRendering_IncludesLiveDecisionSeatHandAfterMulligan()
+    {
+        var start = Script.IndexOf("function BridgeRenderDecision(decision, force)", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeShowError", start, StringComparison.Ordinal);
+        var renderer = Script[start..end];
+
+        Assert.Contains("local function addDecisionCandidate(object)", renderer);
+        Assert.Contains("TTS does not guarantee that cards held in a hand are returned by", renderer);
+        Assert.Contains("BridgeTryGetSeatHandObjects(decision.seatId)", renderer);
+        Assert.Contains("for _, object in ipairs(handObjects or {}) do", renderer);
+    }
+
+    [Fact]
     public void OpeningKeepOrMulligan_IsGatedByExactSnapshotHandReadiness()
     {
         var deferStart = Script.IndexOf("function BridgeShouldDeferDecision", StringComparison.Ordinal);
