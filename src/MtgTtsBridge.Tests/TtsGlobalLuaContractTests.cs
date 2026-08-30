@@ -1267,7 +1267,9 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgeScheduleSnapshotReconcile", Script);
         Assert.Contains("BridgeShouldReconcileAfterEvent(event)", Script);
-        Assert.Contains("or event.kind == \"card_moved\"", Script);
+        Assert.Contains("or (event.kind == \"card_moved\"", Script);
+        Assert.Contains("pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId]", Script);
+        Assert.Contains(".applied ~= true", Script);
         Assert.Contains("BridgeZoneIsPublicForReconcile(zoneName)", Script);
         Assert.Contains("mappedNeedsFix", Script);
         Assert.Contains("BridgeApplyStructuredCardMove(evt)", Script);

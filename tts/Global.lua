@@ -3532,7 +3532,9 @@ end
 function BridgeShouldReconcileAfterEvent(event)
     return event.kind == "spell_resolved"
         or event.kind == "land_played"
-        or event.kind == "card_moved"
+        or (event.kind == "card_moved"
+            and (BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId] == nil
+                or BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId].applied ~= true))
 end
 
 function BridgeResumeChoiceProtocol(reason)
