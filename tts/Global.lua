@@ -17,6 +17,8 @@ BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 -- in TTS without materially affecting interactive responsiveness.
 BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.20
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
+BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS = 8.0
+BRIDGE_OPENING_HAND_READINESS_RETRY_FRAMES = 2
 -- Library extraction is serialized separately. Keep the event cursor moving
 -- promptly after a draw so a burst (for example, a draw per creature) cannot
 -- hold later authoritative phase/priority events behind animation delays.
@@ -212,6 +214,11 @@ BridgeState = {
     pendingDecisionDeferredAt = nil,
     pendingDecisionDeferredCursor = 0,
     pendingDecisionDeferredApplied = 0,
+    expectedHandInstanceIdsBySeatId = {},
+    openingHandReadinessDecisionId = nil,
+    openingHandReadinessSnapshotPending = false,
+    openingHandReadinessSnapshotRequested = false,
+    openingHandReadinessRetryScheduled = false,
     eventSessionId = nil,
     lastReceivedEventSequence = 0,
     lastAppliedEventSequence = 0,
@@ -1750,6 +1757,66 @@ function BridgeUiSet(id, attribute, value)
     end
 end
 
+-- Keep only exact Forge instance IDs here. Card names are intentionally not
+-- retained for the readiness diagnostic because an opening hand may be hidden
+-- information from the other player.
+function BridgeRecordExpectedHandIdentities(snapshot)
+    BridgeState.expectedHandInstanceIdsBySeatId = {}
+    for _, seatSnapshot in ipairs(snapshot and snapshot.seats or {}) do
+        local expected = {}
+        for _, zone in ipairs(seatSnapshot.zones or {}) do
+            if string.lower(tostring(zone.name or "")) == "hand" then
+                for _, card in ipairs(zone.cards or {}) do
+                    if card.cardInstanceId ~= nil then expected[card.cardInstanceId] = true end
+                end
+            end
+        end
+        BridgeState.expectedHandInstanceIdsBySeatId[seatSnapshot.seatId] = expected
+    end
+    BridgeState.openingHandReadinessSnapshotPending = false
+end
+
+function BridgeCheckOpeningHandReadiness(seatId)
+    local expected = BridgeState.expectedHandInstanceIdsBySeatId[seatId]
+    local handGuids, handError = BridgeBuildSeatHandGuidSet(seatId)
+    local expectedCount = 0
+    local readyCount = 0
+    local missing = {}
+    for instanceId in pairs(expected or {}) do
+        expectedCount = expectedCount + 1
+        local guid = BridgeState.physicalByInstanceId[instanceId]
+        local reason = nil
+        if guid == nil then
+            reason = "missing-guid"
+        elseif BridgeState.physicalInstanceIdByGuid[guid] ~= instanceId then
+            reason = "inverse-mapping-mismatch"
+        elseif BridgeState.physicalSeatByGuid[guid] ~= seatId then
+            reason = "physical-seat-mismatch"
+        elseif BridgeState.physicalZoneByGuid[guid] ~= "hand" then
+            reason = "physical-zone-mismatch"
+        else
+            local object = BridgeGetLiveObjectByGuid(guid)
+            if object == nil or object.tag ~= "Card" then
+                reason = "physical-card-unavailable"
+            elseif handGuids[guid] ~= true then
+                reason = "tts-hand-membership-pending"
+            end
+        end
+        if reason == nil then
+            readyCount = readyCount + 1
+        else
+            table.insert(missing, tostring(instanceId) .. "->" .. tostring(guid) .. ":" .. reason)
+        end
+    end
+
+    if expectedCount == 0 then
+        local reason = handError and ("authoritative-hand-snapshot-missing; " .. tostring(handError))
+            or "authoritative-hand-snapshot-missing"
+        return false, readyCount, expectedCount, reason
+    end
+    return readyCount == expectedCount, readyCount, expectedCount, table.concat(missing, ",")
+end
+
 -- A resolved permanent can have two independent pieces of state in flight:
 -- Forge's public zone mapping and TTS's last physical transform.  Keep the
 -- diagnostic exact-id based so a stale semantic resolution can never make us
@@ -3056,12 +3123,14 @@ function BridgeShouldIgnoreStaleDecision(decision)
 end
 
 function BridgeShouldDeferDecision(decision)
+    local openingMulligan = decision ~= nil and decision.kind == "mulligan"
+        and tostring(decision.mulliganStage or "") == "keep_or_mulligan"
     -- A draw is authoritative before its physical Deck extraction callback
     -- completes. Do not expose a priority menu whose new hand card cannot yet
     -- be embodied; otherwise the player can pass a stale menu and only then
     -- see the card/action refresh. The extraction completion path releases
     -- and rerenders the same Forge decision after the exact card is in hand.
-    if decision ~= nil and decision.seatId ~= nil then
+    if not openingMulligan and decision ~= nil and decision.seatId ~= nil then
         local extractionQueue = BridgeState.libraryExtractionQueueBySeatId[decision.seatId]
         if BridgeState.libraryExtractionActiveBySeatId[decision.seatId] == true
             or (extractionQueue ~= nil and #extractionQueue > 0) then
@@ -3070,15 +3139,28 @@ function BridgeShouldDeferDecision(decision)
         end
     end
 
-    -- Do not show KEEP/MULLIGAN until the authoritative opening-hand draws
-    -- have all completed their serialized physical extraction. Otherwise a
-    -- player can be asked to assess six visible cards while Forge has seven.
-    if decision ~= nil and decision.kind == "mulligan" then
-        local queue = BridgeState.libraryExtractionQueueBySeatId[decision.seatId]
-        if BridgeState.libraryExtractionActiveBySeatId[decision.seatId] == true
-            or (queue ~= nil and #queue > 0) then
+    -- Do not show KEEP/MULLIGAN until the exact opening-hand draws from Forge's
+    -- authoritative snapshot is physically settled in the human's TTS hand.
+    -- This deliberately uses the snapshot identities, not a hard-coded hand
+    -- size or the transient extraction queue length.
+    if openingMulligan then
+        if BridgeState.openingHandReadinessDecisionId ~= decision.decisionId then
+            BridgeState.openingHandReadinessDecisionId = decision.decisionId
+            BridgeState.openingHandReadinessSnapshotPending = true
+            BridgeState.openingHandReadinessSnapshotRequested = false
+        end
+        if BridgeState.openingHandReadinessSnapshotPending then
             return true, tonumber(decision.eventCursor or 0) or 0,
-                tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+                tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+                "opening_hand_readiness", "waiting for authoritative opening-hand snapshot"
+        end
+        local ready, readyCount, expectedCount, readinessDetail =
+            BridgeCheckOpeningHandReadiness(decision.seatId)
+        if not ready then
+            return true, tonumber(decision.eventCursor or 0) or 0,
+                tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+                "opening_hand_readiness",
+                string.format("ready=%d expected=%d missing=%s", readyCount, expectedCount, readinessDetail))
         end
     end
     local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
@@ -3087,14 +3169,48 @@ function BridgeShouldDeferDecision(decision)
     return eventCursor > applied, eventCursor, applied
 end
 
+function BridgeScheduleOpeningHandReadinessRetry()
+    if BridgeState.openingHandReadinessRetryScheduled then return end
+    BridgeState.openingHandReadinessRetryScheduled = true
+    BridgeWaitFrames(function()
+        BridgeState.openingHandReadinessRetryScheduled = false
+        if BridgeState.pendingDecision ~= nil and not BridgeState.submitting then
+            BridgeTryPresentPendingDecision("opening-hand-readiness-retry")
+        end
+    end, BRIDGE_OPENING_HAND_READINESS_RETRY_FRAMES)
+end
+
 function BridgeTryPresentPendingDecision(reason)
     if BridgeState.pendingDecision == nil or BridgeState.submitting then return end
     local pending = BridgeState.pendingDecision
-    local defer, eventCursor, applied = BridgeShouldDeferDecision(pending)
+    local defer, eventCursor, applied, deferReason, deferDetail = BridgeShouldDeferDecision(pending)
     if defer then
         local deferredAt = tonumber(BridgeState.pendingDecisionDeferredAt or 0) or 0
         if deferredAt <= 0 then deferredAt = os.clock() end
         local elapsed = os.clock() - deferredAt
+        if deferReason == "opening_hand_readiness" then
+            BridgeState.pendingDecisionDeferredAt = deferredAt
+            BridgeState.pendingDecisionDeferredCursor = eventCursor
+            BridgeState.pendingDecisionDeferredApplied = applied
+            if not BridgeState.openingHandReadinessSnapshotRequested then
+                BridgeState.openingHandReadinessSnapshotRequested = true
+                BridgeState.openingHandReadinessSnapshotPending = true
+                BridgeScheduleSnapshotReconcile("opening-hand-readiness")
+            end
+            if elapsed >= BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS then
+                local _, readyCount, expectedCount, readinessDetail =
+                    BridgeCheckOpeningHandReadiness(pending.seatId)
+                BridgeStopOnDesync(string.format(
+                    "opening hand readiness timeout: ready=%d expected=%d missing=%d mappings=%s",
+                    readyCount, expectedCount, math.max(expectedCount - readyCount, 0), readinessDetail))
+                return
+            end
+            BridgeLog(string.format(
+                "[Bridge] holding opening mulligan decision %s: %s",
+                tostring(pending.decisionId), tostring(deferDetail)))
+            BridgeScheduleOpeningHandReadinessRetry()
+            return
+        end
         local stalledProgress = BridgeState.pendingDecisionDeferredCursor == eventCursor
             and BridgeState.pendingDecisionDeferredApplied == applied
         if elapsed < BRIDGE_DECISION_DEFER_STALL_SECONDS or not stalledProgress then
@@ -3208,6 +3324,7 @@ end
 function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     local movedCount = 0
     BridgePresentationMetric("fullSnapshotReconcileCount")
+    BridgeRecordExpectedHandIdentities(snapshot)
     BridgeSetMonarchSeat(snapshot and snapshot.monarchSeatId or nil)
     BridgeState.stackSummary = {}
     for _, card in ipairs(snapshot and snapshot.stack or {}) do
@@ -3308,6 +3425,7 @@ function BridgeScheduleSnapshotReconcile(reason)
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
         BridgeState.snapshotReconcileInFlight = false
         if ok and snapshot ~= nil and snapshot.sessionId == BridgeState.eventSessionId then
+            BridgeRecordExpectedHandIdentities(snapshot)
             if BridgeSnapshotMayMutatePublicZones(snapshot) then
                 BridgeApplySafeSnapshotReconcile(snapshot, reason)
             else
@@ -3318,6 +3436,10 @@ function BridgeScheduleSnapshotReconcile(reason)
             BridgeLog("[Bridge] snapshot reconcile failed: " .. tostring(err))
         elseif snapshot ~= nil then
             BridgeLog("[Bridge] snapshot reconcile skipped due to session mismatch")
+        end
+
+        if BridgeState.pendingDecision ~= nil then
+            BridgeTryPresentPendingDecision("snapshot-reconcile")
         end
 
         if BridgeState.snapshotReconcilePending then
@@ -4316,7 +4438,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         return
     end
 
-    local deferDecision, deferCursor, deferApplied = BridgeShouldDeferDecision(decision)
+    local deferDecision, deferCursor, deferApplied, deferReason = BridgeShouldDeferDecision(decision)
     if deferDecision then
         BridgeState.pendingDecision = decision
         BridgeState.lastDecision = decision
@@ -4329,6 +4451,9 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         BridgeLog(string.format(
             "[Bridge] gating decision %s until events catch up (cursor=%s, applied=%s)",
             tostring(decision.decisionId), tostring(deferCursor), tostring(deferApplied)))
+        if deferReason == "opening_hand_readiness" then
+            BridgeScheduleOpeningHandReadinessRetry()
+        end
         return
     end
 
@@ -5964,6 +6089,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback)
                 callback(false, "snapshot session mismatch")
                 return
             end
+            BridgeRecordExpectedHandIdentities(snapshot)
             local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids()
             if duplicateGuidCount > 0 then
                 BridgeState.bootstrapping = false
@@ -7172,6 +7298,11 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.pendingDecisionDeferredAt = nil
     BridgeState.pendingDecisionDeferredCursor = 0
     BridgeState.pendingDecisionDeferredApplied = 0
+    BridgeState.expectedHandInstanceIdsBySeatId = {}
+    BridgeState.openingHandReadinessDecisionId = nil
+    BridgeState.openingHandReadinessSnapshotPending = false
+    BridgeState.openingHandReadinessSnapshotRequested = false
+    BridgeState.openingHandReadinessRetryScheduled = false
     BridgeResetSelectionState()
     BridgeHideMainPriorityControls()
     if BridgeState.turnCounterSessionId ~= sessionId then

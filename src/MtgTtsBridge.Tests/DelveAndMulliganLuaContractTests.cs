@@ -100,4 +100,44 @@ public sealed class DelveAndMulliganLuaContractTests
         Assert.Contains("returningMarker.sessionId == BridgeState.eventSessionId", Script);
         Assert.Contains("BridgeQueueMulliganBottomInsertion(event.seatId, object)", Script);
     }
+
+    [Fact]
+    public void OpeningKeepOrMulligan_IsGatedByExactSnapshotHandReadiness()
+    {
+        var deferStart = Script.IndexOf("function BridgeShouldDeferDecision", StringComparison.Ordinal);
+        var retryStart = Script.IndexOf("function BridgeScheduleOpeningHandReadinessRetry", deferStart, StringComparison.Ordinal);
+        var renderStart = Script.IndexOf("function BridgeTryPresentPendingDecision", retryStart, StringComparison.Ordinal);
+        var defer = Script[deferStart..retryStart];
+        var retry = Script[retryStart..renderStart];
+
+        Assert.Contains("decision.kind == \"mulligan\"", defer);
+        Assert.Contains("mulliganStage or \"\") == \"keep_or_mulligan\"", defer);
+        Assert.Contains("expectedHandInstanceIdsBySeatId", Script);
+        Assert.Contains("BridgeCheckOpeningHandReadiness(decision.seatId)", defer);
+        Assert.Contains("physicalInstanceIdByGuid[guid] ~= instanceId", Script);
+        Assert.Contains("physicalSeatByGuid[guid] ~= seatId", Script);
+        Assert.Contains("physicalZoneByGuid[guid] ~= \"hand\"", Script);
+        Assert.Contains("handGuids[guid] ~= true", Script);
+        Assert.Contains("readyCount == expectedCount", Script);
+        Assert.DoesNotContain("== 7", defer);
+        Assert.Contains("BridgeWaitFrames", retry);
+        Assert.Contains("BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS", Script);
+        Assert.Contains("BridgeScheduleSnapshotReconcile(\"opening-hand-readiness\")", Script);
+        Assert.Contains("BridgeStopOnDesync(string.format(", Script);
+        Assert.Contains("opening hand readiness timeout", Script);
+    }
+
+    [Fact]
+    public void OpeningHandReadiness_UsesSnapshotIdsAndNeverDiagnosticCardNames()
+    {
+        var start = Script.IndexOf("function BridgeRecordExpectedHandIdentities", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeCheckOpeningHandReadiness", start, StringComparison.Ordinal);
+        var capture = Script[start..end];
+
+        Assert.Contains("zone.name or \"\")", capture);
+        Assert.Contains("== \"hand\"", capture);
+        Assert.Contains("card.cardInstanceId", capture);
+        Assert.DoesNotContain("card.cardName", capture);
+        Assert.Contains("openingHandReadinessSnapshotPending = false", capture);
+    }
 }
