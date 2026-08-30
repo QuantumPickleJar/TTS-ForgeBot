@@ -72,7 +72,9 @@ CRITICAL: sorceries with graveyard return is failing. the choice accepts but no 
 
 Bug: Casting a creature can  take up to an entire  turn for it to move from this weird area I call the "cast zone"   to its correct place on the battlefiedl
 
-Bug: Main 1 still  gets skipped when certain cards are played (lands, casting any type of spell)
+Bug: Main 1 still gets skipped 
+
+Bug: the option to play a land does not get checked until  the next phase, it needs to be checked on every relevant choice
 
 Bug: Crewing a creature from the UI fails, it does not initiate anythhing  (observed during combat:pre)
 
@@ -81,3 +83,12 @@ bug: player is offered choices they should not have (instants and things with fl
 bug: next card is revealed through choices presented from the UI
 
 bug: you can only highlight one card max for attacker selection, multiple ones are available if done through the UI
+
+BUG: main 1 phase is skipped on to combat turn 1
+BUG: valid choices are not presented until both are satisfied - A the combat step is reached and B - the user has clicked Done on the UI
+BUG: yield turn button has vanished almos entirely.  I only saw it once on turn 3 after I clicked confirm
+BUG: (turn 3) when i cast mental note, a land untapped. Not only that, I had to click "done" to get to the point where cards draw. 
+
+BUG: you can multi-select during times when it does not make sensse to be able to do so (draw step provided max  hand size is not forcing a discard)
+
+BUG: (turn 3) when casting mental note, the top two cards must be transported from the top of library to the  graveyard face-up before the draw triggers. 
