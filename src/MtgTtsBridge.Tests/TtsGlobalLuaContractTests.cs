@@ -2367,6 +2367,19 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void DesyncRecovery_SuppressesDuplicateAsyncFailuresDuringResync()
+    {
+        Assert.Contains("desyncLatched = false", Script);
+        Assert.Contains("desyncFailureCount = 0", Script);
+        Assert.Contains("suppressed desync during authoritative resync", Script);
+        Assert.Contains("duplicate synchronization failure suppressed", Script);
+        var resyncStart = Script.IndexOf("function BridgeResyncFromAuthoritativeSnapshot", StringComparison.Ordinal);
+        var resyncEnd = Script.IndexOf("function BridgeAlignLibraryOrderForSnapshot", resyncStart, StringComparison.Ordinal);
+        Assert.Contains("BridgeState.desyncLatched = false", Script[resyncStart..resyncEnd]);
+        Assert.Contains("BridgeState.desyncFailureCount = 0", Script[resyncStart..resyncEnd]);
+    }
+
+    [Fact]
     public void DevHud_HasOneRollingCaptureControlSoItCannotShadowChoiceButtons()
     {
         var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));

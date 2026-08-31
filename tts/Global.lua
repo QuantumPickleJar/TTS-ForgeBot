@@ -549,6 +549,13 @@ BridgeState = {
     transitionExpectedUntil = 0,
     latencyProbe = nil,
     sessionRecoveryInFlight = false,
+    -- A physical-sync failure is terminal for the current presentation
+    -- generation.  Async movement/snapshot callbacks may still finish after
+    -- the stop (and while an explicit resync is rebuilding the table); keep
+    -- those callbacks diagnostic-only instead of surfacing a second failure.
+    desyncLatched = false,
+    desyncFailureCount = 0,
+    desyncLastMessage = nil,
     choiceProtocolPaused = false,
     choiceProtocolFailureTimes = {},
     gameEnded = nil,
@@ -6773,6 +6780,11 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeShowError("cannot resync before Forge has started a session")
         return
     end
+    -- The previous failure stopped both pollers.  Opening an explicit
+    -- resync starts a new presentation generation; failures from that old
+    -- generation must not remain latched against the recovery attempt.
+    BridgeState.desyncLatched = false
+    BridgeState.desyncLastMessage = nil
     BridgeState.resyncPresentationState = {
         currentTurnSeatId = BridgeState.currentTurnSeatId,
         currentPhase = BridgeState.currentPhase,
@@ -6799,12 +6811,16 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeState.resyncInFlight = false
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
         if not ok then
+            BridgeState.desyncLatched = true
             BridgeStopOnDesync("authoritative resync failed: " .. tostring(err))
             BridgeUiMarkDirty("resync-failed")
             return
         end
         BridgeStartEventPolling(sessionId, false)
         BridgeStartDecisionPolling()
+        BridgeState.desyncLatched = false
+        BridgeState.desyncFailureCount = 0
+        BridgeState.desyncLastMessage = nil
         BridgeSetStatus("MATCH ACTIVE", "Physical table resynced from Forge.")
         BridgeUiMarkDirty("resync-complete")
         BridgeLog("[Bridge] authoritative resync complete at event cursor="
@@ -7930,6 +7946,9 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.renderedDecisionPresentationKey = nil
     BridgeState.renderedDecisionPhysicalGeneration = nil
     BridgeState.eventSessionId = sessionId
+    BridgeState.desyncLatched = false
+    BridgeState.desyncFailureCount = 0
+    BridgeState.desyncLastMessage = nil
     BridgeState.lastReceivedEventSequence = 0
     BridgeState.lastAppliedEventSequence = 0
     BridgeState.eventQueue = {}
@@ -11674,6 +11693,22 @@ function BridgeReturnAttackPresentation(seatId)
 end
 
 function BridgeStopOnDesync(message)
+    local diagnostic = tostring(message or "")
+    if BridgeState.resyncInFlight == true then
+        BridgeState.desyncFailureCount = (BridgeState.desyncFailureCount or 0) + 1
+        BridgeState.desyncLastMessage = diagnostic
+        BridgeLog("[Bridge] suppressed desync during authoritative resync: " .. diagnostic)
+        return
+    end
+    if BridgeState.desyncLatched == true then
+        BridgeState.desyncFailureCount = (BridgeState.desyncFailureCount or 0) + 1
+        BridgeState.desyncLastMessage = diagnostic
+        BridgeLog("[Bridge] duplicate synchronization failure suppressed: " .. diagnostic)
+        return
+    end
+    BridgeState.desyncLatched = true
+    BridgeState.desyncFailureCount = (BridgeState.desyncFailureCount or 0) + 1
+    BridgeState.desyncLastMessage = diagnostic
     BridgeStopEventPolling()
     BridgeStopDecisionPolling()
     BridgeState.animationRunning = false
@@ -11684,7 +11719,6 @@ function BridgeStopOnDesync(message)
     BridgeClearHighlights()
     BridgeResetSelectionState()
     BridgeHideMainPriorityControls()
-    local diagnostic = tostring(message or "")
     if string.sub(diagnostic, 1, 16) == "LIBRARY MISMATCH" then
         -- Bootstrap mismatch has already emitted its complete, read-only
         -- inventory to the scripting log.  Keep the table-facing signal to
