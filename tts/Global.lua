@@ -12484,6 +12484,28 @@ function BridgeHudSubmitReport(category, summary)
     local requestEpoch = BRIDGE_RUNTIME_EPOCH_LOCAL
     local requestSession = BridgeState.eventSessionId
     local completed = false
+
+    -- Diagnostic capture is deliberately out-of-band, but it can overlap a
+    -- transient HTTP/event-poll failure.  Once the capture finishes, make
+    -- sure the normal authoritative pumps are alive again.  This is
+    -- idempotent (the pollers already guard against duplicate schedules) and
+    -- never fabricates a decision or advances Forge.
+    local function resumeGameplayPumps()
+        if not BridgeRuntimeIsCurrent(requestEpoch)
+            or BridgeState.ui ~= requestUi
+            or BridgeState.eventSessionId ~= requestSession
+            or requestSession == nil then
+            return
+        end
+        if BridgeState.eventPolling ~= true then
+            BridgeStartEventPolling(requestSession, false)
+        end
+        if BridgeState.lastDecision == nil and not BridgeState.submitting
+            and BridgeState.gameEnded == nil then
+            BridgeStartDecisionPolling()
+        end
+    end
+
     ui.reportCaptureInFlight = true
     ui.reportStatus = "Capturing..."
     BridgeUiMarkDirty("report-capture-start")
@@ -12508,6 +12530,7 @@ function BridgeHudSubmitReport(category, summary)
             BridgeLog("[Bridge] diagnostic report failed: " .. detail)
         end
         BridgeUiMarkDirty("report-capture-result")
+        resumeGameplayPumps()
     end
 
     -- Arm the watchdog before collecting any diagnostic payload.  Payload

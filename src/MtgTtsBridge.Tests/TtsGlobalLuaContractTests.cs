@@ -2972,4 +2972,17 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("if current ~= nil and current.decisionId == capturedDecisionId then", Script);
         Assert.Contains("BridgeRenderDecision(current, true)", Script);
     }
+
+    [Fact]
+    public void DiagnosticCapture_ResumesAuthoritativeGameplayPumps()
+    {
+        var start = Script.IndexOf("function BridgeHudSubmitReport", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeHudReportCapture", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        Assert.Contains("local function resumeGameplayPumps()", body);
+        Assert.Contains("BridgeStartEventPolling(requestSession, false)", body);
+        Assert.Contains("BridgeStartDecisionPolling()", body);
+        Assert.Contains("resumeGameplayPumps()", body);
+    }
 }
