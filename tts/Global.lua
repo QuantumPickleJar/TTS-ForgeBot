@@ -1394,6 +1394,7 @@ function BridgeStageSeatCardsForBootstrap(snapshot)
     end
 
     local stagedBySeat = {}
+    local stagedGuids = {}
     local stagedCount = 0
     for _, object in ipairs(getAllObjects()) do
         if BridgeObjectIsUsable(object) and object.tag == "Card" then
@@ -1418,6 +1419,7 @@ function BridgeStageSeatCardsForBootstrap(snapshot)
                 and IsGameCardCandidate(object, seatId, context)
                 and BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat) then
                 stagedCount = stagedCount + 1
+                if guid ~= nil then stagedGuids[tostring(guid)] = true end
             end
         end
     end
@@ -1425,7 +1427,7 @@ function BridgeStageSeatCardsForBootstrap(snapshot)
     if stagedCount > 0 then
         BridgeLog("[Bridge] staged " .. tostring(stagedCount) .. " loose card(s) near library before authoritative bootstrap")
     end
-    return true, nil
+    return true, nil, stagedGuids
 end
 
 -- A destructive New Match must not leave the previous game's embodied cards
@@ -1479,7 +1481,15 @@ function BridgeLibraryContainsGuid(deck, guid)
     return false
 end
 
-function BridgeAuditDuplicateLibraryGuids(ignoredGuid)
+function BridgeLibraryAuditIgnoresGuid(ignoredGuids, guid)
+    if ignoredGuids == nil or guid == nil then return false end
+    if type(ignoredGuids) == "table" then
+        return ignoredGuids[tostring(guid)] == true
+    end
+    return tostring(guid) == tostring(ignoredGuids)
+end
+
+function BridgeAuditDuplicateLibraryGuids(ignoredGuids)
     local looseByGuid = {}
     for _, object in ipairs(getAllObjects()) do
         if BridgeObjectIsUsable(object) and object.tag == "Card" then
@@ -1487,9 +1497,9 @@ function BridgeAuditDuplicateLibraryGuids(ignoredGuid)
             -- During a Deck.putObject/takeObject transaction TTS can retain
             -- the exact moved Card in its old loose/source view while also
             -- publishing it in the destination Deck ledger.  The insertion
-            -- caller supplies that one expected GUID; all other collisions
+            -- caller supplies the exact just-inserted GUID(s); all other collisions
             -- remain strict corruption canaries.
-            if guid ~= nil and tostring(guid) ~= tostring(ignoredGuid or "") then
+            if guid ~= nil and not BridgeLibraryAuditIgnoresGuid(ignoredGuids, guid) then
                 looseByGuid[guid] = object
             end
         end
@@ -1594,9 +1604,14 @@ end
 -- as a container-settle window, not as physical corruption.  Keep retrying
 -- the real duplicate audit, and still fail loudly if the loose/contained
 -- collision survives the bounded window.
-function BridgeVerifyLibraryIdentityStability(callback, attempt, expectedGuid)
+function BridgeVerifyLibraryIdentityStability(callback, attempt, expectedGuids)
     attempt = attempt or 1
-    local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids(expectedGuid)
+    -- TTS can retain source Card userdata for a few frames after it has added
+    -- a card to a Deck. Suppress only the exact GUIDs just staged during that
+    -- bounded window; the terminal check is strict so a persistent duplicate
+    -- can never be accepted as a successful insertion/bootstrap.
+    local ignoredGuids = attempt < 30 and expectedGuids or nil
+    local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids(ignoredGuids)
     if duplicateGuidCount == 0 then
         callback(true, nil)
         return
@@ -1610,7 +1625,7 @@ function BridgeVerifyLibraryIdentityStability(callback, attempt, expectedGuid)
         BridgeLog("[Bridge] waiting for TTS library containment to settle before duplicate audit")
     end
     BridgeWaitFrames(function()
-        BridgeVerifyLibraryIdentityStability(callback, attempt + 1, expectedGuid)
+        BridgeVerifyLibraryIdentityStability(callback, attempt + 1, expectedGuids)
     end, 2)
 end
 
@@ -6493,7 +6508,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                 return
             end
             BridgeTraceStart("START-12 physical-bootstrap-begin")
-            local stagedOk, stagedError = BridgeStageSeatCardsForBootstrap(snapshot)
+            local stagedOk, stagedError, stagedGuids = BridgeStageSeatCardsForBootstrap(snapshot)
             if not stagedOk then
                 BridgeState.bootstrapping = false
                 callback(false, stagedError)
@@ -6504,12 +6519,11 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
             -- contained-card ledger. This is a short state-settle, not a
             -- timing-based replacement for deterministic insertion above.
             BridgeTraceStart("START-13 library-settle")
-            BridgeWaitFrames(function()
-                local postStageDuplicateCount = BridgeAuditDuplicateLibraryGuids()
-                if postStageDuplicateCount > 0 then
+            BridgeVerifyLibraryIdentityStability(function(stable, stabilityError)
+                if not stable then
                     BridgeState.bootstrapping = false
-                    local detail = "physical library identity audit found " .. tostring(postStageDuplicateCount)
-                        .. " loose/contained duplicate GUID(s) after staging"
+                    local detail = "physical library identity audit found " .. tostring(stabilityError)
+                        .. " after staging"
                     BridgeLog("[Bridge] " .. detail)
                     callback(false, detail)
                     return
@@ -6549,7 +6563,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                         end)
                     end)
                 end)
-            end, 15)
+            end, 1, stagedGuids)
         end)
     end)
 end

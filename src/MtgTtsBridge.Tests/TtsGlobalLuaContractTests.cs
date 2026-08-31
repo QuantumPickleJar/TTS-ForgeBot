@@ -2355,19 +2355,40 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void LibraryInsertion_AllowsOnlyTheExpectedMovedGuidDuringTtsSourceSettle()
+    public void LibraryInsertion_AllowsOnlyExactStagedGuidsDuringTtsSourceSettle()
     {
-        var auditStart = Script.IndexOf("function BridgeAuditDuplicateLibraryGuids", StringComparison.Ordinal);
+        var auditStart = Script.IndexOf("function BridgeLibraryAuditIgnoresGuid", StringComparison.Ordinal);
         var auditEnd = Script.IndexOf("function BridgeLibraryCardIdentity", auditStart, StringComparison.Ordinal);
         var audit = Script[auditStart..auditEnd];
         var stabilityStart = Script.IndexOf("function BridgeVerifyLibraryIdentityStability", StringComparison.Ordinal);
         var stabilityEnd = Script.IndexOf("function BridgeInsertPhysicalCardIntoLibrary", stabilityStart, StringComparison.Ordinal);
         var stability = Script[stabilityStart..stabilityEnd];
 
-        Assert.Contains("ignoredGuid", audit);
-        Assert.Contains("tostring(guid) ~= tostring(ignoredGuid or \"\")", audit);
-        Assert.Contains("BridgeAuditDuplicateLibraryGuids(expectedGuid)", stability);
-        Assert.Contains("BridgeVerifyLibraryIdentityStability(callback, attempt + 1, expectedGuid)", stability);
+        Assert.Contains("function BridgeLibraryAuditIgnoresGuid(ignoredGuids, guid)", audit);
+        Assert.Contains("ignoredGuids[tostring(guid)] == true", audit);
+        Assert.Contains("not BridgeLibraryAuditIgnoresGuid(ignoredGuids, guid)", audit);
+        Assert.Contains("local ignoredGuids = attempt < 30 and expectedGuids or nil", stability);
+        Assert.Contains("BridgeAuditDuplicateLibraryGuids(ignoredGuids)", stability);
+        Assert.Contains("BridgeVerifyLibraryIdentityStability(callback, attempt + 1, expectedGuids)", stability);
+    }
+
+    [Fact]
+    public void AuthoritativeResync_WaitsForEveryExactBootstrapStagingGuidThenRunsStrictAudit()
+    {
+        var start = Script.IndexOf("function BridgeStageSeatCardsForBootstrap", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeObjectNearSeatZone", start, StringComparison.Ordinal);
+        var staging = Script[start..end];
+        var bootstrapStart = Script.IndexOf("function BridgeBootstrapCurrentSnapshot", StringComparison.Ordinal);
+        var bootstrapEnd = Script.IndexOf("function BridgeAnnotateSnapshotBattlefieldKinds", bootstrapStart, StringComparison.Ordinal);
+        var bootstrap = Script[bootstrapStart..bootstrapEnd];
+
+        Assert.Contains("local stagedGuids = {}", staging);
+        Assert.Contains("stagedGuids[tostring(guid)] = true", staging);
+        Assert.Contains("return true, nil, stagedGuids", staging);
+        Assert.Contains("local stagedOk, stagedError, stagedGuids", bootstrap);
+        Assert.Contains("BridgeVerifyLibraryIdentityStability(function(stable, stabilityError)", bootstrap);
+        Assert.Contains("end, 1, stagedGuids)", bootstrap);
+        Assert.DoesNotContain("local postStageDuplicateCount = BridgeAuditDuplicateLibraryGuids()", bootstrap);
     }
 
     [Fact]
