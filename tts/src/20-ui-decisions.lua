@@ -1531,6 +1531,32 @@ function BridgeCanDeferStructuredMoveToSnapshot(event)
     return event.kind == "card_moved" and BridgeZoneIsPublicForReconcile(destinationZone)
 end
 
+-- A snapshot is authoritative for the resulting public zone, but it does not
+-- carry the physical source of a card that was already public. In particular,
+-- a missing graveyard/battlefield mapping must not be guessed as a library
+-- extraction: during a burst such as Thought Scour (mill, mill, draw), that
+-- would take the current library top by name and can pull a land or a card
+-- which was already milled back out of the deck. Only an exact transition
+-- which is still pending/in-flight may supply a source zone for a synthetic
+-- snapshot repair.
+function BridgeFindAuthoritativeSnapshotTransitionSourceZone(cardInstanceId, destinationZone)
+    if cardInstanceId == nil or destinationZone == nil then return nil end
+    local pending = BridgeState.pendingStructuredZoneTransitionByInstanceId[cardInstanceId]
+    if pending ~= nil and tostring(pending.destinationZone or "") == tostring(destinationZone)
+        and pending.sourceZone ~= nil and tostring(pending.sourceZone) ~= "" then
+        return pending.sourceZone
+    end
+    for _, queued in ipairs(BridgeState.eventQueue or {}) do
+        if queued ~= nil
+            and queued.cardInstanceId == cardInstanceId
+            and tostring(queued.destinationZone or "") == tostring(destinationZone)
+            and queued.sourceZone ~= nil and tostring(queued.sourceZone) ~= "" then
+            return queued.sourceZone
+        end
+    end
+    return nil
+end
+
 function BridgeQueuedEventRange()
     local minimum, maximum = nil, nil
     for _, queued in ipairs(BridgeState.eventQueue or {}) do
@@ -1633,40 +1659,42 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                     if mappedNeedsFix then
                         -- The log intentionally omits cardName: a snapshot can
                         -- contain identities that should not be public chat.
-                        -- A public card absent from the reverse mapping is still
-                        -- often physically contained in its seat library.  This
-                        -- is the normal recovery shape for mill effects: Forge
-                        -- emits the exact library->graveyard transition, but a
-                        -- TTS reload may have lost the mapping before the event
-                        -- is rendered.  Let the structured move extract the
-                        -- authoritative top card instead of silently skipping
-                        -- the new public card.
-                        -- A stale reverse mapping is not a usable source.  If
-                        -- the physical object disappeared during recovery,
-                        -- the card may still be in its authoritative library.
+                        -- A public card absent from the reverse mapping has no
+                        -- trustworthy physical source in a snapshot alone.
+                        -- Never assume library here: a Thought Scour-style
+                        -- mill/draw burst can otherwise extract the wrong top
+                        -- card (including a land or an already-milled card).
+                        -- The exact queued transition, when present, is the
+                        -- only safe source for a synthetic repair.
                         local snapshotSourceZone = mappedObject ~= nil
                             and mappedObject.tag == "Card" and mappedZone or nil
-                        if snapshotSourceZone == nil
-                            and (zoneName == "battlefield" or zoneName == "graveyard") then
-                            snapshotSourceZone = "library"
+                        if snapshotSourceZone == nil then
+                            snapshotSourceZone = BridgeFindAuthoritativeSnapshotTransitionSourceZone(
+                                card.cardInstanceId, zoneName)
                         end
                         BridgeLog(string.format(
                             "[Bridge] snapshot candidate instance=%s oldZone=%s destinationZone=%s",
                             tostring(card.cardInstanceId), tostring(mappedZone), tostring(zoneName)))
-                        local evt = {
-                            seatId = seatSnapshot.seatId,
-                            cardInstanceId = card.cardInstanceId,
-                            cardName = card.cardName,
-                            sourceZone = snapshotSourceZone,
-                            destinationZone = zoneName,
-                            faceDown = card.faceDown,
-                            battlefieldKind = card.battlefieldKind
-                        }
-                        local moved, moveError = BridgeApplyStructuredCardMove(evt)
-                        if moved then
-                            movedCount = movedCount + 1
+                        if snapshotSourceZone == nil then
+                            BridgeLog(string.format(
+                                "[Bridge] snapshot candidate deferred instance=%s destinationZone=%s: no exact source transition",
+                                tostring(card.cardInstanceId), tostring(zoneName)))
                         else
-                            BridgeLog("[Bridge] snapshot reconcile skipped a move: " .. tostring(moveError))
+                            local evt = {
+                                seatId = seatSnapshot.seatId,
+                                cardInstanceId = card.cardInstanceId,
+                                cardName = card.cardName,
+                                sourceZone = snapshotSourceZone,
+                                destinationZone = zoneName,
+                                faceDown = card.faceDown,
+                                battlefieldKind = card.battlefieldKind
+                            }
+                            local moved, moveError = BridgeApplyStructuredCardMove(evt)
+                            if moved then
+                                movedCount = movedCount + 1
+                            else
+                                BridgeLog("[Bridge] snapshot reconcile skipped a move: " .. tostring(moveError))
+                            end
                         end
                     end
 

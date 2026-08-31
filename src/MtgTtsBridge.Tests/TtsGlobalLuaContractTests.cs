@@ -756,7 +756,7 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void SnapshotReconcile_RecoversUnmappedPublicCardsFromTheirAuthoritativeLibrary()
+    public void SnapshotReconcile_DoesNotGuessLibraryForUnmappedPublicCards()
     {
         var reconcile = Script.IndexOf("function BridgeApplySafeSnapshotReconcile", StringComparison.Ordinal);
         var next = Script.IndexOf("function BridgeTryApplyDeferredSnapshotReconcile", reconcile, StringComparison.Ordinal);
@@ -764,9 +764,25 @@ public sealed class TtsGlobalLuaContractTests
 
         Assert.Contains("local snapshotSourceZone = mappedObject ~= nil", body);
         Assert.Contains("and mappedObject.tag == \"Card\" and mappedZone or nil", body);
-        Assert.Contains("snapshotSourceZone = \"library\"", body);
+        Assert.Contains("BridgeFindAuthoritativeSnapshotTransitionSourceZone(", body);
+        Assert.Contains("snapshot candidate deferred", body);
+        Assert.DoesNotContain("snapshotSourceZone = \"library\"", body);
         Assert.Contains("sourceZone = snapshotSourceZone", body);
         Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"graveyard\"", Script);
+    }
+
+    [Fact]
+    public void SnapshotReconcile_UsesOnlyExactQueuedTransitionAsSyntheticSource()
+    {
+        var helper = Script.IndexOf("function BridgeFindAuthoritativeSnapshotTransitionSourceZone", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeQueuedEventRange", helper, StringComparison.Ordinal);
+        var body = Script[helper..end];
+
+        Assert.Contains("pendingStructuredZoneTransitionByInstanceId", body);
+        Assert.Contains("eventQueue", body);
+        Assert.Contains("queued.cardInstanceId == cardInstanceId", body);
+        Assert.Contains("queued.sourceZone ~= nil", body);
+        Assert.DoesNotContain("cardName", body);
     }
 
     [Fact]
