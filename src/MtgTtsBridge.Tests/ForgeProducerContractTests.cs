@@ -179,6 +179,8 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("sa.setActivatingPlayer(player);", Patch);
         Assert.Contains("boolean isActivePlayersTurn = ph.isPlayerTurn(player);", Patch);
         Assert.Contains("boolean hasPriority = player.equals(ph.getPriorityPlayer());", Patch);
+        Assert.Contains("&& (!isActivePlayersTurn || !isMainPhase || stackHasItems)", Patch);
+        Assert.Contains("accepting active empty-stack main-phase controller invocation", Patch);
         Assert.Contains("+ \" active=\" + ph.getPlayerTurn().getName()", Patch);
         Assert.Contains("+ \" isActivePlayersTurn=\" + isActivePlayersTurn", Patch);
         Assert.Contains("+ \" hasPriority=\" + hasPriority", Patch);
