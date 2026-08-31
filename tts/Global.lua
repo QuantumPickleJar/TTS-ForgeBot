@@ -2768,7 +2768,13 @@ function BridgeScheduleDecisionPoll(delay, generation, attempt)
 
     BridgeState.decisionPollScheduled = true
     local nextDelay = delay or 0.1
-    if BridgeState.ui ~= nil and BridgeState.ui.fastPlaytest then nextDelay = math.min(nextDelay, 0.05) end
+    -- FAST is for a known short authoritative transition, not a blanket
+    -- override of Forge's normal no-decision backoff. Polling an idle Forge at
+    -- 20 Hz can race a just-drawn card's physical embodiment and repeatedly
+    -- retry the same presentation work before the 0.5 s authoritative wait.
+    if BridgeState.ui ~= nil and BridgeState.ui.fastPlaytest and BridgeTransitionExpected() then
+        nextDelay = math.min(nextDelay, 0.05)
+    end
     BridgeWaitTime(function()
         if generation ~= BridgeState.decisionPollGeneration then return end
         BridgeState.decisionPollScheduled = false

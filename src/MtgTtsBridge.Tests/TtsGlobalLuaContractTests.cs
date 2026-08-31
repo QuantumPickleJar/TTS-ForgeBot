@@ -1045,6 +1045,19 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void FastPlaytest_OnlyAcceleratesExpectedTransitionsNotIdleForgeBackoff()
+    {
+        var scheduleStart = Script.IndexOf("function BridgeScheduleDecisionPoll", StringComparison.Ordinal);
+        var pollStart = Script.IndexOf("function BridgePollForNextDecision", scheduleStart, StringComparison.Ordinal);
+        Assert.True(scheduleStart >= 0 && pollStart > scheduleStart);
+        var schedule = Script[scheduleStart..pollStart];
+
+        Assert.Contains("BridgeState.ui.fastPlaytest and BridgeTransitionExpected()", schedule);
+        Assert.DoesNotContain("BridgeState.ui.fastPlaytest then nextDelay", schedule);
+        Assert.Contains("local retryDelay = BridgeTransitionExpected() and 0.1 or 0.5", Script);
+    }
+
+    [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
         Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-30-u2-gameplay-repair\"", Script);
