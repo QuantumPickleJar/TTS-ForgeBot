@@ -1395,9 +1395,16 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..006a742909581af966cb6ed3c89c5089
 -                System.out.println(">> Auto-passing priority (no actions available)...\n");
 -                return null;
 -            }
-+        } else if (totalActions == 0) {
-+            System.out.println("[TUI-DIAG priority] no non-pass actions; auto-passing empty human priority window");
++        } else if (totalActions == 0 && !isMainPhase) {
++            System.out.println("[TUI-DIAG priority] no non-pass actions; auto-passing empty non-main human priority window");
 +            return null;
++        } else if (totalActions == 0) {
++            // Main phases are the human's land/sorcery timing window. Keep an
++            // explicit Forge pass menu even when this enumeration is empty:
++            // a transient canPlay/mana refresh must not silently carry the
++            // match into combat before the bridge can request the current
++            // authoritative decision again.
++            System.out.println("[TUI-DIAG priority] preserving empty human main-phase priority window");
          }
  
 -        // Deduplicate abilities - only show unique actions
