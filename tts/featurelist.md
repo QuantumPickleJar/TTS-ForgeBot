@@ -91,8 +91,15 @@ BUG: (turn 3) when i cast mental note, a land untapped. Not only that, I had to 
 
 BUG: you can multi-select during times when it does not make sensse to be able to do so (draw step provided max  hand size is not forcing a discard)
 
-BUG: (turn 3) when casting mental note, the top two cards must be transported from the top of library to the  graveyard face-up before the draw triggers. 
+BUG: when casting mental note, the top two cards must be transported from the top of library to the  graveyard face-up before the draw triggers. 
+
 
 bug: sacrifice cards say "sacrifice CARDNAME" instead of the actual card's name
 
 bug: application does not safely shut down, must be crtl+shift+c interruppted
+
+Bug: you cannot play cards pre-combat on first turn for some reason
+
+Bug: lotus petal prompts the uses to sacrifice it when its already in the graveyard
+
+Bug: lotus petal does not move the top three cards of library to graveyard 
