@@ -32,6 +32,19 @@ public sealed class TtsGlobalLuaTurnEightRegressionTests
     }
 
     [Fact]
+    public void NamedCounterFallback_IsNotMarkedPresentedUntilEncoderActuallyAcceptsIt()
+    {
+        var start = Script.IndexOf("function BridgeSetCardCounters", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeSetCardCounterState", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var counters = Script[start..end];
+
+        Assert.Contains("presentedCounterFallbackSignatureByGuid", counters);
+        Assert.Contains("if fallbackApplied then", counters);
+        Assert.Contains("must be retried on a later reconciliation", counters);
+    }
+
+    [Fact]
     public void PhysicalCardTargetsAndFixedSacrifices_SubmitTheirForgeInputsWithoutLocalDeadEnds()
     {
         Assert.Contains("action.type == \"choose_target\"", Script);

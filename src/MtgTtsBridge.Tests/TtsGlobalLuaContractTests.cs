@@ -98,6 +98,20 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void YieldAutoPass_ExpiresFromAuthoritativeTurnMirrorBeforeDecisionAutoPass()
+    {
+        var start = Script.IndexOf("if BridgeState.yieldSeatId ~= nil then", StringComparison.Ordinal);
+        var end = Script.IndexOf("-- Keep passive auto-pass off", start, StringComparison.Ordinal);
+        var yield = Script[start..end];
+
+        Assert.Contains("authoritativeTurn = tonumber(BridgeState.tableTurnCount or 0)", yield);
+        Assert.Contains("authoritativeActiveSeat = BridgeState.currentTurnSeatId", yield);
+        Assert.Contains("authoritativeTurn ~= yieldTurn", yield);
+        Assert.Contains("authoritativeActiveSeat ~= BridgeState.yieldSeatId", yield);
+        Assert.Contains("BridgeState.yieldSeatId = nil", yield);
+    }
+
+    [Fact]
     public void SyntheticHudCallbackColor_CannotRebindTheConfiguredHumanSeat()
     {
         var claim = Script.IndexOf("function BridgeClaimHumanTtsColor", StringComparison.Ordinal);
@@ -220,6 +234,42 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void DeferredDecision_DoesNotExposeUnembodiedHandActionsThroughTheHud()
+    {
+        var acceptStart = Script.IndexOf("function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationGeneration)", StringComparison.Ordinal);
+        var acceptEnd = Script.IndexOf("function BridgeRenderDecision(decision, force)", acceptStart, StringComparison.Ordinal);
+        Assert.True(acceptStart >= 0 && acceptEnd > acceptStart);
+        var accept = Script[acceptStart..acceptEnd];
+        var deferStart = accept.IndexOf("if deferDecision then", StringComparison.Ordinal);
+        var deferEnd = accept.IndexOf("BridgeState.pendingDecision = nil", deferStart, StringComparison.Ordinal);
+        Assert.True(deferStart >= 0 && deferEnd > deferStart);
+        var deferred = accept[deferStart..deferEnd];
+
+        Assert.Contains("BridgeState.pendingDecision = decision", deferred);
+        Assert.Contains("BridgeState.lastDecision = nil", deferred);
+        Assert.Contains("BridgeUiMarkDirty(\"decision-deferred\")", deferred);
+    }
+
+    [Fact]
+    public void HandActions_AreHeldUntilTheirExactInstancesAreInTheLiveTtsHand()
+    {
+        var deferStart = Script.IndexOf("function BridgeShouldDeferDecision", StringComparison.Ordinal);
+        var retryStart = Script.IndexOf("function BridgeScheduleOpeningHandReadinessRetry", deferStart, StringComparison.Ordinal);
+        Assert.True(deferStart >= 0 && retryStart > deferStart);
+        var defer = Script[deferStart..retryStart];
+
+        Assert.Contains("BridgeBuildSeatHandGuidSet(decision.seatId)", defer);
+        Assert.Contains("action.preparedSourceCardInstanceId", defer);
+        Assert.Contains("BridgeState.physicalByInstanceId[instanceId]", defer);
+        Assert.Contains("BridgeState.physicalInstanceIdByGuid[guid] ~= instanceId", defer);
+        Assert.Contains("handGuids[guid] ~= true", defer);
+        Assert.Contains("\"hand_action_readiness\"", defer);
+        Assert.Contains("function BridgeScheduleHandActionReadinessRetry", Script);
+        Assert.Contains("holding decision %s until exact hand action is embodied", Script);
+        Assert.Contains("hand action readiness timeout", Script);
+    }
+
+    [Fact]
     public void GenericNumericDecisions_ExposePhysicalOptionButtons()
     {
         Assert.Contains("function BridgeEnsureDecisionOptionControls", Script);
@@ -243,10 +293,25 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BRIDGE_MANA_COUNTER_SOURCES", Script);
         Assert.Contains("source.clone", Script);
         Assert.Contains("counter.setVar(\"val\", amount)", Script);
+        Assert.Contains("counter.setValue(amount)", Script);
         Assert.Contains("event.kind == \"mana_pool_changed\"", Script);
         Assert.Contains("seatSnapshot.manaPool", Script);
         Assert.Contains("lifeCounter.getPosition()", Script);
         Assert.Contains("seat.manaBankOffset", Script);
+    }
+
+    [Fact]
+    public void ManaTrackerUpdates_UseCounterApiWithoutCallingMissingFunctions()
+    {
+        var start = Script.IndexOf("function BridgeSetNativeTrackerValue", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeTrackerPosition", start, StringComparison.Ordinal);
+        var body = Script[start..end];
+
+        Assert.Contains("local nativeOk = pcall(function() counter.setValue(amount) end)", body);
+        Assert.Contains("local setVarOk, setVarError = pcall(function() counter.setVar(\"val\", amount) end)", body);
+        Assert.DoesNotContain("counter.call(\"updateVal\")", body);
+        Assert.DoesNotContain("counter.call(\"updateSave\")", body);
+        Assert.DoesNotContain("counter.call(functionName)", body);
     }
 
     [Fact]
@@ -274,6 +339,35 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgePressResume", Script);
         Assert.Contains("function BridgePressNewMatch", Script);
         Assert.Contains("Click it again within 10 seconds", Script);
+    }
+
+    [Fact]
+    public void StartupTrace_RecordsBoundedMarkersAtExistingStartupBoundaries()
+    {
+        var requiredMarkers = new[]
+        {
+            "onLoad_enter",
+            "BridgeOnLoad_enter",
+            "startup_transient_cleanup_begin",
+            "startup_transient_cleanup_end",
+            "startup_ui_begin",
+            "startup_ui_end",
+            "startup_object/bootstrap_discovery_begin",
+            "startup_object/bootstrap_discovery_end",
+            "startup_bridge_health_begin",
+            "startup_bridge_health_dispatched",
+            "BridgeOnLoad_return"
+        };
+
+        foreach (var marker in requiredMarkers)
+        {
+            Assert.Contains($"\"{marker}\"", Script);
+        }
+
+        Assert.Contains("BridgeState.startupTrace.observableDurationMs", Script);
+        Assert.Contains("function BridgePerformanceTraceSnapshot()", Script);
+        Assert.Contains("TTS file read and Lua compilation happen before this function executes", Script);
+        Assert.DoesNotContain("File.Write", Script);
     }
 
     [Fact]
@@ -660,15 +754,44 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void SnapshotReconcile_RecoversUnmappedPublicCardsFromTheirAuthoritativeLibrary()
+    {
+        var reconcile = Script.IndexOf("function BridgeApplySafeSnapshotReconcile", StringComparison.Ordinal);
+        var next = Script.IndexOf("function BridgeTryApplyDeferredSnapshotReconcile", reconcile, StringComparison.Ordinal);
+        var body = Script[reconcile..next];
+
+        Assert.Contains("local snapshotSourceZone = mappedObject ~= nil", body);
+        Assert.Contains("and mappedObject.tag == \"Card\" and mappedZone or nil", body);
+        Assert.Contains("snapshotSourceZone = \"library\"", body);
+        Assert.Contains("sourceZone = snapshotSourceZone", body);
+        Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"graveyard\"", Script);
+    }
+
+    [Fact]
     public void SnapshotBootstrap_StagesLooseCardsNearLibrariesBeforeRemapping()
     {
-        Assert.Contains("BridgeStageSeatCardsForBootstrap(snapshot)", Script);
-        Assert.Contains("function BridgeStageSeatCardsForBootstrap(snapshot)", Script);
+        Assert.Contains("BridgeStageSeatCardsForBootstrap(snapshot, function(stagedOk, stagedError, stagedGuids)", Script);
+        Assert.Contains("function BridgeStageSeatCardsForBootstrap(snapshot, callback)", Script);
         Assert.Contains("IsGameCardCandidate(object, seatId, context)", Script);
         Assert.Contains("BridgeTryGetSeatHandObjects(seatId)", Script);
         Assert.Contains("BridgeNearestSeatIdForPosition", Script);
         Assert.Contains("function BridgeLibraryStagingPosition", Script);
-        Assert.Contains("refused spatial-only library staging", Script);
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(seatId, object, \"NORMAL\"", Script);
+    }
+
+    [Fact]
+    public void SnapshotBootstrap_PreservesLiveHandsWhileRebuildingThePublicEmbodiment()
+    {
+        var start = Script.IndexOf("function BridgeStageSeatCardsForBootstrap", StringComparison.Ordinal);
+        var end = Script.IndexOf("-- A destructive New Match", start, StringComparison.Ordinal);
+        var staging = Script[start..end];
+
+        Assert.Contains("context.handGuidsBySeat[seatId] = handGuids", staging);
+        Assert.Contains("local isInHand = handSeatId ~= nil", staging);
+        Assert.Contains("and not isInHand", staging);
+        Assert.Contains("local function addAsset(object)", Script);
+        Assert.Contains("BridgeTryGetSeatHandObjects(seatId)", Script);
+        Assert.Contains("TTS hand objects are not guaranteed to be present in getAllObjects()", Script);
     }
 
     [Fact]
@@ -770,14 +893,16 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void SnapshotBootstrap_InsertsLooseCardsIntoTheResolvedDeckBeforeReadingTheLibraryLedger()
+    public void SnapshotBootstrap_SerializesVerifiedLooseCardInsertionBeforeReadingTheLibraryLedger()
     {
-        Assert.Contains("local deck = BridgeResolveSeatLibraryDeck(seatId)", Script);
+        Assert.Contains("function BridgeStagePhysicalCardForBootstrap(object, seatId, callback)", Script);
         Assert.Contains("refused to stage a library card into itself", Script);
-        Assert.Contains("deck.putObject(o)", Script);
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(seatId, object, \"NORMAL\"", Script);
+        Assert.Contains("function BridgeStageSeatCardsForBootstrap(snapshot, callback)", Script);
+        Assert.Contains("BridgeStagePhysicalCardForBootstrap(item.object, item.seatId, function(ok, err)", Script);
+        Assert.Contains("BridgeVerifyLibraryContainment(seatId, guid", Script);
         Assert.Contains("BridgeAuditDuplicateLibraryGuids", Script);
-        Assert.Contains("START-13 library-settle", Script);
-        Assert.Contains("Wait.frames(function()", Script);
+        Assert.Contains("START-13 loose-card-staging", Script);
     }
 
     [Fact]
@@ -788,8 +913,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeState.physicalZoneByGuid[guid]", Script);
         Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(candidate.seatId, candidate.object, \"NORMAL\"", Script);
         Assert.Contains("TTS Deck-on-Deck operations", Script);
-        Assert.Contains("if object.tag ~= \"Card\" then return false end", Script);
-        Assert.Contains("object.tag ~= \"Card\" then return end", Script);
+        Assert.Contains("if not BridgeObjectIsUsable(object) or object.tag ~= \"Card\" then", Script);
+        Assert.Contains("if not BridgeObjectIsUsable(object) or object.tag ~= \"Card\" then return end", Script);
         var reset = Script.Substring(Script.IndexOf("function BridgeResetSession()", StringComparison.Ordinal));
         Assert.Contains("BridgeReturnPreviousGameCardsToLibraries(function", reset);
         Assert.True(reset.IndexOf("BridgeReturnPreviousGameCardsToLibraries", StringComparison.Ordinal)
@@ -809,6 +934,16 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeSubmitChoice(decision.decisionId, action.actionId, \"hud_action\")", Script);
         Assert.Contains("BridgeState.retiredChoiceDecisionIds[decision.decisionId] == true", Script);
         Assert.Contains("BridgeDecisionHasAction(decision, action.actionId)", Script);
+    }
+
+    [Fact]
+    public void HudLayout_DoesNotLetNestedLayoutExpandGlobalHudToTheScreen()
+    {
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+
+        Assert.Contains("width=\"700\"", xml);
+        Assert.Contains("height=\"630\"", xml);
+        Assert.DoesNotContain("<VerticalLayout width=\"100%\" height=\"100%\"", xml);
     }
 
     [Fact]
@@ -910,9 +1045,22 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void FastPlaytest_OnlyAcceleratesExpectedTransitionsNotIdleForgeBackoff()
+    {
+        var scheduleStart = Script.IndexOf("function BridgeScheduleDecisionPoll", StringComparison.Ordinal);
+        var pollStart = Script.IndexOf("function BridgePollForNextDecision", scheduleStart, StringComparison.Ordinal);
+        Assert.True(scheduleStart >= 0 && pollStart > scheduleStart);
+        var schedule = Script[scheduleStart..pollStart];
+
+        Assert.Contains("BridgeState.ui.fastPlaytest and BridgeTransitionExpected()", schedule);
+        Assert.DoesNotContain("BridgeState.ui.fastPlaytest then nextDelay", schedule);
+        Assert.Contains("local retryDelay = BridgeTransitionExpected() and 0.1 or 0.5", Script);
+    }
+
+    [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-27-f2c-v14-delve-mulligan\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-30-u2-gameplay-repair\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -1184,7 +1332,9 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgeScheduleSnapshotReconcile", Script);
         Assert.Contains("BridgeShouldReconcileAfterEvent(event)", Script);
-        Assert.Contains("or event.kind == \"card_moved\"", Script);
+        Assert.Contains("or (event.kind == \"card_moved\"", Script);
+        Assert.Contains("pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId]", Script);
+        Assert.Contains(".applied ~= true", Script);
         Assert.Contains("BridgeZoneIsPublicForReconcile(zoneName)", Script);
         Assert.Contains("mappedNeedsFix", Script);
         Assert.Contains("BridgeApplyStructuredCardMove(evt)", Script);
@@ -1254,14 +1404,15 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("mappedPhysicalZone == \"battlefield\"", binding);
         Assert.Contains("mappedPhysicalZone == \"graveyard\"", binding);
         Assert.Contains("mappedSourceZoneMatches", binding);
+        Assert.Contains("exactMappingContradictsActionSource", binding);
+        Assert.Contains("suppressing stale exact action", binding);
     }
 
     [Fact]
     public void SnapshotBattlefieldRepair_PreservesForgeRowKindAndTapDoesNotReflow()
     {
         Assert.Contains("battlefieldKind = card.battlefieldKind", Script);
-        Assert.Contains("local row = event.battlefieldKind", Script);
-        Assert.Contains("or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]", Script);
+        Assert.Contains("function BridgeBattlefieldRowForEvent(event, defaultRow)", Script);
         var tapStart = Script.IndexOf("if event.kind == \"tap_changed\" then", StringComparison.Ordinal);
         var tapEnd = Script.IndexOf("if event.kind == \"counter_changed\" then", tapStart, StringComparison.Ordinal);
         var tapBlock = Script[tapStart..tapEnd];
@@ -1325,8 +1476,35 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void CombatCandidates_AreOrangeFollowupChoices()
     {
-        Assert.Contains("if decision.kind ~= \"main_priority\" then", Script);
+        Assert.Contains("if decision.kind ~= \"main_priority\" and not BridgeIsStructuredForgeToggleChoice(decision) then", Script);
         Assert.Contains("highlightColor = {1.0, 0.55, 0.0}", Script);
+    }
+
+    [Fact]
+    public void StructuredCollections_KeepBlueLegalChoiceHighlights()
+    {
+        var renderStart = Script.IndexOf("function BridgeRenderDecision(decision, force)", StringComparison.Ordinal);
+        var candidateStart = Script.IndexOf("local representedActionIds", renderStart, StringComparison.Ordinal);
+        Assert.True(renderStart >= 0 && candidateStart > renderStart);
+        var highlight = Script[renderStart..candidateStart];
+
+        Assert.Contains("not BridgeIsStructuredForgeToggleChoice(decision)", highlight);
+        Assert.Contains("local highlightColor = {0.53, 0.81, 0.98}", highlight);
+    }
+
+    [Fact]
+    public void ResourceCounters_UseSeatSpecificPresentationRotation()
+    {
+        var showStart = Script.IndexOf("function BridgeShowResourceCounter", StringComparison.Ordinal);
+        var findStart = Script.IndexOf("function BridgeFindResourceCounter", showStart, StringComparison.Ordinal);
+        Assert.True(showStart >= 0 && findStart > showStart);
+        var show = Script[showStart..findStart];
+
+        Assert.Contains("seat.resourceRotation", show);
+        Assert.Contains("counter.setRotation(seat.resourceRotation)", show);
+        Assert.Contains("BridgeShowResourceCounter(counter, position, seat)", Script);
+        Assert.Contains("resourceRotation = {x = 0, y = 90, z = 0}", Script);
+        Assert.Contains("resourceRotation = {x = 0, y = 270, z = 0}", Script);
     }
 
     [Fact]
@@ -1533,6 +1711,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeWaitTime(complete, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)", moveBody);
         Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"graveyard\"", moveBody);
         Assert.DoesNotContain("resolved object is a deck for non-library->hand move", moveBody);
+        Assert.Contains("BridgeRecoverFromLibraryOrderMismatch(takeError)", moveBody);
     }
 
     [Fact]
@@ -1546,6 +1725,36 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("index = top.index", topBody);
         Assert.Contains("top order mismatched authoritative transition", topBody);
         Assert.DoesNotContain("for _, contained in ipairs(containedCards) do", topBody);
+    }
+
+    [Fact]
+    public void LibraryOrderMismatch_RequestsAuthoritativeRecoveryInsteadOfStoppingTheMatch()
+    {
+        var start = Script.IndexOf("function BridgeRecoverFromLibraryOrderMismatch", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeApplyStructuredCardMove", start, StringComparison.Ordinal);
+        var recovery = Script[start..end];
+
+        Assert.Contains("library top order mismatched", recovery);
+        Assert.Contains("BridgeResyncFromAuthoritativeSnapshot(\"library order mismatch\")", recovery);
+        Assert.Contains("consecutive mill transitions", recovery);
+    }
+
+    [Fact]
+    public void BootstrapAlignsThePhysicalLibraryToForgeSnapshotOrderBeforeLiveDraws()
+    {
+        var alignmentStart = Script.IndexOf("function BridgeAlignLibraryOrderForSnapshot", StringComparison.Ordinal);
+        var alignmentEnd = Script.IndexOf("function BridgeTryBootstrapSeatSnapshot", alignmentStart, StringComparison.Ordinal);
+        var alignment = Script[alignmentStart..alignmentEnd];
+
+        Assert.Contains("table.sort(libraryCards", alignment);
+        Assert.Contains("local nextIndex = #libraryCards", alignment);
+        Assert.Contains("BridgeTakeCardFromDeckByIdentity", alignment);
+        Assert.Contains("current.putObject(taken, 0)", alignment);
+        var bootstrapStart = Script.IndexOf("function BridgeTryBootstrapSeatSnapshot", StringComparison.Ordinal);
+        var bootstrapEnd = Script.IndexOf("function BridgeCollectSeatAssets", bootstrapStart, StringComparison.Ordinal);
+        var bootstrap = Script[bootstrapStart..bootstrapEnd];
+        Assert.Contains("BridgeMaterializeSeatSnapshot", bootstrap);
+        Assert.Contains("BridgeAlignLibraryOrderForSnapshot(seatSnapshot", bootstrap);
     }
 
     [Fact]
@@ -1597,6 +1806,17 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("Pass/Yield are properties of the full", uiBody);
         Assert.Contains("BridgeState.ui.contextInstanceId = nil", acceptBody);
         Assert.Contains("Retaining it after Forge changes decisions", acceptBody);
+    }
+
+    [Fact]
+    public void HiddenLibraryIdentityCanary_FailsClosedUnlessForgeExplicitlyAuthorizesPresentation()
+    {
+        Assert.Contains("function BridgeActionPresentationAuthorized(action)", Script);
+        Assert.Contains("sourceZone == \"library\"", Script);
+        Assert.Contains("action.isPresentationAuthorized == true", Script);
+        Assert.Contains("BridgeDecisionHasUnauthorizedPresentationAction(decision)", Script);
+        Assert.Contains("Forge supplied an unapproved hidden-zone action", Script);
+        Assert.Contains("suppressed unauthorized hidden-zone option control", Script);
     }
 
     [Fact]
@@ -1683,8 +1903,10 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgeInsertPhysicalCardIntoLibrary", Script);
         Assert.Contains("local entries = BridgeLibraryEntries(library)", Script);
-        Assert.Contains("library.putObject(object, #entries + 1)", Script);
+        Assert.Contains("library.putObject(object, #entries)", Script);
         Assert.Contains("BridgeVerifyLibraryContainment", Script);
+        Assert.Contains("attempt >= 30", Script);
+        Assert.Contains("return (tonumber(left.zonePosition or 0) or 0) < (tonumber(right.zonePosition or 0) or 0)\n    end)", Script.ReplaceLineEndings("\n"));
         Assert.DoesNotContain("local inverted = {rotation.x, rotation.y, rotation.z + 180}", Script);
     }
 
@@ -1877,6 +2099,25 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void TokenReuse_RequiresExactNormalizedTokenIdentity()
+    {
+        var keyStart = Script.IndexOf("function BridgeTokenNameKey", StringComparison.Ordinal);
+        var keyEnd = Script.IndexOf("function BridgeMarkTokenPhysicalObject", keyStart, StringComparison.Ordinal);
+        var key = Script[keyStart..keyEnd];
+        Assert.Contains("function BridgeTokenNameKey(name)", key);
+        Assert.Contains("string.gsub(normalized, \"%f[%a]token%f[%A]\", \" \")", key);
+        Assert.Contains("return left == right", key);
+        Assert.DoesNotContain("string.find(left, right, 1, true)", key);
+
+        var lookupStart = Script.IndexOf("function BridgeFindDeckWithContainedCardName", StringComparison.Ordinal);
+        var lookupEnd = Script.IndexOf("function BridgeTakeCardFromTokenFetcher", lookupStart, StringComparison.Ordinal);
+        var lookup = Script[lookupStart..lookupEnd];
+        Assert.Contains("local expectedTokenKey = BridgeTokenNameKey(expectedName)", lookup);
+        Assert.Contains("BridgeTokenNameKey(containedName) == expectedTokenKey", lookup);
+        Assert.DoesNotContain("BridgeCardNameMatches(containedName, expectedName)", lookup);
+    }
+
+    [Fact]
     public void Presentation_PreservesCanonicalCardScaleAndSeparatesLandPlacementModes()
     {
         Assert.Contains("canonicalCardScaleByGuid", Script);
@@ -2006,7 +2247,10 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("presentedCounterSignatureByGuid", Script);
         Assert.Contains("presentedOwnerControllerByGuid", Script);
         Assert.Contains("BridgeState.presentedKeywordSignatureByGuid[guid] == signature", Script);
-        Assert.Contains("if guid ~= nil and BridgeState.presentedCounterSignatureByGuid[guid] == signature then return true, nil end", Script);
+        Assert.Contains("local unifiedAlreadyPresented = guid ~= nil and BridgeState.presentedCounterSignatureByGuid[guid] == signature", Script);
+        Assert.Contains("local fallbackAlreadyPresented = guid ~= nil", Script);
+        Assert.Contains("BridgeState.presentedCounterFallbackSignatureByGuid[guid] == fallbackSignature", Script);
+        Assert.Contains("Do not cache failure", Script);
         Assert.Contains("presentationMetrics = {", Script);
         Assert.Contains("decisionRenderSkippedIdentical", Script);
         Assert.Contains("BridgePresentationMetric(\"encoderRebuildCount\")", Script);
@@ -2055,7 +2299,25 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeHudReportSummary", xml);
         Assert.Contains("BridgeHudReportCapture", xml);
         Assert.Contains("BridgeHudReportCancel", xml);
-        Assert.Contains("BridgeHudReportCategory", xml);
+        Assert.Contains("BridgeHudReportCategoryDropdown", xml);
+        Assert.Contains("id=\"BridgeHudDevRoot\" active=\"false\" visibility=\"Host|Admin\" minHeight=\"230\" preferredHeight=\"230\"", xml);
+        Assert.Contains("id=\"BridgeHudReportCategoryDropdown\" options=\"Gameplay sync|Combat|Card movement|Presentation/UI|Decision/prompt|Mana/payment|Performance / Freeze|Crash/error|Other\"", xml);
+        Assert.Contains("minWidth=\"650\" preferredWidth=\"650\"", xml);
+        Assert.Contains("BridgeHudRollingCapture", xml);
+        Assert.Contains("BridgeHudResyncFromForge", xml);
+        var gamePanelStart = xml.IndexOf("id=\"BridgeHudGamePanel\"", StringComparison.Ordinal);
+        var choiceTrayStart = xml.IndexOf("id=\"BridgeHudChoiceTray\"", StringComparison.Ordinal);
+        Assert.True(gamePanelStart >= 0 && choiceTrayStart > gamePanelStart);
+        var gamePanel = xml[gamePanelStart..choiceTrayStart];
+        Assert.Contains("id=\"BridgeHudRollingCapture\"", gamePanel);
+        Assert.Contains("visibility=\"Host|Admin\"", gamePanel);
+        Assert.Contains("function BridgeHudReportCategoryChanged", Script);
+        Assert.Contains("function BridgeHudRollingCapture", Script);
+        var rollingStart = Script.IndexOf("function BridgeHudRollingCapture", StringComparison.Ordinal);
+        var rollingEnd = Script.IndexOf("function BridgeHudResyncFromForge", rollingStart, StringComparison.Ordinal);
+        Assert.Contains("diagnosticsVisible = true", Script[rollingStart..rollingEnd]);
+        Assert.Contains("function BridgeHudResyncFromForge", Script);
+        Assert.Contains("Rolling freeze capture", Script);
         Assert.Contains("function BridgeHudReportCapture", Script);
         Assert.Contains("/api/v1/diagnostics/report", Script);
         Assert.Contains("mappedCardInstanceIds", Script);
@@ -2065,12 +2327,114 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void ReportCategory_UsesReliableButtonCallbacksInsteadOfTheTtsDropdown()
+    {
+        Assert.Contains("function BridgeHudReportCategoryPrevious", Script);
+        Assert.Contains("function BridgeHudReportCategory(player, value, id)", Script);
+        Assert.Contains("BridgeUiMarkDirty(\"report-category-previous\")", Script);
+        Assert.Contains("BridgeUiMarkDirty(\"report-category-next\")", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudReportCategoryDropdown\", \"active\", \"false\")", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudReportCategoryPrevious\", \"active\", categoryControlsActive", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudReportCategory\", \"text\", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex]", Script);
+    }
+
+    [Fact]
+    public void ResyncControl_RemainsAvailableWhenSessionIsStopped()
+    {
+        Assert.Contains("BridgeStopOnDesync", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudResyncFromForge\", \"active\", devEnabled and not ui.resyncInFlight", Script);
+        Assert.Contains("if sessionId == nil then", Script);
+        Assert.Contains("cannot resync before Forge has started a session", Script);
+    }
+
+    [Fact]
+    public void AuthoritativeResync_RebuildsFromSnapshotAndResumesAtItsEventCursor()
+    {
+        var start = Script.IndexOf("function BridgeResyncFromAuthoritativeSnapshot", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeAlignLibraryOrderForSnapshot", start, StringComparison.Ordinal);
+        var resync = Script[start..end];
+
+        Assert.Contains("BridgeBootstrapCurrentSnapshot(sessionId", resync);
+        Assert.Contains("end, true)", resync);
+        Assert.Contains("BridgeStartEventPolling(sessionId, false)", resync);
+        Assert.Contains("BridgeStartDecisionPolling()", resync);
+        Assert.Contains("lastAppliedEventSequence = cursor", Script);
+        Assert.Contains("lastReceivedEventSequence = cursor", Script);
+        Assert.Contains("authoritative resync snapshot is missing a valid event cursor", Script);
+        Assert.Contains("BridgeState.submitting = false", resync);
+        Assert.Contains("BridgeResumeChoiceProtocol(\"authoritative_resync\")", resync);
+        Assert.Contains("resyncPresentationState", Script);
+    }
+
+    [Fact]
+    public void DevHud_HasOneRollingCaptureControlSoItCannotShadowChoiceButtons()
+    {
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+        var occurrences = System.Text.RegularExpressions.Regex.Matches(
+            xml, @"id=""BridgeHudRollingCapture""", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        Assert.Single(occurrences);
+    }
+
+    [Fact]
     public void DevHud_ReportResultIsVisibleAndUsesStableCallbacks()
     {
         Assert.Contains("CAPTURED • ", Script);
         Assert.Contains("diagnostic report failed", Script);
         Assert.Contains("BridgeState.ui.reportStatus", Script);
         Assert.Contains("BridgeHudReportStatus", File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml")));
+    }
+
+    [Fact]
+    public void FreezeFlightRecorder_IsBoundedCaptureOnlyAndUsesCompactScalarRecords()
+    {
+        Assert.Contains("BRIDGE_PERFORMANCE_TRACE_CAPACITY = 384", Script);
+        Assert.Contains("performanceTrace = {capacity = BRIDGE_PERFORMANCE_TRACE_CAPACITY", Script);
+        Assert.Contains("function BridgePerformanceTraceSnapshot()", Script);
+        Assert.Contains("BRIDGE_PERFORMANCE_CLOCK_KIND = \"os.clock-cpu\"", Script);
+        Assert.Contains("BRIDGE_PERFORMANCE_WALL_CLOCK_KIND = \"Time.time-game\"", Script);
+        Assert.Contains("cpuDurationMs = cpuDurationMs", Script);
+        Assert.Contains("wallDurationMs = wallDurationMs", Script);
+        Assert.Contains("wallClockKind = wallClockKind", Script);
+        Assert.Contains("performanceSummary = performance.performanceSummary", Script);
+        Assert.Contains("recentTtsTrace = performance.recentTtsTrace", Script);
+        Assert.DoesNotContain("BridgeHttp.requestJson", Script[Script.IndexOf("function BridgePerformanceTrace", StringComparison.Ordinal)..Script.IndexOf("function BridgePerformanceDiagnosticPayload", StringComparison.Ordinal)]);
+        foreach (var marker in new[]
+        {
+            "decision_accept_begin", "decision_accept_end", "decision_render_begin", "decision_render_skipped", "decision_render_end",
+            "clear_highlights_begin", "clear_highlights_end", "prepared_presentation_begin", "prepared_presentation_end",
+            "candidate_collection_begin", "candidate_collection_end", "action_matching_begin", "action_matching_end",
+            "ui_flush_begin", "ui_flush_end", "authoritative_event_begin", "authoritative_event_end",
+            "physical_move_begin", "physical_move_end", "snapshot_reconcile_begin", "snapshot_reconcile_end"
+        }) Assert.Contains(marker, Script);
+    }
+
+    [Fact]
+    public void FreezeFlightRecorder_UsesTtsWallClockAndFallsBackWithoutIt()
+    {
+        var start = Script.IndexOf("function BridgePerformanceWallNow", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgePerformanceTraceSnapshot", start, StringComparison.Ordinal);
+        var implementation = Script[start..end];
+
+        Assert.Contains("pcall(function()", implementation);
+        Assert.Contains("if Time == nil then return nil end", implementation);
+        Assert.Contains("return Time.time", implementation);
+        Assert.Contains("if wallDurationMs == nil", implementation);
+        Assert.Contains("wallDurationMs = cpuDurationMs", implementation);
+        Assert.Contains("BRIDGE_PERFORMANCE_WALL_CLOCK_FALLBACK_KIND = \"os.clock-cpu-fallback\"", Script);
+        Assert.DoesNotContain("os.time()", implementation);
+    }
+
+    [Fact]
+    public void FreezeCapture_ExcludesCardNamesFromPerformancePayloadAndExposesLandCanaryCounts()
+    {
+        var start = Script.IndexOf("function BridgePerformanceDiagnosticPayload", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeWaitTime", start, StringComparison.Ordinal);
+        var payload = Script[start..end];
+        Assert.Contains("decisionPlayLandCount", payload);
+        Assert.Contains("ttsRepresentedPlayLandCount", payload);
+        Assert.Contains("eventCursor", payload);
+        Assert.DoesNotContain("cardName", payload);
+        Assert.Contains("Performance / Freeze", Script);
     }
     [Fact]
     public void LibraryInsertion_RetiresIdentityOnlyAfterVerifiedContainment()
@@ -2098,6 +2462,73 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("containingDeck", Script);
         Assert.Contains("containedIndex", Script);
         Assert.Contains("BridgeAuditDuplicateLibraryGuids()", Script);
+    }
+
+    [Fact]
+    public void LibraryInsertion_AllowsOnlyExactStagedGuidsDuringTtsSourceSettle()
+    {
+        var auditStart = Script.IndexOf("function BridgeLibraryAuditIgnoresGuid", StringComparison.Ordinal);
+        var auditEnd = Script.IndexOf("function BridgeLibraryCardIdentity", auditStart, StringComparison.Ordinal);
+        var audit = Script[auditStart..auditEnd];
+        var stabilityStart = Script.IndexOf("function BridgeVerifyLibraryIdentityStability", StringComparison.Ordinal);
+        var stabilityEnd = Script.IndexOf("function BridgeInsertPhysicalCardIntoLibrary", stabilityStart, StringComparison.Ordinal);
+        var stability = Script[stabilityStart..stabilityEnd];
+
+        Assert.Contains("function BridgeLibraryAuditIgnoresGuid(ignoredGuids, guid)", audit);
+        Assert.Contains("ignoredGuids[tostring(guid)] == true", audit);
+        Assert.Contains("not BridgeLibraryAuditIgnoresGuid(ignoredGuids, guid)", audit);
+        Assert.Contains("local strictDuplicateCount = BridgeAuditDuplicateLibraryGuids()", stability);
+        Assert.Contains("local ignoredGuids = expectedGuids", stability);
+        Assert.Contains("BridgeAuditDuplicateLibraryGuids(ignoredGuids)", stability);
+        Assert.Contains("unexpected loose/contained duplicate GUID(s)", stability);
+        Assert.Contains("BridgeVerifyLibraryIdentityStability(callback, attempt + 1, expectedGuids)", stability);
+    }
+
+    [Fact]
+    public void AuthoritativeResync_WaitsForEveryExactBootstrapStagingGuidThenRunsStrictAudit()
+    {
+        var start = Script.IndexOf("function BridgeStageSeatCardsForBootstrap", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeObjectNearSeatZone", start, StringComparison.Ordinal);
+        var staging = Script[start..end];
+        var bootstrapStart = Script.IndexOf("function BridgeBootstrapCurrentSnapshot", StringComparison.Ordinal);
+        var bootstrapEnd = Script.IndexOf("function BridgeAnnotateSnapshotBattlefieldKinds", bootstrapStart, StringComparison.Ordinal);
+        var bootstrap = Script[bootstrapStart..bootstrapEnd];
+
+        Assert.Contains("local stagedGuids = {}", staging);
+        Assert.Contains("local function stageNext(index)", staging);
+        Assert.Contains("BridgeStagePhysicalCardForBootstrap(item.object, item.seatId, function(ok, err)", staging);
+        Assert.Contains("stagedGuids[tostring(item.guid)] = true", staging);
+        Assert.Contains("callback(true, nil, stagedGuids)", staging);
+        Assert.Contains("BridgeStageSeatCardsForBootstrap(snapshot, function(stagedOk, stagedError, stagedGuids)", bootstrap);
+        Assert.Contains("BridgeVerifyLibraryIdentityStability(function(stable, stabilityError)", bootstrap);
+        Assert.Contains("end, 1, stagedGuids)", bootstrap);
+        Assert.DoesNotContain("local postStageDuplicateCount = BridgeAuditDuplicateLibraryGuids()", bootstrap);
+    }
+
+    [Fact]
+    public void GraveyardCleanup_WaitsForTakeObjectSourcePileToSettleBeforeReinsertion()
+    {
+        var start = Script.IndexOf("function BridgeReturnGraveyardPilesToLibraries", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeReturnPreviousGameCardsToLibraries", start, StringComparison.Ordinal);
+        var cleanup = Script[start..end];
+
+        Assert.Contains("takeObject invokes its callback before TTS has", cleanup);
+        Assert.Contains("BridgeWaitFrames(function()", cleanup);
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(job.seatId, card, \"NORMAL\"", cleanup);
+    }
+
+    [Fact]
+    public void EventQueue_DoesNotRemoveAnEventAfterSessionReplacementOrQueueMutation()
+    {
+        var start = Script.IndexOf("function BridgeProcessEventQueue", StringComparison.Ordinal);
+        var end = Script.IndexOf("-- Decisions are fetched from Forge independently", start, StringComparison.Ordinal);
+        var processor = Script[start..end];
+
+        Assert.Contains("not BridgeState.eventPolling", processor);
+        Assert.Contains("local processingGeneration = BridgeState.eventPollGeneration", processor);
+        Assert.Contains("processingGeneration ~= BridgeState.eventPollGeneration", processor);
+        Assert.Contains("BridgeState.eventQueue[1] ~= event", processor);
+        Assert.Contains("event queue changed while applying event", processor);
     }
 
     [Fact]
@@ -2192,8 +2623,23 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("snapshotRow ~= nil and priorRow ~= snapshotRow", Script);
         Assert.Contains("local expectedRow = BridgeBattlefieldRowForEvent(event, \"creature\")", Script);
-        Assert.Contains($"BridgeMoveToBattlefield({Environment.NewLine}                        event, object, expectedRow, false)", Script);
+        var normalizedScript = Script.Replace("\r\n", "\n", StringComparison.Ordinal);
+        Assert.Contains("BridgeMoveToBattlefield(\n                        event, object, expectedRow, false)", normalizedScript);
         Assert.Contains("if countAsNewPlacement ~= false then", Script);
+    }
+
+    [Fact]
+    public void BattlefieldMoves_DeriveFallbackRowFromForgeCurrentTypes()
+    {
+        var moveStart = Script.IndexOf("function BridgeApplyStructuredCardMove", StringComparison.Ordinal);
+        var moveEnd = Script.IndexOf("function BridgeMoveToGraveyard", moveStart, StringComparison.Ordinal);
+        var move = Script[moveStart..moveEnd];
+
+        Assert.Contains("local row = BridgeBattlefieldRowForEvent(event, \"creature\")", move);
+        Assert.DoesNotContain("local row = event.battlefieldKind\n            or BridgeState.battlefieldKindByInstanceId[event.cardInstanceId]", move);
+        Assert.Contains("for _, cardType in ipairs(event.currentTypes or {}) do", Script);
+        Assert.Contains("local normalizedType = string.lower(tostring(cardType))", Script);
+        Assert.Contains("if normalizedType == \"land\" then return \"land\" end", Script);
     }
 
     [Fact]
@@ -2237,6 +2683,36 @@ public sealed class TtsGlobalLuaContractTests
         var graveyardHandler = Script[graveyard..graveyardEnd];
         Assert.DoesNotContain("BridgeMoveToBattlefield", graveyardHandler);
         Assert.Contains("BridgeMoveToGraveyard", graveyardHandler);
+    }
+
+    [Fact]
+    public void GraveyardMove_RetiresOnlyTheExactPendingCast()
+    {
+        var start = Script.IndexOf("function BridgeMoveToGraveyard", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeFindSeatLibraryDeckWithCard", start, StringComparison.Ordinal);
+        var move = Script[start..end];
+
+        Assert.Contains("BridgeRetirePendingCastForInstance(", move);
+        Assert.Contains("event.cardInstanceId, guid, \"graveyard-move\"", move);
+        Assert.DoesNotContain("BridgeState.pendingCastBySeatId[event.seatId] = nil", move);
+    }
+
+    [Fact]
+    public void PublicZoneReturn_UnlocksExactGraveyardCardBeforeReuse()
+    {
+        var prepareStart = Script.IndexOf("function BridgePreparePhysicalCardForPublicZoneMove", StringComparison.Ordinal);
+        var prepareEnd = Script.IndexOf("function BridgeApplyStructuredCardMove", prepareStart, StringComparison.Ordinal);
+        Assert.True(prepareStart >= 0);
+        Assert.True(prepareEnd > prepareStart);
+        var prepare = Script[prepareStart..prepareEnd];
+        Assert.Contains("object.setLock(false)", prepare);
+        Assert.Contains("destinationZone == \"graveyard\" or destinationZone == \"library\"", prepare);
+
+        var moveStart = Script.IndexOf("function BridgeMoveToBattlefield", StringComparison.Ordinal);
+        var moveEnd = Script.IndexOf("function BridgeBattlefieldPosition", moveStart, StringComparison.Ordinal);
+        Assert.True(moveStart >= 0);
+        Assert.True(moveEnd > moveStart);
+        Assert.Contains("BridgePreparePhysicalCardForPublicZoneMove(object, \"battlefield\")", Script[moveStart..moveEnd]);
     }
 
     [Fact]

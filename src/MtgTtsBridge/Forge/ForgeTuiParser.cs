@@ -53,7 +53,21 @@ public sealed partial class ForgeTuiParser
             .Select(match => new ForgeTuiMenuOption(
                 int.Parse(match.Groups["number"].Value, CultureInfo.InvariantCulture),
                 match.Groups["label"].Value.Trim()))
-            .ToArray();
+            .ToList();
+
+        // PlayerControllerTUI writes the target prompt with print(), then the
+        // numbered targets with println().  stdout chunking can therefore put
+        // the prompt in one Append call and the menu options in the next one.
+        // Only consume a contiguous, complete block of numeric lines directly
+        // after the prompt.  A non-option line terminates that block so a later
+        // unrelated menu cannot be greedily folded into this decision.
+        var trailingMenu = definition is not null
+            ? ParseTrailingMenuOptions(text, prompt)
+            : new TrailingMenuParse(Array.Empty<ForgeTuiMenuOption>(), prompt.Index + prompt.Length);
+        if (trailingMenu.Options.Count > 0)
+        {
+            actions.AddRange(trailingMenu.Options);
+        }
 
         var selectionMetadata = SelectionMetadataRegex().Match(promptContext);
         var decisionProvenance = DecisionProvenanceRegex().Matches(promptContext).Cast<Match>().LastOrDefault();
@@ -68,21 +82,23 @@ public sealed partial class ForgeTuiParser
         var promptKind = selectionMetadata.Success
             ? selectionMetadata.Groups["kind"].Value
             : definition?.Definition.Kind ?? inferredKind;
-        if (actions.Length == 0 && promptKind is "blocker_selection" or "attacker_selection"
+        if (actions.Count == 0 && promptKind is "blocker_selection" or "attacker_selection"
             && prompt.Value.Contains("done", StringComparison.OrdinalIgnoreCase))
         {
-            actions = [new ForgeTuiMenuOption(0, "done")];
+            actions.Add(new ForgeTuiMenuOption(0, "done"));
         }
 
-        if (actions.Length == 0)
+        if (actions.Count == 0)
         {
-            var trailing = text[(prompt.Index + prompt.Length)..];
             var promptLooksLikeFinalInput = ExplicitNumericInputPromptRegex().IsMatch(prompt.Value);
-            if (string.IsNullOrWhiteSpace(trailing) && !promptLooksLikeFinalInput)
+            var trailing = text[(prompt.Index + prompt.Length)..];
+            if (definition is not null
+                || (!promptLooksLikeFinalInput && string.IsNullOrWhiteSpace(trailing)))
             {
                 // Forge frequently streams prompt headers and numbered options in
-                // separate stdout chunks. Preserve the current buffer so parsing
-                // can complete once the numeric options arrive.
+                // separate stdout chunks. Preserve the current buffer whenever
+                // a supported menu is incomplete; certainty is preferable to
+                // killing a live session on a transient framing boundary.
                 return ForgeTuiParserResult.None;
             }
 
@@ -99,7 +115,12 @@ public sealed partial class ForgeTuiParser
             return ForgeTuiParserResult.Error("unrecognized_tui_menu", "Forge printed a supported menu header without numeric actions.");
         }
 
-        _buffer.Remove(0, prompt.Index + prompt.Length);
+        var consumedLength = prompt.Index + prompt.Length;
+        if (trailingMenu.ConsumedThrough > consumedLength)
+        {
+            consumedLength = trailingMenu.ConsumedThrough;
+        }
+        _buffer.Remove(0, consumedLength);
 
         var kind = promptKind ?? "generic_numeric_selection";
         // A collection choice is a single Forge transaction even though the
@@ -221,6 +242,47 @@ public sealed partial class ForgeTuiParser
              inputMap));
     }
 
+    private static TrailingMenuParse ParseTrailingMenuOptions(string text, Match prompt)
+    {
+        var options = new List<ForgeTuiMenuOption>();
+        var cursor = prompt.Index + prompt.Length;
+        var consumedThrough = cursor;
+
+        while (cursor < text.Length)
+        {
+            var newline = text.IndexOf('\n', cursor);
+            var hasCompleteLine = newline >= 0;
+            var lineEnd = hasCompleteLine ? newline : text.Length;
+            var line = text[cursor..lineEnd].TrimEnd('\r');
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                if (!hasCompleteLine) break;
+                cursor = newline + 1;
+                continue;
+            }
+
+            var match = MenuOptionRegex().Match(line);
+            if (!match.Success || match.Index != 0 || match.Length != line.Length)
+            {
+                break;
+            }
+
+            // A final line without its newline may still be receiving bytes in
+            // the next stdout chunk. Do not expose a partial or prematurely
+            // truncated menu as a Forge decision.
+            if (!hasCompleteLine) break;
+
+            options.Add(new ForgeTuiMenuOption(
+                int.Parse(match.Groups["number"].Value, CultureInfo.InvariantCulture),
+                match.Groups["label"].Value.Trim()));
+            consumedThrough = newline + 1;
+            cursor = consumedThrough;
+        }
+
+        return new TrailingMenuParse(options, consumedThrough);
+    }
+
     private static string GetInputValue(ForgeTuiMenuOption option, string kind, string inputPrompt)
     {
         if ((kind is "blocker_selection" or "attacker_selection")
@@ -309,6 +371,15 @@ public sealed partial class ForgeTuiParser
             ?? (forgeCardId.Success ? $"forge-object:{forgeCardId.Groups["id"].Value}" : null);
         var sourceName = string.Equals(entityKind, "player", StringComparison.OrdinalIgnoreCase)
             ? null : GetCardIdentity(label, kind);
+        var sourceZone = entityProvenance.Success && entityProvenance.Groups["sourceZone"].Success
+            ? entityProvenance.Groups["sourceZone"].Value
+            : provenance.Success ? provenance.Groups["sourceZone"].Value : null;
+        // A legacy producer did not emit visibility metadata. Its only
+        // actionable hidden-zone source was library, so fail closed for that
+        // source while preserving existing hand/graveyard/exile contracts.
+        var presentationAuthorized = !string.Equals(sourceZone, "library", StringComparison.OrdinalIgnoreCase)
+            || provenance.Success
+                && string.Equals(provenance.Groups["visibility"].Value, "authorized", StringComparison.OrdinalIgnoreCase);
         return new LegalActionDto(
             ActionId: $"{decisionId}-choice-{option.Number}",
             Type: actionType,
@@ -330,9 +401,7 @@ public sealed partial class ForgeTuiParser
             // highlighted target is selected, not staged behind the collection
             // confirmation control used for discard/sacrifice menus.
             RequiresSelection: kind is "card_selection" or "attacker_selection" or "blocker_selection" or "blocker_assignment",
-            SourceZone: entityProvenance.Success && entityProvenance.Groups["sourceZone"].Success
-                ? entityProvenance.Groups["sourceZone"].Value
-                : provenance.Success ? provenance.Groups["sourceZone"].Value : null,
+            SourceZone: sourceZone,
             AbilityKind: provenance.Success ? provenance.Groups["abilityKind"].Value : null,
             CastMode: provenance.Success ? provenance.Groups["castMode"].Value : null,
             CostKind: provenance.Success ? provenance.Groups["costKind"].Value : null,
@@ -344,6 +413,7 @@ public sealed partial class ForgeTuiParser
             EntityKind: entityKind,
             EntitySeatId: entitySeatId)
         {
+            IsPresentationAuthorized = presentationAuthorized,
             // U2: Populate structured action provenance when bridge metadata is present
             Provenance = provenance.Success ? new ActionProvenanceDto(
                 ActionKind: provenance.Groups["actionKind"].Success ? provenance.Groups["actionKind"].Value : actionType,
@@ -357,7 +427,8 @@ public sealed partial class ForgeTuiParser
                 DisplayCost: provenance.Groups["displayManaCost"].Success ? NullIfBlank(provenance.Groups["displayManaCost"].Value) : null,
                 PaymentContextId: provenance.Groups["paymentContextId"].Success
                     ? NullIfBlank(provenance.Groups["paymentContextId"].Value)
-                    : null)
+                    : null,
+                IsPresentationAuthorized: presentationAuthorized)
             : null
         };
     }
@@ -546,7 +617,7 @@ public sealed partial class ForgeTuiParser
 
     // Forge emits this additive machine-readable suffix while constructing
     // numeric choices. Display labels remain presentation-only.
-    [GeneratedRegex(@"\[bridge\s+sourceZone=(?<sourceZone>[A-Za-z_]+)(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+abilityKind=(?<abilityKind>[A-Za-z0-9_$]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+costKind=(?<costKind>[A-Za-z0-9_-]+))?(?:\s+displayManaCost=(?<displayManaCost>[A-Za-z0-9{}+*/-]+))?(?:\s+prototypePower=(?<prototypePower>[A-Za-z0-9+*/-]+))?(?:\s+prototypeToughness=(?<prototypeToughness>[A-Za-z0-9+*/-]+))?(?:\s+preparedSourceCardId=(?<preparedSourceId>\d+))?(?:\s+paymentContextId=(?<paymentContextId>[A-Za-z0-9:_-]+))?\]", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\[bridge\s+sourceZone=(?<sourceZone>[A-Za-z_]+)(?:\s+visibility=(?<visibility>authorized|redacted))?(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+abilityKind=(?<abilityKind>[A-Za-z0-9_$]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+costKind=(?<costKind>[A-Za-z0-9_-]+))?(?:\s+displayManaCost=(?<displayManaCost>[A-Za-z0-9{}+*/-]+))?(?:\s+prototypePower=(?<prototypePower>[A-Za-z0-9+*/-]+))?(?:\s+prototypeToughness=(?<prototypeToughness>[A-Za-z0-9+*/-]+))?(?:\s+preparedSourceCardId=(?<preparedSourceId>\d+))?(?:\s+paymentContextId=(?<paymentContextId>[A-Za-z0-9:_-]+))?\]", RegexOptions.CultureInvariant)]
     private static partial Regex ActionProvenanceRegex();
 
     [GeneratedRegex(@"\[bridge\s+paymentContextId=(?<paymentContextId>[A-Za-z0-9:_-]+)(?:\s+originActionId=(?<originActionId>[A-Za-z0-9:_-]+))?(?:\s+sourceCardId=(?<sourceCardId>\d+))?(?:\s+sourceZone=(?<sourceZone>[A-Za-z_]+))?(?:\s+actionKind=(?<actionKind>[A-Za-z_]+))?(?:\s+castMode=(?<castMode>[A-Za-z0-9_-]+))?(?:\s+paymentStage=(?<paymentStage>[A-Za-z0-9_-]+))?\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
@@ -613,6 +684,10 @@ public sealed partial class ForgeTuiParser
         new("=== FORGE CHOICE ===", "generic_numeric_selection"),
     ];
 }
+
+internal readonly record struct TrailingMenuParse(
+    IReadOnlyList<ForgeTuiMenuOption> Options,
+    int ConsumedThrough);
 
 public sealed record ForgeTuiMenuOption(int Number, string Label);
 

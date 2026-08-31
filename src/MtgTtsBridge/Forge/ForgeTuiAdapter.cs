@@ -800,13 +800,20 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         {
             "turn_changed" => rawEvent.TurnNumber == previous.TurnNumber,
             // A phase repeats on every turn (Main 1 is the important case),
-            // so the phase alone is not a transition identity. Raw legacy
-            // phase lines do not carry a turn number and must remain visible
-            // rather than being guessed to be duplicates.
-            "phase_changed" => rawEvent.TurnNumber is not null
-                && previous.TurnNumber is not null
-                && rawEvent.TurnNumber == previous.TurnNumber
-                && string.Equals(rawEvent.Phase, previous.Phase, StringComparison.Ordinal),
+            // so the phase alone is not a transition identity. A turnless
+            // legacy phase line is still preserved when it is the only source;
+            // when it immediately follows the richer same-turn diagnostic,
+            // however, it is the same transition and must not clear a current
+            // Main 1 decision as a duplicate event.
+            "phase_changed" =>
+                (rawEvent.TurnNumber is not null
+                    && previous.TurnNumber is not null
+                    && rawEvent.TurnNumber == previous.TurnNumber
+                    && string.Equals(rawEvent.Phase, previous.Phase, StringComparison.Ordinal))
+                || (rawEvent.TurnNumber is null
+                    && previous.TurnNumber is not null
+                    && _latestObservedTurnNumber == previous.TurnNumber
+                    && string.Equals(rawEvent.Phase, previous.Phase, StringComparison.Ordinal)),
             "priority_changed" => rawEvent.TurnNumber is not null
                 && previous.TurnNumber is not null
                 && rawEvent.TurnNumber == previous.TurnNumber

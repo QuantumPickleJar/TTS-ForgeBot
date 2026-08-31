@@ -6,7 +6,7 @@ public sealed class BridgeProcessIdentity
 {
     // Keep the process diagnostic in lockstep with the Global.lua protocol
     // revision so a live table cannot silently report an older bridge build.
-    public const string Revision = "2026-08-27-f2c-v14-delve-mulligan";
+    public const string Revision = "2026-08-30-u2-rolling-capture";
 
     public BridgeProcessIdentity()
     {

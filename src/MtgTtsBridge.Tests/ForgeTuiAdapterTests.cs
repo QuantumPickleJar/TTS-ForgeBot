@@ -167,6 +167,49 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
+    public async Task RichPriorityDiagnosticSuppressesItsEquivalentLegacyPhaseLine()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-rich-phase-{Guid.NewGuid():N}.cmd");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo [TUI-DIAG priority] turn=1 phase=Main phase, precombat active=Player 1 priority=Player 1 isActivePlayersTurn=true hasPriority=true totalActions=0 uniqueActions=0
+            echo +++ Phase: Player 1's Main phase, precombat
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """);
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                }),
+                NullLogger<ForgeTuiAdapter>.Instance);
+
+            var state = await adapter.StartSessionAsync(CancellationToken.None);
+            Assert.NotNull(state.CurrentDecision);
+            var events = await adapter.GetEventsAsync(0, CancellationToken.None);
+
+            Assert.Single(events.Events.Where(item => item.Kind == "phase_changed"));
+            Assert.Contains(events.Events, item => item.Kind == "phase_changed"
+                && item.TurnNumber == 1
+                && item.Phase == "Main phase, precombat");
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
     public async Task RepeatedMainPhaseOnLaterTurnIsNotDeduplicated()
     {
         await using var adapter = new ForgeTuiAdapter(

@@ -15,4 +15,5 @@ public sealed record ActionProvenanceDto(
     string? CastFace = null,
     string? DisplayLabel = null,
     string? DisplayCost = null,
-    string? PaymentContextId = null);
+    string? PaymentContextId = null,
+    bool? IsPresentationAuthorized = null);
