@@ -1047,13 +1047,23 @@ function BridgeRenderDecision(decision, force)
             table.insert(matches, mappedObject)
         else
             local fallbackMatches = {}
-            for _, object in ipairs(cards) do
-                local objectGuid = BridgeSafeObjectGuid(object)
-                local objectZone = objectGuid and BridgeState.physicalZoneByGuid[objectGuid] or nil
-                if (not combatSelection or objectZone == "battlefield")
-                    and BridgeCardNameMatches(object.getName(), action.cardIdentity) then
-                    table.insert(fallbackMatches, object)
+            -- A combat candidate with an exact Forge identity must never fall
+            -- back to a same-name physical card. A spent instant (or another
+            -- stale card that left the battlefield) could otherwise receive an
+            -- attacker highlight and submit the wrong object.
+            if not (combatSelection and action.cardInstanceId ~= nil) then
+                for _, object in ipairs(cards) do
+                    local objectGuid = BridgeSafeObjectGuid(object)
+                    local objectZone = objectGuid and BridgeState.physicalZoneByGuid[objectGuid] or nil
+                    if (not combatSelection or objectZone == "battlefield")
+                        and BridgeCardNameMatches(object.getName(), action.cardIdentity) then
+                        table.insert(fallbackMatches, object)
+                    end
                 end
+            else
+                BridgeLog(string.format(
+                    "[Bridge] suppressing combat action without exact physical mapping instance=%s card=%s",
+                    tostring(action.cardInstanceId), tostring(action.cardIdentity or action.type)))
             end
             if action.cardInstanceId == nil then
                 matches = fallbackMatches

@@ -963,6 +963,7 @@ function BridgeProcessMulliganBottomQueue(seatId)
         -- A replacement opening-hand draw must not overtake a preceding
         -- authoritative hand->library insertion.
         BridgeProcessLibraryExtractionQueue(seatId)
+        BridgeTryApplyDeferredSnapshotReconcile("library-bottom-insertion-complete")
     end
 
     local guid = BridgeSafeObjectGuid(item.object)
@@ -1014,11 +1015,12 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         local current = BridgeState.libraryExtractionQueueBySeatId[seatId]
         if current ~= nil then table.remove(current, 1) end
     BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
-    BridgeProcessLibraryExtractionQueue(seatId)
-    BridgeTryPresentPendingDecision("library-extraction-complete")
-    if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
-        BridgeRenderDecision(BridgeState.lastDecision)
-    end
+        BridgeProcessLibraryExtractionQueue(seatId)
+        BridgeTryPresentPendingDecision("library-extraction-complete")
+        if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
+            BridgeRenderDecision(BridgeState.lastDecision)
+        end
+        BridgeTryApplyDeferredSnapshotReconcile("library-extraction-complete")
     end
     job(complete)
 end

@@ -217,6 +217,31 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void SameTurnStalePriorityMenuCannotCarryUpkeepPassIntoMainOne()
+    {
+        var start = Script.IndexOf("function BridgeShouldIgnoreStaleDecision", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeShouldDeferDecision", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+
+        Assert.Contains("eventCursor > 0 and eventCursor < applied", body);
+        Assert.Contains("local function phaseFamily(value)", body);
+        Assert.Contains("decisionFamily ~= authoritativeFamily", body);
+        Assert.Contains("ignoring stale main-priority decision phase=", body);
+    }
+
+    [Fact]
+    public void CombatActionsWithExactIdentityNeverFallBackToSpentSameNameCards()
+    {
+        var start = Script.IndexOf("local fallbackMatches = {}", StringComparison.Ordinal);
+        var end = Script.IndexOf("if action.cardInstanceId == nil then", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        Assert.Contains("combatSelection and action.cardInstanceId ~= nil", body);
+        Assert.Contains("suppressing combat action without exact physical mapping", body);
+    }
+
+    [Fact]
     public void NonMainPriorityDecisions_HidePassAndYieldControls()
     {
         Assert.Contains("function BridgeHideMainPriorityControls", Script);
@@ -783,6 +808,17 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("queued.cardInstanceId == cardInstanceId", body);
         Assert.Contains("queued.sourceZone ~= nil", body);
         Assert.DoesNotContain("cardName", body);
+    }
+
+    [Fact]
+    public void SnapshotReconcile_WaitsForOrderedLibraryQueues()
+    {
+        Assert.Contains("function BridgePhysicalLibraryQueuesIdle()", Script);
+        Assert.Contains("BridgeState.libraryExtractionActiveBySeatId[seatId] == true", Script);
+        Assert.Contains("mulliganBottomInsertionActiveBySeatId[seatId] == true", Script);
+        Assert.Contains("BridgeSnapshotMayMutatePublicZones(snapshot) and BridgePhysicalLibraryQueuesIdle()", Script);
+        Assert.Contains("local queueState = BridgePhysicalLibraryQueuesIdle() and \"event-cursor\" or \"physical-library-queue\"", Script);
+        Assert.Contains("library-extraction-complete", Script);
     }
 
     [Fact]

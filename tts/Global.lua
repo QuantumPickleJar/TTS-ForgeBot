@@ -1772,6 +1772,7 @@ function BridgeProcessMulliganBottomQueue(seatId)
         -- A replacement opening-hand draw must not overtake a preceding
         -- authoritative hand->library insertion.
         BridgeProcessLibraryExtractionQueue(seatId)
+        BridgeTryApplyDeferredSnapshotReconcile("library-bottom-insertion-complete")
     end
 
     local guid = BridgeSafeObjectGuid(item.object)
@@ -1823,11 +1824,12 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         local current = BridgeState.libraryExtractionQueueBySeatId[seatId]
         if current ~= nil then table.remove(current, 1) end
     BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
-    BridgeProcessLibraryExtractionQueue(seatId)
-    BridgeTryPresentPendingDecision("library-extraction-complete")
-    if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
-        BridgeRenderDecision(BridgeState.lastDecision)
-    end
+        BridgeProcessLibraryExtractionQueue(seatId)
+        BridgeTryPresentPendingDecision("library-extraction-complete")
+        if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
+            BridgeRenderDecision(BridgeState.lastDecision)
+        end
+        BridgeTryApplyDeferredSnapshotReconcile("library-extraction-complete")
     end
     job(complete)
 end
@@ -3523,6 +3525,40 @@ function BridgeShouldIgnoreStaleDecision(decision)
         return true, eventCursor, applied
     end
 
+    -- A same-turn priority menu can still be returned by a delayed poll after
+    -- the authoritative phase event has already been applied. Keeping that
+    -- menu would make an Upkeep pass look current and can carry the game
+    -- straight past Main 1. Decision phase metadata never advances or
+    -- regresses BridgeState.currentPhase; when its cursor is stale it is only
+    -- used as a contradiction check. Coarse families keep Forge labels such
+    -- as "Main phase, precombat" and "Main 1" equivalent.
+    if eventCursor > 0 and eventCursor < applied then
+        local function phaseFamily(value)
+            local phase = string.upper(tostring(value or ""))
+            if phase == "" then return "" end
+            if string.find(phase, "UPKEEP", 1, true) then return "UPKEEP" end
+            if string.find(phase, "DRAW", 1, true) then return "DRAW" end
+            if string.find(phase, "MAIN", 1, true) then return "MAIN" end
+            if string.find(phase, "ATTACK", 1, true)
+                or string.find(phase, "BLOCK", 1, true)
+                or string.find(phase, "DAMAGE", 1, true)
+                or string.find(phase, "COMBAT", 1, true) then return "COMBAT" end
+            if string.find(phase, "CLEANUP", 1, true) then return "CLEANUP" end
+            if string.find(phase, "END", 1, true) then return "END" end
+            return phase
+        end
+        local decisionFamily = phaseFamily(decision.phaseName)
+        local authoritativeFamily = phaseFamily(BridgeState.currentPhase)
+        if decisionFamily ~= "" and authoritativeFamily ~= ""
+            and decisionFamily ~= authoritativeFamily then
+            BridgeLog(string.format(
+                "[Bridge] ignoring stale main-priority decision phase=%s authoritativePhase=%s cursor=%s applied=%s",
+                tostring(decision.phaseName), tostring(BridgeState.currentPhase),
+                tostring(eventCursor), tostring(applied)))
+            return true, eventCursor, applied
+        end
+    end
+
     -- Priority/active-seat fields are descriptive state, not ordering keys.
     -- During a phase transition the event feed can legitimately update one
     -- before the decision poll (and a decision's chooser can differ from the
@@ -3808,6 +3844,23 @@ function BridgeSnapshotMayMutatePublicZones(snapshot)
     return snapshotCursor <= tonumber(BridgeState.lastAppliedEventSequence or 0)
 end
 
+-- A snapshot can be authoritative while its physical library transitions are
+-- still being embodied.  Applying it during a Thought Scour-style burst lets
+-- bootstrap/reconcile extract a same-name card from the current Deck top,
+-- racing the exact queued mill/draw operations.  Keep snapshot mutation
+-- deferred until every seat's ordered library queue is idle.
+function BridgePhysicalLibraryQueuesIdle()
+    for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+        if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
+            or #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}) > 0
+            or BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
+            or #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {}) > 0 then
+            return false
+        end
+    end
+    return true
+end
+
 function BridgeApplyCombatSnapshot(combat)
     local parts = {}
     for _, attack in ipairs((combat and combat.attacks) or {}) do table.insert(parts, tostring(attack.attackerCardInstanceId) .. "|" .. table.concat(attack.blockerCardInstanceIds or {}, ",")) end
@@ -3948,7 +4001,8 @@ end
 
 function BridgeTryApplyDeferredSnapshotReconcile(reason)
     local pending = BridgeState.deferredSnapshotReconcile
-    if pending == nil or not BridgeSnapshotMayMutatePublicZones(pending.snapshot) then return end
+    if pending == nil or not BridgeSnapshotMayMutatePublicZones(pending.snapshot)
+        or not BridgePhysicalLibraryQueuesIdle() then return end
     BridgeState.deferredSnapshotReconcile = nil
     BridgeState.pendingStructuredZoneTransitionByInstanceId = {}
     BridgeApplySafeSnapshotReconcile(pending.snapshot, pending.reason or reason or "deferred")
@@ -3973,11 +4027,12 @@ function BridgeScheduleSnapshotReconcile(reason)
                 BridgeState.openingHandReadinessSnapshotRequested = false
                 BridgeLog("[Bridge] opening-hand-readiness snapshot contained no exact hand identities; retrying")
             end
-            if BridgeSnapshotMayMutatePublicZones(snapshot) then
+            if BridgeSnapshotMayMutatePublicZones(snapshot) and BridgePhysicalLibraryQueuesIdle() then
                 BridgeApplySafeSnapshotReconcile(snapshot, reason)
             else
                 BridgeState.deferredSnapshotReconcile = {snapshot = snapshot, reason = reason}
-                BridgeLogSnapshotOrdering("deferred", snapshot, reason)
+                local queueState = BridgePhysicalLibraryQueuesIdle() and "event-cursor" or "physical-library-queue"
+                BridgeLogSnapshotOrdering("deferred-" .. queueState, snapshot, reason)
             end
         elseif not ok then
             BridgeLog("[Bridge] snapshot reconcile failed: " .. tostring(err))
@@ -6323,13 +6378,23 @@ function BridgeRenderDecision(decision, force)
             table.insert(matches, mappedObject)
         else
             local fallbackMatches = {}
-            for _, object in ipairs(cards) do
-                local objectGuid = BridgeSafeObjectGuid(object)
-                local objectZone = objectGuid and BridgeState.physicalZoneByGuid[objectGuid] or nil
-                if (not combatSelection or objectZone == "battlefield")
-                    and BridgeCardNameMatches(object.getName(), action.cardIdentity) then
-                    table.insert(fallbackMatches, object)
+            -- A combat candidate with an exact Forge identity must never fall
+            -- back to a same-name physical card. A spent instant (or another
+            -- stale card that left the battlefield) could otherwise receive an
+            -- attacker highlight and submit the wrong object.
+            if not (combatSelection and action.cardInstanceId ~= nil) then
+                for _, object in ipairs(cards) do
+                    local objectGuid = BridgeSafeObjectGuid(object)
+                    local objectZone = objectGuid and BridgeState.physicalZoneByGuid[objectGuid] or nil
+                    if (not combatSelection or objectZone == "battlefield")
+                        and BridgeCardNameMatches(object.getName(), action.cardIdentity) then
+                        table.insert(fallbackMatches, object)
+                    end
                 end
+            else
+                BridgeLog(string.format(
+                    "[Bridge] suppressing combat action without exact physical mapping instance=%s card=%s",
+                    tostring(action.cardInstanceId), tostring(action.cardIdentity or action.type)))
             end
             if action.cardInstanceId == nil then
                 matches = fallbackMatches
