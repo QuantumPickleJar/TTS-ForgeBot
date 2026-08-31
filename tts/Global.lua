@@ -3463,6 +3463,31 @@ end
 function BridgeShouldDeferDecision(decision)
     local openingMulligan = decision ~= nil and decision.kind == "mulligan"
         and tostring(decision.mulliganStage or "") == "keep_or_mulligan"
+    -- Forge can produce the next priority menu before the bridge event poll
+    -- has received the matching draw. Do not reveal or make actionable a
+    -- hand-source action until its exact instance has an exact physical card
+    -- in the chooser's live TTS hand. This is stronger than event-cursor
+    -- ordering: the menu itself can legitimately carry an older cursor while
+    -- already reflecting Forge's newly drawn hand.
+    if not openingMulligan and decision ~= nil and decision.seatId ~= nil then
+        local handGuids, handError = BridgeBuildSeatHandGuidSet(decision.seatId)
+        for _, action in ipairs(decision.actions or {}) do
+            if string.lower(tostring(action.sourceZone or "")) == "hand" then
+                local instanceId = action.preparedSourceCardInstanceId
+                    or action.sourceCardInstanceId or action.cardInstanceId
+                local guid = instanceId and BridgeState.physicalByInstanceId[instanceId] or nil
+                if instanceId == nil or guid == nil
+                    or BridgeState.physicalInstanceIdByGuid[guid] ~= instanceId
+                    or handGuids[guid] ~= true then
+                    return true, tonumber(decision.eventCursor or 0) or 0,
+                        tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+                        "hand_action_readiness",
+                        string.format("instance=%s guid=%s hand=%s error=%s",
+                            tostring(instanceId), tostring(guid), tostring(handGuids[guid] == true), tostring(handError))
+                end
+            end
+        end
+    end
     -- A draw is authoritative before its physical Deck extraction callback
     -- completes. Do not expose a priority menu whose new hand card cannot yet
     -- be embodied; otherwise the player can pass a stale menu and only then
@@ -3518,6 +3543,17 @@ function BridgeScheduleOpeningHandReadinessRetry()
     end, BRIDGE_OPENING_HAND_READINESS_RETRY_FRAMES)
 end
 
+function BridgeScheduleHandActionReadinessRetry()
+    if BridgeState.handActionReadinessRetryScheduled then return end
+    BridgeState.handActionReadinessRetryScheduled = true
+    BridgeWaitFrames(function()
+        BridgeState.handActionReadinessRetryScheduled = false
+        if BridgeState.pendingDecision ~= nil and not BridgeState.submitting then
+            BridgeTryPresentPendingDecision("hand-action-readiness-retry")
+        end
+    end, BRIDGE_OPENING_HAND_READINESS_RETRY_FRAMES)
+end
+
 function BridgeTryPresentPendingDecision(reason)
     if BridgeState.pendingDecision == nil or BridgeState.submitting then return end
     local pending = BridgeState.pendingDecision
@@ -3560,6 +3596,20 @@ function BridgeTryPresentPendingDecision(reason)
                 "[Bridge] holding opening mulligan decision %s: %s",
                 tostring(pending.decisionId), tostring(deferDetail)))
             BridgeScheduleOpeningHandReadinessRetry()
+            return
+        end
+        if deferReason == "hand_action_readiness" then
+            BridgeState.pendingDecisionDeferredAt = deferredAt
+            BridgeState.pendingDecisionDeferredCursor = eventCursor
+            BridgeState.pendingDecisionDeferredApplied = applied
+            if elapsed >= BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS then
+                BridgeStopOnDesync("hand action readiness timeout: " .. tostring(deferDetail))
+                return
+            end
+            BridgeLog(string.format(
+                "[Bridge] holding decision %s until exact hand action is embodied: %s",
+                tostring(pending.decisionId), tostring(deferDetail)))
+            BridgeScheduleHandActionReadinessRetry()
             return
         end
         local stalledProgress = BridgeState.pendingDecisionDeferredCursor == eventCursor

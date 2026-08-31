@@ -251,6 +251,25 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void HandActions_AreHeldUntilTheirExactInstancesAreInTheLiveTtsHand()
+    {
+        var deferStart = Script.IndexOf("function BridgeShouldDeferDecision", StringComparison.Ordinal);
+        var retryStart = Script.IndexOf("function BridgeScheduleOpeningHandReadinessRetry", deferStart, StringComparison.Ordinal);
+        Assert.True(deferStart >= 0 && retryStart > deferStart);
+        var defer = Script[deferStart..retryStart];
+
+        Assert.Contains("BridgeBuildSeatHandGuidSet(decision.seatId)", defer);
+        Assert.Contains("action.preparedSourceCardInstanceId", defer);
+        Assert.Contains("BridgeState.physicalByInstanceId[instanceId]", defer);
+        Assert.Contains("BridgeState.physicalInstanceIdByGuid[guid] ~= instanceId", defer);
+        Assert.Contains("handGuids[guid] ~= true", defer);
+        Assert.Contains("\"hand_action_readiness\"", defer);
+        Assert.Contains("function BridgeScheduleHandActionReadinessRetry", Script);
+        Assert.Contains("holding decision %s until exact hand action is embodied", Script);
+        Assert.Contains("hand action readiness timeout", Script);
+    }
+
+    [Fact]
     public void GenericNumericDecisions_ExposePhysicalOptionButtons()
     {
         Assert.Contains("function BridgeEnsureDecisionOptionControls", Script);
