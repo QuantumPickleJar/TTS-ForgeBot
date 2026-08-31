@@ -181,6 +181,25 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void Reconciliation_EmitsExactGraveyardToBattlefieldReturnForTargetedSorcery()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+
+        reconciler.Apply("session-a", Parse(parser, Frame(1, Player(
+            graveyard: [Card(417, "Tune Up", "graveyard", 0), Card(88, "Cargo Ship", "graveyard", 1)]))));
+
+        var events = reconciler.Apply("session-a", Parse(parser, Frame(2, Player(
+            graveyard: [Card(417, "Tune Up", "graveyard", 0)],
+            battlefield: [Card(88, "Cargo Ship", "battlefield", 0, currentTypes: "[\"artifact\",\"vehicle\"]")]))) );
+
+        var moved = Assert.Single(events, item => item.Kind == "card_moved" && item.ForgeObjectId == 88);
+        Assert.Equal("graveyard", moved.SourceZone);
+        Assert.Equal("battlefield", moved.DestinationZone);
+        Assert.Equal("creature", moved.BattlefieldKind);
+    }
+
+    [Fact]
     public void Reconciliation_OrdersSoulstoneZoneTransitionBeforeItsTapPresentation()
     {
         var parser = new ForgeStructuredOutputParser();

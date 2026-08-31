@@ -2589,6 +2589,24 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void PublicZoneReturn_UnlocksExactGraveyardCardBeforeReuse()
+    {
+        var prepareStart = Script.IndexOf("function BridgePreparePhysicalCardForPublicZoneMove", StringComparison.Ordinal);
+        var prepareEnd = Script.IndexOf("function BridgeApplyStructuredCardMove", prepareStart, StringComparison.Ordinal);
+        Assert.True(prepareStart >= 0);
+        Assert.True(prepareEnd > prepareStart);
+        var prepare = Script[prepareStart..prepareEnd];
+        Assert.Contains("object.setLock(false)", prepare);
+        Assert.Contains("destinationZone == \"graveyard\" or destinationZone == \"library\"", prepare);
+
+        var moveStart = Script.IndexOf("function BridgeMoveToBattlefield", StringComparison.Ordinal);
+        var moveEnd = Script.IndexOf("function BridgeBattlefieldPosition", moveStart, StringComparison.Ordinal);
+        Assert.True(moveStart >= 0);
+        Assert.True(moveEnd > moveStart);
+        Assert.Contains("BridgePreparePhysicalCardForPublicZoneMove(object, \"battlefield\")", Script[moveStart..moveEnd]);
+    }
+
+    [Fact]
     public void DrawBurst_UsesSerializedExtractionWithoutBlockingPhaseCursor()
     {
         Assert.Contains("BRIDGE_DRAW_EVENT_PRESENTATION_DELAY = 0.25", Script);

@@ -9243,6 +9243,23 @@ function BridgeRecoverFromLibraryOrderMismatch(detail)
     return true
 end
 
+function BridgePreparePhysicalCardForPublicZoneMove(object, destinationZone)
+    if object == nil or object.tag ~= "Card" then
+        return false, "public-zone move requires a physical game card"
+    end
+    if destinationZone == "graveyard" or destinationZone == "library" then
+        return true, nil
+    end
+    -- Graveyard cards are intentionally locked for readable pile presentation.
+    -- A later authoritative public-zone transition must unlock that exact card
+    -- before TTS can reuse it; Forge's zone change remains the authority.
+    local unlocked, unlockError = pcall(function() object.setLock(false) end)
+    if not unlocked then
+        return false, "could not unlock card for " .. tostring(destinationZone) .. " move: " .. tostring(unlockError)
+    end
+    return true, nil
+end
+
 function BridgeApplyStructuredCardMove(event)
     if event.cardInstanceId == nil then return false, "structured zone change has no cardInstanceId" end
     local seat = BRIDGE_SEATS[event.seatId]
@@ -9632,6 +9649,8 @@ function BridgeApplyStructuredCardMove(event)
     end
 
     if event.destinationZone ~= "battlefield" then
+        local prepared, prepareError = BridgePreparePhysicalCardForPublicZoneMove(object, event.destinationZone)
+        if not prepared then return false, prepareError end
         -- Prepared/prototyped are zone-scoped Forge state. Retire their
         -- presentation as soon as the exact physical card leaves the
         -- battlefield; a later snapshot remains authoritative for recovery.
@@ -11242,6 +11261,8 @@ function BridgeMoveToBattlefield(event, object, row, countAsNewPlacement)
     local guidBeforeMove = BridgeSafeObjectGuid(object)
     if guidBeforeMove ~= nil then sourcePhysicalZone = BridgeState.physicalZoneByGuid[guidBeforeMove] end
     local moved, movementError = pcall(function()
+        local prepared, prepareError = BridgePreparePhysicalCardForPublicZoneMove(object, "battlefield")
+        if not prepared then error(prepareError) end
         BridgeCaptureCanonicalCardScale(object)
         object.use_hands = false
         BridgeSetPhysicalFaceDown(object, BRIDGE_SEATS[event.seatId], event.faceDown == true)
