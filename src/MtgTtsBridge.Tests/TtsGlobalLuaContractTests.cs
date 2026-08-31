@@ -770,13 +770,13 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void SnapshotBootstrap_StagesLooseCardsNearLibrariesBeforeRemapping()
     {
-        Assert.Contains("BridgeStageSeatCardsForBootstrap(snapshot)", Script);
-        Assert.Contains("function BridgeStageSeatCardsForBootstrap(snapshot)", Script);
+        Assert.Contains("BridgeStageSeatCardsForBootstrap(snapshot, function(stagedOk, stagedError, stagedGuids)", Script);
+        Assert.Contains("function BridgeStageSeatCardsForBootstrap(snapshot, callback)", Script);
         Assert.Contains("IsGameCardCandidate(object, seatId, context)", Script);
         Assert.Contains("BridgeTryGetSeatHandObjects(seatId)", Script);
         Assert.Contains("BridgeNearestSeatIdForPosition", Script);
         Assert.Contains("function BridgeLibraryStagingPosition", Script);
-        Assert.Contains("refused spatial-only library staging", Script);
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(seatId, object, \"NORMAL\"", Script);
     }
 
     [Fact]
@@ -2477,9 +2477,11 @@ public sealed class TtsGlobalLuaContractTests
         var bootstrap = Script[bootstrapStart..bootstrapEnd];
 
         Assert.Contains("local stagedGuids = {}", staging);
-        Assert.Contains("stagedGuids[tostring(guid)] = true", staging);
-        Assert.Contains("return true, nil, stagedGuids", staging);
-        Assert.Contains("local stagedOk, stagedError, stagedGuids", bootstrap);
+        Assert.Contains("local function stageNext(index)", staging);
+        Assert.Contains("BridgeStagePhysicalCardForBootstrap(item.object, item.seatId, function(ok, err)", staging);
+        Assert.Contains("stagedGuids[tostring(item.guid)] = true", staging);
+        Assert.Contains("callback(true, nil, stagedGuids)", staging);
+        Assert.Contains("BridgeStageSeatCardsForBootstrap(snapshot, function(stagedOk, stagedError, stagedGuids)", bootstrap);
         Assert.Contains("BridgeVerifyLibraryIdentityStability(function(stable, stabilityError)", bootstrap);
         Assert.Contains("end, 1, stagedGuids)", bootstrap);
         Assert.DoesNotContain("local postStageDuplicateCount = BridgeAuditDuplicateLibraryGuids()", bootstrap);

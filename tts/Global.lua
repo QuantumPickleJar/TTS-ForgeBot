@@ -1227,13 +1227,14 @@ function BridgeLibraryStagingPosition(seat, stagedBySeat, seatId)
     }
 end
 
-function BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat)
-    if not BridgeObjectIsUsable(object) then return false end
+function BridgeStagePhysicalCardForBootstrap(object, seatId, callback)
+    callback = callback or function() end
+    if not BridgeObjectIsUsable(object) then callback(false, "staged object is unavailable"); return end
     -- This helper is intentionally Card-only. TTS Deck-on-Deck operations
     -- are not a safe reset primitive and can corrupt the physical pile.
-    if object.tag ~= "Card" then return false end
+    if object.tag ~= "Card" then callback(false, "staged object is not a Card"); return end
     local seat = seatId and BRIDGE_SEATS[seatId] or nil
-    if seat == nil then return false end
+    if seat == nil then callback(false, "staged object has no configured seat"); return end
 
     -- Do not merely drop cards above the scripting-zone marker and hope that
     -- physics merges them before the library ledger is inspected. On this
@@ -1241,45 +1242,27 @@ function BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat)
     -- transient (and occasionally permanent) under-count during bootstrap.
     -- Inserting into the resolved physical Deck is deterministic and does not
     -- assign any Forge identity; the later ledger remains authoritative.
+    local objectGuid = BridgeSafeObjectGuid(object)
     local deck = BridgeResolveSeatLibraryDeck(seatId)
-    if deck ~= nil then
-        local objectGuid = BridgeSafeObjectGuid(object)
-        local deckGuid = BridgeSafeObjectGuid(deck)
-        if objectGuid ~= nil and objectGuid == deckGuid then
-            BridgeLog("[Bridge] refused to stage a library card into itself guid=" .. tostring(objectGuid)
-                .. " seat=" .. tostring(seatId))
-            return false
-        end
-        if not BridgeRequireArtBearingLibraryCard(object, seatId, nil) then return false end
-        if deck.tag == "Card" then
-            -- TTS collapses a one-card Deck to a Card.  Form the next Deck
-            -- deterministically and let the post-bootstrap containment audit
-            -- decide whether the physical merge really happened.
-            local libraryPosition = deck.getPosition()
-            local inserted = BridgeSafeObjectCall(object, function(o)
-                o.setLock(false)
-                o.use_hands = false
-                BridgeSetPhysicalFaceDown(o, seat, true)
-                deck.setLock(false)
-                deck.use_hands = false
-                BridgeSetPhysicalFaceDown(deck, seat, true)
-                o.setPosition({libraryPosition.x, libraryPosition.y + 0.06, libraryPosition.z})
-                deck.setPosition(libraryPosition)
-            end)
-            if inserted then return true end
-            return false
-        end
-        local inserted = BridgeSafeObjectCall(object, function(o)
-            o.use_hands = false
-            o.setLock(false)
-            BridgeSetPhysicalFaceDown(o, seat, true)
-            deck.putObject(o)
-        end)
-        if inserted then return true end
+    local deckGuid = BridgeSafeObjectGuid(deck)
+    if objectGuid ~= nil and objectGuid == deckGuid then
+        local detail = "refused to stage a library card into itself guid=" .. tostring(objectGuid)
+            .. " seat=" .. tostring(seatId)
+        BridgeLog("[Bridge] " .. detail)
+        callback(false, detail)
+        return
     end
-
-    BridgeLog("[Bridge] refused spatial-only library staging seat=" .. tostring(seatId))
-    return false
+    -- Serialize staging through the same verified insertion primitive used by
+    -- mulligan and ordinary library returns. Repeated synchronous putObject
+    -- calls leave several loose Card userdatas beside one Deck long enough to
+    -- defeat the strict resync audit.
+    BridgeInsertPhysicalCardIntoLibrary(seatId, object, "NORMAL", function(ok, err)
+        if not ok then
+            BridgeLog("[Bridge] bootstrap library staging failed seat=" .. tostring(seatId)
+                .. " guid=" .. tostring(objectGuid) .. " reason=" .. tostring(err))
+        end
+        callback(ok, err)
+    end, nil)
 end
 
 function BridgeZoneAnchorCacheKey(seatId, zoneName)
@@ -1370,7 +1353,8 @@ function BridgeResolveSeatZoneAnchor(seatId, zoneName)
     return nil
 end
 
-function BridgeStageSeatCardsForBootstrap(snapshot)
+function BridgeStageSeatCardsForBootstrap(snapshot, callback)
+    callback = callback or function() end
     BridgeTraceStart("START-13 loose-card-staging")
     local knownSeatIds = {}
     local knownSeatIdSet = {}
@@ -1387,7 +1371,7 @@ function BridgeStageSeatCardsForBootstrap(snapshot)
     -- does not consistently return them from getAllObjects().
     for seatId, _ in pairs(BRIDGE_SEATS) do
         local handObjects, handError = BridgeTryGetSeatHandObjects(seatId)
-        if handObjects == nil then return false, handError end
+        if handObjects == nil then callback(false, handError); return end
         local handGuids = {}
         for _, handObject in ipairs(handObjects) do
             local guid = BridgeSafeObjectGuid(handObject)
@@ -1396,9 +1380,8 @@ function BridgeStageSeatCardsForBootstrap(snapshot)
         context.handGuidsBySeat[seatId] = handGuids
     end
 
-    local stagedBySeat = {}
     local stagedGuids = {}
-    local stagedCount = 0
+    local staged = {}
     for _, object in ipairs(getAllObjects()) do
         if BridgeObjectIsUsable(object) and object.tag == "Card" then
             local guid = BridgeSafeObjectGuid(object)
@@ -1419,18 +1402,34 @@ function BridgeStageSeatCardsForBootstrap(snapshot)
             local isInHand = handSeatId ~= nil
             if seatId ~= nil
                 and not isInHand
-                and IsGameCardCandidate(object, seatId, context)
-                and BridgeStagePhysicalCardForBootstrap(object, seatId, stagedBySeat) then
-                stagedCount = stagedCount + 1
-                if guid ~= nil then stagedGuids[tostring(guid)] = true end
+                and IsGameCardCandidate(object, seatId, context) then
+                table.insert(staged, {object = object, seatId = seatId, guid = guid})
             end
         end
     end
 
-    if stagedCount > 0 then
-        BridgeLog("[Bridge] staged " .. tostring(stagedCount) .. " loose card(s) near library before authoritative bootstrap")
+    local stagedCount = 0
+    local function stageNext(index)
+        local item = staged[index]
+        if item == nil then
+            if stagedCount > 0 then
+                BridgeLog("[Bridge] staged " .. tostring(stagedCount)
+                    .. " loose card(s) through verified library containment before authoritative bootstrap")
+            end
+            callback(true, nil, stagedGuids)
+            return
+        end
+        BridgeStagePhysicalCardForBootstrap(item.object, item.seatId, function(ok, err)
+            if not ok then
+                callback(false, "bootstrap staging failed for guid=" .. tostring(item.guid) .. ": " .. tostring(err))
+                return
+            end
+            stagedCount = stagedCount + 1
+            if item.guid ~= nil then stagedGuids[tostring(item.guid)] = true end
+            stageNext(index + 1)
+        end)
     end
-    return true, nil, stagedGuids
+    stageNext(1)
 end
 
 -- A destructive New Match must not leave the previous game's embodied cards
@@ -6625,62 +6624,63 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                 return
             end
             BridgeTraceStart("START-12 physical-bootstrap-begin")
-            local stagedOk, stagedError, stagedGuids = BridgeStageSeatCardsForBootstrap(snapshot)
-            if not stagedOk then
-                BridgeState.bootstrapping = false
-                callback(false, stagedError)
-                return
-            end
-
-            -- Let Tabletop Simulator commit Deck.putObject before reading the
-            -- contained-card ledger. This is a short state-settle, not a
-            -- timing-based replacement for deterministic insertion above.
-            BridgeTraceStart("START-13 library-settle")
-            BridgeVerifyLibraryIdentityStability(function(stable, stabilityError)
-                if not stable then
+            BridgeStageSeatCardsForBootstrap(snapshot, function(stagedOk, stagedError, stagedGuids)
+                if not stagedOk then
                     BridgeState.bootstrapping = false
-                    local detail = "physical library identity audit found " .. tostring(stabilityError)
-                        .. " after staging"
-                    BridgeLog("[Bridge] " .. detail)
-                    callback(false, detail)
+                    callback(false, stagedError)
                     return
                 end
-                BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
-                    BridgeRunTraced("START annotate-callback", function()
-                        if not annotated then
-                            BridgeState.bootstrapping = false
-                            callback(false, annotationError)
-                            return
-                        end
-                        BridgeBootstrapSeats(snapshot, 1, function(seatsOk, seatsError)
-                            BridgeRunTraced("START seat-bootstrap-callback", function()
+
+                -- Each staged Card was individually containment-verified.
+                -- Keep the terminal strict audit as a corruption canary
+                -- before rebuilding exact Forge mappings.
+                BridgeTraceStart("START-13 library-settle")
+                BridgeVerifyLibraryIdentityStability(function(stable, stabilityError)
+                    if not stable then
+                        BridgeState.bootstrapping = false
+                        local detail = "physical library identity audit found " .. tostring(stabilityError)
+                            .. " after staging"
+                        BridgeLog("[Bridge] " .. detail)
+                        callback(false, detail)
+                        return
+                    end
+                    BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
+                        BridgeRunTraced("START annotate-callback", function()
+                            if not annotated then
                                 BridgeState.bootstrapping = false
-                                if not seatsOk then callback(false, seatsError); return end
-                                BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
-                                if resumeFromSnapshotCursor == true then
-                                    local cursor = tonumber(snapshot.eventCursor)
-                                    if cursor == nil or cursor < 0 then
-                                        BridgeState.bootstrapping = false
-                                        callback(false, "authoritative resync snapshot is missing a valid event cursor")
-                                        return
+                                callback(false, annotationError)
+                                return
+                            end
+                            BridgeBootstrapSeats(snapshot, 1, function(seatsOk, seatsError)
+                                BridgeRunTraced("START seat-bootstrap-callback", function()
+                                    BridgeState.bootstrapping = false
+                                    if not seatsOk then callback(false, seatsError); return end
+                                    BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
+                                    if resumeFromSnapshotCursor == true then
+                                        local cursor = tonumber(snapshot.eventCursor)
+                                        if cursor == nil or cursor < 0 then
+                                            BridgeState.bootstrapping = false
+                                            callback(false, "authoritative resync snapshot is missing a valid event cursor")
+                                            return
+                                        end
+                                        -- The snapshot is coherent through this bridge event cursor.
+                                        -- Resume polling after it so no pre-snapshot transition is
+                                        -- replayed over the just-rebuilt physical embodiment.
+                                        BridgeState.lastReceivedEventSequence = cursor
+                                        BridgeState.lastAppliedEventSequence = cursor
+                                        BridgeState.eventQueue = {}
+                                        BridgeState.skipExistingEventsOnAttach = false
                                     end
-                                    -- The snapshot is coherent through this bridge event cursor.
-                                    -- Resume polling after it so no pre-snapshot transition is
-                                    -- replayed over the just-rebuilt physical embodiment.
-                                    BridgeState.lastReceivedEventSequence = cursor
-                                    BridgeState.lastAppliedEventSequence = cursor
-                                    BridgeState.eventQueue = {}
-                                    BridgeState.skipExistingEventsOnAttach = false
-                                end
-                                BridgeLog(string.format(
-                                    "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
-                                    #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
-                                callback(true, nil)
+                                    BridgeLog(string.format(
+                                        "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
+                                        #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
+                                    callback(true, nil)
+                                end)
                             end)
                         end)
                     end)
-                end)
-            end, 1, stagedGuids)
+                end, 1, stagedGuids)
+            end)
         end)
     end)
 end
