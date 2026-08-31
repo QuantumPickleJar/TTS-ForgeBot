@@ -186,6 +186,22 @@ public sealed class DelveAndMulliganLuaContractTests
         Assert.Contains("== \"hand\"", capture);
         Assert.Contains("card.cardInstanceId", capture);
         Assert.DoesNotContain("card.cardName", capture);
-        Assert.Contains("openingHandReadinessSnapshotPending = false", capture);
+        Assert.Contains("openingHandReadinessSnapshotPending = not complete", capture);
+    }
+
+    [Fact]
+    public void BootstrapMatching_ReservesTtsHandMembersBeforeMatchingDuplicateNamesInOtherZones()
+    {
+        var start = Script.IndexOf("function BridgeReconcileSeatSnapshot", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeMaterializeSeatSnapshot", start, StringComparison.Ordinal);
+        var reconcile = Script[start..end];
+
+        Assert.Contains("local handByName = {}", reconcile);
+        Assert.Contains("local nonHandByName = {}", reconcile);
+        Assert.Contains("BridgeBuildSeatHandGuidSet(seatSnapshot.seatId)", reconcile);
+        Assert.Contains("handGuids[assetGuid] == true and handByName or nonHandByName", reconcile);
+        Assert.Contains("zoneName == \"hand\"", reconcile);
+        Assert.Contains("handByName[normalized]", reconcile);
+        Assert.Contains("nonHandByName[normalized]", reconcile);
     }
 }

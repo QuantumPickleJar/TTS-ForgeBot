@@ -2056,20 +2056,33 @@ end
 -- Keep only exact Forge instance IDs here. Card names are intentionally not
 -- retained for the readiness diagnostic because an opening hand may be hidden
 -- information from the other player.
-function BridgeRecordExpectedHandIdentities(snapshot)
+function BridgeRecordExpectedHandIdentities(snapshot, requiredSeatId)
     BridgeState.expectedHandInstanceIdsBySeatId = {}
+    local identityCount = 0
     for _, seatSnapshot in ipairs(snapshot and snapshot.seats or {}) do
         local expected = {}
         for _, zone in ipairs(seatSnapshot.zones or {}) do
             if string.lower(tostring(zone.name or "")) == "hand" then
                 for _, card in ipairs(zone.cards or {}) do
-                    if card.cardInstanceId ~= nil then expected[card.cardInstanceId] = true end
+                    if card.cardInstanceId ~= nil and tostring(card.cardInstanceId) ~= "" then
+                        expected[card.cardInstanceId] = true
+                        identityCount = identityCount + 1
+                    end
                 end
             end
         end
         BridgeState.expectedHandInstanceIdsBySeatId[seatSnapshot.seatId] = expected
     end
-    BridgeState.openingHandReadinessSnapshotPending = false
+    -- A transient/partial snapshot must not release the opening decision.  If
+    -- no exact hand IDs were returned, the next readiness retry requests a
+    -- fresh snapshot instead of waiting forever on an empty expected set.
+    local requiredExpected = requiredSeatId ~= nil
+        and BridgeState.expectedHandInstanceIdsBySeatId[requiredSeatId] or nil
+    local complete = requiredSeatId ~= nil
+        and requiredExpected ~= nil and next(requiredExpected) ~= nil
+        or (requiredSeatId == nil and identityCount > 0)
+    BridgeState.openingHandReadinessSnapshotPending = not complete
+    return complete
 end
 
 function BridgeCheckOpeningHandReadiness(seatId)
@@ -3649,7 +3662,11 @@ end
 function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     local movedCount = 0
     BridgePresentationMetric("fullSnapshotReconcileCount")
-    BridgeRecordExpectedHandIdentities(snapshot)
+    local pending = BridgeState.pendingDecision
+    local requiredSeatId = pending ~= nil and pending.kind == "mulligan"
+        and tostring(pending.mulliganStage or "") == "keep_or_mulligan"
+        and pending.seatId or nil
+    BridgeRecordExpectedHandIdentities(snapshot, requiredSeatId)
     BridgeSetMonarchSeat(snapshot and snapshot.monarchSeatId or nil)
     BridgeState.stackSummary = {}
     for _, card in ipairs(snapshot and snapshot.stack or {}) do
@@ -3767,7 +3784,15 @@ function BridgeScheduleSnapshotReconcile(reason)
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
         BridgeState.snapshotReconcileInFlight = false
         if ok and snapshot ~= nil and snapshot.sessionId == BridgeState.eventSessionId then
-            BridgeRecordExpectedHandIdentities(snapshot)
+            local pending = BridgeState.pendingDecision
+            local requiredSeatId = pending ~= nil and pending.kind == "mulligan"
+                and tostring(pending.mulliganStage or "") == "keep_or_mulligan"
+                and pending.seatId or nil
+            local hasHandIdentities = BridgeRecordExpectedHandIdentities(snapshot, requiredSeatId)
+            if not hasHandIdentities then
+                BridgeState.openingHandReadinessSnapshotRequested = false
+                BridgeLog("[Bridge] opening-hand-readiness snapshot contained no exact hand identities; retrying")
+            end
             if BridgeSnapshotMayMutatePublicZones(snapshot) then
                 BridgeApplySafeSnapshotReconcile(snapshot, reason)
             else
@@ -7037,13 +7062,17 @@ function BridgeLogLibraryMismatchInventory(seatSnapshot, failedName, displayName
 end
 
 function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagnostic)
-    local byName = {}
+    local handByName = {}
+    local nonHandByName = {}
     local looseCountByName = {}
     local mappings = {}
+    local handGuids = BridgeBuildSeatHandGuidSet(seatSnapshot.seatId)
     for _, asset in ipairs(assets) do
         local name = BridgeNormalizeCardName(asset.cardName)
-        byName[name] = byName[name] or {}
-        table.insert(byName[name], asset)
+        local assetGuid = asset.guid or (asset.object and BridgeSafeObjectGuid(asset.object))
+        local destination = handGuids[assetGuid] == true and handByName or nonHandByName
+        destination[name] = destination[name] or {}
+        table.insert(destination[name], asset)
         looseCountByName[name] = (looseCountByName[name] or 0) + 1
     end
 
@@ -7101,7 +7130,14 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
             end
         end
         local function consumeLoose()
-            local looseCandidates = byName[normalized] or {}
+            -- TTS can expose hand cards in a different order from getAllObjects.
+            -- Reserve those exact hand members for the authoritative hand zone;
+            -- otherwise duplicate names can cross-link a hand card with a
+            -- battlefield card and opening-hand readiness will correctly reject
+            -- the resulting mapping.
+            local looseCandidates = zoneName == "hand"
+                and (handByName[normalized] or {})
+                or (nonHandByName[normalized] or {})
             if #looseCandidates > 0 then
                 assigned = table.remove(looseCandidates, 1)
             end
