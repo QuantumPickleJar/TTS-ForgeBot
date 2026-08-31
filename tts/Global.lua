@@ -511,6 +511,11 @@ BridgeState = {
     -- allowed a prior yield to resume when that same player received their
     -- next turn, silently skipping an entire turn cycle.
     yieldTurnNumber = nil,
+    -- HUD YIELD can be armed while the AI is acting and no human decision is
+    -- currently visible.  Keep that policy scoped to the authoritative turn
+    -- and active seat so it cannot leak into a later turn.
+    yieldPolicyTurnNumber = nil,
+    yieldPolicyActiveSeatId = nil,
     counterStateByInstanceId = {},
     keywordStateByInstanceId = {},
     cardDesignationsByInstanceId = {},
@@ -2476,8 +2481,15 @@ function BridgeUiFlush()
     local targetCanCancel = decision ~= nil and decision.allowsCancel == true
         and (decision.kind == "target_selection" or decision.kind == "defender_selection"
             or decision.kind == "player_selection")
+    local yieldPolicyAvailable = BridgeState.gameEnded == nil
+        and not BridgeDecisionNeedsConfirmation(decision)
+        and BridgeState.pendingIntent == nil
     BridgeUiSet("BridgeHudPass", "active", hasPass and "true" or "false")
-    BridgeUiSet("BridgeHudYield", "active", hasYield and "true" or "false")
+    -- Keep YIELD visible during an AI/opponent turn even when Forge is not
+    -- currently waiting on a human decision; clicking it arms the policy and
+    -- does not fabricate a pass. When a human pass decision exists, it uses
+    -- the exact Forge action as before.
+    BridgeUiSet("BridgeHudYield", "active", (hasYield or yieldPolicyAvailable) and "true" or "false")
     BridgeUiSet("BridgeHudConfirm", "active", (decision and BridgeDecisionNeedsConfirmation(decision))
         or castPreviewPending and "true" or "false")
     BridgeUiSet("BridgeHudConfirm", "text", castPreviewPending and "CAST / CONFIRM" or "CONFIRM")
@@ -2628,6 +2640,22 @@ function BridgeHudPass(player, value, id)
 end
 
 function BridgeHudYield(player, value, id)
+    local decision = BridgeState.lastDecision
+    -- During the opponent's turn Forge may be executing AI priority without
+    -- exposing a human decision at this instant. Arm the existing YIELD
+    -- policy so the next Forge pass windows are consumed until a meaningful
+    -- human choice or an authoritative turn change appears. No rules state is
+    -- advanced locally and no synthetic pass is submitted.
+    if decision == nil or decision.seatId ~= "forge-player-1" or decision.kind ~= "main_priority" then
+        if BridgeState.ui ~= nil then
+            BridgeState.ui.autoAdvanceMode = "YIELD"
+            BridgeUiMarkDirty("yield-policy-armed")
+        end
+        BridgeState.yieldPolicyTurnNumber = tonumber(BridgeState.tableTurnCount or 0) or 0
+        BridgeState.yieldPolicyActiveSeatId = BridgeState.currentTurnSeatId
+        BridgeSetStatus("YIELD TURN ARMED", "Forge will continue passing opponent priority until human intervention is required.")
+        return
+    end
     BridgePressEndTurn(nil, player, false)
 end
 
@@ -6026,6 +6054,32 @@ function BridgeRenderDecision(decision, force)
         end
     end
 
+    -- A YIELD TURN request may be made while Blue/AI is still consuming its
+    -- priority windows and no human decision exists.  Once Forge presents a
+    -- human main-priority decision in that same authoritative turn, consume
+    -- only a pass-only window.  Meaningful actions remain visible and stop
+    -- the yield, while the next exact Forge decision is awaited.
+    local policyTurn = tonumber(BridgeState.yieldPolicyTurnNumber or 0) or 0
+    local policyActiveSeat = BridgeState.yieldPolicyActiveSeatId
+    local policyTurnMatches = policyTurn > 0
+        and (tonumber(BridgeState.tableTurnCount or 0) or 0) == policyTurn
+    local policySeatMatches = policyActiveSeat == nil
+        or BridgeState.currentTurnSeatId == policyActiveSeat
+    if BridgeState.ui ~= nil and BridgeState.ui.autoAdvanceMode == "YIELD"
+        and policyTurnMatches and policySeatMatches
+        and decision.kind == "main_priority"
+        and decision.seatId == "forge-player-1"
+        and BridgeDecisionOffersActionType(decision, "pass_priority")
+        and not BridgeDecisionHasNonPassAction(decision) then
+        for _, action in ipairs(decision.actions) do
+            if action.type == "pass_priority" then
+                BridgeSubmitChoice(decision.decisionId, action.actionId, "yield_policy_auto_pass")
+                BridgeRecordDecisionPresentationRendered(key)
+                return
+            end
+        end
+    end
+
     -- Keep passive auto-pass off for the human seat. This avoids skipping a
     -- playable window when decision/action rendering lags a frame; explicit
     -- PASS and END TURN controls still provide intentional progression.
@@ -6150,6 +6204,8 @@ function BridgeRenderDecision(decision, force)
         -- decisions.  The hand candidate set remains the safe fallback for
         -- legacy actions without provenance metadata.
         local mappedPhysicalZone = mappedGuid and BridgeState.physicalZoneByGuid[mappedGuid] or nil
+        local combatActionKind = action.type or action.actionKind
+        local combatSelection = combatActionKind == "choose_attacker" or combatActionKind == "choose_blocker"
         local actionSourceZone = string.lower(tostring(action.sourceZone or ""))
         local mappedSourceZoneMatches = actionSourceZone ~= ""
             and mappedPhysicalZone == actionSourceZone
@@ -6162,6 +6218,13 @@ function BridgeRenderDecision(decision, force)
         local mappedZoneMatches = decision.kind ~= "main_priority"
             or candidateGuid[mappedGuid] == true
             or mappedSourceZoneMatches
+        -- Combat candidates are Forge battlefield objects.  A stale mapping
+        -- can otherwise make a spent instant (or any card that has since left
+        -- the battlefield) inherit a combat highlight because non-priority
+        -- decisions historically accepted every mapped zone.
+        if combatSelection and mappedPhysicalZone ~= "battlefield" then
+            mappedZoneMatches = false
+        end
         local exactMappingContradictsActionSource = mappedObject ~= nil
             and action.cardInstanceId ~= nil
             and ((actionSourceZone ~= "" and not mappedSourceZoneMatches)
@@ -6181,7 +6244,10 @@ function BridgeRenderDecision(decision, force)
         else
             local fallbackMatches = {}
             for _, object in ipairs(cards) do
-                if BridgeCardNameMatches(object.getName(), action.cardIdentity) then
+                local objectGuid = BridgeSafeObjectGuid(object)
+                local objectZone = objectGuid and BridgeState.physicalZoneByGuid[objectGuid] or nil
+                if (not combatSelection or objectZone == "battlefield")
+                    and BridgeCardNameMatches(object.getName(), action.cardIdentity) then
                     table.insert(fallbackMatches, object)
                 end
             end
@@ -8028,6 +8094,8 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.lastPriorityEventSignature = nil
     BridgeState.zoneAnchorGuidBySeatAndZone = {}
     BridgeState.yieldSeatId = nil
+    BridgeState.yieldPolicyTurnNumber = nil
+    BridgeState.yieldPolicyActiveSeatId = nil
     BridgeState.gameEnded = nil
     BridgeState.playerStateBySeatId = {}
     BridgeState.playerCountersBySeatId = {}
@@ -8354,6 +8422,11 @@ function BridgeApplyAuthoritativeEvent(event)
             BridgeState.yieldSeatId = nil
             BridgeState.yieldTurnNumber = nil
             BridgeLog("[Bridge] cleared end-turn yield at authoritative turn transition")
+        end
+        if BridgeState.yieldPolicyTurnNumber ~= nil then
+            BridgeState.yieldPolicyTurnNumber = nil
+            BridgeState.yieldPolicyActiveSeatId = nil
+            BridgeLog("[Bridge] cleared HUD yield policy at authoritative turn transition")
         end
         BridgeMarkTransitionExpected(0)
         BridgeUiMarkDirty("turn")

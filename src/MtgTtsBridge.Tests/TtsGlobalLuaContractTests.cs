@@ -2380,6 +2380,30 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void CombatCandidates_RequireCurrentBattlefieldMapping()
+    {
+        var start = Script.IndexOf("local mappedPhysicalZone =", StringComparison.Ordinal);
+        var end = Script.IndexOf("BridgeEnsureDecisionOptionControls", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        Assert.Contains("local combatActionKind = action.type or action.actionKind", body);
+        Assert.Contains("local combatSelection = combatActionKind == \"choose_attacker\" or combatActionKind == \"choose_blocker\"", body);
+        Assert.Contains("if combatSelection and mappedPhysicalZone ~= \"battlefield\" then", body);
+        Assert.Contains("not combatSelection or objectZone == \"battlefield\"", body);
+    }
+
+    [Fact]
+    public void YieldTurn_IsVisibleWithoutHumanDecisionAndRemainsTurnScoped()
+    {
+        Assert.Contains("local yieldPolicyAvailable = BridgeState.gameEnded == nil", Script);
+        Assert.Contains("(hasYield or yieldPolicyAvailable)", Script);
+        Assert.Contains("yieldPolicyTurnNumber = tonumber(BridgeState.tableTurnCount or 0)", Script);
+        Assert.Contains("yieldPolicyActiveSeatId = BridgeState.currentTurnSeatId", Script);
+        Assert.Contains("yield_policy_auto_pass", Script);
+        Assert.Contains("cleared HUD yield policy at authoritative turn transition", Script);
+    }
+
+    [Fact]
     public void DevHud_HasOneRollingCaptureControlSoItCannotShadowChoiceButtons()
     {
         var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
