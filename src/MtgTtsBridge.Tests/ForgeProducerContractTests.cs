@@ -192,8 +192,8 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("return accepted;", Patch);
         Assert.Contains("return ComputerUtil.handlePlayingSpellAbility(player, sa, getDeferredTargetingPlayerAction(sa));", Patch);
         Assert.DoesNotContain("boolean sorcerySpeedWindow", Patch);
-        Assert.Contains("totalActions == 0 && !isMainPhase", Patch);
-        Assert.Contains("auto-passing empty non-main human priority window", Patch);
+        Assert.Contains("totalActions == 0 && (!isMainPhase || stackHasItems)", Patch);
+        Assert.Contains("auto-passing empty non-main or stack-response window", Patch);
         Assert.Contains("preserving empty human main-phase priority window", Patch);
         Assert.True(Patch.IndexOf("sa.setActivatingPlayer(player);", StringComparison.Ordinal) < Patch.IndexOf("if (!sa.canPlay()) continue;", StringComparison.Ordinal));
     }
