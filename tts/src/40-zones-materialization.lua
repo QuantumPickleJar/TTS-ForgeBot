@@ -1252,6 +1252,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.openingHandReadinessSnapshotPending = false
     BridgeState.openingHandReadinessSnapshotRequested = false
     BridgeState.openingHandReadinessRetryScheduled = false
+    BridgeState.handReadinessRecoveryDecisionId = nil
+    BridgeState.handReadinessRecoverySessionId = nil
+    BridgeState.handReadinessRecoveryAttempts = 0
     BridgeResetSelectionState()
     BridgeHideMainPriorityControls()
     if BridgeState.turnCounterSessionId ~= sessionId then

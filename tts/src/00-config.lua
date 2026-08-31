@@ -19,6 +19,11 @@ BRIDGE_EVENT_POLL_INTERVAL_ACTIVE = 0.20
 BRIDGE_DECISION_DEFER_STALL_SECONDS = 0.6
 BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS = 8.0
 BRIDGE_OPENING_HAND_READINESS_RETRY_FRAMES = 2
+-- A hand can be authoritative in Forge before TTS finishes returning/redealing
+-- physical cards (especially after a mulligan).  Readiness failures are
+-- recoverable embodiment races, so allow a bounded refresh before latching a
+-- synchronization failure.
+BRIDGE_HAND_READINESS_RECOVERY_ATTEMPTS = 2
 BRIDGE_PERFORMANCE_TRACE_CAPACITY = 384
 BRIDGE_PERFORMANCE_SLOW_OPERATION_SECONDS = 0.25
 -- Diagnostic capture is deliberately best-effort. A lost WebRequest callback
@@ -416,6 +421,9 @@ BridgeState = {
     openingHandReadinessSnapshotPending = false,
     openingHandReadinessSnapshotRequested = false,
     openingHandReadinessRetryScheduled = false,
+    handReadinessRecoveryDecisionId = nil,
+    handReadinessRecoverySessionId = nil,
+    handReadinessRecoveryAttempts = 0,
     eventSessionId = nil,
     lastReceivedEventSequence = 0,
     lastAppliedEventSequence = 0,

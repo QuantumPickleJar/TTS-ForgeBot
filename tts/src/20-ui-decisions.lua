@@ -1444,6 +1444,56 @@ function BridgeScheduleHandActionReadinessRetry()
     end, BRIDGE_OPENING_HAND_READINESS_RETRY_FRAMES)
 end
 
+-- A readiness timeout is not, by itself, evidence that Forge and TTS disagree.
+-- Mulligan replacement cards can be present in the authoritative snapshot while
+-- TTS is still finishing Deck/Card callbacks.  Recover from that transient
+-- state with an exact-session snapshot refresh, then (once) a full
+-- authoritative rebuild.  The decision is never fabricated and the bounded
+-- attempt ledger prevents an endless retry loop.
+function BridgeRecoverFromHandReadinessTimeout(decision, deferReason, detail)
+    local decisionId = decision and decision.decisionId or nil
+    local sessionId = BridgeState.eventSessionId
+    if decisionId == nil or sessionId == nil then return false end
+    if BridgeState.handReadinessRecoveryDecisionId ~= decisionId
+        or BridgeState.handReadinessRecoverySessionId ~= sessionId then
+        BridgeState.handReadinessRecoveryDecisionId = decisionId
+        BridgeState.handReadinessRecoverySessionId = sessionId
+        BridgeState.handReadinessRecoveryAttempts = 0
+    end
+    local attempts = (BridgeState.handReadinessRecoveryAttempts or 0) + 1
+    BridgeState.handReadinessRecoveryAttempts = attempts
+    BridgeState.pendingDecisionDeferredAt = os.clock()
+    BridgeState.pendingDecisionDeferredCursor = tonumber(decision.eventCursor or 0) or 0
+    BridgeState.pendingDecisionDeferredApplied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    BridgeLog(string.format(
+        "[Bridge] hand readiness timeout is recoverable decision=%s reason=%s attempt=%d/%d session=%s detail=%s",
+        tostring(decisionId), tostring(deferReason), attempts,
+        BRIDGE_HAND_READINESS_RECOVERY_ATTEMPTS, tostring(sessionId), tostring(detail)))
+
+    if attempts < BRIDGE_HAND_READINESS_RECOVERY_ATTEMPTS then
+        -- Keep the exact Forge decision pending while refreshing the snapshot;
+        -- no local selection or physical move is performed.
+        BridgeState.openingHandReadinessSnapshotRequested = false
+        BridgeState.openingHandReadinessSnapshotPending = true
+        BridgeScheduleSnapshotReconcile("hand-readiness-timeout")
+        if deferReason == "opening_hand_readiness" then
+            BridgeScheduleOpeningHandReadinessRetry()
+        else
+            BridgeScheduleHandActionReadinessRetry()
+        end
+        return true
+    end
+
+    -- A second timeout means the ordinary snapshot refresh did not settle the
+    -- physical hand. Rebuild from Forge's current snapshot and resume polling;
+    -- this is still recoverable and is intentionally not a guessed card bind.
+    if BridgeState.resyncInFlight ~= true then
+        BridgeResyncFromAuthoritativeSnapshot("hand-readiness-timeout")
+        return true
+    end
+    return true
+end
+
 function BridgeTryPresentPendingDecision(reason)
     if BridgeState.pendingDecision == nil or BridgeState.submitting then return end
     local pending = BridgeState.pendingDecision
@@ -1477,6 +1527,11 @@ function BridgeTryPresentPendingDecision(reason)
                     BridgeTryPresentPendingDecision(reason .. "-readiness-recovered")
                     return
                 end
+                if BridgeRecoverFromHandReadinessTimeout(pending, deferReason, string.format(
+                    "ready=%d expected=%d missing=%d mappings=%s",
+                    readyCount, expectedCount, math.max(expectedCount - readyCount, 0), readinessDetail)) then
+                    return
+                end
                 BridgeStopOnDesync(string.format(
                     "opening hand readiness timeout: ready=%d expected=%d missing=%d mappings=%s",
                     readyCount, expectedCount, math.max(expectedCount - readyCount, 0), readinessDetail))
@@ -1493,6 +1548,9 @@ function BridgeTryPresentPendingDecision(reason)
             BridgeState.pendingDecisionDeferredCursor = eventCursor
             BridgeState.pendingDecisionDeferredApplied = applied
             if elapsed >= BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS then
+                if BridgeRecoverFromHandReadinessTimeout(pending, deferReason, deferDetail) then
+                    return
+                end
                 BridgeStopOnDesync("hand action readiness timeout: " .. tostring(deferDetail))
                 return
             end

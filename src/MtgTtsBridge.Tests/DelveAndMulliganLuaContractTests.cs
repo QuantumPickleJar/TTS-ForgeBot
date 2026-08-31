@@ -171,7 +171,8 @@ public sealed class DelveAndMulliganLuaContractTests
         Assert.Contains("BridgeWaitFrames", retry);
         Assert.Contains("BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS", Script);
         Assert.Contains("BridgeScheduleSnapshotReconcile(\"opening-hand-readiness\")", Script);
-        Assert.Contains("BridgeStopOnDesync(string.format(", Script);
+        Assert.Contains("BridgeRecoverFromHandReadinessTimeout", Script);
+        Assert.Contains("BridgeScheduleSnapshotReconcile(\"hand-readiness-timeout\")", Script);
         Assert.Contains("opening hand readiness timeout", Script);
     }
 
@@ -217,5 +218,21 @@ public sealed class DelveAndMulliganLuaContractTests
         Assert.Contains("BridgeTryPresentPendingDecision(reason .. \"-readiness-recovered\")", timeout);
         Assert.True(Script.IndexOf("BridgeTryPresentPendingDecision(reason .. \"-readiness-recovered\")", start, StringComparison.Ordinal)
             < stop);
+    }
+
+    [Fact]
+    public void HandReadinessTimeout_UsesBoundedAuthoritativeRecoveryBeforeDesyncLatch()
+    {
+        var start = Script.IndexOf("function BridgeRecoverFromHandReadinessTimeout", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeTryPresentPendingDecision", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var recovery = Script[start..end];
+
+        Assert.Contains("handReadinessRecoveryDecisionId", recovery);
+        Assert.Contains("handReadinessRecoverySessionId", recovery);
+        Assert.Contains("BRIDGE_HAND_READINESS_RECOVERY_ATTEMPTS", recovery);
+        Assert.Contains("BridgeScheduleSnapshotReconcile(\"hand-readiness-timeout\")", recovery);
+        Assert.Contains("BridgeResyncFromAuthoritativeSnapshot(\"hand-readiness-timeout\")", recovery);
+        Assert.DoesNotContain("cardName", recovery);
     }
 }
