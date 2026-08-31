@@ -39,6 +39,8 @@ FIXED GENERICALLY — exact normalized token identity is required; LIVE CONFIRMA
 bug: an additional token  is created when only one shuold be spawned during prodigy's prototype activation
 LIVE CONFIRMATION PENDING — exactly-once materialization guard is present; no card-name special case added
 
+UI BUG: dropdown for bug selection is broken, no menu or choices appear, just a checkbox
+
 Bug: lita, mechanical engineer does not fetch the appropriate card when activating her mana ability
 FIXED GENERICALLY — token/card lookup no longer accepts fuzzy name collisions; LIVE CONFIRMATION PENDING
 
@@ -50,7 +52,7 @@ bug: if white is attacking, we have to pass priority to advance even though it's
 Bug: pilot tokens are viable blockers, but for some reason don't get considered as such when blue attacks
 LIVE CONFIRMATION PENDING — Forge producer path includes Forge-valid creature tokens; exact physical mapping still needs canary
 
-Flaw: blocking selection does not allow defenders to select which creature they wish to have it block, or multiples if they want it to block multiple creature.   Heavily lean on arena's gameplay solution to this
+Flaw: blocking selection does not allow defenders to select which creature they wish to have it block, or multiples if they want it to block multiple creature.   Heavily lean on arena's gameplay solution to this **where you can select attacker -> blocker(s) relations, as opposed to the current sequential advance through each attacker in a given combat step
 DEFERRED TO U4 — new generalized multi-blocker/assignment relationship architecture is out of U2 scope
 
 - for multiplayer to work, UI code needs to be injected clientside
@@ -58,6 +60,7 @@ DEFERRED TO U4 — new generalized multi-blocker/assignment relationship archite
 - optional choices like pay 2 land to have a land enter untapped are  not presented to the player
 
 bug: sagas and classes do not have a level counter on them (might be called loyalty by the encoder)
+IMPLEMENTED GENERICALLY — named-counter fallback retries after temporary Encoder unavailability; NEEDS LIVE CONFIRMATION
 
 - feature: use Arena-style "Card Carousel" in the UI.  Ideally this comes up in a new modal.  Main point is to mimic Arena's usage of card art within UI elements
 
@@ -66,7 +69,7 @@ FIXED GENERICALLY IN EMBODIMENT PATH — follows authoritative battlefield-to-gr
 
 
 bug: Mulligan of opening hands sstill places them on top of the library face-up
-NEEDS LIVE CONFIRMATION
+FIXED
 
 CRITICAL BUG: attempting to play a land on your draw step results in skipping straight to combat phase
 NOT A BUG — lands are normally illegal during Draw; verify the subsequent Main 1 decision instead
@@ -91,7 +94,7 @@ Bug: Main 1 still gets skipped
 NEEDS LIVE CONFIRMATION
 
 Bug: the option to play a land does not get checked until  the next phase, it needs to be checked on every relevant choice
-NEEDS LIVE CONFIRMATION
+FIXED
 
 Bug: Crewing a creature from the UI fails, it does not initiate anythhing  (observed during combat:pre)
 
@@ -99,38 +102,41 @@ bug: player is offered choices they should not have (instants and things with fl
 NEEDS LIVE CONFIRMATION
 
 bug: next card is revealed through choices presented from the UI
-FIXED 122d25d
+IMPLEMENTED — exact hand embodiment gate plus FAST-mode idle backoff preservation (`2eedd16`); NEEDS LIVE CONFIRMATION
+
+UI BUG: user is not prompted to discard a card when the choice is presented after a mulligan
+
+BUG: Yield turn acts like passing during opponent's turn
+
 
 bug: you can only highlight one card max for attacker selection, multiple ones are available if done through the UI
 
 BUG: main 1 phase is skipped on to combat turn 1
-NEEDS LIVE CONFIRMATION
-BUG: valid choices are not presented until both are satisfied - A the combat step is reached and B - the user has clicked Done on the UI
-NEEDS LIVE CONFIRMATION
-BUG: yield turn button has vanished almos entirely.  I only saw it once on turn 3 after I clicked confirm
-NEEDS LIVE CONFIRMATION
+IMPLEMENTED — active empty-stack Main 1 priority window is retained through transient Forge priority-holder mismatch (`0eab0f2`); NEEDS LIVE CONFIRMATION
 
-BUG: (turn 3) when i cast mental note, a land untapped. Not only that, I had to click "done" to get to the point where cards draw. 
+BUG: valid choices are not presented until both are satisfied - A the combat step is reached and B - the user has clicked Done on the UI
+FIXED?
 
 BUG: you can multi-select during times when it does not make sensse to be able to do so (draw step provided max  hand size is not forcing a discard)
-NEEDS LIVE CONFIRMATION
+FIXED
 
 BUG:  when casting mental note, the top two cards must be transported from the top of library to the  graveyard face-up before the draw triggers. 
 FIXED as of 8-30-u2-gameplay-repair
 
-(Low priorty) Bug: mana counters are FUNCTIONING! but do not face the respective seat.  For white, counters sshould be rotaatedd 90  degrees clockwise
+Bug: mana counters are FUNCTIONING! but do not face the respective seat.  For white, counters sshould be rotaatedd 90  degrees clockwise
+IMPLEMENTED GENERICALLY — seat-specific resource rotations are applied; NEEDS LIVE CONFIRMATION
 
 Bug: mulliganing causes a desync followed by errors on each card  move (the cards still  move and the hand EVENTUALLY cycles)
-NEEDS LIVE CONFIRMATION
+SEEMINGLY FIXED
 
 Bug: highlights fail to appear on a mulliganed hand
-FIXED 
+IMPLEMENTED — structured Forge collections, including mulligan bottom selection, use blue legal-choice highlights; NEEDS LIVE CONFIRMATION
 
 Critical: reporting a bug or capturing a freeze softlocks the process from progressing (suspected to be on a per-match basis)
 FIXED
 
 Bug: hands are not properly cleaned up when destructively requesting to start a new match
-NEEDS LIVE CONFIRMATION
+FIXED
 
 Bug: cannot play lands already in hand on draw nor upkeep steps, must wait for main 1 to pass
 NOT A BUG — lands are normally illegal during Draw/Upkeep; Main 1 action freshness is tracked above
@@ -139,7 +145,10 @@ Bug: casting stitcher's suppplier failed to trigger the mill-adjacent effect tha
 NEEDS LIVE CONFIRMATION
 
 Bug: passing priority on the upkeep step skips Main 1
-NEEDS LIVE CONFIRMATION
+IMPLEMENTED — active empty-stack Main 1 priority window is retained after upkeep (`0eab0f2`); NEEDS LIVE CONFIRMATION
+
+Bug: resync does not sseem to do anything
+IMPLEMENTED — bootstrap staging now serializes verified library containment before strict duplicate audit (`b3aa409`); NEEDS LIVE CONFIRMATION FROM A CLEAN TABLE
 
 (high priority) Bug: if a player opts to keep the opening hand, it can sometimes still gets mulliganned
 NEEDS LIVE CONFIRMATION
@@ -148,3 +157,17 @@ bug: sacrifice cards say "sacrifice CARDNAME" instead of the actual card's name
 
 bug: application does not safely shut down, must be crtl+shift+c interrupted
 FIXED
+==========================
+Live smoke matrix remaining:
+- Upkeep pass → Draw → Main 1: land/sorcery/instant actions exactly as Forge offers.
+NEEDS LIVE CONFIRMATION — producer and bridge regressions are covered; run after rebuilding the Forge patch.
+
+- Unknown top-library card leaks no identity; authorized top-library cast remains usable.
+
+- KEEP cannot later mulligan; destructive new match clears old hands.
+
+- Tune Up graveyard return and Stitcher’s Supplier ETB mill.
+
+- Permanent hand → stack → battlefield promptly after Forge event.
+
+- Yield visibility and normal single-action decision behavior.
