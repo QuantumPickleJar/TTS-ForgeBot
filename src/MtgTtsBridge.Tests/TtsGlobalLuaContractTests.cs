@@ -2411,6 +2411,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("local activeSeat = BridgeState.currentTurnSeatId", Script);
         Assert.Contains("if activeSeat ~= nil and activeSeat ~= \"forge-player-1\" then", Script);
         Assert.Contains("yieldPolicyActiveSeatId = activeSeat", Script);
+        Assert.Contains("local policyTurnMatches = policyTurn == 0", Script);
     }
 
     [Fact]

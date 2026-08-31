@@ -6109,8 +6109,12 @@ function BridgeRenderDecision(decision, force)
     -- the yield, while the next exact Forge decision is awaited.
     local policyTurn = tonumber(BridgeState.yieldPolicyTurnNumber or 0) or 0
     local policyActiveSeat = BridgeState.yieldPolicyActiveSeatId
-    local policyTurnMatches = policyTurn > 0
-        and (tonumber(BridgeState.tableTurnCount or 0) or 0) == policyTurn
+    -- A freshly started match may expose the opponent turn before Forge has
+    -- emitted its first numeric turn counter. In that bootstrap window, the
+    -- active-seat fence remains authoritative; turn_changed retires the
+    -- policy once the real boundary is observed.
+    local policyTurnMatches = policyTurn == 0
+        or (tonumber(BridgeState.tableTurnCount or 0) or 0) == policyTurn
     local policySeatMatches = policyActiveSeat == nil
         or BridgeState.currentTurnSeatId == policyActiveSeat
     if BridgeState.ui ~= nil and BridgeState.ui.autoAdvanceMode == "YIELD"
