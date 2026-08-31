@@ -98,6 +98,20 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void YieldAutoPass_ExpiresFromAuthoritativeTurnMirrorBeforeDecisionAutoPass()
+    {
+        var start = Script.IndexOf("if BridgeState.yieldSeatId ~= nil then", StringComparison.Ordinal);
+        var end = Script.IndexOf("-- Keep passive auto-pass off", start, StringComparison.Ordinal);
+        var yield = Script[start..end];
+
+        Assert.Contains("authoritativeTurn = tonumber(BridgeState.tableTurnCount or 0)", yield);
+        Assert.Contains("authoritativeActiveSeat = BridgeState.currentTurnSeatId", yield);
+        Assert.Contains("authoritativeTurn ~= yieldTurn", yield);
+        Assert.Contains("authoritativeActiveSeat ~= BridgeState.yieldSeatId", yield);
+        Assert.Contains("BridgeState.yieldSeatId = nil", yield);
+    }
+
+    [Fact]
     public void SyntheticHudCallbackColor_CannotRebindTheConfiguredHumanSeat()
     {
         var claim = Script.IndexOf("function BridgeClaimHumanTtsColor", StringComparison.Ordinal);

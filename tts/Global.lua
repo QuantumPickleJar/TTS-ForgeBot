@@ -5930,8 +5930,17 @@ function BridgeRenderDecision(decision, force)
     if BridgeState.yieldSeatId ~= nil then
         local yieldTurn = tonumber(BridgeState.yieldTurnNumber or 0) or 0
         local decisionTurn = tonumber(decision.turnNumber or 0) or 0
+        local authoritativeTurn = tonumber(BridgeState.tableTurnCount or 0) or 0
+        local authoritativeActiveSeat = BridgeState.currentTurnSeatId
         if decision.seatId ~= BridgeState.yieldSeatId or decision.kind ~= "main_priority"
-            or (yieldTurn > 0 and decisionTurn > 0 and decisionTurn ~= yieldTurn) then
+            or (yieldTurn > 0 and decisionTurn > 0 and decisionTurn ~= yieldTurn)
+            or (yieldTurn > 0 and authoritativeTurn > 0 and authoritativeTurn ~= yieldTurn)
+            or (authoritativeActiveSeat ~= nil and authoritativeActiveSeat ~= BridgeState.yieldSeatId) then
+            -- Yield is only valid for the exact Forge turn in which it was
+            -- submitted.  Use the bridge's authoritative turn/active-seat
+            -- mirrors as a boundary too: a newer decision can outrun the
+            -- physical turn_changed presentation event, and must not inherit
+            -- a stale yield into the next turn.
             BridgeState.yieldSeatId = nil
             BridgeState.yieldTurnNumber = nil
         else
