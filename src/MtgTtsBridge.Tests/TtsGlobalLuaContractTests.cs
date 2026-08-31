@@ -2404,6 +2404,33 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void CheckedInGlobalLua_MatchesDeterministicAuthoringBundle()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var sourceDirectory = Path.Combine(repositoryRoot, "tts", "src");
+        var expected = new StringBuilder();
+        foreach (var path in Directory.GetFiles(sourceDirectory, "*.lua")
+                     .OrderBy(Path.GetFileName, StringComparer.Ordinal))
+        {
+            var name = Path.GetFileName(path);
+            expected.Append("-- BEGIN GENERATED SOURCE: ").Append(name).AppendLine();
+            expected.Append(File.ReadAllText(path));
+            if (expected.Length == 0 || expected[^1] != '\n') expected.AppendLine();
+            expected.Append("-- END GENERATED SOURCE: ").Append(name).AppendLine();
+        }
+
+        Assert.Equal(expected.ToString(), File.ReadAllText(Path.Combine(repositoryRoot, "tts", "Global.lua")));
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "AGENTS.md")))
+            directory = directory.Parent;
+        return directory?.FullName ?? throw new DirectoryNotFoundException("Repository root not found.");
+    }
+
+    [Fact]
     public void DevHud_HasOneRollingCaptureControlSoItCannotShadowChoiceButtons()
     {
         var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));

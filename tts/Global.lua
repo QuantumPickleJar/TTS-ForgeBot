@@ -1,3 +1,4 @@
+-- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
 BRIDGE_MANA_COUNTER_SOURCES = {
@@ -798,6 +799,8 @@ end
 
 function BridgeTryGetSeatPlayer(seatId)
     local seat = BRIDGE_SEATS[seatId]
+-- END GENERATED SOURCE: 00-config.lua
+-- BEGIN GENERATED SOURCE: 10-state-diagnostics.lua
     if seat == nil then
         return nil, "unknown configured seat " .. tostring(seatId)
     end
@@ -2198,6 +2201,8 @@ function BridgeUiMarkDirty(reason)
         BridgeUiFlush()
     end, 1)
 end
+-- END GENERATED SOURCE: 10-state-diagnostics.lua
+-- BEGIN GENERATED SOURCE: 20-ui-decisions.lua
 
 function BridgeUiRecordEvent(event)
     local ui = BridgeState.ui
@@ -5198,6 +5203,8 @@ function BridgeEnsureDecisionOptionControls(decision, representedActionIds)
         BridgeClearOptionControls()
         return
     end
+-- END GENERATED SOURCE: 20-ui-decisions.lua
+-- BEGIN GENERATED SOURCE: 30-input-identity.lua
 
     if BridgeState.optionControlDecisionId == decision.decisionId and #BridgeState.optionControlGuids == #unbound then
         return
@@ -6998,6 +7005,8 @@ function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback)
             return
         end
         BridgeMaterializeSeatSnapshot(seatSnapshot, 1, 1, function(materialized, materializeError)
+-- END GENERATED SOURCE: 30-input-identity.lua
+-- BEGIN GENERATED SOURCE: 40-zones-materialization.lua
             if not materialized then callback(false, materializeError); return end
             -- Materialization removes the snapshot hand and public-zone cards
             -- from the imported deck first. Only then does the remaining deck
@@ -9998,6 +10007,8 @@ function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
         or BridgeDeckContainsCardName(preferred, expectedName)) then
         return preferred
     end
+-- END GENERATED SOURCE: 40-zones-materialization.lua
+-- BEGIN GENERATED SOURCE: 50-presentation-session.lua
 
     local candidates = seatId and BridgeFindLibraryDeckCandidatesForSeat(seatId) or {}
     local matches = {}
@@ -12371,3 +12382,4 @@ function BridgeUiFlush()
     BridgeUiFlushFlightRecorderBase()
     BridgePerformanceEnd(token, "ui_flush_end", "uiFlush")
 end
+-- END GENERATED SOURCE: 50-presentation-session.lua
