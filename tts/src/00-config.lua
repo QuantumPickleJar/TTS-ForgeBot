@@ -490,6 +490,9 @@ BridgeState = {
     -- Token imports are asynchronous. A Forge identity is allowed one and
     -- only one in-flight embodiment, independent of token name.
     tokenMaterializationByInstanceId = {},
+    -- Authoritative Forge-object metadata is independent of physical GUIDs.
+    -- Virtual/copy objects can exist without an original deck card.
+    authoritativeObjectByInstanceId = {},
     canonicalCardScaleByGuid = {},
     landPlacementMode = BRIDGE_LAND_PLACEMENT_MODE,
     landInsertionOrderByInstanceId = {},

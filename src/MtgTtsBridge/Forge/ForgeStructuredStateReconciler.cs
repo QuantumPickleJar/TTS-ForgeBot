@@ -107,8 +107,15 @@ public sealed class ForgeStructuredStateReconciler
                     .ToArray());
         }
 
+        string NormalizeObjectId(string? value, int fallbackForgeCardId) =>
+            string.IsNullOrWhiteSpace(value)
+                ? $"forge:{sessionId}:{fallbackForgeCardId}"
+                : value.StartsWith("forge:", StringComparison.Ordinal)
+                    ? value
+                    : $"forge:{sessionId}:{value.StartsWith("forge-object:", StringComparison.Ordinal) ? value[13..] : value}";
+
         GameCardSnapshotDto ConvertCard(ForgeStructuredCard card) => new(
-            CardInstanceId: $"forge:{sessionId}:{card.ForgeCardId}",
+            CardInstanceId: NormalizeObjectId(card.AuthoritativeObjectId, card.ForgeCardId),
             ForgeCardId: card.ForgeCardId,
             CardName: card.CardName,
             CurrentCardName: card.CurrentCardName,
@@ -154,6 +161,15 @@ public sealed class ForgeStructuredStateReconciler
                 .ToArray(),
             IsToken = card.IsToken,
             Characteristics = ConvertCharacteristics(card)
+        } with
+        {
+            AuthoritativeObjectId = NormalizeObjectId(card.AuthoritativeObjectId, card.ForgeCardId),
+            OriginObjectId = string.IsNullOrWhiteSpace(card.OriginObjectId) ? null : NormalizeObjectId(card.OriginObjectId, card.ForgeCardId),
+            CopySourceObjectId = string.IsNullOrWhiteSpace(card.CopySourceObjectId) ? null : NormalizeObjectId(card.CopySourceObjectId, card.ForgeCardId),
+            ObjectKind = string.IsNullOrWhiteSpace(card.ObjectKind) ? (card.IsToken ? "forge-token" : "physical-original") : card.ObjectKind,
+            IsCopy = card.IsCopy,
+            IsVirtual = card.IsVirtual,
+            MaterializationPolicy = card.MaterializationPolicy
         };
 
         static bool HasCreatureType(ForgeStructuredCard card) =>

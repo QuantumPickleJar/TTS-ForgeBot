@@ -42,7 +42,14 @@ public sealed record AuthoritativeEventDto(
     IReadOnlyList<string>? LoserSeatIds = null,
     string? GameEndReason = null,
     IReadOnlyDictionary<string, int>? Counters = null,
-    string? BattlefieldKind = null)
+    string? BattlefieldKind = null,
+    string? AuthoritativeObjectId = null,
+    string? OriginObjectId = null,
+    string? CopySourceObjectId = null,
+    string? ObjectKind = null,
+    bool IsCopy = false,
+    bool IsVirtual = false,
+    string? MaterializationPolicy = null)
 {
     /// <summary>
     /// Complete current characteristics change when present. Provides structured

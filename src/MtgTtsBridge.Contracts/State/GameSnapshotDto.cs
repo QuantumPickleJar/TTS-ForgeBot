@@ -64,6 +64,16 @@ public sealed record GameCardSnapshotDto(
     int? CurrentToughness = null,
     IReadOnlyList<string>? CurrentTypes = null)
 {
+    // U3 identity is deliberately separate from the physical TTS mapping.
+    // CardInstanceId remains the stable bridge key for backwards compatibility;
+    // these fields describe the authoritative Forge object and its provenance.
+    public string AuthoritativeObjectId { get; init; } = CardInstanceId;
+    public string? OriginObjectId { get; init; }
+    public string? CopySourceObjectId { get; init; }
+    public string ObjectKind { get; init; } = "physical-original";
+    public bool IsCopy { get; init; }
+    public bool IsVirtual { get; init; }
+    public string? MaterializationPolicy { get; init; }
     /// <summary>Forge-event-derived physical row hint; never inferred from card text.</summary>
     public string? BattlefieldKind { get; init; }
     // Card-level designation data is Forge truth, not a counter or keyword.

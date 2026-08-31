@@ -571,6 +571,29 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void SnapshotReconstruction_PreservesGenericCopyVirtualIdentity()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        var frame = Frame(7, Player(
+            hand: ["{\"forgeCardId\":41,\"cardName\":\"Original\",\"currentCardName\":\"Original\",\"zone\":\"hand\",\"zonePosition\":0,\"ownerSeatId\":\"forge-player-1\",\"controllerSeatId\":\"forge-player-1\",\"tapped\":false,\"faceDown\":false,\"phasedOut\":false,\"counters\":{},\"keywords\":[],\"authoritativeObjectId\":\"card-41\",\"objectKind\":\"physical-original\"}"],
+            seatId: "forge-player-1",
+            forgePlayerId: 1));
+        // Replace the empty stack in the compact fixture with a distinct
+        // authoritative virtual copy, keeping the test focused on transport.
+        frame = frame.Replace(",\"stack\":[]", ",\"stack\":[{\"forgeCardId\":99,\"cardName\":\"Original\",\"currentCardName\":\"Copied Original\",\"zone\":\"stack\",\"zonePosition\":0,\"ownerSeatId\":\"forge-player-1\",\"controllerSeatId\":\"forge-player-1\",\"tapped\":false,\"faceDown\":false,\"phasedOut\":false,\"counters\":{},\"keywords\":[],\"authoritativeObjectId\":\"copy-99\",\"originObjectId\":\"card-41\",\"copySourceObjectId\":\"card-41\",\"objectKind\":\"copy-spell\",\"isCopy\":true,\"isVirtual\":true,\"materializationPolicy\":\"virtual-stack\"}]");
+
+        _ = reconciler.Apply("session-u3", Parse(parser, frame));
+        var copy = Assert.Single(reconciler.Current!.Stack);
+        Assert.Equal("forge:session-u3:copy-99", copy.CardInstanceId);
+        Assert.Equal("copy-spell", copy.ObjectKind);
+        Assert.True(copy.IsCopy);
+        Assert.True(copy.IsVirtual);
+        Assert.Equal("forge:session-u3:card-41", copy.CopySourceObjectId);
+        Assert.Equal("virtual-stack", copy.MaterializationPolicy);
+    }
+
+    [Fact]
     public void CharacteristicChangedEvent_CarriesStructuredCharacteristics()
     {
         var parser = new ForgeStructuredOutputParser();

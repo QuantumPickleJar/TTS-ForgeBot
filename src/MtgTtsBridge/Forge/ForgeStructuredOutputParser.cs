@@ -155,7 +155,14 @@ public sealed record ForgeStructuredCard(
     IReadOnlyList<string>? CurrentTypes = null,
     ForgeStructuredCharacteristics? Characteristics = null,
     IReadOnlyList<string>? CardDesignations = null,
-    bool IsToken = false);
+    bool IsToken = false,
+    string? AuthoritativeObjectId = null,
+    string? OriginObjectId = null,
+    string? CopySourceObjectId = null,
+    string ObjectKind = "physical-original",
+    bool IsCopy = false,
+    bool IsVirtual = false,
+    string? MaterializationPolicy = null);
 
 public sealed record ForgeStructuredCharacteristics(
     string CurrentCardName,

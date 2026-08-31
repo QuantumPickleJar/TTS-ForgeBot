@@ -380,6 +380,23 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
     end
 
     local card = cards[cardIndex]
+    -- Forge may expose transient copies (for example a copied spell on the
+    -- stack) that are intentionally virtual. Keep their authoritative
+    -- identity in bridge state, but never invent a physical deck card.
+    if card.isVirtual == true or tostring(card.materializationPolicy or "") == "virtual"
+        or tostring(card.materializationPolicy or "") == "virtual-stack" then
+        BridgeState.authoritativeObjectByInstanceId[card.cardInstanceId] = {
+            objectId = card.authoritativeObjectId or card.cardInstanceId,
+            originObjectId = card.originObjectId,
+            copySourceObjectId = card.copySourceObjectId,
+            objectKind = card.objectKind,
+            isCopy = card.isCopy == true,
+            isVirtual = true,
+            materializationPolicy = card.materializationPolicy
+        }
+        BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex + 1, callback)
+        return
+    end
     local guid = BridgeState.physicalByInstanceId[card.cardInstanceId]
 
     local function continueWith(object)
@@ -548,6 +565,17 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
     BridgeApplySeatTrackers(seatSnapshot)
     local battlefieldInstances = {}
     for _, zone in ipairs(seatSnapshot.zones or {}) do
+        for _, card in ipairs(zone.cards or {}) do
+            BridgeState.authoritativeObjectByInstanceId[card.cardInstanceId] = {
+                objectId = card.authoritativeObjectId or card.cardInstanceId,
+                originObjectId = card.originObjectId,
+                copySourceObjectId = card.copySourceObjectId,
+                objectKind = card.objectKind,
+                isCopy = card.isCopy == true,
+                isVirtual = card.isVirtual == true,
+                materializationPolicy = card.materializationPolicy
+            }
+        end
         if zone.name == "battlefield" then
             for _, card in ipairs(zone.cards or {}) do
                 BridgeState.battlefieldKindByInstanceId[card.cardInstanceId] = card.battlefieldKind == "land"
@@ -1076,6 +1104,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.counterStateByInstanceId = {}
     BridgeState.keywordStateByInstanceId = {}
     BridgeState.cardDesignationsByInstanceId = {}
+    BridgeState.authoritativeObjectByInstanceId = {}
     BridgeState.preparedDescriptionByGuid = {}
     BridgeState.prototypeDescriptionByGuid = {}
     BridgeState.preparedBadgeGuidByInstanceId = {}
