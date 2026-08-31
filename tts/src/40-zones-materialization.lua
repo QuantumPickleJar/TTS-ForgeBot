@@ -424,6 +424,26 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
     local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
     if object ~= nil then continueWith(object); return end
 
+    -- A Forge copy of a permanent has no deck inventory entry. When Forge
+    -- supplies its exact origin identity, clone that already-materialized
+    -- physical presentation as a starting surface, then apply the copy's
+    -- authoritative characteristics below. The clone receives the copy's
+    -- own CardInstanceId and never steals the source mapping.
+    if card.isCopy == true and card.originObjectId ~= nil then
+        local originGuid = BridgeState.physicalByInstanceId[card.originObjectId]
+        local origin = originGuid and BridgeGetLiveObjectByGuid(originGuid) or nil
+        if origin ~= nil and type(origin.clone) == "function" then
+            local cloned = nil
+            local ok = pcall(function()
+                cloned = origin.clone({position = origin.getPosition(), rotation = origin.getRotation()})
+            end)
+            if ok and cloned ~= nil then
+                continueWith(cloned)
+                return
+            end
+        end
+    end
+
     local function tryTokenFallback(takeError)
         if card.isToken ~= true then
             callback(false, "ordinary deck card was not found in its authoritative physical zone: " .. tostring(takeError))

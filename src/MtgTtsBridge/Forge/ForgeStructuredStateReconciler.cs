@@ -112,9 +112,9 @@ public sealed class ForgeStructuredStateReconciler
                 ? $"forge:{sessionId}:{fallbackForgeCardId}"
                 : value.StartsWith("forge:", StringComparison.Ordinal)
                     ? value
-                    : $"forge:{sessionId}:{value.StartsWith("forge-object:", StringComparison.Ordinal) ? value[13..] : value}";
+                    : $"forge:{sessionId}:{(value.StartsWith("forge-object:", StringComparison.Ordinal) ? value[13..] : value)}";
 
-        GameCardSnapshotDto ConvertCard(ForgeStructuredCard card) => new(
+        GameCardSnapshotDto ConvertCard(ForgeStructuredCard card) => new GameCardSnapshotDto(
             CardInstanceId: NormalizeObjectId(card.AuthoritativeObjectId, card.ForgeCardId),
             ForgeCardId: card.ForgeCardId,
             CardName: card.CardName,

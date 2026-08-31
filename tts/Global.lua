@@ -3799,6 +3799,15 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     BridgeState.stackSummary = {}
     for _, card in ipairs(snapshot and snapshot.stack or {}) do
         table.insert(BridgeState.stackSummary, tostring(card.currentCardName or card.cardName or "Forge stack object"))
+        BridgeState.authoritativeObjectByInstanceId[card.cardInstanceId] = {
+            objectId = card.authoritativeObjectId or card.cardInstanceId,
+            originObjectId = card.originObjectId,
+            copySourceObjectId = card.copySourceObjectId,
+            objectKind = card.objectKind,
+            isCopy = card.isCopy == true,
+            isVirtual = card.isVirtual == true,
+            materializationPolicy = card.materializationPolicy
+        }
     end
     BridgeUiMarkDirty("stack")
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
@@ -7449,6 +7458,26 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
 
     local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
     if object ~= nil then continueWith(object); return end
+
+    -- A Forge copy of a permanent has no deck inventory entry. When Forge
+    -- supplies its exact origin identity, clone that already-materialized
+    -- physical presentation as a starting surface, then apply the copy's
+    -- authoritative characteristics below. The clone receives the copy's
+    -- own CardInstanceId and never steals the source mapping.
+    if card.isCopy == true and card.originObjectId ~= nil then
+        local originGuid = BridgeState.physicalByInstanceId[card.originObjectId]
+        local origin = originGuid and BridgeGetLiveObjectByGuid(originGuid) or nil
+        if origin ~= nil and type(origin.clone) == "function" then
+            local cloned = nil
+            local ok = pcall(function()
+                cloned = origin.clone({position = origin.getPosition(), rotation = origin.getRotation()})
+            end)
+            if ok and cloned ~= nil then
+                continueWith(cloned)
+                return
+            end
+        end
+    end
 
     local function tryTokenFallback(takeError)
         if card.isToken ~= true then

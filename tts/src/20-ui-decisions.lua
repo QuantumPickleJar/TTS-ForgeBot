@@ -1577,6 +1577,15 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     BridgeState.stackSummary = {}
     for _, card in ipairs(snapshot and snapshot.stack or {}) do
         table.insert(BridgeState.stackSummary, tostring(card.currentCardName or card.cardName or "Forge stack object"))
+        BridgeState.authoritativeObjectByInstanceId[card.cardInstanceId] = {
+            objectId = card.authoritativeObjectId or card.cardInstanceId,
+            originObjectId = card.originObjectId,
+            copySourceObjectId = card.copySourceObjectId,
+            objectKind = card.objectKind,
+            isCopy = card.isCopy == true,
+            isVirtual = card.isVirtual == true,
+            materializationPolicy = card.materializationPolicy
+        }
     end
     BridgeUiMarkDirty("stack")
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
