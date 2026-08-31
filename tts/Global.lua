@@ -8527,6 +8527,16 @@ function BridgeApplyAuthoritativeEvent(event)
             BridgeState.yieldPolicyActiveSeatId = nil
             BridgeLog("[Bridge] cleared HUD yield policy at authoritative turn transition")
         end
+        -- A turn boundary retires any decision belonging to the previous
+        -- priority/phase transaction. BridgeCurrentDecisionOutrunsEvent above
+        -- protects a genuinely newer decision that arrived before this event;
+        -- once the event is authoritative, retaining the old decision would
+        -- keep stale decision controls mounted and can hide YIELD TURN on the
+        -- new opponent turn.
+        BridgeState.lastDecision = nil
+        BridgeState.pendingDecision = nil
+        BridgeResetSelectionState()
+        BridgeClearHighlights()
         BridgeMarkTransitionExpected(0)
         BridgeUiMarkDirty("turn")
         return true, 0.1

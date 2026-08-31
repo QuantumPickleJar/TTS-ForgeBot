@@ -2414,6 +2414,19 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void TurnBoundary_RetiresStaleDecisionBeforeRefreshingYieldControls()
+    {
+        var start = Script.IndexOf("if event.kind == \"turn_changed\" then", StringComparison.Ordinal);
+        var end = Script.IndexOf("if event.kind == \"phase_changed\" then", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var turnBody = Script[start..end];
+        Assert.Contains("BridgeState.lastDecision = nil", turnBody);
+        Assert.Contains("BridgeState.pendingDecision = nil", turnBody);
+        Assert.Contains("BridgeResetSelectionState()", turnBody);
+        Assert.Contains("BridgeClearHighlights()", turnBody);
+    }
+
+    [Fact]
     public void CheckedInGlobalLua_MatchesDeterministicAuthoringBundle()
     {
         var repositoryRoot = FindRepositoryRoot();
