@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace MtgTtsBridge.Tests;
 
 public sealed class TtsGlobalLuaContractTests
