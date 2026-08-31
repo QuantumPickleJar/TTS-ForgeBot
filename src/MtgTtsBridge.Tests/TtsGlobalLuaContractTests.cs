@@ -2735,6 +2735,47 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void AuthoritativeZoneChangeClearsOldTappedPresentationBeforePublicDestinationPlacement()
+    {
+        var prepareStart = Script.IndexOf("function BridgePreparePhysicalCardForPublicZoneMove", StringComparison.Ordinal);
+        var prepareEnd = Script.IndexOf("function BridgeApplyStructuredCardMove", prepareStart, StringComparison.Ordinal);
+        Assert.True(prepareStart >= 0 && prepareEnd > prepareStart);
+        var prepare = Script[prepareStart..prepareEnd];
+        Assert.Contains("if destinationZone ~= \"battlefield\" then", prepare);
+        Assert.Contains("BridgeSetPhysicalTapped(object, false)", prepare);
+
+        var graveyardStart = Script.IndexOf("function BridgeMoveToGraveyard", StringComparison.Ordinal);
+        var graveyardEnd = Script.IndexOf("function BridgeFindSeatLibraryDeckWithCard", graveyardStart, StringComparison.Ordinal);
+        var graveyard = Script[graveyardStart..graveyardEnd];
+        Assert.True(graveyard.IndexOf("BridgeSetPhysicalTapped(object, false)", StringComparison.Ordinal)
+            < graveyard.IndexOf("BridgeSetPhysicalFaceDown(object, seat, false)", StringComparison.Ordinal));
+
+        var moveStart = Script.IndexOf("function BridgeApplyStructuredCardMove", StringComparison.Ordinal);
+        var moveEnd = Script.IndexOf("function BridgeMoveToGraveyard", moveStart, StringComparison.Ordinal);
+        var move = Script[moveStart..moveEnd];
+        var exile = move.IndexOf("elseif event.destinationZone == \"exile\" then", StringComparison.Ordinal);
+        Assert.True(exile >= 0);
+        Assert.Contains("BridgeSetPhysicalTapped(object, false)", move[exile..]);
+    }
+
+    [Fact]
+    public void StaleUpkeepPassCannotReplaceRegeneratedMainOneActionMenu()
+    {
+        var start = Script.IndexOf("function BridgeShouldIgnoreStaleDecision", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeShouldDeferDecision", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var policy = Script[start..end];
+
+        Assert.Contains("BridgePriorityPhaseFamily(decision.phaseName)", policy);
+        Assert.Contains("BridgePriorityPhaseFamily(BridgeState.currentPhase)", policy);
+        Assert.Contains("not BridgeDecisionHasNonPassAction(decision)", policy);
+        Assert.Contains("ignoring stale pass-only priority menu", policy);
+        Assert.Contains("retaining regenerated Forge action menu", policy);
+        Assert.True(policy.IndexOf("if eventCursor <= 0", StringComparison.Ordinal)
+            > policy.IndexOf("BridgePriorityPhaseFamily(decision.phaseName)", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void PublicZoneReturn_UnlocksExactGraveyardCardBeforeReuse()
     {
         var prepareStart = Script.IndexOf("function BridgePreparePhysicalCardForPublicZoneMove", StringComparison.Ordinal);

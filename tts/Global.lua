@@ -3432,9 +3432,46 @@ function BridgeDecisionHasNonPassAction(decision)
     return false
 end
 
+function BridgePriorityPhaseFamily(value)
+    local phase = string.upper(tostring(value or ""))
+    if string.find(phase, "MAIN", 1, true) ~= nil then return "MAIN" end
+    if string.find(phase, "DRAW", 1, true) ~= nil then return "DRAW" end
+    if string.find(phase, "UPKEEP", 1, true) ~= nil then return "UPKEEP" end
+    if string.find(phase, "UNTAP", 1, true) ~= nil then return "UNTAP" end
+    if string.find(phase, "ATTACK", 1, true)
+        or string.find(phase, "BLOCK", 1, true)
+        or string.find(phase, "DAMAGE", 1, true)
+        or string.find(phase, "COMBAT", 1, true) then return "COMBAT" end
+    if string.find(phase, "CLEANUP", 1, true) then return "CLEANUP" end
+    if string.find(phase, "END", 1, true) then return "END" end
+    return phase
+end
+
 function BridgeShouldIgnoreStaleDecision(decision)
     local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
     local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    -- Phase changes and decision polling are separate transports. Do not let
+    -- an old pass-only upkeep/draw menu be clicked after the authoritative
+    -- state has entered Main 1; conversely, retain a regenerated Main 1 menu
+    -- that carries an exact Forge action while its event cursor catches up.
+    if decision ~= nil and decision.kind == "main_priority" then
+        local decisionFamily = BridgePriorityPhaseFamily(decision.phaseName)
+        local authoritativeFamily = BridgePriorityPhaseFamily(BridgeState.currentPhase)
+        if decisionFamily ~= "" and authoritativeFamily ~= "" and decisionFamily ~= authoritativeFamily then
+            if not BridgeDecisionHasNonPassAction(decision) then
+                BridgeLog(string.format(
+                    "[Bridge] ignoring stale pass-only priority menu phase=%s authoritativePhase=%s cursor=%s applied=%s",
+                    tostring(decision.phaseName), tostring(BridgeState.currentPhase),
+                    tostring(eventCursor), tostring(applied)))
+                return true, eventCursor, applied
+            end
+            BridgeLog(string.format(
+                "[Bridge] retaining regenerated Forge action menu phase=%s authoritativePhase=%s cursor=%s applied=%s",
+                tostring(decision.phaseName), tostring(BridgeState.currentPhase),
+                tostring(eventCursor), tostring(applied)))
+            return false, eventCursor, applied
+        end
+    end
     if eventCursor <= 0 or eventCursor >= applied then
         if decision ~= nil and (decision.kind == "attacker_selection"
             or decision.kind == "blocker_selection" or decision.kind == "blocker_assignment") then
@@ -9474,6 +9511,12 @@ function BridgePreparePhysicalCardForPublicZoneMove(object, destinationZone)
     if object == nil or object.tag ~= "Card" then
         return false, "public-zone move requires a physical game card"
     end
+    -- A zone change is authoritative Forge state, not a continuation of the
+    -- battlefield object's presentation. A tapped permanent leaving the
+    -- battlefield must not carry its visual rotation into a public zone.
+    if destinationZone ~= "battlefield" then
+        BridgeSetPhysicalTapped(object, false)
+    end
     if destinationZone == "graveyard" or destinationZone == "library" then
         return true, nil
     end
@@ -9568,6 +9611,12 @@ function BridgeApplyStructuredCardMove(event)
             if event.destinationZone == "battlefield" then
                 BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
             else
+                -- An idempotent authoritative move can arrive after physical
+                -- placement. Repair stale battlefield orientation here too.
+                BridgeSetPhysicalTapped(object, false)
+                if event.destinationZone == "graveyard" or event.destinationZone == "exile" then
+                    BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
+                end
                 BridgeClearCardDesignationPresentation(event.cardInstanceId, object, event.destinationZone ~= "stack")
             end
             BridgeLog(string.format(
@@ -9912,6 +9961,8 @@ function BridgeApplyStructuredCardMove(event)
         if not moved then return false, moveError end
     elseif event.destinationZone == "exile" then
         object.use_hands = false
+        BridgeSetPhysicalTapped(object, false)
+        BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
         local exilePosition = BridgeResolveSeatZoneAnchor(event.seatId, "exile")
         if exilePosition == nil then
             return false, "no exile anchor configured for seat " .. tostring(event.seatId)
@@ -9974,6 +10025,9 @@ function BridgeMoveToGraveyard(event, object)
     end
     local moved, movementError = pcall(function()
         object.use_hands = false
+        -- Direct spell-resolution and sacrifice moves can bypass the public
+        -- zone preparation helper. Clear the old battlefield tap state first.
+        BridgeSetPhysicalTapped(object, false)
         BridgeSetPhysicalFaceDown(object, seat, false)
         object.setPositionSmooth(graveyardPosition, false, true)
         object.setLock(true)
