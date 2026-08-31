@@ -745,6 +745,10 @@ index 0000000000000000000000000000000000000000..cb4c5481c7aae85ed730dc73d535bab0
 +            throw new DuplicateCardIdentityException(card, zone);
 +        }
 +        final String canonicalName = card.getPaperCard() == null ? card.getName() : card.getPaperCard().getName();
++        final Card cloneOrigin = card.getCloneOrigin();
++        final boolean copied = card.isCloned() || card.getCopiedPermanent() != null;
++        final String objectKind = card.isRealToken() || card.isTokenCard()
++                ? "forge-token" : (copied ? ("stack".equals(zone) ? "copy-spell" : "copy-permanent") : "physical-original");
 +        json.append('{');
 +        property(json, "forgeCardId", card.getId()).append(',');
 +        property(json, "cardName", canonicalName).append(',');
@@ -766,6 +770,13 @@ index 0000000000000000000000000000000000000000..cb4c5481c7aae85ed730dc73d535bab0
 +        // Printed deck cards and Forge-created tokens must never share the
 +        // ordinary library-card materialization fallback in TTS.
 +        property(json, "isToken", card.isToken() || card.isTokenCard()).append(',');
++        property(json, "authoritativeObjectId", "forge-object:" + card.getId()).append(',');
++        property(json, "originObjectId", cloneOrigin == null ? null : "forge-object:" + cloneOrigin.getId()).append(',');
++        property(json, "copySourceObjectId", cloneOrigin == null ? null : "forge-object:" + cloneOrigin.getId()).append(',');
++        property(json, "objectKind", objectKind).append(',');
++        property(json, "isCopy", copied).append(',');
++        property(json, "isVirtual", "stack".equals(zone) && copied).append(',');
++        property(json, "materializationPolicy", "stack".equals(zone) && copied ? "virtual-stack" : "physical").append(',');
 +        json.append("\"cardDesignations\":[");
 +        if (card.isPrepared()) string(json, "prepared");
 +        if (card.isPrototyped()) {
