@@ -422,6 +422,8 @@ BridgeState = {
     openingHandReadinessSnapshotPending = false,
     openingHandReadinessSnapshotRequested = false,
     openingHandReadinessRetryScheduled = false,
+    handActionReadinessSnapshotDecisionId = nil,
+    handActionReadinessSnapshotSessionId = nil,
     handReadinessRecoveryDecisionId = nil,
     handReadinessRecoverySessionId = nil,
     handReadinessRecoveryAttempts = 0,
@@ -2435,6 +2437,14 @@ function BridgeUiFlush()
     if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew" then
         prompt = "CREW — SELECT CREATURES"
     end
+    if decision ~= nil and BridgeIsDiscardChoice(decision) then
+        -- Keep post-mulligan discard explicit even when Forge's prompt is
+        -- generic. Exact candidate/action identities remain Forge-owned.
+        prompt = "DISCARD A CARD - SELECT IN ORANGE, THEN CONFIRM"
+    elseif decision ~= nil and decision.kind == "mulligan"
+        and tostring(decision.mulliganStage or "") == "bottom_selection" then
+        prompt = "MULLIGAN - PUT CARD ON BOTTOM, THEN CONFIRM"
+    end
     BridgeUiSet("BridgeHudPrompt", "text", terminal and BridgeUiTerminalLabel(terminal) or prompt)
     BridgeUiSet("BridgeHudMana", "text", "MANA: " .. tostring(ui.manaMode or "AUTO"))
     BridgeUiSet("BridgeHudMode", "text", tostring(ui.autoAdvanceMode or "SMART"))
@@ -2967,6 +2977,12 @@ function BridgeIsDiscardChoice(decision)
     if decision == nil or decision.confirmRequired ~= true then return false end
     return decision.kind == "discard" or
         (decision.kind == "card_selection" and BridgeDecisionContainsDiscardAction(decision))
+end
+
+function BridgeIsMulliganBottomSelection(decision)
+    return decision ~= nil and decision.kind == "mulligan"
+        and tostring(decision.mulliganStage or "") == "bottom_selection"
+        and decision.confirmRequired == true
 end
 
 function BridgeCanSubmitStructuredDone(decision, source)
@@ -3793,6 +3809,27 @@ function BridgeTryPresentPendingDecision(reason)
             BridgeState.pendingDecisionDeferredAt = deferredAt
             BridgeState.pendingDecisionDeferredCursor = eventCursor
             BridgeState.pendingDecisionDeferredApplied = applied
+            -- Keep a discard/bottoming transaction visible through the HUD
+            -- while exact hand GUIDs finish converging.  The HUD submits only
+            -- the exact Forge ActionId; physical cards remain inert until
+            -- their identity mapping is verified.  Without this fallback a
+            -- post-mulligan hand race looked like "no discard prompt" and
+            -- could never be recovered by the player.
+            if BridgeIsDiscardChoice(pending) or BridgeIsMulliganBottomSelection(pending) then
+                BridgeState.lastDecision = pending
+                BridgeUiMarkDirty("hand-action-readiness-fallback")
+                BridgeRenderDecision(pending, true)
+            end
+            -- Mulligan replacement cards can leave the next hand-based
+            -- discard/cast menu one polling cycle ahead of its physical TTS
+            -- mappings. Request one exact-session snapshot immediately so
+            -- readiness converges without waiting for the long timeout.
+            if BridgeState.handActionReadinessSnapshotDecisionId ~= pending.decisionId
+                or BridgeState.handActionReadinessSnapshotSessionId ~= BridgeState.eventSessionId then
+                BridgeState.handActionReadinessSnapshotDecisionId = pending.decisionId
+                BridgeState.handActionReadinessSnapshotSessionId = BridgeState.eventSessionId
+                BridgeScheduleSnapshotReconcile("hand-action-readiness")
+            end
             if elapsed >= BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS then
                 if BridgeRecoverFromHandReadinessTimeout(pending, deferReason, deferDetail) then
                     return
@@ -3823,6 +3860,10 @@ function BridgeTryPresentPendingDecision(reason)
             BridgeState.pendingDecisionDeferredAt = nil
             BridgeState.pendingDecisionDeferredCursor = 0
             BridgeState.pendingDecisionDeferredApplied = 0
+            -- Retiring a stale deferred menu must not strand the protocol.
+            -- Poll again for the exact current Forge decision after the
+            -- event/physical-mapping fence has been observed.
+            BridgeStartDecisionPolling()
             return
         end
         BridgeLog(string.format(
@@ -5137,8 +5178,23 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     local ignoreStale, eventCursor, applied = BridgeShouldIgnoreStaleDecision(decision)
     if ignoreStale then
         BridgeLog(string.format(
-            "[Bridge] ignoring stale main-priority decision %s (cursor=%s, applied=%s)",
+            "[Bridge] ignoring stale decision %s kind=%s (cursor=%s, applied=%s)",
             tostring(decision.decisionId), tostring(eventCursor), tostring(applied)))
+        -- A stale poll response is not a terminal state.  The GET that
+        -- delivered it has already completed, so simply returning would
+        -- leave the bridge with no current decision and Forge would continue
+        -- advancing its priority windows.  Start a fresh poll against the
+        -- current event/session generation; only that newer Forge decision
+        -- may replace the stale one.
+        -- If this was the menu currently rendered, retire it before polling;
+        -- otherwise a newer menu is already authoritative and must remain.
+        if BridgeState.lastDecision == nil
+            or BridgeState.lastDecision.decisionId == decision.decisionId then
+            BridgeState.lastDecision = nil
+            BridgeClearHighlights()
+            BridgeHideMainPriorityControls()
+            BridgeStartDecisionPolling()
+        end
         return
     end
 
@@ -5222,16 +5278,20 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         BridgeSetStatus(attackerLabel, "Drag/select highlighted creatures into block row for this exact attacker\nDONE BLOCKING")
     elseif decision.kind == "blocker_assignment" then
         BridgeSetStatus("ASSIGN BLOCKERS", "Choose which attacker each blocker will block\nDONE ASSIGNING")
-    elseif decision.kind == "card_selection" then
-        BridgeSetStatus("CHOOSE CARD", "Required Forge selection (for example, discard) — this is not a cast action")
-    elseif decision.kind == "discard" then
+    elseif BridgeIsDiscardChoice(decision) then
         if decision.decisionCauseKind == "cleanup_hand_size" then
             BridgeSetStatus("DISCARD TO MAXIMUM HAND SIZE", "Choose " .. tostring(decision.minSelections or 1) .. " card(s) from your hand.")
         elseif decision.decisionCauseKind == "spell_or_ability" then
             BridgeSetStatus("DISCARD " .. tostring(decision.minSelections or 1) .. " CARD", "Caused by: " .. tostring(decision.sourceCardName or "Forge spell or ability"))
         else
-            BridgeSetStatus("DISCARD", "Choose Forge's legal discard card(s).")
+            BridgeSetStatus("DISCARD", "Choose Forge's legal discard card(s), then CONFIRM.")
         end
+    elseif decision.kind == "mulligan"
+        and tostring(decision.mulliganStage or "") == "bottom_selection" then
+        BridgeSetStatus("MULLIGAN — PUT CARD ON BOTTOM",
+            "Choose " .. tostring(decision.minSelections or 1) .. " card(s) to put on the bottom of your library, then CONFIRM.")
+    elseif decision.kind == "card_selection" then
+        BridgeSetStatus("CHOOSE CARD", "Required Forge selection (this is not a cast action)")
     elseif decision.kind == "cost_selection" and tostring(decision.costKind or "") == "crew" then
         BridgeSetStatus("CREW", "Select Forge-provided creatures, then CONFIRM.")
     elseif decision.kind == "entity_selection" and tostring(decision.selectionKind or "") == "proliferate" then
@@ -6301,7 +6361,11 @@ function BridgeRenderDecision(decision, force)
     -- playable window when decision/action rendering lags a frame; explicit
     -- PASS and END TURN controls still provide intentional progression.
     if decision.kind == "main_priority"
-        and decision.seatId ~= "forge-player-1"
+        -- Passive automation is only safe for an explicitly identified
+        -- opponent window.  A missing/legacy seat field must never be treated
+        -- as evidence that the human can be auto-passed through Main 1.
+        and decision.seatId == "forge-player-2"
+        and (decision.activeSeatId == nil or decision.activeSeatId == "forge-player-2")
         and BridgeDecisionOffersActionType(decision, "pass_priority")
         and not BridgeDecisionHasNonPassAction(decision) then
         for _, action in ipairs(decision.actions) do
@@ -6315,11 +6379,16 @@ function BridgeRenderDecision(decision, force)
 
     local highlightColor = {0.53, 0.81, 0.98}
     local selectedCombatColor = {0.2, 1.0, 0.35}
-    -- A Forge-owned collection (mulligan bottoming, discard, Crew, Delve,
-    -- etc.) is an immediate legal-choice surface, not a follow-up target.
-    -- Blue makes that distinction visible while orange remains reserved for
-    -- target/follow-up decisions such as combat assignment.
-    if decision.kind ~= "main_priority" and not BridgeIsStructuredForgeToggleChoice(decision) then
+    -- Discard is an immediate destructive choice and must remain visibly
+    -- distinct from ordinary action availability.  Structured discard menus
+    -- are Forge-owned toggles, but their physical candidates still use the
+    -- orange choice treatment so the player can see that a discard decision
+    -- is awaiting input.  Main-priority actions (including the pre-combat
+    -- land/spell window) remain blue.
+    if BridgeIsDiscardChoice(decision)
+        or BridgeIsMulliganBottomSelection(decision)
+        or (decision.kind == "card_selection" and BridgeDecisionContainsDiscardAction(decision))
+        or (decision.kind ~= "main_priority" and not BridgeIsStructuredForgeToggleChoice(decision)) then
         highlightColor = {1.0, 0.55, 0.0}
     end
 
@@ -6350,7 +6419,22 @@ function BridgeRenderDecision(decision, force)
                 or BridgeState.physicalZoneByGuid[guid] ~= "hand"
             BridgeState.physicalSeatByGuid[guid] = decision.seatId
             BridgeState.physicalZoneByGuid[guid] = "hand"
-            if handMappingChanged then BridgeAdvancePhysicalPresentationGeneration("hand-mapping-repaired") end
+            if handMappingChanged then
+                BridgeAdvancePhysicalPresentationGeneration("hand-mapping-repaired")
+                -- A discard decision may have been shown via the HUD while
+                -- this exact hand mapping was pending. Re-render once the
+                -- physical identity is repaired so the same Forge action is
+                -- available from the card as well.
+                if BridgeState.lastDecision ~= nil
+                    and BridgeState.lastDecision.decisionId == decision.decisionId then
+                    BridgeWaitFrames(function()
+                        if BridgeState.lastDecision ~= nil
+                            and BridgeState.lastDecision.decisionId == decision.decisionId then
+                            BridgeRenderDecision(BridgeState.lastDecision, true)
+                        end
+                    end, 1)
+                end
+            end
         end
         local isCandidate = decision.kind ~= "main_priority"
             or mappedInDecisionHand
@@ -8518,6 +8602,8 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.openingHandReadinessSnapshotPending = false
     BridgeState.openingHandReadinessSnapshotRequested = false
     BridgeState.openingHandReadinessRetryScheduled = false
+    BridgeState.handActionReadinessSnapshotDecisionId = nil
+    BridgeState.handActionReadinessSnapshotSessionId = nil
     BridgeState.handReadinessRecoveryDecisionId = nil
     BridgeState.handReadinessRecoverySessionId = nil
     BridgeState.handReadinessRecoveryAttempts = 0

@@ -1252,6 +1252,8 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.openingHandReadinessSnapshotPending = false
     BridgeState.openingHandReadinessSnapshotRequested = false
     BridgeState.openingHandReadinessRetryScheduled = false
+    BridgeState.handActionReadinessSnapshotDecisionId = nil
+    BridgeState.handActionReadinessSnapshotSessionId = nil
     BridgeState.handReadinessRecoveryDecisionId = nil
     BridgeState.handReadinessRecoverySessionId = nil
     BridgeState.handReadinessRecoveryAttempts = 0

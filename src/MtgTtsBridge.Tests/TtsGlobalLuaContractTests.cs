@@ -208,7 +208,7 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgeShouldIgnoreStaleDecision", Script);
         Assert.Contains("if decision.kind ~= \"main_priority\" then", Script);
-        Assert.Contains("ignoring stale main-priority decision", Script);
+        Assert.Contains("ignoring stale decision %s kind=%s", Script);
         Assert.Contains("decision.eventCursor", Script);
         Assert.Contains("BridgeState.lastAppliedEventSequence", Script);
         Assert.Contains("decision.prioritySeatId", Script);
@@ -1237,8 +1237,19 @@ public sealed class TtsGlobalLuaContractTests
     public void CardSelection_IsPresentedAsAnOrangeRequiredChoiceRatherThanABlueCastAction()
     {
         Assert.Contains("elseif decision.kind == \"card_selection\"", Script);
-        Assert.Contains("Required Forge selection (for example, discard)", Script);
-        Assert.Contains("if decision.kind ~= \"main_priority\" then", Script);
+        Assert.Contains("BridgeIsDiscardChoice(decision)", Script);
+        Assert.Contains("DISCARD A CARD - SELECT IN ORANGE, THEN CONFIRM", Script);
+        Assert.Contains("highlightColor = {1.0, 0.55, 0.0}", Script);
+    }
+
+    [Fact]
+    public void PostMulliganDiscardReadiness_RetainsAnExactForgeHudFallback()
+    {
+        Assert.Contains("function BridgeIsMulliganBottomSelection(decision)", Script);
+        Assert.Contains("hand-action-readiness-fallback", Script);
+        Assert.Contains("BridgeRenderDecision(pending, true)", Script);
+        Assert.Contains("handActionReadinessSnapshotDecisionId", Script);
+        Assert.Contains("BridgeScheduleSnapshotReconcile(\"hand-action-readiness\")", Script);
     }
 
     [Fact]
@@ -1550,7 +1561,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void CombatCandidates_AreOrangeFollowupChoices()
     {
-        Assert.Contains("if decision.kind ~= \"main_priority\" and not BridgeIsStructuredForgeToggleChoice(decision) then", Script);
+        Assert.Contains("or (decision.kind ~= \"main_priority\" and not BridgeIsStructuredForgeToggleChoice(decision))", Script);
         Assert.Contains("highlightColor = {1.0, 0.55, 0.0}", Script);
     }
 
@@ -1562,7 +1573,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.True(renderStart >= 0 && candidateStart > renderStart);
         var highlight = Script[renderStart..candidateStart];
 
-        Assert.Contains("not BridgeIsStructuredForgeToggleChoice(decision)", highlight);
+        Assert.Contains("BridgeIsDiscardChoice(decision)", highlight);
+        Assert.Contains("decision.kind ~= \"main_priority\" and not BridgeIsStructuredForgeToggleChoice(decision)", highlight);
         Assert.Contains("local highlightColor = {0.53, 0.81, 0.98}", highlight);
     }
 
@@ -1836,7 +1848,8 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgeDecisionHasNonPassAction", Script);
         Assert.Contains("empty_priority_auto_pass", Script);
-        Assert.Contains("decision.seatId ~= \"forge-player-1\"", Script);
+        Assert.Contains("decision.seatId == \"forge-player-2\"", Script);
+        Assert.Contains("decision.activeSeatId == nil or decision.activeSeatId == \"forge-player-2\"", Script);
         Assert.Contains("not BridgeDecisionHasNonPassAction(decision)", Script);
         Assert.Contains("Keep passive auto-pass off for the human seat", Script);
         Assert.Contains("Priority/active-seat fields are descriptive state, not ordering keys", Script);

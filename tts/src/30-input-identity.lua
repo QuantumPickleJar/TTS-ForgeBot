@@ -888,7 +888,11 @@ function BridgeRenderDecision(decision, force)
     -- playable window when decision/action rendering lags a frame; explicit
     -- PASS and END TURN controls still provide intentional progression.
     if decision.kind == "main_priority"
-        and decision.seatId ~= "forge-player-1"
+        -- Passive automation is only safe for an explicitly identified
+        -- opponent window.  A missing/legacy seat field must never be treated
+        -- as evidence that the human can be auto-passed through Main 1.
+        and decision.seatId == "forge-player-2"
+        and (decision.activeSeatId == nil or decision.activeSeatId == "forge-player-2")
         and BridgeDecisionOffersActionType(decision, "pass_priority")
         and not BridgeDecisionHasNonPassAction(decision) then
         for _, action in ipairs(decision.actions) do
@@ -902,11 +906,16 @@ function BridgeRenderDecision(decision, force)
 
     local highlightColor = {0.53, 0.81, 0.98}
     local selectedCombatColor = {0.2, 1.0, 0.35}
-    -- A Forge-owned collection (mulligan bottoming, discard, Crew, Delve,
-    -- etc.) is an immediate legal-choice surface, not a follow-up target.
-    -- Blue makes that distinction visible while orange remains reserved for
-    -- target/follow-up decisions such as combat assignment.
-    if decision.kind ~= "main_priority" and not BridgeIsStructuredForgeToggleChoice(decision) then
+    -- Discard is an immediate destructive choice and must remain visibly
+    -- distinct from ordinary action availability.  Structured discard menus
+    -- are Forge-owned toggles, but their physical candidates still use the
+    -- orange choice treatment so the player can see that a discard decision
+    -- is awaiting input.  Main-priority actions (including the pre-combat
+    -- land/spell window) remain blue.
+    if BridgeIsDiscardChoice(decision)
+        or BridgeIsMulliganBottomSelection(decision)
+        or (decision.kind == "card_selection" and BridgeDecisionContainsDiscardAction(decision))
+        or (decision.kind ~= "main_priority" and not BridgeIsStructuredForgeToggleChoice(decision)) then
         highlightColor = {1.0, 0.55, 0.0}
     end
 
@@ -937,7 +946,22 @@ function BridgeRenderDecision(decision, force)
                 or BridgeState.physicalZoneByGuid[guid] ~= "hand"
             BridgeState.physicalSeatByGuid[guid] = decision.seatId
             BridgeState.physicalZoneByGuid[guid] = "hand"
-            if handMappingChanged then BridgeAdvancePhysicalPresentationGeneration("hand-mapping-repaired") end
+            if handMappingChanged then
+                BridgeAdvancePhysicalPresentationGeneration("hand-mapping-repaired")
+                -- A discard decision may have been shown via the HUD while
+                -- this exact hand mapping was pending. Re-render once the
+                -- physical identity is repaired so the same Forge action is
+                -- available from the card as well.
+                if BridgeState.lastDecision ~= nil
+                    and BridgeState.lastDecision.decisionId == decision.decisionId then
+                    BridgeWaitFrames(function()
+                        if BridgeState.lastDecision ~= nil
+                            and BridgeState.lastDecision.decisionId == decision.decisionId then
+                            BridgeRenderDecision(BridgeState.lastDecision, true)
+                        end
+                    end, 1)
+                end
+            end
         end
         local isCandidate = decision.kind ~= "main_priority"
             or mappedInDecisionHand
