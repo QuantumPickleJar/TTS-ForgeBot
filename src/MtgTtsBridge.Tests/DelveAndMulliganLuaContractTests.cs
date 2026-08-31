@@ -204,4 +204,18 @@ public sealed class DelveAndMulliganLuaContractTests
         Assert.Contains("handByName[normalized]", reconcile);
         Assert.Contains("nonHandByName[normalized]", reconcile);
     }
+
+    [Fact]
+    public void OpeningHandReadinessTimeout_RechecksReadyHandBeforeStoppingSynchronization()
+    {
+        var start = Script.IndexOf("if elapsed >= BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS then", StringComparison.Ordinal);
+        var stop = Script.IndexOf("BridgeStopOnDesync", start, StringComparison.Ordinal);
+        var timeout = Script[start..stop];
+
+        Assert.Contains("local ready, readyCount, expectedCount, readinessDetail", timeout);
+        Assert.Contains("if ready then", timeout);
+        Assert.Contains("BridgeTryPresentPendingDecision(reason .. \"-readiness-recovered\")", timeout);
+        Assert.True(Script.IndexOf("BridgeTryPresentPendingDecision(reason .. \"-readiness-recovered\")", start, StringComparison.Ordinal)
+            < stop);
+    }
 }

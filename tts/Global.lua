@@ -3534,8 +3534,21 @@ function BridgeTryPresentPendingDecision(reason)
                 BridgeScheduleSnapshotReconcile("opening-hand-readiness")
             end
             if elapsed >= BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS then
-                local _, readyCount, expectedCount, readinessDetail =
+                local ready, readyCount, expectedCount, readinessDetail =
                     BridgeCheckOpeningHandReadiness(pending.seatId)
+                if ready then
+                    -- The readiness reason was captured before TTS published
+                    -- all hand membership callbacks.  Re-evaluate the full
+                    -- decision now that the exact hand is ready; otherwise a
+                    -- stale defer reason can stop a valid seven-card opening
+                    -- hand with ready=expected in the diagnostic.
+                    BridgeState.openingHandReadinessSnapshotPending = false
+                    BridgeLog(string.format(
+                        "[Bridge] opening hand readiness recovered: ready=%d expected=%d; re-evaluating decision",
+                        readyCount, expectedCount))
+                    BridgeTryPresentPendingDecision(reason .. "-readiness-recovered")
+                    return
+                end
                 BridgeStopOnDesync(string.format(
                     "opening hand readiness timeout: ready=%d expected=%d missing=%d mappings=%s",
                     readyCount, expectedCount, math.max(expectedCount - readyCount, 0), readinessDetail))
