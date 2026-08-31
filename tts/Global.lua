@@ -1610,15 +1610,21 @@ function BridgeVerifyLibraryIdentityStability(callback, attempt, expectedGuids)
     -- a card to a Deck. Suppress only the exact GUIDs just staged during that
     -- bounded window; the terminal check is strict so a persistent duplicate
     -- can never be accepted as a successful insertion/bootstrap.
-    local ignoredGuids = attempt < 30 and expectedGuids or nil
-    local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids(ignoredGuids)
-    if duplicateGuidCount == 0 then
+    local strictDuplicateCount = BridgeAuditDuplicateLibraryGuids()
+    if strictDuplicateCount == 0 then
         callback(true, nil)
         return
     end
     if attempt >= 30 then
-        callback(false, "library insertion produced " .. tostring(duplicateGuidCount)
+        callback(false, "library insertion produced " .. tostring(strictDuplicateCount)
             .. " loose/contained duplicate GUID(s)")
+        return
+    end
+    local ignoredGuids = expectedGuids
+    local unexpectedDuplicateCount = BridgeAuditDuplicateLibraryGuids(ignoredGuids)
+    if unexpectedDuplicateCount > 0 then
+        callback(false, "library insertion produced " .. tostring(unexpectedDuplicateCount)
+            .. " unexpected loose/contained duplicate GUID(s)")
         return
     end
     if attempt == 1 then

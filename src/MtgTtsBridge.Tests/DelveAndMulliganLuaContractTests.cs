@@ -111,7 +111,8 @@ public sealed class DelveAndMulliganLuaContractTests
         var insertionEnd = Script.IndexOf("function BridgeProcessMulliganBottomQueue", insertionStart, StringComparison.Ordinal);
         var insertion = Script[insertionStart..insertionEnd];
 
-        Assert.Contains("local ignoredGuids = attempt < 30 and expectedGuids or nil", stability);
+        Assert.Contains("local strictDuplicateCount = BridgeAuditDuplicateLibraryGuids()", stability);
+        Assert.Contains("local ignoredGuids = expectedGuids", stability);
         Assert.Contains("BridgeAuditDuplicateLibraryGuids(ignoredGuids)", stability);
         Assert.Contains("attempt >= 30", stability);
         Assert.Contains("BridgeWaitFrames(function()", stability);
