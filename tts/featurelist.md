@@ -171,3 +171,9 @@ NEEDS LIVE CONFIRMATION — producer and bridge regressions are covered; run aft
 - Permanent hand → stack → battlefield promptly after Forge event.
 
 - Yield visibility and normal single-action decision behavior.
+
+Bug: you cannot play cards pre-combat on first turn for some reason
+
+Bug: lotus petal prompts the uses to sacrifice it when its already in the graveyard
+
+Bug: lotus petal does not move the top three cards of library to graveyard
