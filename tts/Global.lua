@@ -6792,7 +6792,20 @@ function onObjectPickUp(playerColor, object)
         object.setPositionSmooth(BridgeState.pendingIntent.position, false, true)
         object.setRotationSmooth(BridgeState.pendingIntent.rotation, false, true)
         BridgeState.pendingIntent = nil
-        BridgeWaitFrames(function() BridgeRenderDecision(decision) end, 2)
+        -- The physical snap-back is asynchronous.  A spell/target choice can
+        -- resolve and Forge can publish a newer decision before these frames
+        -- elapse (Thought Scour is a particularly visible example).  Never
+        -- redraw the captured decision after it has retired: doing so brings
+        -- back stale cast/target highlights over the authoritative next
+        -- decision.  The normal decision/event pipeline owns the replacement
+        -- render.
+        local capturedDecisionId = decision.decisionId
+        BridgeWaitFrames(function()
+            local current = BridgeState.lastDecision
+            if current ~= nil and current.decisionId == capturedDecisionId then
+                BridgeRenderDecision(current, true)
+            end
+        end, 2)
         return
     end
 

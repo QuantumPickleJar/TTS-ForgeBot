@@ -2964,4 +2964,12 @@ public sealed class TtsGlobalLuaContractTests
         Assert.DoesNotContain("local library = BridgeResolveSeatLibraryDeck(seatId", body[addAsset..]);
         Assert.Contains("libraryGuid == BridgeSafeObjectGuid(object)", body);
     }
+
+    [Fact]
+    public void DelayedPhysicalRedraw_CannotResurrectRetiredDecisionHighlights()
+    {
+        Assert.Contains("local capturedDecisionId = decision.decisionId", Script);
+        Assert.Contains("if current ~= nil and current.decisionId == capturedDecisionId then", Script);
+        Assert.Contains("BridgeRenderDecision(current, true)", Script);
+    }
 }
