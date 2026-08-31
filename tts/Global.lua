@@ -437,6 +437,7 @@ BridgeState = {
     presentedOwnerControllerByGuid = {},
     presentedPhasedByGuid = {},
     presentedCounterSignatureByGuid = {},
+    presentedCounterFallbackSignatureByGuid = {},
     presentedKeywordSignatureByGuid = {},
     presentedIconLayoutByGuid = {},
     preparedDescriptionByGuid = {},
@@ -7938,6 +7939,7 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.presentedOwnerControllerByGuid = {}
     BridgeState.presentedPhasedByGuid = {}
     BridgeState.presentedCounterSignatureByGuid = {}
+    BridgeState.presentedCounterFallbackSignatureByGuid = {}
     BridgeState.presentedKeywordSignatureByGuid = {}
     BridgeState.presentedIconLayoutByGuid = {}
     BridgeState.unsupportedKeywordLogged = {}
@@ -10882,31 +10884,43 @@ function BridgeSetCardCounters(object, absoluteCounters)
     for _, entry in ipairs(named) do table.insert(signatureParts, entry.counterType .. "=" .. tostring(entry.counterValue)) end
     local signature = table.concat(signatureParts, "|")
     local guid = BridgeSafeObjectGuid(object)
-    if guid ~= nil and BridgeState.presentedCounterSignatureByGuid[guid] == signature then return true, nil end
+    local unifiedAlreadyPresented = guid ~= nil and BridgeState.presentedCounterSignatureByGuid[guid] == signature
+    if not unifiedAlreadyPresented then
+        local applied, applyError = BridgeMutateUnifiedState(object, function(unified)
+            unified.plusOneCounters = plusOne
+            unified.displayPlusOne = plusOne ~= 0
+            -- Unified has one generic named counter display. Never combine
+            -- different Forge counter types into an invented total.
+            if #named == 1 then
+                unified.namedCounters = named[1].counterValue
+                unified.displayCounters = named[1].counterValue ~= 0
+            else
+                unified.namedCounters = 0
+                unified.displayCounters = false
+            end
+            if guid ~= nil then BridgeState.presentedCounterSignatureByGuid[guid] = signature end
+        end)
+        if not applied then return false, applyError end
 
-    local applied, applyError = BridgeMutateUnifiedState(object, function(unified)
-        unified.plusOneCounters = plusOne
-        unified.displayPlusOne = plusOne ~= 0
-        -- Unified has one generic named counter display.  Never combine
-        -- different Forge counter types into an invented total.
-        if #named == 1 then
-            unified.namedCounters = named[1].counterValue
-            unified.displayCounters = named[1].counterValue ~= 0
-        else
-            unified.namedCounters = 0
-            unified.displayCounters = false
+        local stunApplied, stunError = BridgeSetCardKeywordState(object, "stun", (counters.stun or 0) > 0)
+        if not stunApplied then
+            BridgeLog("[Bridge] optional stun presentation skipped: " .. tostring(stunError))
         end
-        if guid ~= nil then BridgeState.presentedCounterSignatureByGuid[guid] = signature end
-    end)
-    if not applied then return false, applyError end
-
-    local stunApplied, stunError = BridgeSetCardKeywordState(object, "stun", (counters.stun or 0) > 0)
-    if not stunApplied then
-        BridgeLog("[Bridge] optional stun presentation skipped: " .. tostring(stunError))
     end
-    local fallbackApplied, fallbackError = BridgeSetForgeBotCounterFallback(object, named)
-    if not fallbackApplied then
-        BridgeLog("[Bridge] optional counter fallback skipped: " .. tostring(fallbackError))
+
+    local fallbackSignature = table.concat(signatureParts, "|")
+    local fallbackAlreadyPresented = guid ~= nil
+        and BridgeState.presentedCounterFallbackSignatureByGuid[guid] == fallbackSignature
+    if not fallbackAlreadyPresented then
+        local fallbackApplied, fallbackError = BridgeSetForgeBotCounterFallback(object, named)
+        if fallbackApplied then
+            if guid ~= nil then BridgeState.presentedCounterFallbackSignatureByGuid[guid] = fallbackSignature end
+        else
+            -- Do not cache failure. Encoder can become available after the
+            -- first snapshot; an unchanged authoritative lore/level counter
+            -- must be retried on a later reconciliation.
+            BridgeLog("[Bridge] optional counter fallback skipped: " .. tostring(fallbackError))
+        end
     end
     return true, nil
 end
