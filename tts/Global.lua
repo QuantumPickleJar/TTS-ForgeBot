@@ -364,6 +364,9 @@ BridgeState = {
     endTurnObjectGuidBySeatId = {},
     passObjectGuidBySeatId = {},
     setupObjectGuidByKind = {},
+    -- Reuse named presentation objects between refreshes; each lookup still
+    -- validates the GUID through BridgeGetLiveObjectByGuid before use.
+    namedObjectGuidByName = {},
     statusObjectGuid = nil,
     statusHeadline = "CLIENT LOADED",
     statusDetail = "Checking companion...",
@@ -1150,14 +1153,25 @@ function BridgeDestroyTransientControls()
     BridgeState.optionControlGuids = {}
     BridgeState.optionControlDecisionId = nil
     BridgeState.setupObjectGuidByKind = {}
+    BridgeState.namedObjectGuidByName = {}
     BridgeState.resetConfirmationArmed = false
     BridgeState.resetConfirmationGuid = nil
 end
 
 function BridgeFindNamedObject(name)
+    local cachedGuid = BridgeState.namedObjectGuidByName[name]
+    if cachedGuid ~= nil then
+        local cached = BridgeGetLiveObjectByGuid(cachedGuid)
+        if cached ~= nil and BridgeSafeObjectName(cached) == name then return cached end
+        BridgeState.namedObjectGuidByName[name] = nil
+    end
     for _, object in _ip(_all()) do
         if BridgeObjectIsUsable(object) then
-            if BridgeSafeObjectName(object) == name then return object end
+            if BridgeSafeObjectName(object) == name then
+                local guid = BridgeSafeObjectGuid(object)
+                if guid ~= nil then BridgeState.namedObjectGuidByName[name] = guid end
+                return object
+            end
         end
     end
     return nil

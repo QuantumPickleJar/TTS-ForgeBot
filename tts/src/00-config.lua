@@ -363,6 +363,9 @@ BridgeState = {
     endTurnObjectGuidBySeatId = {},
     passObjectGuidBySeatId = {},
     setupObjectGuidByKind = {},
+    -- Reuse named presentation objects between refreshes; each lookup still
+    -- validates the GUID through BridgeGetLiveObjectByGuid before use.
+    namedObjectGuidByName = {},
     statusObjectGuid = nil,
     statusHeadline = "CLIENT LOADED",
     statusDetail = "Checking companion...",
