@@ -447,6 +447,30 @@ function BridgeHudPass(player, value, id)
     end
 end
 
+function BridgeArmYieldPolicy(activeSeat, reason)
+    -- Yield is a bridge policy, not a synthetic Forge action.  A player may
+    -- press it while Forge is between opponent priority windows, so make
+    -- sure both authoritative pumps are running to observe the next exact
+    -- decision/turn boundary rather than leaving the policy inert.
+    if BridgeState.ui ~= nil then
+        BridgeState.ui.autoAdvanceMode = "YIELD"
+        BridgeUiMarkDirty("yield-policy-armed")
+    end
+    BridgeState.yieldPolicyTurnNumber = tonumber(BridgeState.tableTurnCount or 0) or 0
+    BridgeState.yieldPolicyActiveSeatId = activeSeat
+    BridgeSetStatus("YIELD TURN ARMED", "Forge will continue passing opponent priority until human intervention is required.")
+    if BridgeState.eventSessionId ~= nil and BridgeState.gameEnded == nil then
+        if not BridgeState.eventPolling then
+            BridgeStartEventPolling(BridgeState.eventSessionId, false)
+        end
+        if BridgeState.lastDecision == nil and not BridgeState.submitting then
+            BridgeStartDecisionPolling()
+        end
+    end
+    BridgeLog("[Bridge] yield policy armed activeSeat=" .. tostring(activeSeat)
+        .. " reason=" .. tostring(reason or "user"))
+end
+
 function BridgeHudYield(player, value, id)
     local decision = BridgeState.lastDecision
     local activeSeat = BridgeState.currentTurnSeatId
@@ -455,13 +479,8 @@ function BridgeHudYield(player, value, id)
     -- human response is already required, leave that decision untouched so
     -- the policy stops at the intervention boundary.
     if activeSeat ~= nil and activeSeat ~= "forge-player-1" then
-        if BridgeState.ui ~= nil then
-            BridgeState.ui.autoAdvanceMode = "YIELD"
-            BridgeUiMarkDirty("yield-policy-armed")
-        end
-        BridgeState.yieldPolicyTurnNumber = tonumber(BridgeState.tableTurnCount or 0) or 0
-        BridgeState.yieldPolicyActiveSeatId = activeSeat
-        BridgeSetStatus("YIELD TURN ARMED", "Forge will continue passing opponent priority until human intervention is required.")
+        BridgeArmYieldPolicy(activeSeat, "opponent-turn")
+        if decision ~= nil then BridgeRenderDecision(decision, true) end
         return
     end
     -- During the opponent's turn Forge may be executing AI priority without
@@ -470,13 +489,8 @@ function BridgeHudYield(player, value, id)
     -- human choice or an authoritative turn change appears. No rules state is
     -- advanced locally and no synthetic pass is submitted.
     if decision == nil or decision.seatId ~= "forge-player-1" or decision.kind ~= "main_priority" then
-        if BridgeState.ui ~= nil then
-            BridgeState.ui.autoAdvanceMode = "YIELD"
-            BridgeUiMarkDirty("yield-policy-armed")
-        end
-        BridgeState.yieldPolicyTurnNumber = tonumber(BridgeState.tableTurnCount or 0) or 0
-        BridgeState.yieldPolicyActiveSeatId = BridgeState.currentTurnSeatId
-        BridgeSetStatus("YIELD TURN ARMED", "Forge will continue passing opponent priority until human intervention is required.")
+        BridgeArmYieldPolicy(BridgeState.currentTurnSeatId, "no-human-decision")
+        if decision ~= nil then BridgeRenderDecision(decision, true) end
         return
     end
     BridgePressEndTurn(nil, player, false)
@@ -1322,23 +1336,32 @@ function BridgeShouldIgnoreStaleDecision(decision)
     -- regresses BridgeState.currentPhase; when its cursor is stale it is only
     -- used as a contradiction check. Coarse families keep Forge labels such
     -- as "Main phase, precombat" and "Main 1" equivalent.
-    if eventCursor > 0 and eventCursor < applied then
-        local function phaseFamily(value)
-            local phase = string.upper(tostring(value or ""))
-            if phase == "" then return "" end
-            if string.find(phase, "UPKEEP", 1, true) then return "UPKEEP" end
-            if string.find(phase, "DRAW", 1, true) then return "DRAW" end
-            if string.find(phase, "MAIN", 1, true) then return "MAIN" end
-            if string.find(phase, "ATTACK", 1, true)
-                or string.find(phase, "BLOCK", 1, true)
-                or string.find(phase, "DAMAGE", 1, true)
-                or string.find(phase, "COMBAT", 1, true) then return "COMBAT" end
-            if string.find(phase, "CLEANUP", 1, true) then return "CLEANUP" end
-            if string.find(phase, "END", 1, true) then return "END" end
-            return phase
-        end
-        local decisionFamily = phaseFamily(decision.phaseName)
-        local authoritativeFamily = phaseFamily(BridgeState.currentPhase)
+    -- A pass-only menu from an older phase is never actionable, even when
+    -- the decision and phase event happen to share the same cursor.  That
+    -- race was allowing an Upkeep/DRAW pass to be submitted after Main 1 had
+    -- already become authoritative, effectively consuming the Main 1 window.
+    -- A menu carrying a real Forge action remains eligible to bridge the
+    -- short event-publication gap; legality is still Forge-owned.
+    local function phaseFamily(value)
+        local phase = string.upper(tostring(value or ""))
+        if phase == "" then return "" end
+        if string.find(phase, "UPKEEP", 1, true) then return "UPKEEP" end
+        if string.find(phase, "DRAW", 1, true) then return "DRAW" end
+        if string.find(phase, "MAIN", 1, true) then return "MAIN" end
+        if string.find(phase, "ATTACK", 1, true)
+            or string.find(phase, "BLOCK", 1, true)
+            or string.find(phase, "DAMAGE", 1, true)
+            or string.find(phase, "COMBAT", 1, true) then return "COMBAT" end
+        if string.find(phase, "CLEANUP", 1, true) then return "CLEANUP" end
+        if string.find(phase, "END", 1, true) then return "END" end
+        return phase
+    end
+    local decisionFamily = phaseFamily(decision.phaseName)
+    local authoritativeFamily = phaseFamily(BridgeState.currentPhase)
+    local contradictoryPassOnly = decisionFamily ~= "" and authoritativeFamily ~= ""
+        and decisionFamily ~= authoritativeFamily
+        and not BridgeDecisionHasNonPassAction(decision)
+    if (eventCursor > 0 and eventCursor < applied) or contradictoryPassOnly then
         if decisionFamily ~= "" and authoritativeFamily ~= ""
             and decisionFamily ~= authoritativeFamily then
             -- Forge can publish the first Main 1 menu (including a legal land

@@ -227,6 +227,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("eventCursor > 0 and eventCursor < applied", body);
         Assert.Contains("local function phaseFamily(value)", body);
         Assert.Contains("decisionFamily ~= authoritativeFamily", body);
+        Assert.Contains("local contradictoryPassOnly", body);
         Assert.Contains("ignoring stale main-priority pass-only decision phase=", body);
         Assert.Contains("retaining stale main-priority decision with Forge action", body);
         Assert.Contains("BridgeDecisionHasNonPassAction(decision)", body);
@@ -2488,7 +2489,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("local yieldPolicyAvailable = BridgeState.gameEnded == nil", Script);
         Assert.Contains("(hasYield or yieldPolicyAvailable)", Script);
         Assert.Contains("yieldPolicyTurnNumber = tonumber(BridgeState.tableTurnCount or 0)", Script);
-        Assert.Contains("yieldPolicyActiveSeatId = BridgeState.currentTurnSeatId", Script);
+        Assert.Contains("BridgeArmYieldPolicy(BridgeState.currentTurnSeatId, \"no-human-decision\")", Script);
         Assert.Contains("yield_policy_auto_pass", Script);
         Assert.Contains("cleared HUD yield policy at authoritative turn transition", Script);
     }
@@ -2500,6 +2501,33 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("if activeSeat ~= nil and activeSeat ~= \"forge-player-1\" then", Script);
         Assert.Contains("yieldPolicyActiveSeatId = activeSeat", Script);
         Assert.Contains("local policyTurnMatches = policyTurn == 0", Script);
+    }
+
+    [Fact]
+    public void YieldTurn_ArmingRestartsAuthoritativePumpsWhenBetweenOpponentWindows()
+    {
+        var start = Script.IndexOf("function BridgeArmYieldPolicy", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeHudYield", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        Assert.Contains("BridgeStartEventPolling(BridgeState.eventSessionId, false)", body);
+        Assert.Contains("BridgeStartDecisionPolling()", body);
+        Assert.Contains("yield policy armed activeSeat=", body);
+        Assert.Contains("BridgeRenderDecision(decision, true)", Script);
+    }
+
+    [Fact]
+    public void ManaPoolUpdatesNormalizeAbsoluteForgeColorsBeforeRefreshingRow()
+    {
+        var start = Script.IndexOf("function BridgeSetManaBank", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeSetNativeTrackerValue", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        Assert.Contains("string.upper(tostring(key))", body);
+        Assert.Contains("normalized[canonical] = tonumber(value) or 0", body);
+        Assert.Contains("normalized[key] = 0", body);
+        Assert.Contains("return true", body);
+        Assert.Contains("BridgeRefreshResourceRow(seatSnapshot.seatId)", Script);
     }
 
     [Fact]
