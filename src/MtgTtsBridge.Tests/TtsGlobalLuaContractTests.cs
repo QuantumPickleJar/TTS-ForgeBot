@@ -2908,4 +2908,33 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeSetNativeTrackerValue(counter, BridgeResourceValue(seatId, kind))", body);
         Assert.Contains("BridgeSetNativeTrackerValue(taken, BridgeResourceValue(seatId, kind))", body);
     }
+
+    [Fact]
+    public void FreezeCapture_HasTimeoutAndSessionScopedCompletion()
+    {
+        Assert.Contains("BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS = 30.0", Script);
+        var start = Script.IndexOf("function BridgeHudSubmitReport", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeHudReportCapture", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        Assert.Contains("local requestEpoch = BRIDGE_RUNTIME_EPOCH_LOCAL", body);
+        Assert.Contains("local requestSession = BridgeState.eventSessionId", body);
+        Assert.Contains("local completed = false", body);
+        Assert.Contains("finish(false, nil, \"diagnostic capture timed out after \"", body);
+        Assert.Contains("BridgeState.eventSessionId ~= requestSession", body);
+    }
+
+    [Fact]
+    public void AssetCollection_ResolvesLibraryOnceBeforeScanningCandidates()
+    {
+        var start = Script.IndexOf("function BridgeCollectSeatAssets", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeBuildSeatLibraryLedger", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        var resolve = body.IndexOf("local library = BridgeResolveSeatLibraryDeck(seatId)", StringComparison.Ordinal);
+        var addAsset = body.IndexOf("local function addAsset", StringComparison.Ordinal);
+        Assert.True(resolve >= 0 && addAsset > resolve);
+        Assert.DoesNotContain("local library = BridgeResolveSeatLibraryDeck(seatId)", body[addAsset..]);
+        Assert.Contains("libraryGuid == BridgeSafeObjectGuid(object)", body);
+    }
 }

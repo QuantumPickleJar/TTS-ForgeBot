@@ -21,6 +21,9 @@ BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS = 8.0
 BRIDGE_OPENING_HAND_READINESS_RETRY_FRAMES = 2
 BRIDGE_PERFORMANCE_TRACE_CAPACITY = 384
 BRIDGE_PERFORMANCE_SLOW_OPERATION_SECONDS = 0.25
+-- Diagnostic capture is deliberately best-effort. A lost WebRequest callback
+-- must not leave report controls latched forever after a freeze capture.
+BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS = 30.0
 -- Library extraction is serialized separately. Keep the event cursor moving
 -- promptly after a draw so a burst (for example, a draw per creature) cannot
 -- hold later authoritative phase/priority events behind animation delays.

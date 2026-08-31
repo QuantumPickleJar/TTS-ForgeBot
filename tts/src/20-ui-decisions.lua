@@ -2886,12 +2886,14 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         BridgeState.currentTurnSeatId = decision.activeSeatId
     end
     -- Phase transitions are authoritative events. Decision metadata is only a
-    -- corroborating hint and must not regress a newer event (or replace it
-    -- with a stale/blank phase during polling).
+    -- corroborating hint and must not overwrite the phase event stream. The
+    -- initial decision may seed an otherwise-uninitialized display, but once
+    -- any authoritative phase is known, a poll response can never move it.
     local decisionPhase = tostring(decision.phaseName or "")
     local decisionCursor = tonumber(decision.eventCursor or 0) or 0
     local appliedCursor = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
-    if decisionPhase ~= "" and (decisionCursor <= 0 or decisionCursor >= appliedCursor) then
+    if decisionPhase ~= "" and BridgeState.currentPhase == nil
+        and (decisionCursor <= 0 or decisionCursor >= appliedCursor) then
         BridgeState.currentPhase = decisionPhase
     elseif decisionPhase ~= "" then
         BridgeLog(string.format("[Bridge] retaining event phase=%s over stale decision phase=%s cursor=%s applied=%s",

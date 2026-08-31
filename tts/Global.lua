@@ -22,6 +22,9 @@ BRIDGE_OPENING_HAND_READINESS_TIMEOUT_SECONDS = 8.0
 BRIDGE_OPENING_HAND_READINESS_RETRY_FRAMES = 2
 BRIDGE_PERFORMANCE_TRACE_CAPACITY = 384
 BRIDGE_PERFORMANCE_SLOW_OPERATION_SECONDS = 0.25
+-- Diagnostic capture is deliberately best-effort. A lost WebRequest callback
+-- must not leave report controls latched forever after a freeze capture.
+BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS = 30.0
 -- Library extraction is serialized separately. Keep the event cursor moving
 -- promptly after a draw so a burst (for example, a draw per creature) cannot
 -- hold later authoritative phase/priority events behind animation delays.
@@ -5121,12 +5124,14 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         BridgeState.currentTurnSeatId = decision.activeSeatId
     end
     -- Phase transitions are authoritative events. Decision metadata is only a
-    -- corroborating hint and must not regress a newer event (or replace it
-    -- with a stale/blank phase during polling).
+    -- corroborating hint and must not overwrite the phase event stream. The
+    -- initial decision may seed an otherwise-uninitialized display, but once
+    -- any authoritative phase is known, a poll response can never move it.
     local decisionPhase = tostring(decision.phaseName or "")
     local decisionCursor = tonumber(decision.eventCursor or 0) or 0
     local appliedCursor = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
-    if decisionPhase ~= "" and (decisionCursor <= 0 or decisionCursor >= appliedCursor) then
+    if decisionPhase ~= "" and BridgeState.currentPhase == nil
+        and (decisionCursor <= 0 or decisionCursor >= appliedCursor) then
         BridgeState.currentPhase = decisionPhase
     elseif decisionPhase ~= "" then
         BridgeLog(string.format("[Bridge] retaining event phase=%s over stale decision phase=%s cursor=%s applied=%s",
@@ -7190,6 +7195,11 @@ function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
     local seat = BRIDGE_SEATS[seatId]
     local assets = {}
     local assetByGuid = {}
+    -- Resolve the library once. BridgeResolveSeatLibraryDeck scans the TTS
+    -- object list; doing that for every candidate made bootstrap O(n^2) and
+    -- was the measured multi-second freeze hot path.
+    local library = BridgeResolveSeatLibraryDeck(seatId)
+    local libraryGuid = BridgeSafeObjectGuid(library)
     local context = {
         expectedCardNamesBySeat = {},
         handGuidsBySeat = {}
@@ -7200,8 +7210,7 @@ function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
 
     local function addAsset(object)
         if not BridgeObjectIsUsable(object) or object.tag ~= "Card" then return end
-        local library = BridgeResolveSeatLibraryDeck(seatId)
-        if library ~= nil and BridgeSafeObjectGuid(library) == BridgeSafeObjectGuid(object) then return end
+        if libraryGuid ~= nil and libraryGuid == BridgeSafeObjectGuid(object) then return end
         if not IsGameCardCandidate(object, seatId, context) then return end
         local guid = BridgeSafeObjectGuid(object)
         local cardName = BridgePhysicalCanonicalCardName(object)
@@ -8382,6 +8391,15 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         end
     end
     if BridgeState.ui ~= nil then
+        -- A report callback can be lost while TTS is frozen or while a match
+        -- is replaced. The capture belongs to the old session, so release
+        -- its UI latch at the generation boundary; the guarded callback
+        -- cannot mutate the new session.
+        if BridgeState.ui.reportCaptureInFlight then
+            BridgeLog("[Bridge] retiring diagnostic capture at session boundary")
+        end
+        BridgeState.ui.reportCaptureInFlight = false
+        BridgeState.ui.reportStatus = ""
         BridgeState.ui.uiAttributeCache = {}
         BridgeState.ui.uiAttributeAttemptCount = 0
         BridgeState.ui.uiAttributeWriteCount = 0
@@ -12214,9 +12232,35 @@ end
 function BridgeHudSubmitReport(category, summary)
     local ui = BridgeState.ui
     if ui == nil or ui.reportCaptureInFlight then return end
+    local requestUi = ui
+    local requestEpoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    local requestSession = BridgeState.eventSessionId
+    local completed = false
     ui.reportCaptureInFlight = true
     ui.reportStatus = "Capturing..."
     BridgeUiMarkDirty("report-capture-start")
+
+    local function finish(ok, body, err)
+        if completed then return end
+        completed = true
+        if not BridgeRuntimeIsCurrent(requestEpoch)
+            or BridgeState.ui ~= requestUi
+            or BridgeState.eventSessionId ~= requestSession then
+            return
+        end
+        requestUi.reportCaptureInFlight = false
+        if ok and body ~= nil and body.success == true then
+            local reportId = tostring(body.reportId or "unknown")
+            local reportPath = tostring(body.reportPath or "BugReports")
+            requestUi.reportStatus = "CAPTURED â€¢ " .. reportId .. "\n" .. reportPath
+            BridgeLog("[Bridge] diagnostic report captured id=" .. reportId .. " path=" .. reportPath)
+        else
+            local detail = BridgeHttpFailureDetail(body, err or "capture failed")
+            requestUi.reportStatus = "ERROR â€¢ " .. detail
+            BridgeLog("[Bridge] diagnostic report failed: " .. detail)
+        end
+        BridgeUiMarkDirty("report-capture-result")
+    end
 
     local performance = BridgePerformanceDiagnosticPayload()
     local request = {
@@ -12237,6 +12281,10 @@ function BridgeHudSubmitReport(category, summary)
         recentTtsTrace = performance.recentTtsTrace
     }
     BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
+        finish(ok, body, err)
+        return
+        --[[ legacy inline completion retained only as a source-compatible
+             comment while all completion is routed through finish above.
         ui.reportCaptureInFlight = false
         if ok and body ~= nil and body.success == true then
             local reportId = tostring(body.reportId or "unknown")
@@ -12248,8 +12296,11 @@ function BridgeHudSubmitReport(category, summary)
             ui.reportStatus = "ERROR • " .. detail
             BridgeLog("[Bridge] diagnostic report failed: " .. detail)
         end
-        BridgeUiMarkDirty("report-capture-result")
+        BridgeUiMarkDirty("report-capture-result") ]]
     end)
+    BridgeWaitTime(function()
+        finish(false, nil, "diagnostic capture timed out after " .. tostring(BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS) .. " seconds")
+    end, BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS)
 end
 
 function BridgeHudReportCapture(player, value, id)

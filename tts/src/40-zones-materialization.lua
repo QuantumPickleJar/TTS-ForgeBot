@@ -17,6 +17,11 @@ function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
     local seat = BRIDGE_SEATS[seatId]
     local assets = {}
     local assetByGuid = {}
+    -- Resolve the library once. BridgeResolveSeatLibraryDeck scans the TTS
+    -- object list; doing that for every candidate made bootstrap O(n^2) and
+    -- was the measured multi-second freeze hot path.
+    local library = BridgeResolveSeatLibraryDeck(seatId)
+    local libraryGuid = BridgeSafeObjectGuid(library)
     local context = {
         expectedCardNamesBySeat = {},
         handGuidsBySeat = {}
@@ -27,8 +32,7 @@ function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
 
     local function addAsset(object)
         if not BridgeObjectIsUsable(object) or object.tag ~= "Card" then return end
-        local library = BridgeResolveSeatLibraryDeck(seatId)
-        if library ~= nil and BridgeSafeObjectGuid(library) == BridgeSafeObjectGuid(object) then return end
+        if libraryGuid ~= nil and libraryGuid == BridgeSafeObjectGuid(object) then return end
         if not IsGameCardCandidate(object, seatId, context) then return end
         local guid = BridgeSafeObjectGuid(object)
         local cardName = BridgePhysicalCanonicalCardName(object)
@@ -1209,6 +1213,15 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         end
     end
     if BridgeState.ui ~= nil then
+        -- A report callback can be lost while TTS is frozen or while a match
+        -- is replaced. The capture belongs to the old session, so release
+        -- its UI latch at the generation boundary; the guarded callback
+        -- cannot mutate the new session.
+        if BridgeState.ui.reportCaptureInFlight then
+            BridgeLog("[Bridge] retiring diagnostic capture at session boundary")
+        end
+        BridgeState.ui.reportCaptureInFlight = false
+        BridgeState.ui.reportStatus = ""
         BridgeState.ui.uiAttributeCache = {}
         BridgeState.ui.uiAttributeAttemptCount = 0
         BridgeState.ui.uiAttributeWriteCount = 0
