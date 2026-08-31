@@ -3589,11 +3589,24 @@ function BridgeShouldIgnoreStaleDecision(decision)
         local authoritativeFamily = phaseFamily(BridgeState.currentPhase)
         if decisionFamily ~= "" and authoritativeFamily ~= ""
             and decisionFamily ~= authoritativeFamily then
+            -- Forge can publish the first Main 1 menu (including a legal land
+            -- or sorcery action) with the prior draw/upkeep event cursor while
+            -- its event stream catches up.  Discarding that menu makes the
+            -- bridge look as if upkeep jumped straight to combat.  A stale
+            -- pass-only menu is still unsafe and is retired; a menu carrying
+            -- an exact meaningful Forge action is authoritative enough to
+            -- present and submit.  Legality remains entirely Forge-owned.
+            if not BridgeDecisionHasNonPassAction(decision) then
+                BridgeLog(string.format(
+                    "[Bridge] ignoring stale main-priority pass-only decision phase=%s authoritativePhase=%s cursor=%s applied=%s",
+                    tostring(decision.phaseName), tostring(BridgeState.currentPhase),
+                    tostring(eventCursor), tostring(applied)))
+                return true, eventCursor, applied
+            end
             BridgeLog(string.format(
-                "[Bridge] ignoring stale main-priority decision phase=%s authoritativePhase=%s cursor=%s applied=%s",
+                "[Bridge] retaining stale main-priority decision with Forge action phase=%s authoritativePhase=%s cursor=%s applied=%s",
                 tostring(decision.phaseName), tostring(BridgeState.currentPhase),
                 tostring(eventCursor), tostring(applied)))
-            return true, eventCursor, applied
         end
     end
 

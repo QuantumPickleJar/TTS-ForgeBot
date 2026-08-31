@@ -227,7 +227,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("eventCursor > 0 and eventCursor < applied", body);
         Assert.Contains("local function phaseFamily(value)", body);
         Assert.Contains("decisionFamily ~= authoritativeFamily", body);
-        Assert.Contains("ignoring stale main-priority decision phase=", body);
+        Assert.Contains("ignoring stale main-priority pass-only decision phase=", body);
+        Assert.Contains("retaining stale main-priority decision with Forge action", body);
+        Assert.Contains("BridgeDecisionHasNonPassAction(decision)", body);
     }
 
     [Fact]
