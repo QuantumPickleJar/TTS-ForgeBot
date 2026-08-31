@@ -2406,6 +2406,14 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void YieldTurn_ArmsDuringOpponentTurnWithoutSubmittingHumanResponse()
+    {
+        Assert.Contains("local activeSeat = BridgeState.currentTurnSeatId", Script);
+        Assert.Contains("if activeSeat ~= nil and activeSeat ~= \"forge-player-1\" then", Script);
+        Assert.Contains("yieldPolicyActiveSeatId = activeSeat", Script);
+    }
+
+    [Fact]
     public void CheckedInGlobalLua_MatchesDeterministicAuthoringBundle()
     {
         var repositoryRoot = FindRepositoryRoot();

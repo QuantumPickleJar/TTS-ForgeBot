@@ -2663,6 +2663,21 @@ end
 
 function BridgeHudYield(player, value, id)
     local decision = BridgeState.lastDecision
+    local activeSeat = BridgeState.currentTurnSeatId
+    -- Yield is a turn-scoped policy. During the opponent's turn it must arm
+    -- the policy even when Forge is between AI priority windows; if a real
+    -- human response is already required, leave that decision untouched so
+    -- the policy stops at the intervention boundary.
+    if activeSeat ~= nil and activeSeat ~= "forge-player-1" then
+        if BridgeState.ui ~= nil then
+            BridgeState.ui.autoAdvanceMode = "YIELD"
+            BridgeUiMarkDirty("yield-policy-armed")
+        end
+        BridgeState.yieldPolicyTurnNumber = tonumber(BridgeState.tableTurnCount or 0) or 0
+        BridgeState.yieldPolicyActiveSeatId = activeSeat
+        BridgeSetStatus("YIELD TURN ARMED", "Forge will continue passing opponent priority until human intervention is required.")
+        return
+    end
     -- During the opponent's turn Forge may be executing AI priority without
     -- exposing a human decision at this instant. Arm the existing YIELD
     -- policy so the next Forge pass windows are consumed until a meaningful
