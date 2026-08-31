@@ -216,6 +216,26 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void PlayerTarget_WithForgeDisplayAnnotation_RemainsTypedTarget()
+    {
+        var parser = new ForgeTuiParser(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Player 1"] = "forge-player-1",
+            ["AI-blue"] = "forge-player-2",
+        });
+
+        var result = parser.Append("Choose target for Thought Scour:\n"
+            + "  0. Player 1 (Life: 20) [id=1]\n"
+            + "  1. AI-blue (Life: 20) [controller=AI]\n"
+            + "Enter choice (0-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        var target = Assert.Single(decision.Actions,
+            action => action.TargetKind == "player" && action.TargetSeatId == "forge-player-2");
+        Assert.Equal("choose_target", target.Type);
+    }
+
+    [Fact]
     public void TargetMenu_OptionSplitAcrossChunks_WaitsForCompleteLine()
     {
         var parser = new ForgeTuiParser();

@@ -641,7 +641,12 @@ public sealed partial class ForgeTuiParser
     [GeneratedRegex(@"(?:\s+\(\d+/\d+\))?(?:\s+\[[^\]]+\])+$|\s+\(\d+/\d+\)$", RegexOptions.CultureInvariant)]
     private static partial Regex CardOptionSuffixRegex();
 
-    [GeneratedRegex(@"^(?<player>.+?)\s+\(Life:\s*-?\d+\)$", RegexOptions.CultureInvariant)]
+    // Forge may append controller/identity annotations after the life total
+    // (for example, a target row can end in "[id=2]").  Those annotations are
+    // presentation metadata; retain the player target identity instead of
+    // degrading the row into an untyped option that the TTS response surface
+    // cannot submit.
+    [GeneratedRegex(@"^(?<player>.+?)\s+\(Life:\s*-?\d+\)(?:\s+\[[^\]]+\])*$", RegexOptions.CultureInvariant)]
     private static partial Regex PlayerTargetRegex();
 
     [GeneratedRegex(@"^.+?\s+\(\d+/\d+\)\s+\[[^\]]+\]$", RegexOptions.CultureInvariant)]
