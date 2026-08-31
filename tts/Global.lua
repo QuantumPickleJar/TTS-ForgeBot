@@ -11766,6 +11766,28 @@ function BridgeHudReportCategoryChanged(player, value, id)
     end
 end
 
+function BridgeHudReportCategoryPrevious(player, value, id)
+    local ui = BridgeState.ui
+    if ui == nil or ui.reportCaptureInFlight then return end
+    local count = #BRIDGE_REPORT_CATEGORIES
+    if count == 0 then return end
+    local index = (tonumber(ui.reportCategoryIndex or 1) or 1) - 1
+    if index < 1 then index = count end
+    ui.reportCategoryIndex = index
+    BridgeUiMarkDirty("report-category-previous")
+end
+
+function BridgeHudReportCategory(player, value, id)
+    local ui = BridgeState.ui
+    if ui == nil or ui.reportCaptureInFlight then return end
+    local count = #BRIDGE_REPORT_CATEGORIES
+    if count == 0 then return end
+    local index = (tonumber(ui.reportCategoryIndex or 1) or 1) + 1
+    if index > count then index = 1 end
+    ui.reportCategoryIndex = index
+    BridgeUiMarkDirty("report-category-next")
+end
+
 function BridgeHudReportMappedCardInstanceIds()
     local ids = {}
     for cardInstanceId, _ in pairs(BridgeState.physicalByInstanceId or {}) do
@@ -11947,9 +11969,16 @@ function BridgeUiFlush()
     -- recovery control disappear exactly when a library mismatch needed it.
     BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not ui.resyncInFlight and "true" or "false")
     BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
-    BridgeUiSet("BridgeHudReportCategoryDropdown", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
+    -- Some TTS clients render Dropdown as a non-interactive checkbox. The
+    -- adjacent previous/current buttons use ordinary Button callbacks and are
+    -- reliable in desktop and VR, so they are the supported category control.
+    BridgeUiSet("BridgeHudReportCategoryDropdown", "active", "false")
     BridgeUiSet("BridgeHudReportCategoryDropdown", "options", table.concat(BRIDGE_REPORT_CATEGORIES, "|"))
     BridgeUiSet("BridgeHudReportCategoryDropdown", "value", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex] or "Other")
+    local categoryControlsActive = reportVisible and not ui.reportCaptureInFlight
+    BridgeUiSet("BridgeHudReportCategoryPrevious", "active", categoryControlsActive and "true" or "false")
+    BridgeUiSet("BridgeHudReportCategory", "active", categoryControlsActive and "true" or "false")
+    BridgeUiSet("BridgeHudReportCategory", "text", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex] or "Other")
     BridgeUiSet("BridgeHudReportCapture", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportCancel", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportStatus", "text", ui.reportStatus or "")

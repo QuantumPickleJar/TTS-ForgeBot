@@ -2309,6 +2309,18 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void ReportCategory_UsesReliableButtonCallbacksInsteadOfTheTtsDropdown()
+    {
+        Assert.Contains("function BridgeHudReportCategoryPrevious", Script);
+        Assert.Contains("function BridgeHudReportCategory(player, value, id)", Script);
+        Assert.Contains("BridgeUiMarkDirty(\"report-category-previous\")", Script);
+        Assert.Contains("BridgeUiMarkDirty(\"report-category-next\")", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudReportCategoryDropdown\", \"active\", \"false\")", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudReportCategoryPrevious\", \"active\", categoryControlsActive", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudReportCategory\", \"text\", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex]", Script);
+    }
+
+    [Fact]
     public void ResyncControl_RemainsAvailableWhenSessionIsStopped()
     {
         Assert.Contains("BridgeStopOnDesync", Script);
