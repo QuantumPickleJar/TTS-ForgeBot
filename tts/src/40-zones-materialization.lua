@@ -239,6 +239,7 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
     local handByName = {}
     local nonHandByName = {}
     local looseCountByName = {}
+    local assetByGuid = {}
     local mappings = {}
     local handGuids = BridgeBuildSeatHandGuidSet(seatSnapshot.seatId)
     for _, asset in ipairs(assets) do
@@ -247,6 +248,7 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
         local destination = handGuids[assetGuid] == true and handByName or nonHandByName
         destination[name] = destination[name] or {}
         table.insert(destination[name], asset)
+        if assetGuid ~= nil then assetByGuid[tostring(assetGuid)] = asset end
         looseCountByName[name] = (looseCountByName[name] or 0) + 1
     end
 
@@ -294,8 +296,12 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
 
         local function consumeContained()
             local containedCandidates = ledger.byName[normalized] or {}
+            while #containedCandidates > 0 and containedCandidates[1].assigned == true do
+                table.remove(containedCandidates, 1)
+            end
             if #containedCandidates > 0 then
                 local contained = table.remove(containedCandidates, 1)
+                contained.assigned = true
                 assigned = {
                     cardName = contained.cardName,
                     object = nil
@@ -312,12 +318,24 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
             local looseCandidates = zoneName == "hand"
                 and (handByName[normalized] or {})
                 or (nonHandByName[normalized] or {})
+            while #looseCandidates > 0 and looseCandidates[1].assigned == true do
+                table.remove(looseCandidates, 1)
+            end
             if #looseCandidates > 0 then
                 assigned = table.remove(looseCandidates, 1)
+                assigned.assigned = true
             end
         end
 
-        if zoneName == "library" then
+        -- Same-session resync preserves live public mappings. Prefer that exact
+        -- GUID before any duplicate-name fallback so a played land or already
+        -- milled card can never be replaced by another copy from the library.
+        local preservedGuid = BridgeState.physicalByInstanceId[card.cardInstanceId]
+        local preservedAsset = preservedGuid and assetByGuid[tostring(preservedGuid)] or nil
+        if preservedAsset ~= nil and preservedAsset.assigned ~= true then
+            assigned = preservedAsset
+            preservedAsset.assigned = true
+        elseif zoneName == "library" then
             consumeContained()
             if assigned == nil then consumeLoose() end
         else
@@ -465,6 +483,14 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
     end
 
     local seat = BRIDGE_SEATS[seatSnapshot.seatId]
+    if BridgeState.resyncInFlight == true then
+        -- Exact same-session public mappings have already been preferred and
+        -- retained above. Any remaining deck extraction is therefore limited
+        -- to an object that is genuinely still contained in the library; keep
+        -- this diagnostic visible because a name-only fallback is only a
+        -- recovery path, never an identity source.
+        BridgeLog("[Bridge] resync materialization using contained-library fallback for unmapped public card")
+    end
     local deck = BridgeFindSeatLibraryDeckWithCard(seat, card.cardName)
     if deck == nil then deck = BridgeFindLibraryDeckForSeat(seatSnapshot.seatId) end
     if deck == nil then
@@ -1045,9 +1071,25 @@ function BridgeRetireResourceRowObjects()
     BridgeState.playerTrackerGuidBySeatId = {}
 end
 
-function BridgePrepareEventSession(sessionId, forceReset)
+function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     if not forceReset and BridgeState.eventSessionId == sessionId then
         return
+    end
+
+    local preservedLiveMappings = nil
+    if preserveLiveMappings == true and BridgeState.eventSessionId == sessionId then
+        preservedLiveMappings = {}
+        for instanceId, guid in pairs(BridgeState.physicalByInstanceId or {}) do
+            local object = BridgeGetLiveObjectByGuid(guid)
+            if object ~= nil and object.tag == "Card" then
+                preservedLiveMappings[instanceId] = {
+                    guid = guid,
+                    seatId = BridgeState.physicalSeatByGuid[guid],
+                    zoneName = BridgeState.physicalZoneByGuid[guid],
+                    cardName = BridgeState.cardNameByInstanceId[instanceId]
+                }
+            end
+        end
     end
 
     BridgeStopEventPolling()
@@ -1148,6 +1190,24 @@ function BridgePrepareEventSession(sessionId, forceReset)
     BridgeState.gameEnded = nil
     BridgeState.playerStateBySeatId = {}
     BridgeState.playerCountersBySeatId = {}
+
+    -- Same-session authoritative resyncs rebuild presentation, but must not
+    -- discard exact public CardInstanceId -> TTS GUID identity. Clearing that
+    -- mapping forces bootstrap to reconstruct battlefield/graveyard cards by
+    -- display name from the library, which can steal a played land or an
+    -- already-milled duplicate during a Thought Scour burst. New sessions
+    -- never enter this branch, so old-match identities cannot cross the fence.
+    for instanceId, mapping in pairs(preservedLiveMappings or {}) do
+        if mapping.guid ~= nil and BridgeGetLiveObjectByGuid(mapping.guid) ~= nil then
+            BridgeState.physicalByInstanceId[instanceId] = mapping.guid
+            BridgeState.physicalInstanceIdByGuid[mapping.guid] = instanceId
+            BridgeState.physicalSeatByGuid[mapping.guid] = mapping.seatId
+            BridgeState.physicalZoneByGuid[mapping.guid] = mapping.zoneName
+            if mapping.cardName ~= nil then
+                BridgeState.cardNameByInstanceId[instanceId] = mapping.cardName
+            end
+        end
+    end
     if BridgeState.ui ~= nil then
         BridgeState.ui.uiAttributeCache = {}
         BridgeState.ui.uiAttributeAttemptCount = 0

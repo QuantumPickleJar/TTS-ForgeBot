@@ -580,7 +580,7 @@ public sealed class TtsGlobalLuaContractTests
     public void SnapshotBootstrap_EstablishesEventSessionBeforeBuildingInstanceMappings()
     {
         var bootstrap = Script.IndexOf("function BridgeBootstrapCurrentSnapshot", StringComparison.Ordinal);
-        var prepare = Script.IndexOf("BridgePrepareEventSession(sessionId, true)", bootstrap, StringComparison.Ordinal);
+        var prepare = Script.IndexOf("BridgePrepareEventSession(sessionId, true, resumeFromSnapshotCursor == true)", bootstrap, StringComparison.Ordinal);
         var requestSnapshot = Script.IndexOf("BridgeGetEmbodimentSnapshot", bootstrap, StringComparison.Ordinal);
 
         Assert.True(bootstrap >= 0);
@@ -819,6 +819,26 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeSnapshotMayMutatePublicZones(snapshot) and BridgePhysicalLibraryQueuesIdle()", Script);
         Assert.Contains("local queueState = BridgePhysicalLibraryQueuesIdle() and \"event-cursor\" or \"physical-library-queue\"", Script);
         Assert.Contains("library-extraction-complete", Script);
+    }
+
+    [Fact]
+    public void SameSessionResync_PreservesExactPublicMappingsBeforeBootstrap()
+    {
+        Assert.Contains("BridgePrepareEventSession(sessionId, true, resumeFromSnapshotCursor == true)", Script);
+        Assert.Contains("preservedLiveMappings", Script);
+        Assert.Contains("BridgeState.physicalByInstanceId[instanceId] = mapping.guid", Script);
+        Assert.Contains("mapping.zoneName", Script);
+        Assert.Contains("authoritative resync deferred until physical library queues are idle", Script);
+    }
+
+    [Fact]
+    public void SnapshotBootstrap_PrefersExactGuidAndRefusesResyncNameExtraction()
+    {
+        Assert.Contains("local preservedGuid = BridgeState.physicalByInstanceId[card.cardInstanceId]", Script);
+        Assert.Contains("assetByGuid[tostring(preservedGuid)]", Script);
+        Assert.Contains("local preserveTrackedPublicCard = trackedInstanceId ~= nil", Script);
+        Assert.Contains("and not preserveTrackedPublicCard", Script);
+        Assert.Contains("resync materialization using contained-library fallback for unmapped public card", Script);
     }
 
     [Fact]

@@ -1476,7 +1476,10 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
     -- Establish the event session before populating instance mappings. Event
     -- polling must not clear the authoritative snapshot we just reconciled.
     BridgeTraceStart("START-09 event-session-prepare")
-    BridgePrepareEventSession(sessionId, true)
+    -- A same-session resync must preserve live public CardInstanceId/GUID
+    -- bindings while rebuilding presentation. New-match bootstrap passes no
+    -- preserve flag and therefore clears every prior mapping.
+    BridgePrepareEventSession(sessionId, true, resumeFromSnapshotCursor == true)
     -- A resync rebuilds physical embodiment, not the Forge match.  The card
     -- snapshot intentionally does not carry the live phase/priority mirror,
     -- so retain those last authoritative scalar values while the rebuild is
@@ -1658,6 +1661,18 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     local sessionId = BridgeState.eventSessionId
     if sessionId == nil then
         BridgeShowError("cannot resync before Forge has started a session")
+        return
+    end
+    -- A resync requested from a library-order mismatch commonly arrives from
+    -- inside the active extraction callback. Do not rebuild the snapshot while
+    -- that physical transaction is still mutating the Deck; the callback's
+    -- completion retires the queue and this bounded retry then starts from a
+    -- stable physical order.
+    if not BridgePhysicalLibraryQueuesIdle() then
+        BridgeLog("[Bridge] authoritative resync deferred until physical library queues are idle")
+        BridgeWaitFrames(function()
+            BridgeResyncFromAuthoritativeSnapshot(origin)
+        end, 2)
         return
     end
     -- The previous failure stopped both pollers.  Opening an explicit

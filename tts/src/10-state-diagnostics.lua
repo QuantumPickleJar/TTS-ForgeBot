@@ -623,8 +623,19 @@ function BridgeStageSeatCardsForBootstrap(snapshot, callback)
                 end
             end
             local isInHand = handSeatId ~= nil
+            local trackedInstanceId = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+            local trackedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
+            -- During a same-session resync, retain live public cards in place.
+            -- Moving them into the library would erase their exact identity
+            -- before snapshot reconciliation and force a duplicate-name deck
+            -- extraction (the Thought Scour failure mode). Unknown loose
+            -- objects are still staged so a real new-match/bootstrap rebuild
+            -- remains strict and deterministic.
+            local preserveTrackedPublicCard = trackedInstanceId ~= nil
+                and trackedZone ~= nil and trackedZone ~= "library"
             if seatId ~= nil
                 and not isInHand
+                and not preserveTrackedPublicCard
                 and IsGameCardCandidate(object, seatId, context) then
                 table.insert(staged, {object = object, seatId = seatId, guid = guid})
             end
