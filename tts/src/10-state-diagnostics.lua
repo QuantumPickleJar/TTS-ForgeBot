@@ -172,11 +172,11 @@ function BridgeDeckContainsCardName(deck, expectedName)
     return false
 end
 
-function BridgeFindLibraryDeckCandidatesForSeat(seatId)
+function BridgeFindLibraryDeckCandidatesForSeat(seatId, objectSnapshot)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then return {} end
     local candidates = {}
-    for _, object in ipairs(getAllObjects()) do
+    for _, object in ipairs(objectSnapshot or _all()) do
         if BridgeObjectIsUsable(object) and object.tag == "Deck" and BridgeObjectIsOnSeatSide(object, seat) then
             table.insert(candidates, object)
         end
@@ -184,7 +184,7 @@ function BridgeFindLibraryDeckCandidatesForSeat(seatId)
     return candidates
 end
 
-function BridgeFindSingleCardLibraryCandidateForSeat(seatId)
+function BridgeFindSingleCardLibraryCandidateForSeat(seatId, objectSnapshot)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then return nil end
     local anchor = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
@@ -194,7 +194,7 @@ function BridgeFindSingleCardLibraryCandidateForSeat(seatId)
     local nearest = nil
     local nearestDistance = nil
     local radius = (seat.libraryAssetRadius or 4) + 0.75
-    for _, object in ipairs(getAllObjects()) do
+    for _, object in ipairs(objectSnapshot or _all()) do
         if BridgeObjectIsUsable(object) and object.tag == "Card"
             and not BridgeIsPresentationOnlyObject(object) then
             local guid = BridgeSafeObjectGuid(object)
@@ -255,10 +255,10 @@ function BridgeSelectNearestDeckCandidate(seat, candidates)
     return nil
 end
 
-function BridgeResolveSeatLibraryDeck(seatId)
+function BridgeResolveSeatLibraryDeck(seatId, objectSnapshot)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then return nil, {}, "unknown seat" end
-    local candidates = BridgeFindLibraryDeckCandidatesForSeat(seatId)
+    local candidates = BridgeFindLibraryDeckCandidatesForSeat(seatId, objectSnapshot)
 
     local configured = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
     if configured ~= nil and configured.tag == "Deck" and BridgeObjectIsOnSeatSide(configured, seat) then
@@ -279,7 +279,7 @@ function BridgeResolveSeatLibraryDeck(seatId)
         -- the physical library, but it must only be promoted back to a Deck by
         -- a verified insertion; proximity alone is never enough to clear a
         -- Forge identity mapping.
-        local singleCard = BridgeFindSingleCardLibraryCandidateForSeat(seatId)
+        local singleCard = BridgeFindSingleCardLibraryCandidateForSeat(seatId, objectSnapshot)
         if singleCard ~= nil then return singleCard, candidates, nil end
         return nil, candidates, "no deck or single-card library candidate found near library anchor"
     end

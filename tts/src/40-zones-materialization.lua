@@ -17,10 +17,15 @@ function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
     local seat = BRIDGE_SEATS[seatId]
     local assets = {}
     local assetByGuid = {}
+    -- Reuse one TTS object snapshot for both library discovery and candidate
+    -- collection.  TTS getAllObjects() is a native boundary and can take
+    -- hundreds of milliseconds in a large table; scanning it twice during
+    -- bootstrap needlessly amplifies a freeze already visible in diagnostics.
+    local objectSnapshot = _all()
     -- Resolve the library once. BridgeResolveSeatLibraryDeck scans the TTS
     -- object list; doing that for every candidate made bootstrap O(n^2) and
     -- was the measured multi-second freeze hot path.
-    local library = BridgeResolveSeatLibraryDeck(seatId)
+    local library = BridgeResolveSeatLibraryDeck(seatId, objectSnapshot)
     local libraryGuid = BridgeSafeObjectGuid(library)
     local context = {
         expectedCardNamesBySeat = {},
@@ -55,7 +60,7 @@ function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
     end
     for _, object in ipairs(handObjects) do addAsset(object) end
 
-    for _, object in ipairs(getAllObjects()) do
+    for _, object in ipairs(objectSnapshot) do
         addAsset(object)
     end
     callback(true, assets, nil)
@@ -1434,6 +1439,44 @@ function BridgePhaseEventMatchesCurrentDecision(event)
     return decisionPhase ~= "" and decisionPhase == eventPhase
 end
 
+-- A poll response can outrun the event queue, but it can also be followed by
+-- an already-buffered event from an older turn/phase.  Applying that older
+-- event would regress the HUD while trying to preserve the newer decision.
+-- Only contradictory events are suppressed; a matching or corroborating
+-- event still updates the authoritative BridgeState fields below.
+function BridgeAuthoritativeEventSupersededByDecision(event)
+    if not BridgeCurrentDecisionOutrunsEvent(event) then return false end
+    local decision = BridgeState.lastDecision
+    if decision == nil then return false end
+    local eventTurn = tonumber(event.turnNumber or 0) or 0
+    local decisionTurn = tonumber(decision.turnNumber or 0) or 0
+    if eventTurn > 0 and decisionTurn > 0 and eventTurn < decisionTurn then return true end
+    if event.kind == "turn_changed"
+        and event.activeSeatId ~= nil and decision.activeSeatId ~= nil
+        and event.activeSeatId ~= decision.activeSeatId then
+        return true
+    end
+    if event.kind == "phase_changed"
+        and event.phase ~= nil and tostring(event.phase) ~= ""
+        and decision.phaseName ~= nil and tostring(decision.phaseName) ~= "" then
+        local eventPhase = string.upper(tostring(event.phase))
+        local decisionPhase = string.upper(tostring(decision.phaseName))
+        local function family(value)
+            if string.find(value, "UPKEEP", 1, true) then return "UPKEEP" end
+            if string.find(value, "DRAW", 1, true) then return "DRAW" end
+            if string.find(value, "MAIN", 1, true) then return "MAIN" end
+            if string.find(value, "ATTACK", 1, true)
+                or string.find(value, "BLOCK", 1, true)
+                or string.find(value, "DAMAGE", 1, true)
+                or string.find(value, "COMBAT", 1, true) then return "COMBAT" end
+            if string.find(value, "END", 1, true) or string.find(value, "CLEANUP", 1, true) then return "END" end
+            return value
+        end
+        if family(eventPhase) ~= family(decisionPhase) then return true end
+    end
+    return false
+end
+
 function BridgeApplyAuthoritativeEvent(event)
     BridgeUiRecordEvent(event)
     if event.containsHiddenIdentity == true then
@@ -1503,12 +1546,18 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "turn_changed" then
-        if BridgeCurrentDecisionOutrunsEvent(event) then
+        if BridgeAuthoritativeEventSupersededByDecision(event) then
             BridgeLog(string.format(
-                "[Bridge] retaining newer decision %s over queued turn event=%s decisionCursor=%s",
+                "[Bridge] ignoring superseded turn event=%s behind decision=%s",
+                tostring(event.sequence), tostring(BridgeState.lastDecision and BridgeState.lastDecision.decisionId)))
+            return true, 0
+        end
+        local retainCurrentDecision = BridgeCurrentDecisionOutrunsEvent(event)
+        if retainCurrentDecision then
+            BridgeLog(string.format(
+                "[Bridge] applying queued turn event while retaining newer decision %s event=%s decisionCursor=%s",
                 tostring(BridgeState.lastDecision.decisionId), tostring(event.sequence),
                 tostring(BridgeState.lastDecision.eventCursor)))
-            return true, 0
         end
         local turnSignature = table.concat({
             tostring(event.turnNumber or ""),
@@ -1556,24 +1605,33 @@ function BridgeApplyAuthoritativeEvent(event)
         -- once the event is authoritative, retaining the old decision would
         -- keep stale decision controls mounted and can hide YIELD TURN on the
         -- new opponent turn.
-        BridgeState.lastDecision = nil
-        BridgeState.pendingDecision = nil
-        BridgeResetSelectionState()
-        BridgeClearHighlights()
+        if not retainCurrentDecision then
+            BridgeState.lastDecision = nil
+            BridgeState.pendingDecision = nil
+            BridgeResetSelectionState()
+            BridgeClearHighlights()
+        end
         BridgeMarkTransitionExpected(0)
         BridgeUiMarkDirty("turn")
         return true, 0.1
     end
 
     if event.kind == "phase_changed" then
-        if BridgeCurrentDecisionOutrunsEvent(event) then
+        if BridgeAuthoritativeEventSupersededByDecision(event) then
             BridgeLog(string.format(
-                "[Bridge] retaining newer decision %s over queued phase event=%s decisionCursor=%s",
-                tostring(BridgeState.lastDecision.decisionId), tostring(event.sequence),
-                tostring(BridgeState.lastDecision.eventCursor)))
+                "[Bridge] ignoring superseded phase event=%s phase=%s behind decision=%s",
+                tostring(event.sequence), tostring(event.phase),
+                tostring(BridgeState.lastDecision and BridgeState.lastDecision.decisionId)))
             return true, 0
         end
-        local retainCurrentDecision = BridgePhaseEventMatchesCurrentDecision(event)
+        local retainCurrentDecision = BridgeCurrentDecisionOutrunsEvent(event)
+        if retainCurrentDecision then
+            BridgeLog(string.format(
+                "[Bridge] applying queued phase event while retaining newer decision %s event=%s decisionCursor=%s",
+                tostring(BridgeState.lastDecision.decisionId), tostring(event.sequence),
+                tostring(BridgeState.lastDecision.eventCursor)))
+        end
+        retainCurrentDecision = retainCurrentDecision or BridgePhaseEventMatchesCurrentDecision(event)
         local phaseSignature = table.concat({
             tostring(event.turnNumber or ""),
             tostring(event.activeSeatId or ""),

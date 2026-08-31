@@ -984,11 +984,11 @@ function BridgeDeckContainsCardName(deck, expectedName)
     return false
 end
 
-function BridgeFindLibraryDeckCandidatesForSeat(seatId)
+function BridgeFindLibraryDeckCandidatesForSeat(seatId, objectSnapshot)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then return {} end
     local candidates = {}
-    for _, object in ipairs(getAllObjects()) do
+    for _, object in ipairs(objectSnapshot or _all()) do
         if BridgeObjectIsUsable(object) and object.tag == "Deck" and BridgeObjectIsOnSeatSide(object, seat) then
             table.insert(candidates, object)
         end
@@ -996,7 +996,7 @@ function BridgeFindLibraryDeckCandidatesForSeat(seatId)
     return candidates
 end
 
-function BridgeFindSingleCardLibraryCandidateForSeat(seatId)
+function BridgeFindSingleCardLibraryCandidateForSeat(seatId, objectSnapshot)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then return nil end
     local anchor = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
@@ -1006,7 +1006,7 @@ function BridgeFindSingleCardLibraryCandidateForSeat(seatId)
     local nearest = nil
     local nearestDistance = nil
     local radius = (seat.libraryAssetRadius or 4) + 0.75
-    for _, object in ipairs(getAllObjects()) do
+    for _, object in ipairs(objectSnapshot or _all()) do
         if BridgeObjectIsUsable(object) and object.tag == "Card"
             and not BridgeIsPresentationOnlyObject(object) then
             local guid = BridgeSafeObjectGuid(object)
@@ -1067,10 +1067,10 @@ function BridgeSelectNearestDeckCandidate(seat, candidates)
     return nil
 end
 
-function BridgeResolveSeatLibraryDeck(seatId)
+function BridgeResolveSeatLibraryDeck(seatId, objectSnapshot)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then return nil, {}, "unknown seat" end
-    local candidates = BridgeFindLibraryDeckCandidatesForSeat(seatId)
+    local candidates = BridgeFindLibraryDeckCandidatesForSeat(seatId, objectSnapshot)
 
     local configured = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
     if configured ~= nil and configured.tag == "Deck" and BridgeObjectIsOnSeatSide(configured, seat) then
@@ -1091,7 +1091,7 @@ function BridgeResolveSeatLibraryDeck(seatId)
         -- the physical library, but it must only be promoted back to a Deck by
         -- a verified insertion; proximity alone is never enough to clear a
         -- Forge identity mapping.
-        local singleCard = BridgeFindSingleCardLibraryCandidateForSeat(seatId)
+        local singleCard = BridgeFindSingleCardLibraryCandidateForSeat(seatId, objectSnapshot)
         if singleCard ~= nil then return singleCard, candidates, nil end
         return nil, candidates, "no deck or single-card library candidate found near library anchor"
     end
@@ -6299,8 +6299,30 @@ function BridgeRenderDecision(decision, force)
             table.insert(cards, object)
         end
     end
-    for _, object in ipairs(getAllObjects()) do
-        addDecisionCandidate(object)
+    -- Exact Forge identities are resolved through the bridge indexes below;
+    -- a world scan is only needed for legacy/name-only actions.  In
+    -- particular, KEEP/MULLIGAN and pass-only menus contain no card
+    -- candidates at all.  Scanning every TTS object for those menus was the
+    -- measured freeze hot path during opening-hand presentation.
+    local scanWorldCandidates = false
+    for _, action in ipairs(decision.actions or {}) do
+        local exactInstanceId = action.preparedSourceCardInstanceId
+            or action.sourceCardInstanceId or action.cardInstanceId
+        local actionType = action.type or action.actionKind
+        local hasDisplayCard = action.cardIdentity ~= nil and tostring(action.cardIdentity) ~= ""
+        if exactInstanceId == nil
+            and hasDisplayCard
+            and actionType ~= "pass_priority"
+            and actionType ~= "keep_hand"
+            and actionType ~= "mulligan" then
+            scanWorldCandidates = true
+            break
+        end
+    end
+    if scanWorldCandidates then
+        for _, object in ipairs(getAllObjects()) do
+            addDecisionCandidate(object)
+        end
     end
     -- TTS does not guarantee that cards held in a hand are returned by
     -- getAllObjects().  This is especially visible after mulligan replacement
@@ -7195,10 +7217,15 @@ function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
     local seat = BRIDGE_SEATS[seatId]
     local assets = {}
     local assetByGuid = {}
+    -- Reuse one TTS object snapshot for both library discovery and candidate
+    -- collection.  TTS getAllObjects() is a native boundary and can take
+    -- hundreds of milliseconds in a large table; scanning it twice during
+    -- bootstrap needlessly amplifies a freeze already visible in diagnostics.
+    local objectSnapshot = _all()
     -- Resolve the library once. BridgeResolveSeatLibraryDeck scans the TTS
     -- object list; doing that for every candidate made bootstrap O(n^2) and
     -- was the measured multi-second freeze hot path.
-    local library = BridgeResolveSeatLibraryDeck(seatId)
+    local library = BridgeResolveSeatLibraryDeck(seatId, objectSnapshot)
     local libraryGuid = BridgeSafeObjectGuid(library)
     local context = {
         expectedCardNamesBySeat = {},
@@ -7233,7 +7260,7 @@ function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
     end
     for _, object in ipairs(handObjects) do addAsset(object) end
 
-    for _, object in ipairs(getAllObjects()) do
+    for _, object in ipairs(objectSnapshot) do
         addAsset(object)
     end
     callback(true, assets, nil)
@@ -8612,6 +8639,44 @@ function BridgePhaseEventMatchesCurrentDecision(event)
     return decisionPhase ~= "" and decisionPhase == eventPhase
 end
 
+-- A poll response can outrun the event queue, but it can also be followed by
+-- an already-buffered event from an older turn/phase.  Applying that older
+-- event would regress the HUD while trying to preserve the newer decision.
+-- Only contradictory events are suppressed; a matching or corroborating
+-- event still updates the authoritative BridgeState fields below.
+function BridgeAuthoritativeEventSupersededByDecision(event)
+    if not BridgeCurrentDecisionOutrunsEvent(event) then return false end
+    local decision = BridgeState.lastDecision
+    if decision == nil then return false end
+    local eventTurn = tonumber(event.turnNumber or 0) or 0
+    local decisionTurn = tonumber(decision.turnNumber or 0) or 0
+    if eventTurn > 0 and decisionTurn > 0 and eventTurn < decisionTurn then return true end
+    if event.kind == "turn_changed"
+        and event.activeSeatId ~= nil and decision.activeSeatId ~= nil
+        and event.activeSeatId ~= decision.activeSeatId then
+        return true
+    end
+    if event.kind == "phase_changed"
+        and event.phase ~= nil and tostring(event.phase) ~= ""
+        and decision.phaseName ~= nil and tostring(decision.phaseName) ~= "" then
+        local eventPhase = string.upper(tostring(event.phase))
+        local decisionPhase = string.upper(tostring(decision.phaseName))
+        local function family(value)
+            if string.find(value, "UPKEEP", 1, true) then return "UPKEEP" end
+            if string.find(value, "DRAW", 1, true) then return "DRAW" end
+            if string.find(value, "MAIN", 1, true) then return "MAIN" end
+            if string.find(value, "ATTACK", 1, true)
+                or string.find(value, "BLOCK", 1, true)
+                or string.find(value, "DAMAGE", 1, true)
+                or string.find(value, "COMBAT", 1, true) then return "COMBAT" end
+            if string.find(value, "END", 1, true) or string.find(value, "CLEANUP", 1, true) then return "END" end
+            return value
+        end
+        if family(eventPhase) ~= family(decisionPhase) then return true end
+    end
+    return false
+end
+
 function BridgeApplyAuthoritativeEvent(event)
     BridgeUiRecordEvent(event)
     if event.containsHiddenIdentity == true then
@@ -8681,12 +8746,18 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "turn_changed" then
-        if BridgeCurrentDecisionOutrunsEvent(event) then
+        if BridgeAuthoritativeEventSupersededByDecision(event) then
             BridgeLog(string.format(
-                "[Bridge] retaining newer decision %s over queued turn event=%s decisionCursor=%s",
+                "[Bridge] ignoring superseded turn event=%s behind decision=%s",
+                tostring(event.sequence), tostring(BridgeState.lastDecision and BridgeState.lastDecision.decisionId)))
+            return true, 0
+        end
+        local retainCurrentDecision = BridgeCurrentDecisionOutrunsEvent(event)
+        if retainCurrentDecision then
+            BridgeLog(string.format(
+                "[Bridge] applying queued turn event while retaining newer decision %s event=%s decisionCursor=%s",
                 tostring(BridgeState.lastDecision.decisionId), tostring(event.sequence),
                 tostring(BridgeState.lastDecision.eventCursor)))
-            return true, 0
         end
         local turnSignature = table.concat({
             tostring(event.turnNumber or ""),
@@ -8734,24 +8805,33 @@ function BridgeApplyAuthoritativeEvent(event)
         -- once the event is authoritative, retaining the old decision would
         -- keep stale decision controls mounted and can hide YIELD TURN on the
         -- new opponent turn.
-        BridgeState.lastDecision = nil
-        BridgeState.pendingDecision = nil
-        BridgeResetSelectionState()
-        BridgeClearHighlights()
+        if not retainCurrentDecision then
+            BridgeState.lastDecision = nil
+            BridgeState.pendingDecision = nil
+            BridgeResetSelectionState()
+            BridgeClearHighlights()
+        end
         BridgeMarkTransitionExpected(0)
         BridgeUiMarkDirty("turn")
         return true, 0.1
     end
 
     if event.kind == "phase_changed" then
-        if BridgeCurrentDecisionOutrunsEvent(event) then
+        if BridgeAuthoritativeEventSupersededByDecision(event) then
             BridgeLog(string.format(
-                "[Bridge] retaining newer decision %s over queued phase event=%s decisionCursor=%s",
-                tostring(BridgeState.lastDecision.decisionId), tostring(event.sequence),
-                tostring(BridgeState.lastDecision.eventCursor)))
+                "[Bridge] ignoring superseded phase event=%s phase=%s behind decision=%s",
+                tostring(event.sequence), tostring(event.phase),
+                tostring(BridgeState.lastDecision and BridgeState.lastDecision.decisionId)))
             return true, 0
         end
-        local retainCurrentDecision = BridgePhaseEventMatchesCurrentDecision(event)
+        local retainCurrentDecision = BridgeCurrentDecisionOutrunsEvent(event)
+        if retainCurrentDecision then
+            BridgeLog(string.format(
+                "[Bridge] applying queued phase event while retaining newer decision %s event=%s decisionCursor=%s",
+                tostring(BridgeState.lastDecision.decisionId), tostring(event.sequence),
+                tostring(BridgeState.lastDecision.eventCursor)))
+        end
+        retainCurrentDecision = retainCurrentDecision or BridgePhaseEventMatchesCurrentDecision(event)
         local phaseSignature = table.concat({
             tostring(event.turnNumber or ""),
             tostring(event.activeSeatId or ""),
@@ -12262,7 +12342,18 @@ function BridgeHudSubmitReport(category, summary)
         BridgeUiMarkDirty("report-capture-result")
     end
 
-    local performance = BridgePerformanceDiagnosticPayload()
+    -- Arm the watchdog before collecting any diagnostic payload.  Payload
+    -- collection runs inside TTS and may encounter a transient/invalid object;
+    -- an exception there must not strand reportCaptureInFlight forever.
+    BridgeWaitTime(function()
+        finish(false, nil, "diagnostic capture timed out after " .. tostring(BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS) .. " seconds")
+    end, BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS)
+
+    local performanceOk, performance = pcall(BridgePerformanceDiagnosticPayload)
+    if not performanceOk or performance == nil then
+        finish(false, nil, "diagnostic payload failed: " .. tostring(performance))
+        return
+    end
     local request = {
         summary = summary or BridgeHudReportSummaryText(),
         category = category or BRIDGE_REPORT_CATEGORIES[tonumber(ui.reportCategoryIndex or 1) or 1] or "Other",
@@ -12280,9 +12371,10 @@ function BridgeHudSubmitReport(category, summary)
         performanceSummary = performance.performanceSummary,
         recentTtsTrace = performance.recentTtsTrace
     }
-    BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
-        finish(ok, body, err)
-        return
+    local requestOk, requestError = pcall(function()
+        BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
+            finish(ok, body, err)
+            return
         --[[ legacy inline completion retained only as a source-compatible
              comment while all completion is routed through finish above.
         ui.reportCaptureInFlight = false
@@ -12297,10 +12389,11 @@ function BridgeHudSubmitReport(category, summary)
             BridgeLog("[Bridge] diagnostic report failed: " .. detail)
         end
         BridgeUiMarkDirty("report-capture-result") ]]
+        end)
     end)
-    BridgeWaitTime(function()
-        finish(false, nil, "diagnostic capture timed out after " .. tostring(BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS) .. " seconds")
-    end, BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS)
+    if not requestOk then
+        finish(false, nil, "diagnostic request failed: " .. tostring(requestError))
+    end
 end
 
 function BridgeHudReportCapture(player, value, id)

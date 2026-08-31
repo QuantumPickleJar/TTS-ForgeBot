@@ -952,8 +952,30 @@ function BridgeRenderDecision(decision, force)
             table.insert(cards, object)
         end
     end
-    for _, object in ipairs(getAllObjects()) do
-        addDecisionCandidate(object)
+    -- Exact Forge identities are resolved through the bridge indexes below;
+    -- a world scan is only needed for legacy/name-only actions.  In
+    -- particular, KEEP/MULLIGAN and pass-only menus contain no card
+    -- candidates at all.  Scanning every TTS object for those menus was the
+    -- measured freeze hot path during opening-hand presentation.
+    local scanWorldCandidates = false
+    for _, action in ipairs(decision.actions or {}) do
+        local exactInstanceId = action.preparedSourceCardInstanceId
+            or action.sourceCardInstanceId or action.cardInstanceId
+        local actionType = action.type or action.actionKind
+        local hasDisplayCard = action.cardIdentity ~= nil and tostring(action.cardIdentity) ~= ""
+        if exactInstanceId == nil
+            and hasDisplayCard
+            and actionType ~= "pass_priority"
+            and actionType ~= "keep_hand"
+            and actionType ~= "mulligan" then
+            scanWorldCandidates = true
+            break
+        end
+    end
+    if scanWorldCandidates then
+        for _, object in ipairs(getAllObjects()) do
+            addDecisionCandidate(object)
+        end
     end
     -- TTS does not guarantee that cards held in a hand are returned by
     -- getAllObjects().  This is especially visible after mulligan replacement

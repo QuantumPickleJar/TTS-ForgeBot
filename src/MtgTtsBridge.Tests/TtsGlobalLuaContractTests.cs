@@ -1853,7 +1853,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgeCurrentDecisionOutrunsEvent(event)", Script);
         Assert.Contains("function BridgePhaseEventMatchesCurrentDecision(event)", Script);
         Assert.Contains("retaining newer decision", applyBody);
-        Assert.Contains("local retainCurrentDecision = BridgePhaseEventMatchesCurrentDecision(event)", applyBody);
+        Assert.Contains("retainCurrentDecision = retainCurrentDecision or BridgePhaseEventMatchesCurrentDecision(event)", applyBody);
+        Assert.Contains("applying queued phase event while retaining newer decision", applyBody);
         Assert.Contains("if not retainCurrentDecision then", applyBody);
         Assert.Contains("BridgeRenderDecision(BridgeState.lastDecision, true)", applyBody);
     }
@@ -2925,16 +2926,29 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void DecisionRendering_DoesNotScanWorldForCardlessMenus()
+    {
+        var start = Script.IndexOf("function BridgeRenderDecision", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeShowError", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        Assert.Contains("local scanWorldCandidates = false", body);
+        Assert.Contains("actionType ~= \"keep_hand\"", body);
+        Assert.Contains("if scanWorldCandidates then", body);
+        Assert.Contains("for _, object in ipairs(getAllObjects()) do", body);
+    }
+
+    [Fact]
     public void AssetCollection_ResolvesLibraryOnceBeforeScanningCandidates()
     {
         var start = Script.IndexOf("function BridgeCollectSeatAssets", StringComparison.Ordinal);
         var end = Script.IndexOf("function BridgeBuildSeatLibraryLedger", start, StringComparison.Ordinal);
         Assert.True(start >= 0 && end > start);
         var body = Script[start..end];
-        var resolve = body.IndexOf("local library = BridgeResolveSeatLibraryDeck(seatId)", StringComparison.Ordinal);
+        var resolve = body.IndexOf("local library = BridgeResolveSeatLibraryDeck(seatId", StringComparison.Ordinal);
         var addAsset = body.IndexOf("local function addAsset", StringComparison.Ordinal);
         Assert.True(resolve >= 0 && addAsset > resolve);
-        Assert.DoesNotContain("local library = BridgeResolveSeatLibraryDeck(seatId)", body[addAsset..]);
+        Assert.DoesNotContain("local library = BridgeResolveSeatLibraryDeck(seatId", body[addAsset..]);
         Assert.Contains("libraryGuid == BridgeSafeObjectGuid(object)", body);
     }
 }

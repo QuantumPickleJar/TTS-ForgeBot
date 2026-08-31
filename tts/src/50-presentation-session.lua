@@ -1950,7 +1950,18 @@ function BridgeHudSubmitReport(category, summary)
         BridgeUiMarkDirty("report-capture-result")
     end
 
-    local performance = BridgePerformanceDiagnosticPayload()
+    -- Arm the watchdog before collecting any diagnostic payload.  Payload
+    -- collection runs inside TTS and may encounter a transient/invalid object;
+    -- an exception there must not strand reportCaptureInFlight forever.
+    BridgeWaitTime(function()
+        finish(false, nil, "diagnostic capture timed out after " .. tostring(BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS) .. " seconds")
+    end, BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS)
+
+    local performanceOk, performance = pcall(BridgePerformanceDiagnosticPayload)
+    if not performanceOk or performance == nil then
+        finish(false, nil, "diagnostic payload failed: " .. tostring(performance))
+        return
+    end
     local request = {
         summary = summary or BridgeHudReportSummaryText(),
         category = category or BRIDGE_REPORT_CATEGORIES[tonumber(ui.reportCategoryIndex or 1) or 1] or "Other",
@@ -1968,9 +1979,10 @@ function BridgeHudSubmitReport(category, summary)
         performanceSummary = performance.performanceSummary,
         recentTtsTrace = performance.recentTtsTrace
     }
-    BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
-        finish(ok, body, err)
-        return
+    local requestOk, requestError = pcall(function()
+        BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
+            finish(ok, body, err)
+            return
         --[[ legacy inline completion retained only as a source-compatible
              comment while all completion is routed through finish above.
         ui.reportCaptureInFlight = false
@@ -1985,10 +1997,11 @@ function BridgeHudSubmitReport(category, summary)
             BridgeLog("[Bridge] diagnostic report failed: " .. detail)
         end
         BridgeUiMarkDirty("report-capture-result") ]]
+        end)
     end)
-    BridgeWaitTime(function()
-        finish(false, nil, "diagnostic capture timed out after " .. tostring(BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS) .. " seconds")
-    end, BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS)
+    if not requestOk then
+        finish(false, nil, "diagnostic request failed: " .. tostring(requestError))
+    end
 end
 
 function BridgeHudReportCapture(player, value, id)
