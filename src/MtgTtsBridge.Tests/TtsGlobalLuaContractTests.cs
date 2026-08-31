@@ -2205,6 +2205,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeHudReportCapture", xml);
         Assert.Contains("BridgeHudReportCancel", xml);
         Assert.Contains("BridgeHudReportCategoryDropdown", xml);
+        Assert.Contains("id=\"BridgeHudDevRoot\" active=\"false\" visibility=\"Host|Admin\" minHeight=\"230\" preferredHeight=\"230\"", xml);
+        Assert.Contains("id=\"BridgeHudReportCategoryDropdown\" options=\"Gameplay sync|Combat|Card movement|Presentation/UI|Decision/prompt|Mana/payment|Performance / Freeze|Crash/error|Other\"", xml);
+        Assert.Contains("minWidth=\"650\" preferredWidth=\"650\"", xml);
         Assert.Contains("BridgeHudRollingCapture", xml);
         Assert.Contains("BridgeHudResyncFromForge", xml);
         var gamePanelStart = xml.IndexOf("id=\"BridgeHudGamePanel\"", StringComparison.Ordinal);
