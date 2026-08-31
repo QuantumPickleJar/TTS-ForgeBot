@@ -234,6 +234,23 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void DeferredDecision_DoesNotExposeUnembodiedHandActionsThroughTheHud()
+    {
+        var acceptStart = Script.IndexOf("function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationGeneration)", StringComparison.Ordinal);
+        var acceptEnd = Script.IndexOf("function BridgeRenderDecision(decision, force)", acceptStart, StringComparison.Ordinal);
+        Assert.True(acceptStart >= 0 && acceptEnd > acceptStart);
+        var accept = Script[acceptStart..acceptEnd];
+        var deferStart = accept.IndexOf("if deferDecision then", StringComparison.Ordinal);
+        var deferEnd = accept.IndexOf("BridgeState.pendingDecision = nil", deferStart, StringComparison.Ordinal);
+        Assert.True(deferStart >= 0 && deferEnd > deferStart);
+        var deferred = accept[deferStart..deferEnd];
+
+        Assert.Contains("BridgeState.pendingDecision = decision", deferred);
+        Assert.Contains("BridgeState.lastDecision = nil", deferred);
+        Assert.Contains("BridgeUiMarkDirty(\"decision-deferred\")", deferred);
+    }
+
+    [Fact]
     public void GenericNumericDecisions_ExposePhysicalOptionButtons()
     {
         Assert.Contains("function BridgeEnsureDecisionOptionControls", Script);
@@ -1425,8 +1442,35 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void CombatCandidates_AreOrangeFollowupChoices()
     {
-        Assert.Contains("if decision.kind ~= \"main_priority\" then", Script);
+        Assert.Contains("if decision.kind ~= \"main_priority\" and not BridgeIsStructuredForgeToggleChoice(decision) then", Script);
         Assert.Contains("highlightColor = {1.0, 0.55, 0.0}", Script);
+    }
+
+    [Fact]
+    public void StructuredCollections_KeepBlueLegalChoiceHighlights()
+    {
+        var renderStart = Script.IndexOf("function BridgeRenderDecision(decision, force)", StringComparison.Ordinal);
+        var candidateStart = Script.IndexOf("local representedActionIds", renderStart, StringComparison.Ordinal);
+        Assert.True(renderStart >= 0 && candidateStart > renderStart);
+        var highlight = Script[renderStart..candidateStart];
+
+        Assert.Contains("not BridgeIsStructuredForgeToggleChoice(decision)", highlight);
+        Assert.Contains("local highlightColor = {0.53, 0.81, 0.98}", highlight);
+    }
+
+    [Fact]
+    public void ResourceCounters_UseSeatSpecificPresentationRotation()
+    {
+        var showStart = Script.IndexOf("function BridgeShowResourceCounter", StringComparison.Ordinal);
+        var findStart = Script.IndexOf("function BridgeFindResourceCounter", showStart, StringComparison.Ordinal);
+        Assert.True(showStart >= 0 && findStart > showStart);
+        var show = Script[showStart..findStart];
+
+        Assert.Contains("seat.resourceRotation", show);
+        Assert.Contains("counter.setRotation(seat.resourceRotation)", show);
+        Assert.Contains("BridgeShowResourceCounter(counter, position, seat)", Script);
+        Assert.Contains("resourceRotation = {x = 0, y = 90, z = 0}", Script);
+        Assert.Contains("resourceRotation = {x = 0, y = 270, z = 0}", Script);
     }
 
     [Fact]

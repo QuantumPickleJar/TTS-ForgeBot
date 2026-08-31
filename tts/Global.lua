@@ -290,6 +290,7 @@ BRIDGE_SEATS = {
         attackLaneZ = -0.9,
         blockerLaneZ = -2.2,
         manaBankOffset = {x = 2.5, y = 0.45, z = -0.60},  -- Positioned right of life counter, nudged toward battlefield
+        resourceRotation = {x = 0, y = 90, z = 0},
         trackerOffsets = {
             poison = {x = -2.8, y = 0.45, z = -0.55}, experience = {x = -4.0, y = 0.45, z = -0.55},
             energy = {x = -5.2, y = 0.45, z = -0.55}, speed = {x = -6.4, y = 0.45, z = -0.55}
@@ -323,6 +324,7 @@ BRIDGE_SEATS = {
         attackLaneZ = 0.9,
         blockerLaneZ = 2.2,
         manaBankOffset = {x = 2.5, y = 0.45, z = 0.60},  -- Positioned right of life counter, nudged toward battlefield
+        resourceRotation = {x = 0, y = 270, z = 0},
         trackerOffsets = {
             poison = {x = -2.8, y = 0.45, z = 0.55}, experience = {x = -4.0, y = 0.45, z = 0.55},
             energy = {x = -5.2, y = 0.45, z = 0.55}, speed = {x = -6.4, y = 0.45, z = 0.55}
@@ -4852,13 +4854,20 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     local deferDecision, deferCursor, deferApplied, deferReason = BridgeShouldDeferDecision(decision)
     if deferDecision then
         BridgeState.pendingDecision = decision
-        BridgeState.lastDecision = decision
+        -- A pending decision is not yet presentation-safe.  In particular, a
+        -- post-draw menu can describe a card whose extraction from the
+        -- library has not completed. Keeping it as lastDecision lets the HUD
+        -- render those action rows even though physical interaction is gated.
+        -- Keep the decision only in the private pending slot until the exact
+        -- embodiment/event cursor gate releases it.
+        BridgeState.lastDecision = nil
         BridgeState.pendingDecisionDeferredAt = os.clock()
         BridgeState.pendingDecisionDeferredCursor = deferCursor
         BridgeState.pendingDecisionDeferredApplied = deferApplied
         BridgeClearHighlights()
         BridgeResetSelectionState()
         BridgeHideMainPriorityControls()
+        BridgeUiMarkDirty("decision-deferred")
         BridgeLog(string.format(
             "[Bridge] gating decision %s until events catch up (cursor=%s, applied=%s)",
             tostring(decision.decisionId), tostring(deferCursor), tostring(deferApplied)))
@@ -5972,7 +5981,11 @@ function BridgeRenderDecision(decision, force)
 
     local highlightColor = {0.53, 0.81, 0.98}
     local selectedCombatColor = {0.2, 1.0, 0.35}
-    if decision.kind ~= "main_priority" then
+    -- A Forge-owned collection (mulligan bottoming, discard, Crew, Delve,
+    -- etc.) is an immediate legal-choice surface, not a follow-up target.
+    -- Blue makes that distinction visible while orange remains reserved for
+    -- target/follow-up decisions such as combat assignment.
+    if decision.kind ~= "main_priority" and not BridgeIsStructuredForgeToggleChoice(decision) then
         highlightColor = {1.0, 0.55, 0.0}
     end
 
@@ -7524,9 +7537,15 @@ function BridgeHideResourceCounter(counter)
     pcall(function() counter.setInvisibleTo({"White", "Blue"}) end)
 end
 
-function BridgeShowResourceCounter(counter, position)
+function BridgeShowResourceCounter(counter, position, seat)
     if counter == nil or position == nil then return end
     pcall(function() counter.setInvisibleTo({}) end)
+    -- Native Counter templates are laid out sideways relative to the player
+    -- cards. Give each player the same clockwise-facing reading orientation
+    -- without changing the authoritative mana value or resource placement.
+    if seat ~= nil and seat.resourceRotation ~= nil then
+        pcall(function() counter.setRotation(seat.resourceRotation) end)
+    end
     pcall(function() counter.setPosition(position) end)
 end
 
@@ -7627,7 +7646,7 @@ function BridgeRefreshResourceRow(seatId)
             local position = BridgeResourceRowPosition(seatId, slot)
             if counter == nil then counter = BridgeCreateResourceCounter(seatId, kind, definition, position) end
             if counter ~= nil then
-                BridgeShowResourceCounter(counter, position)
+                BridgeShowResourceCounter(counter, position, seat)
                 BridgeSetNativeTrackerValue(counter, value)
             end
         elseif counter ~= nil then
