@@ -893,14 +893,16 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void SnapshotBootstrap_InsertsLooseCardsIntoTheResolvedDeckBeforeReadingTheLibraryLedger()
+    public void SnapshotBootstrap_SerializesVerifiedLooseCardInsertionBeforeReadingTheLibraryLedger()
     {
-        Assert.Contains("local deck = BridgeResolveSeatLibraryDeck(seatId)", Script);
+        Assert.Contains("function BridgeStagePhysicalCardForBootstrap(object, seatId, callback)", Script);
         Assert.Contains("refused to stage a library card into itself", Script);
-        Assert.Contains("deck.putObject(o)", Script);
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(seatId, object, \"NORMAL\"", Script);
+        Assert.Contains("function BridgeStageSeatCardsForBootstrap(snapshot, callback)", Script);
+        Assert.Contains("BridgeStagePhysicalCardForBootstrap(item.object, item.seatId, function(ok, err)", Script);
+        Assert.Contains("BridgeVerifyLibraryContainment(seatId, guid", Script);
         Assert.Contains("BridgeAuditDuplicateLibraryGuids", Script);
-        Assert.Contains("START-13 library-settle", Script);
-        Assert.Contains("Wait.frames(function()", Script);
+        Assert.Contains("START-13 loose-card-staging", Script);
     }
 
     [Fact]
@@ -911,8 +913,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeState.physicalZoneByGuid[guid]", Script);
         Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(candidate.seatId, candidate.object, \"NORMAL\"", Script);
         Assert.Contains("TTS Deck-on-Deck operations", Script);
-        Assert.Contains("if object.tag ~= \"Card\" then return false end", Script);
-        Assert.Contains("object.tag ~= \"Card\" then return end", Script);
+        Assert.Contains("if not BridgeObjectIsUsable(object) or object.tag ~= \"Card\" then", Script);
+        Assert.Contains("if not BridgeObjectIsUsable(object) or object.tag ~= \"Card\" then return end", Script);
         var reset = Script.Substring(Script.IndexOf("function BridgeResetSession()", StringComparison.Ordinal));
         Assert.Contains("BridgeReturnPreviousGameCardsToLibraries(function", reset);
         Assert.True(reset.IndexOf("BridgeReturnPreviousGameCardsToLibraries", StringComparison.Ordinal)
@@ -2232,7 +2234,10 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("presentedCounterSignatureByGuid", Script);
         Assert.Contains("presentedOwnerControllerByGuid", Script);
         Assert.Contains("BridgeState.presentedKeywordSignatureByGuid[guid] == signature", Script);
-        Assert.Contains("if guid ~= nil and BridgeState.presentedCounterSignatureByGuid[guid] == signature then return true, nil end", Script);
+        Assert.Contains("local unifiedAlreadyPresented = guid ~= nil and BridgeState.presentedCounterSignatureByGuid[guid] == signature", Script);
+        Assert.Contains("local fallbackAlreadyPresented = guid ~= nil", Script);
+        Assert.Contains("BridgeState.presentedCounterFallbackSignatureByGuid[guid] == fallbackSignature", Script);
+        Assert.Contains("Do not cache failure", Script);
         Assert.Contains("presentationMetrics = {", Script);
         Assert.Contains("decisionRenderSkippedIdentical", Script);
         Assert.Contains("BridgePresentationMetric(\"encoderRebuildCount\")", Script);
