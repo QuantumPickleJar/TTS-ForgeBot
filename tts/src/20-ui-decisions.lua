@@ -458,6 +458,7 @@ function BridgeArmYieldPolicy(activeSeat, reason)
     end
     BridgeState.yieldPolicyTurnNumber = tonumber(BridgeState.tableTurnCount or 0) or 0
     BridgeState.yieldPolicyActiveSeatId = activeSeat
+    BridgeState.yieldPolicySessionId = BridgeState.eventSessionId
     BridgeSetStatus("YIELD TURN ARMED", "Forge will continue passing opponent priority until human intervention is required.")
     if BridgeState.eventSessionId ~= nil and BridgeState.gameEnded == nil then
         if not BridgeState.eventPolling then
@@ -478,22 +479,17 @@ function BridgeHudYield(player, value, id)
     -- the policy even when Forge is between AI priority windows; if a real
     -- human response is already required, leave that decision untouched so
     -- the policy stops at the intervention boundary.
-    if activeSeat ~= nil and activeSeat ~= "forge-player-1" then
-        BridgeArmYieldPolicy(activeSeat, "opponent-turn")
-        if decision ~= nil then BridgeRenderDecision(decision, true) end
-        return
+    BridgeArmYieldPolicy(activeSeat, decision == nil and "no-human-decision" or "hud-yield")
+    if decision ~= nil then BridgeRenderDecision(decision, true) end
+end
+
+function BridgeDisarmYieldPolicy(reason)
+    if BridgeState.yieldPolicyTurnNumber ~= nil then
+        BridgeState.yieldPolicyTurnNumber = nil
+        BridgeState.yieldPolicyActiveSeatId = nil
+        BridgeState.yieldPolicySessionId = nil
+        BridgeLog("[Bridge] yield policy stopped reason=" .. tostring(reason))
     end
-    -- During the opponent's turn Forge may be executing AI priority without
-    -- exposing a human decision at this instant. Arm the existing YIELD
-    -- policy so the next Forge pass windows are consumed until a meaningful
-    -- human choice or an authoritative turn change appears. No rules state is
-    -- advanced locally and no synthetic pass is submitted.
-    if decision == nil or decision.seatId ~= "forge-player-1" or decision.kind ~= "main_priority" then
-        BridgeArmYieldPolicy(BridgeState.currentTurnSeatId, "no-human-decision")
-        if decision ~= nil then BridgeRenderDecision(decision, true) end
-        return
-    end
-    BridgePressEndTurn(nil, player, false)
 end
 
 function BridgeHudMode(player, value, id)
@@ -906,7 +902,7 @@ function BridgeLogChoiceAttempt(source, decisionId, actionId, transactionState)
         "[Bridge] choice-attempt=%s source=%s session=%s decision=%s action=%s submitting=%s transactionState=%s yieldSeat=%s",
         tostring(attempt), tostring(source or "unknown"), tostring(BridgeState.eventSessionId or "nil"),
         tostring(decisionId), tostring(actionId), tostring(BridgeState.submitting == true),
-        tostring(transactionState or "none"), tostring(BridgeState.yieldSeatId or "nil")))
+        tostring(transactionState or "none"), tostring(BridgeState.yieldPolicyActiveSeatId or "nil")))
     return attempt
 end
 
@@ -1122,7 +1118,6 @@ function BridgeSubmitChoice(decisionId, actionId, source)
                 return
             end
             if BridgeIsStaleChoiceRejection(body) then
-                BridgeState.yieldSeatId = nil
                 BridgeState.lastDecision = nil
                 BridgeLog("[Bridge] rejected Forge transaction retired decision=" .. tostring(decisionId)
                     .. " action=" .. tostring(actionId) .. " code=" .. tostring(body and body.errorCode or "unknown"))
@@ -1214,7 +1209,6 @@ end
 function BridgePauseChoiceProtocol(reason)
     if BridgeState.choiceProtocolPaused then return end
     BridgeState.choiceProtocolPaused = true
-    BridgeState.yieldSeatId = nil
     BridgeClearHighlights()
     BridgeRollbackPendingIntent()
     BridgeResetSelectionState()
@@ -1235,7 +1229,6 @@ function BridgeRecoverFromStaleSession(body, requestId)
     BridgeState.sessionRecoveryInFlight = true
     BridgeState.choiceProtocolPaused = false
     BridgeState.choiceProtocolFailureTimes = {}
-    BridgeState.yieldSeatId = nil
     BridgeState.lastDecision = nil
     BridgeState.pendingDecision = nil
     BridgeClearHighlights()

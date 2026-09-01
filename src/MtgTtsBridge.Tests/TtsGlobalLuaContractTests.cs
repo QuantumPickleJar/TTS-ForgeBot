@@ -75,9 +75,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("click_function = \"BridgePressEndTurn\"", Script);
         Assert.Contains("type = \"BlockSquare\"", Script);
         Assert.Contains("object.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0})", Script);
-        Assert.Contains("BridgeState.yieldSeatId = decision.seatId", Script);
-        Assert.Contains("yieldTurnNumber = tonumber(decision.turnNumber or BridgeState.tableTurnCount or 0)", Script);
-        Assert.Contains("cleared end-turn yield at authoritative turn transition", Script);
+        Assert.Contains("BridgeArmYieldPolicy(BridgeState.currentTurnSeatId", Script);
+        Assert.Contains("yieldPolicySessionId = BridgeState.eventSessionId", Script);
+        Assert.Contains("cleared HUD yield policy at authoritative turn transition", Script);
         Assert.Contains("if action.type == \"pass_priority\"", Script);
         Assert.Contains("BridgeState.currentTurnSeatId = event.activeSeatId", Script);
         Assert.Contains("BridgeRecordAuthoritativeTurn(BridgeState.currentTurnSeatId, tonumber(event.turnNumber or 0))", Script);
@@ -93,24 +93,25 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgePressPass", Script);
         Assert.Contains("Pass exactly this Forge priority decision", Script);
-        Assert.Contains("BridgeState.yieldSeatId = nil", Script);
         Assert.Contains("function BridgePressEndTurn", Script);
-        Assert.Contains("BridgeState.yieldSeatId = decision.seatId", Script);
+        Assert.Contains("BridgeArmYieldPolicy(BridgeState.currentTurnSeatId", Script);
         Assert.Contains("action.type == \"pass_priority\"", Script);
+        Assert.DoesNotContain("yieldSeatId", Script);
+        Assert.DoesNotContain("yieldTurnNumber", Script);
     }
 
     [Fact]
-    public void YieldAutoPass_ExpiresFromAuthoritativeTurnMirrorBeforeDecisionAutoPass()
+    public void YieldAutoPass_IsScopedToAuthoritativeTurnActiveSeatAndSession()
     {
-        var start = Script.IndexOf("if BridgeState.yieldSeatId ~= nil then", StringComparison.Ordinal);
+        var start = Script.IndexOf("local policyTurn =", StringComparison.Ordinal);
         var end = Script.IndexOf("-- Keep passive auto-pass off", start, StringComparison.Ordinal);
         var yield = Script[start..end];
 
-        Assert.Contains("authoritativeTurn = tonumber(BridgeState.tableTurnCount or 0)", yield);
-        Assert.Contains("authoritativeActiveSeat = BridgeState.currentTurnSeatId", yield);
-        Assert.Contains("authoritativeTurn ~= yieldTurn", yield);
-        Assert.Contains("authoritativeActiveSeat ~= BridgeState.yieldSeatId", yield);
-        Assert.Contains("BridgeState.yieldSeatId = nil", yield);
+        Assert.Contains("policyTurnMatches", yield);
+        Assert.Contains("policySeatMatches", yield);
+        Assert.Contains("policySessionMatches", yield);
+        Assert.Contains("decision.seatId == \"forge-player-1\"", yield);
+        Assert.Contains("not BridgeDecisionHasNonPassAction(decision)", yield);
     }
 
     [Fact]
@@ -1117,7 +1118,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("errorCode == \"decision_already_resolved\"", Script);
         Assert.Contains("errorCode == \"no_pending_decision\"", Script);
         Assert.DoesNotContain("responseCode == 409", Script);
-        Assert.Contains("BridgeState.yieldSeatId = nil", Script);
+        Assert.Contains("BridgeState.yieldPolicyTurnNumber = nil", Script);
         Assert.Contains("BridgeStartDecisionPolling()", Script);
     }
 
@@ -2499,7 +2500,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("local yieldPolicyAvailable = BridgeState.gameEnded == nil", Script);
         Assert.Contains("(hasYield or yieldPolicyAvailable)", Script);
         Assert.Contains("yieldPolicyTurnNumber = tonumber(BridgeState.tableTurnCount or 0)", Script);
-        Assert.Contains("BridgeArmYieldPolicy(BridgeState.currentTurnSeatId, \"no-human-decision\")", Script);
+        Assert.Contains("BridgeArmYieldPolicy(activeSeat, decision == nil and \"no-human-decision\"", Script);
+        Assert.Contains("yieldPolicySessionId", Script);
         Assert.Contains("yield_policy_auto_pass", Script);
         Assert.Contains("cleared HUD yield policy at authoritative turn transition", Script);
     }
@@ -2508,7 +2510,7 @@ public sealed class TtsGlobalLuaContractTests
     public void YieldTurn_ArmsDuringOpponentTurnWithoutSubmittingHumanResponse()
     {
         Assert.Contains("local activeSeat = BridgeState.currentTurnSeatId", Script);
-        Assert.Contains("if activeSeat ~= nil and activeSeat ~= \"forge-player-1\" then", Script);
+        Assert.Contains("BridgeArmYieldPolicy(activeSeat", Script);
         Assert.Contains("yieldPolicyActiveSeatId = activeSeat", Script);
         Assert.Contains("local policyTurnMatches = policyTurn == 0", Script);
     }
@@ -2524,6 +2526,20 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeStartDecisionPolling()", body);
         Assert.Contains("yield policy armed activeSeat=", body);
         Assert.Contains("BridgeRenderDecision(decision, true)", Script);
+    }
+
+    [Fact]
+    public void HudAndPhysicalYieldShareTheSameTurnPolicyPath()
+    {
+        var hudStart = Script.IndexOf("function BridgeHudYield", StringComparison.Ordinal);
+        var hudEnd = Script.IndexOf("function BridgeHudMode", hudStart, StringComparison.Ordinal);
+        var physicalStart = Script.IndexOf("function BridgePressEndTurn", StringComparison.Ordinal);
+        var physicalEnd = Script.IndexOf("function BridgeClaimHumanTtsColor", physicalStart, StringComparison.Ordinal);
+        Assert.True(hudStart >= 0 && hudEnd > hudStart && physicalStart >= 0 && physicalEnd > physicalStart);
+        Assert.Contains("BridgeArmYieldPolicy(activeSeat", Script[hudStart..hudEnd]);
+        Assert.Contains("BridgeArmYieldPolicy(BridgeState.currentTurnSeatId", Script[physicalStart..physicalEnd]);
+        Assert.DoesNotContain("BridgeSubmitChoice", Script[hudStart..hudEnd]);
+        Assert.DoesNotContain("BridgeSubmitChoice", Script[physicalStart..physicalEnd]);
     }
 
     [Fact]

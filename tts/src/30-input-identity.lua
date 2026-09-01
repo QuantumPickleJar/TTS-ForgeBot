@@ -352,8 +352,6 @@ function BridgePressPass(object, playerColor, altClick)
         return
     end
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
-    BridgeState.yieldSeatId = nil
-    BridgeState.yieldTurnNumber = nil
     for _, action in ipairs(decision.actions or {}) do
         if action.type == "pass_priority" then
             BridgeClearHighlights()
@@ -376,22 +374,8 @@ function BridgePressEndTurn(object, playerColor, altClick)
         BridgeTryPresentPendingDecision("manual-yield")
         decision = BridgeState.lastDecision
     end
-    if decision == nil or decision.kind ~= "main_priority" then
-        BridgeHideMainPriorityControls()
-        BridgeShowError("End Turn is unavailable while waiting for a Forge main-priority decision")
-        return
-    end
-    BridgeClaimHumanTtsColor(decision.seatId, playerColor)
-    for _, action in ipairs(decision.actions or {}) do
-        if action.type == "pass_priority" then
-            BridgeState.yieldSeatId = decision.seatId
-            BridgeState.yieldTurnNumber = tonumber(decision.turnNumber or BridgeState.tableTurnCount or 0) or 0
-            BridgeClearHighlights()
-            BridgeSubmitChoice(decision.decisionId, action.actionId, "yield_button")
-            return
-        end
-    end
-    BridgeShowError("Forge did not offer a pass/yield action")
+    BridgeArmYieldPolicy(BridgeState.currentTurnSeatId, decision == nil and "physical-yield-no-decision" or "physical-yield")
+    if decision ~= nil then BridgeRenderDecision(decision, true) end
 end
 
 function BridgeClaimHumanTtsColor(seatId, playerColor)
@@ -827,33 +811,6 @@ function BridgeRenderDecision(decision, force)
         BridgeHideMainPriorityControls()
     end
 
-    if BridgeState.yieldSeatId ~= nil then
-        local yieldTurn = tonumber(BridgeState.yieldTurnNumber or 0) or 0
-        local decisionTurn = tonumber(decision.turnNumber or 0) or 0
-        local authoritativeTurn = tonumber(BridgeState.tableTurnCount or 0) or 0
-        local authoritativeActiveSeat = BridgeState.currentTurnSeatId
-        if decision.seatId ~= BridgeState.yieldSeatId or decision.kind ~= "main_priority"
-            or (yieldTurn > 0 and decisionTurn > 0 and decisionTurn ~= yieldTurn)
-            or (yieldTurn > 0 and authoritativeTurn > 0 and authoritativeTurn ~= yieldTurn)
-            or (authoritativeActiveSeat ~= nil and authoritativeActiveSeat ~= BridgeState.yieldSeatId) then
-            -- Yield is only valid for the exact Forge turn in which it was
-            -- submitted.  Use the bridge's authoritative turn/active-seat
-            -- mirrors as a boundary too: a newer decision can outrun the
-            -- physical turn_changed presentation event, and must not inherit
-            -- a stale yield into the next turn.
-            BridgeState.yieldSeatId = nil
-            BridgeState.yieldTurnNumber = nil
-        else
-            for _, action in ipairs(decision.actions) do
-                if action.type == "pass_priority" then
-                    BridgeSubmitChoice(decision.decisionId, action.actionId, "yield_auto_pass")
-                    BridgeRecordDecisionPresentationRendered(key)
-                    return
-                end
-            end
-        end
-    end
-
     -- A YIELD TURN request may be made while Blue/AI is still consuming its
     -- priority windows and no human decision exists.  Once Forge presents a
     -- human main-priority decision in that same authoritative turn, consume
@@ -861,6 +818,13 @@ function BridgeRenderDecision(decision, force)
     -- the yield, while the next exact Forge decision is awaited.
     local policyTurn = tonumber(BridgeState.yieldPolicyTurnNumber or 0) or 0
     local policyActiveSeat = BridgeState.yieldPolicyActiveSeatId
+    local policySessionMatches = BridgeState.yieldPolicySessionId == nil
+        or BridgeState.yieldPolicySessionId == BridgeState.eventSessionId
+    if BridgeState.yieldPolicyTurnNumber ~= nil
+        and (decision.kind ~= "main_priority" or BridgeDecisionHasNonPassAction(decision)) then
+        BridgeDisarmYieldPolicy("meaningful-human-decision")
+        policyTurnMatches = false
+    end
     -- A freshly started match may expose the opponent turn before Forge has
     -- emitted its first numeric turn counter. In that bootstrap window, the
     -- active-seat fence remains authoritative; turn_changed retires the
@@ -870,7 +834,7 @@ function BridgeRenderDecision(decision, force)
     local policySeatMatches = policyActiveSeat == nil
         or BridgeState.currentTurnSeatId == policyActiveSeat
     if BridgeState.ui ~= nil and BridgeState.ui.autoAdvanceMode == "YIELD"
-        and policyTurnMatches and policySeatMatches
+        and policyTurnMatches and policySeatMatches and policySessionMatches
         and decision.kind == "main_priority"
         and decision.seatId == "forge-player-1"
         and BridgeDecisionOffersActionType(decision, "pass_priority")

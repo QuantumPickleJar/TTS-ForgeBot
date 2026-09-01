@@ -526,16 +526,12 @@ BridgeState = {
     currentTurnSeatId = nil,
     prioritySeatId = nil,
     stackSummary = {},
-    yieldSeatId = nil,
-    -- End Turn is scoped to the current Forge turn. Keeping only a seat ID
-    -- allowed a prior yield to resume when that same player received their
-    -- next turn, silently skipping an entire turn cycle.
-    yieldTurnNumber = nil,
     -- HUD YIELD can be armed while the AI is acting and no human decision is
     -- currently visible.  Keep that policy scoped to the authoritative turn
     -- and active seat so it cannot leak into a later turn.
     yieldPolicyTurnNumber = nil,
     yieldPolicyActiveSeatId = nil,
+    yieldPolicySessionId = nil,
     counterStateByInstanceId = {},
     keywordStateByInstanceId = {},
     cardDesignationsByInstanceId = {},

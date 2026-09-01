@@ -1215,9 +1215,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.lastPhaseEventSignature = nil
     BridgeState.lastPriorityEventSignature = nil
     BridgeState.zoneAnchorGuidBySeatAndZone = {}
-    BridgeState.yieldSeatId = nil
     BridgeState.yieldPolicyTurnNumber = nil
     BridgeState.yieldPolicyActiveSeatId = nil
+    BridgeState.yieldPolicySessionId = nil
     BridgeState.gameEnded = nil
     BridgeState.playerStateBySeatId = {}
     BridgeState.playerCountersBySeatId = {}
@@ -1529,7 +1529,6 @@ function BridgeApplyAuthoritativeEvent(event)
             loserSeatIds = event.loserSeatIds or {},
             reason = event.gameEndReason
         }
-        BridgeState.yieldSeatId = nil
         BridgeState.pendingDecision = nil
         BridgeState.lastDecision = nil
         BridgeState.submitting = false
@@ -1612,14 +1611,10 @@ function BridgeApplyAuthoritativeEvent(event)
         -- End Turn means "the remainder of this turn". A turn transition is
         -- authoritative proof that scope has ended even when a legacy text
         -- event lacks a numeric turn value or a reliable seat label.
-        if BridgeState.yieldSeatId ~= nil then
-            BridgeState.yieldSeatId = nil
-            BridgeState.yieldTurnNumber = nil
-            BridgeLog("[Bridge] cleared end-turn yield at authoritative turn transition")
-        end
         if BridgeState.yieldPolicyTurnNumber ~= nil then
             BridgeState.yieldPolicyTurnNumber = nil
             BridgeState.yieldPolicyActiveSeatId = nil
+            BridgeState.yieldPolicySessionId = nil
             BridgeLog("[Bridge] cleared HUD yield policy at authoritative turn transition")
         end
         -- A turn boundary retires any decision belonging to the previous
