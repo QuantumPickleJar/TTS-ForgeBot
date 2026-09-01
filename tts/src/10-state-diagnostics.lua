@@ -1297,6 +1297,10 @@ function onLoad()
 end
 
 function onUpdate()
+    -- Wait.time is normally sufficient, but a bootstrap can be waiting on a
+    -- TTS callback while the time scheduler is delayed.  Keep the resync
+    -- watchdog reactive from the frame loop as well.
+    if BridgeCheckResyncWatchdog ~= nil then BridgeCheckResyncWatchdog("onUpdate") end
 end
 
 -- The stable static tree lives in Global.xml. Dynamic decision content is

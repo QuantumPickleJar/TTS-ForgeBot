@@ -42,6 +42,12 @@ BRIDGE_DRAW_EVENT_PRESENTATION_DELAY = 0.25
 BRIDGE_EVENT_DRAIN_STALL_SECONDS = 2.0
 BRIDGE_RESYNC_PHYSICAL_QUEUE_GRACE_SECONDS = 1.0
 BRIDGE_RESYNC_STALL_SECONDS = 30.0
+-- A recovery request may wait briefly for an already-running physical library
+-- transaction, but it must not create an unbounded retry stream.  The frame
+-- watchdog is a fallback for hosts where a time callback is delayed while the
+-- TTS runtime is busy.
+BRIDGE_RESYNC_AUTOMATIC_QUEUE_GRACE_SECONDS = 10.0
+BRIDGE_RESYNC_STALL_FRAMES = 1800
 BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
 -- Configuration, not rules: FREEFORM permits a player to arrange their own
 -- lands after they enter. STRICT re-applies the persistent land row only on
@@ -181,6 +187,10 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncOrigin = BridgeState.resyncOrigin,
         resyncStartedAt = BridgeState.resyncStartedAt,
         resyncDeferredReason = BridgeState.resyncDeferredReason,
+        resyncDeferredSince = BridgeState.resyncDeferredSince,
+        resyncDeferredRetryScheduled = BridgeState.resyncDeferredRetryScheduled == true,
+        resyncWatchdogToken = BridgeState.resyncWatchdogToken,
+        resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration,
         reportCaptureInFlight = ui.reportCaptureInFlight == true
     }
     local lifecycle = BridgeState.diagnosticCaptureLifecycle
@@ -328,7 +338,14 @@ function BridgeEventDrainQueueState()
         eventPollScheduled = BridgeState.eventPollScheduled == true,
         desyncLatched = BridgeState.desyncLatched == true,
         resyncInFlight = BridgeState.resyncInFlight == true,
-        bootstrapping = BridgeState.bootstrapping == true
+        bootstrapping = BridgeState.bootstrapping == true,
+        resyncOrigin = BridgeState.resyncOrigin,
+        resyncStartedAt = BridgeState.resyncStartedAt,
+        resyncDeferredReason = BridgeState.resyncDeferredReason,
+        resyncDeferredSince = BridgeState.resyncDeferredSince,
+        resyncDeferredRetryScheduled = BridgeState.resyncDeferredRetryScheduled == true,
+        resyncWatchdogToken = BridgeState.resyncWatchdogToken,
+        resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration
     }
 end
 
@@ -932,6 +949,10 @@ BridgeState = {
         count = 0,
         lastLoggedCount = 0
     },
+    resyncDeferredRetryScheduled = false,
+    resyncDeferredSince = nil,
+    resyncWatchdogToken = nil,
+    resyncBootstrapGeneration = 0,
     lastChoiceAttempt = nil,
     counterStateByInstanceId = {},
     keywordStateByInstanceId = {},

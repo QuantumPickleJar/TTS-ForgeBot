@@ -1577,6 +1577,18 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
         callback(false, "an embodiment bootstrap is already in progress")
         return
     end
+    BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
+    local bootstrapGeneration = BridgeState.resyncBootstrapGeneration
+    local function currentBootstrap()
+        return BridgeState.resyncBootstrapGeneration == bootstrapGeneration
+            and BridgeState.eventSessionId == sessionId
+            and BridgeState.bootstrapping == true
+    end
+    local function finishBootstrap(ok, errorMessage)
+        if not currentBootstrap() then return end
+        BridgeState.bootstrapping = false
+        callback(ok, errorMessage)
+    end
     -- Establish the event session before populating instance mappings. Event
     -- polling must not clear the authoritative snapshot we just reconciled.
     BridgeTraceStart("START-09 event-session-prepare")
@@ -1601,34 +1613,33 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
     BridgeState.bootstrapping = true
     BridgeTraceStart("START-10 snapshot-request")
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
+        if not currentBootstrap() then return end
         BridgeRunTraced("START-11 snapshot-response", function()
+            if not currentBootstrap() then return end
             BridgeTraceStart("START-11 snapshot-response", ok and tostring(snapshot and snapshot.sessionId or "ok") or tostring(err))
             if not ok or snapshot == nil then
-                BridgeState.bootstrapping = false
-                callback(false, "authoritative snapshot unavailable: " .. tostring(err))
+                finishBootstrap(false, "authoritative snapshot unavailable: " .. tostring(err))
                 return
             end
             if snapshot.sessionId ~= sessionId then
-                BridgeState.bootstrapping = false
-                callback(false, "snapshot session mismatch")
+                finishBootstrap(false, "snapshot session mismatch")
                 return
             end
             BridgeRecordResyncSnapshotProgress(resyncOrigin, snapshot)
             BridgeRecordExpectedHandIdentities(snapshot)
             local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids()
             if duplicateGuidCount > 0 then
-                BridgeState.bootstrapping = false
                 local detail = "physical library identity audit found " .. tostring(duplicateGuidCount)
                     .. " loose/contained duplicate GUID(s)"
                 BridgeLog("[Bridge] " .. detail)
-                callback(false, detail)
+                finishBootstrap(false, detail)
                 return
             end
             BridgeTraceStart("START-12 physical-bootstrap-begin")
             BridgeStageSeatCardsForBootstrap(snapshot, function(stagedOk, stagedError, stagedGuids)
+                if not currentBootstrap() then return end
                 if not stagedOk then
-                    BridgeState.bootstrapping = false
-                    callback(false, stagedError)
+                    finishBootstrap(false, stagedError)
                     return
                 end
 
@@ -1637,31 +1648,32 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                 -- before rebuilding exact Forge mappings.
                 BridgeTraceStart("START-13 library-settle")
                 BridgeVerifyLibraryIdentityStability(function(stable, stabilityError)
+                    if not currentBootstrap() then return end
                     if not stable then
-                        BridgeState.bootstrapping = false
                         local detail = "physical library identity audit found " .. tostring(stabilityError)
                             .. " after staging"
                         BridgeLog("[Bridge] " .. detail)
-                        callback(false, detail)
+                        finishBootstrap(false, detail)
                         return
                     end
                     BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
+                        if not currentBootstrap() then return end
                         BridgeRunTraced("START annotate-callback", function()
+                            if not currentBootstrap() then return end
                             if not annotated then
-                                BridgeState.bootstrapping = false
-                                callback(false, annotationError)
+                                finishBootstrap(false, annotationError)
                                 return
                             end
                             BridgeBootstrapSeats(snapshot, 1, function(seatsOk, seatsError)
+                                if not currentBootstrap() then return end
                                 BridgeRunTraced("START seat-bootstrap-callback", function()
-                                    BridgeState.bootstrapping = false
-                                    if not seatsOk then callback(false, seatsError); return end
+                                    if not currentBootstrap() then return end
+                                    if not seatsOk then finishBootstrap(false, seatsError); return end
                                     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
                                     if resumeFromSnapshotCursor == true then
                                         local cursor = tonumber(snapshot.eventCursor)
                                         if cursor == nil or cursor < 0 then
-                                            BridgeState.bootstrapping = false
-                                            callback(false, "authoritative resync snapshot is missing a valid event cursor")
+                                            finishBootstrap(false, "authoritative resync snapshot is missing a valid event cursor")
                                             return
                                         end
                                         -- The snapshot is coherent through this bridge event cursor.
@@ -1675,7 +1687,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                                     BridgeLog(string.format(
                                         "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
                                         #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
-                                    callback(true, nil)
+                                    finishBootstrap(true, nil)
                                 end)
                             end)
                         end)
@@ -1793,25 +1805,56 @@ function BridgeRetireLocalPhysicalTransactions(reason)
         .. " generation=" .. tostring(BridgeState.currentPhysicalPresentationGeneration))
 end
 
+function BridgeReleaseStalledResync(sessionId, token, reason)
+    if BridgeState.eventSessionId ~= sessionId
+        or BridgeState.resyncToken ~= token
+        or BridgeState.resyncInFlight ~= true then return false end
+
+    BridgeLog(string.format(
+        "[Bridge] RESYNC_STALLED origin=%s session=%s token=%s startedAt=%s received=%s applied=%s queueLength=%s reason=%s",
+        tostring(BridgeState.resyncOrigin), tostring(sessionId), tostring(token),
+        tostring(BridgeState.resyncStartedAt), tostring(BridgeState.lastReceivedEventSequence),
+        tostring(BridgeState.lastAppliedEventSequence), tostring(#(BridgeState.eventQueue or {})),
+        tostring(reason or "watchdog")))
+
+    -- A stalled bootstrap must stop owning the presentation.  Both the
+    -- resync token and bootstrap generation fence callbacks that were already
+    -- issued by the abandoned recovery; a later manual recovery can therefore
+    -- start without an old callback changing its state.
+    BridgeState.resyncToken = (BridgeState.resyncToken or token) + 1
+    BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
+    BridgeState.resyncWatchdogToken = nil
+    BridgeState.resyncInFlight = false
+    BridgeState.bootstrapping = false
+    BridgeState.resyncStartedAt = nil
+    BridgeState.resyncDeferredReason = "stalled"
+    BridgeState.animationRunning = false
+    BridgeState.eventDrainTransaction = nil
+    if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
+    BridgeSetStatus("RESYNC AVAILABLE", "Authoritative recovery stalled; try RESYNC FORGE again.")
+    BridgeUiMarkDirty("resync-stalled")
+    return true
+end
+
+function BridgeCheckResyncWatchdog(reason)
+    if BridgeState.resyncInFlight ~= true or BridgeState.resyncStartedAt == nil then return false end
+    local now = BridgeResyncClockNow()
+    if now == nil or now - BridgeState.resyncStartedAt < BRIDGE_RESYNC_STALL_SECONDS then return false end
+    local token = BridgeState.resyncToken
+    return BridgeReleaseStalledResync(BridgeState.eventSessionId, token, reason or "clock")
+end
+
 function BridgeScheduleResyncWatchdog(sessionId, token)
-    BridgeWaitTime(function()
-        if BridgeState.eventSessionId ~= sessionId
-            or BridgeState.resyncToken ~= token
-            or BridgeState.resyncInFlight ~= true then return end
-        BridgeLog(string.format(
-            "[Bridge] RESYNC_STALLED origin=%s session=%s token=%s startedAt=%s received=%s applied=%s queueLength=%s",
-            tostring(BridgeState.resyncOrigin), tostring(sessionId), tostring(token),
-            tostring(BridgeState.resyncStartedAt), tostring(BridgeState.lastReceivedEventSequence),
-            tostring(BridgeState.lastAppliedEventSequence), tostring(#(BridgeState.eventQueue or {}))))
-        -- Release only the local UI/pump latch. The in-flight callback is
-        -- fenced by the token below and cannot replace a later recovery.
-        BridgeState.resyncToken = (BridgeState.resyncToken or token) + 1
-        BridgeState.resyncInFlight = false
-        BridgeState.resyncStartedAt = nil
-        if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
-        BridgeSetStatus("RESYNC AVAILABLE", "Authoritative recovery stalled; try RESYNC FORGE again.")
-        BridgeUiMarkDirty("resync-stalled")
-    end, BRIDGE_RESYNC_STALL_SECONDS)
+    BridgeState.resyncWatchdogToken = token
+    local function check(source)
+        if BridgeState.resyncWatchdogToken ~= token then return end
+        BridgeReleaseStalledResync(sessionId, token, source)
+    end
+    -- Keep the time watchdog for normal TTS operation and add a frame/clock
+    -- fallback.  A single delayed Wait.time callback must not leave the match
+    -- in RESYNCING forever.
+    BridgeWaitTime(function() check("time") end, BRIDGE_RESYNC_STALL_SECONDS)
+    BridgeWaitFrames(function() check("frames") end, BRIDGE_RESYNC_STALL_FRAMES)
 end
 
 function BridgeResyncFromAuthoritativeSnapshot(origin)
@@ -1841,15 +1884,31 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
                 .. " reason=physical-library-queue-timeout")
             BridgeRetireLocalPhysicalTransactions("manual-resync-force")
         else
+            if not explicit and (BridgeState.resyncDeferredSince or 0) <= 0 then
+                BridgeState.resyncDeferredSince = now
+            end
+            if not explicit and now - (BridgeState.resyncDeferredSince or now)
+                >= BRIDGE_RESYNC_AUTOMATIC_QUEUE_GRACE_SECONDS then
+                BridgeState.resyncDeferredReason = "physical-library-queue-timeout"
+                BridgeLog("[Bridge] RESYNC_DEFERRED reason=physical-library-queue-timeout origin=" .. tostring(origin)
+                    .. "; stopping automatic progression for manual recovery")
+                BridgeStopOnDesync("automatic authoritative resync blocked by physical library queue")
+                return false
+            end
             BridgeState.resyncDeferredReason = "physical-library-queue"
             BridgeLog("[Bridge] RESYNC_DEFERRED reason=physical-library-queue origin=" .. tostring(origin)
                 .. " graceUntil=" .. tostring(BridgeState.manualResyncGraceUntil))
+            if BridgeState.resyncDeferredRetryScheduled then return false end
+            BridgeState.resyncDeferredRetryScheduled = true
             BridgeWaitFrames(function()
+                BridgeState.resyncDeferredRetryScheduled = false
                 BridgeResyncFromAuthoritativeSnapshot(origin)
             end, 2)
             return false
         end
     end
+    BridgeState.resyncDeferredSince = nil
+    BridgeState.resyncDeferredRetryScheduled = false
     if explicit then
         -- Invalidate delayed local callbacks even when the physical queues
         -- happened to look idle.  An event-drain continuation or other frame
@@ -1874,6 +1933,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     }
     BridgeState.resyncToken = (BridgeState.resyncToken or 0) + 1
     local resyncToken = BridgeState.resyncToken
+    BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     BridgeState.resyncOrigin = origin
     BridgeState.resyncStartedAt = BridgeResyncClockNow()
     BridgeState.resyncInFlight = true
@@ -1899,6 +1959,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             return
         end
         BridgeState.resyncInFlight = false
+        BridgeState.resyncWatchdogToken = nil
         BridgeState.resyncStartedAt = nil
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
         if not ok then

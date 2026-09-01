@@ -173,6 +173,54 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Equal(1, state.Get("physicalTransactionGeneration").Number);
     }
 
+    [Fact]
+    public void StalledAutomaticResyncReleasesItsLocalLatchAndInvalidatesBootstrap()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.resyncToken = 4
+            BridgeState.resyncInFlight = true
+            BridgeState.bootstrapping = true
+            BridgeState.resyncStartedAt = 0
+            BridgeState.ui = {resyncInFlight=true}
+            BridgeSetStatus = function(headline, detail) end
+            BridgeUiMarkDirty = function(reason) end
+            Time.time = 31
+            released = BridgeCheckResyncWatchdog('test-clock')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(lua.Globals.Get("released").Boolean);
+        Assert.False(state.Get("resyncInFlight").Boolean);
+        Assert.False(state.Get("bootstrapping").Boolean);
+        Assert.False(state.Get("ui").Table.Get("resyncInFlight").Boolean);
+        Assert.Equal(5, state.Get("resyncToken").Number);
+        Assert.Equal(1, state.Get("resyncBootstrapGeneration").Number);
+    }
+
+    [Fact]
+    public void AutomaticResyncBehindPhysicalQueueUsesOneBoundedRetry()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.libraryExtractionActiveBySeatId['forge-player-1'] = true
+            BridgeState.resyncDeferredRetryScheduled = false
+            BridgeState.resyncDeferredSince = nil
+            Time.time = 1
+            retrySchedules = 0
+            function BridgeWaitFrames(callback, frames) retrySchedules = retrySchedules + 1 end
+            BridgeResyncFromAuthoritativeSnapshot('library order mismatch')
+            BridgeResyncFromAuthoritativeSnapshot('library order mismatch')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(1, lua.Globals.Get("retrySchedules").Number);
+        Assert.True(state.Get("resyncDeferredRetryScheduled").Boolean);
+        Assert.Equal("physical-library-queue", state.Get("resyncDeferredReason").String);
+    }
+
     private static Script NewQueueProbe()
     {
         var lua = new Script();
