@@ -2,7 +2,8 @@
 param(
     [Nullable[int]]$Seed,
     [switch]$TraceBridgeState,
-    [switch]$ManualMana
+    [switch]$ManualMana,
+    [switch]$NoBuild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,6 +16,7 @@ $jar = Get-ChildItem -Path $jarDirectory -Filter 'forge-headless-*-jar-with-depe
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $bridgePatch = Join-Path $repoRoot 'tools\forge\bridge-headless.patch'
 $buildStampPath = Join-Path $jarDirectory 'forge-headless-bridge-build.json'
+$bridgeDll = Join-Path $repoRoot 'src\MtgTtsBridge\bin\Debug\net8.0-windows\MtgTtsBridge.dll'
 
 if ($null -eq $jar) {
     throw "Forge headless JAR was not found. Run .\tools\forge\bootstrap.ps1 -Build first."
@@ -26,6 +28,9 @@ if (-not (Test-Path (Join-Path $assetsDirectory 'res\languages\en-US.properties'
 $java = Get-Command java -ErrorAction SilentlyContinue
 if ($null -eq $java) {
     throw 'Java 17+ was not found on PATH. Install Java 17+ and rerun tools\forge\bootstrap.ps1 -Build.'
+}
+if ($NoBuild -and -not (Test-Path -LiteralPath $bridgeDll -PathType Leaf)) {
+    throw "Bridge binary was not found at $bridgeDll. Run dotnet build first or omit -NoBuild."
 }
 if (-not (Test-Path -LiteralPath $bridgePatch)) {
     throw "Forge bridge patch is missing: $bridgePatch"
@@ -112,14 +117,21 @@ if ($null -ne $Seed) { Write-Host "Forge seed: $Seed (explicit)" } else { Write-
 Write-Host 'Decks: loaded from the two TTS library piles when NEW MATCH is pressed (Legacy assumption).'
 if ($TraceBridgeState) { Write-Host 'BridgeStateFeed trace: enabled (public battlefield summaries only).' }
 if ($ManualMana) { Write-Host 'Mana payment: manual human Forge source choices enabled.' }
+if ($NoBuild) { Write-Host "Bridge launch: using existing binary $bridgeDll" }
 
 Push-Location $repoRoot
 try {
-    & dotnet run --project 'src\MtgTtsBridge\MtgTtsBridge.csproj' -- `
-        --Bridge:Adapter ForgeTui `
-        --Forge:WorkingDirectory $workingDirectory `
-        --Forge:Executable $java.Source `
-        --Forge:Arguments $forgeArguments
+    $bridgeArguments = @(
+        '--Bridge:Adapter', 'ForgeTui',
+        '--Forge:WorkingDirectory', $workingDirectory,
+        '--Forge:Executable', $java.Source,
+        '--Forge:Arguments', $forgeArguments)
+    if ($NoBuild) {
+        & dotnet $bridgeDll @bridgeArguments
+    }
+    else {
+        & dotnet run --project 'src\MtgTtsBridge\MtgTtsBridge.csproj' -- @bridgeArguments
+    }
 }
 finally {
     Pop-Location

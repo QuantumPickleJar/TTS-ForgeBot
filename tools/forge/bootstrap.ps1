@@ -5,7 +5,13 @@ param(
     # made an otherwise valid rebuild fail before prerequisites were checked.
     [string]$RepositoryRoot = '',
     [string]$Ref = 'rrn-headless-rebased',
-    [switch]$Build
+    [switch]$Build,
+    # Reconstruct and verify the clean upstream-plus-patch source even when
+    # the schema-v3 content-addressed evidence is valid.
+    [switch]$ForceVerify,
+    # Bypass the fast path and invoke Maven. Combine with -ForceVerify for a
+    # clean milestone/release-quality reconstruction and build.
+    [switch]$ForceBuild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,6 +24,7 @@ if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
 }
 $forgeDirectory = Join-Path $RepositoryRoot '.deps\forge'
 $bridgePatch = Join-Path $scriptDirectory 'bridge-headless.patch'
+. (Join-Path $scriptDirectory 'ForgeBuildCache.ps1')
 
 function Require-Command([string]$name) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
@@ -27,7 +34,7 @@ function Require-Command([string]$name) {
 
 Require-Command git
 Require-Command java
-if ($Build) { Require-Command mvn }
+$doBuild = $Build -or $ForceBuild
 
 function Get-NativeVersionLine([string]$commandLine, [string]$displayName) {
     $output = & cmd.exe /d /c "$commandLine 2>&1"
@@ -77,11 +84,6 @@ function Get-ForgeExpectedSources([string]$forgePath, [string]$upstreamCommit, [
 
 $javaVersion = Get-NativeVersionLine 'java -version' 'Java'
 Write-Host "Java: $javaVersion"
-if ($Build) {
-    $mavenVersion = Get-NativeVersionLine 'mvn -version' 'Maven'
-    Write-Host "Maven: $mavenVersion"
-}
-
 if (-not (Test-Path (Join-Path $forgeDirectory '.git'))) {
     New-Item -ItemType Directory -Force -Path (Split-Path $forgeDirectory -Parent) | Out-Null
     & git clone --depth 1 --single-branch --branch $Ref https://github.com/rrnewton/forge.git $forgeDirectory
@@ -111,6 +113,19 @@ try {
     if (-not (Test-Path -LiteralPath $bridgePatch)) {
         throw "Required Forge bridge patch is missing: $bridgePatch"
     }
+
+    if (-not $ForceVerify -and -not $ForceBuild `
+        -and (Test-ForgeBuildFastPath $forgeDirectory $commit $Ref $bridgePatch)) {
+        Write-Host 'Forge bridge build is current; skipping reconstruction and Maven.'
+        exit 0
+    }
+
+    if ($doBuild) {
+        Require-Command mvn
+        $mavenVersion = Get-NativeVersionLine 'mvn -version' 'Maven'
+        Write-Host "Maven: $mavenVersion"
+    }
+
     # Never treat a dirty checkout as proof that the current patch is present.
     # Reconstruct the expected patch result from a clean upstream worktree and
     # replace only patch-touched files. An existing build stamp may identify
@@ -145,11 +160,12 @@ try {
     foreach ($relative in $expectedSources.Keys) {
         $target = Join-Path $forgeDirectory $relative
         New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
-        [System.IO.File]::WriteAllBytes($target, [byte[]]$expectedSources[$relative].bytes)
+        $expected = [byte[]]$expectedSources[$relative].bytes
+        Set-ForgeExpectedSourceIfChanged $target $expected $expectedSources[$relative].sha256 | Out-Null
     }
     Write-Host 'Reconstructed patch-touched Forge sources from clean upstream plus the current bridge patch.'
 
-    if ($Build) {
+    if ($doBuild) {
         & mvn -pl forge-headless -am package -DskipTests
         if ($LASTEXITCODE -ne 0) { throw 'Forge headless build failed.' }
         $jar = Get-ChildItem 'forge-headless\target\forge-headless-*-SNAPSHOT-jar-with-dependencies.jar' |
@@ -187,3 +203,4 @@ try {
 finally {
     Pop-Location
 }
+exit 0

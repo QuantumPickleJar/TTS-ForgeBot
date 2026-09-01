@@ -303,5 +303,19 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("bridgePatchSha256", Launcher);
         Assert.Contains("patchedSourceSha256", Launcher);
         Assert.Contains("BridgeStateFeed source is newer than the assembled JAR", Launcher);
+        Assert.Contains("Test-ForgeBuildFastPath", Bootstrap);
+        Assert.Contains("Forge bridge build is current; skipping reconstruction and Maven.", Bootstrap);
+        Assert.Contains("ForceVerify", Bootstrap);
+        Assert.Contains("ForceBuild", Bootstrap);
+        Assert.Contains("Set-ForgeExpectedSourceIfChanged", Bootstrap);
+    }
+
+    [Fact]
+    public void LauncherSupportsNoBuildOnlyWhenTheExistingBridgeBinaryIsPresent()
+    {
+        Assert.Contains("[switch]$NoBuild", Launcher);
+        Assert.Contains("Bridge binary was not found", Launcher);
+        Assert.Contains("dotnet $bridgeDll @bridgeArguments", Launcher);
+        Assert.Contains("dotnet run --project 'src\\MtgTtsBridge\\MtgTtsBridge.csproj'", Launcher);
     }
 }
