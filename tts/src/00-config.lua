@@ -63,6 +63,72 @@ function BridgeLog(message)
     log(tostring(message))
 end
 
+local BRIDGE_DECISION_LIFECYCLE_CAPACITY = 128
+
+function BridgeRecordDecisionLifecycle(decision, origin, disposition, reason, actionId, actionType, automationPolicy, result)
+    if decision == nil then return end
+    local actionTypes = {}
+    local nonPassActionCount = 0
+    local hasPassPriority = false
+    for _, action in ipairs(decision.actions or {}) do
+        local kind = tostring(action.type or action.actionType or "unknown")
+        table.insert(actionTypes, kind)
+        if kind == "pass_priority" then
+            hasPassPriority = true
+        else
+            nonPassActionCount = nonPassActionCount + 1
+        end
+    end
+    local record = {
+        timestamp = os.clock(),
+        sessionId = BridgeState.eventSessionId,
+        decisionId = decision.decisionId,
+        origin = origin,
+        kind = decision.kind,
+        seatId = decision.seatId,
+        activeSeatId = decision.activeSeatId,
+        prioritySeatId = decision.prioritySeatId,
+        turnNumber = decision.turnNumber,
+        phaseName = decision.phaseName,
+        eventCursor = decision.eventCursor,
+        lastReceivedEventSequence = BridgeState.lastReceivedEventSequence,
+        lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
+        actionCount = #actionTypes,
+        actionTypes = actionTypes,
+        hasPassPriority = hasPassPriority,
+        nonPassActionCount = nonPassActionCount,
+        disposition = disposition,
+        reason = reason,
+        actionId = actionId,
+        actionType = actionType,
+        automationPolicy = automationPolicy,
+        result = result
+    }
+    table.insert(BridgeState.decisionLifecycle, record)
+    while #BridgeState.decisionLifecycle > BRIDGE_DECISION_LIFECYCLE_CAPACITY do
+        table.remove(BridgeState.decisionLifecycle, 1)
+    end
+    BridgeLog(string.format(
+        "[Bridge] DECISION_LIFECYCLE timestamp=%s session=%s decision=%s origin=%s kind=%s seat=%s active=%s priority=%s turn=%s phase=%s cursor=%s received=%s applied=%s actionCount=%s actionTypes=%s pass=%s nonPass=%s disposition=%s reason=%s actionId=%s actionType=%s automationPolicy=%s result=%s",
+        tostring(record.timestamp), tostring(record.sessionId), tostring(record.decisionId), tostring(origin),
+        tostring(record.kind), tostring(record.seatId), tostring(record.activeSeatId), tostring(record.prioritySeatId),
+        tostring(record.turnNumber), tostring(record.phaseName), tostring(record.eventCursor),
+        tostring(record.lastReceivedEventSequence), tostring(record.lastAppliedEventSequence),
+        tostring(record.actionCount), #actionTypes > 0 and table.concat(actionTypes, ",") or "none",
+        tostring(record.hasPassPriority), tostring(record.nonPassActionCount), tostring(disposition),
+        tostring(reason), tostring(actionId), tostring(actionType), tostring(automationPolicy), tostring(result)))
+    if decision.kind == "main_priority" and decision.seatId == "forge-player-1"
+        and string.find(string.lower(tostring(decision.phaseName or "")), "main", 1, true) ~= nil then
+        BridgeLog(string.format(
+            "[Bridge] MAIN1_TX decision=%s cursor=%s received=%s applied=%s pass=%s nonPass=%s origin=%s disposition=%s reason=%s",
+            tostring(decision.decisionId), tostring(decision.eventCursor),
+            tostring(record.lastReceivedEventSequence), tostring(record.lastAppliedEventSequence),
+            tostring(record.hasPassPriority), tostring(record.nonPassActionCount), tostring(origin),
+            tostring(disposition), tostring(reason)))
+    end
+    return record
+end
+
 function BridgePresentationMetric(name)
     BridgeState.presentationMetrics[name] = (BridgeState.presentationMetrics[name] or 0) + 1
 end
@@ -571,6 +637,9 @@ BridgeState = {
     yieldPolicyTurnNumber = nil,
     yieldPolicyActiveSeatId = nil,
     yieldPolicySessionId = nil,
+    yieldPolicyOwnTurn = false,
+    decisionLifecycle = {},
+    lastChoiceAttempt = nil,
     counterStateByInstanceId = {},
     keywordStateByInstanceId = {},
     cardDesignationsByInstanceId = {},

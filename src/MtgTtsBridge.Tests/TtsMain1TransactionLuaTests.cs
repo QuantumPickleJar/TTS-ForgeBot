@@ -90,6 +90,19 @@ public sealed class TtsMain1TransactionLuaTests
         Assert.Equal(2, actions.Length);
         lua.DoString("probeHasPlayLand = false; for _, action in ipairs(BridgeState.lastDecision.actions) do if action.type == 'play_land' then probeHasPlayLand = true end end");
         Assert.True(lua.Globals.Get("probeHasPlayLand").Boolean);
+        lua.DoString(@"
+            probeObserved = false
+            probeAccepted = false
+            probeRendered = false
+            for _, record in ipairs(BridgeState.decisionLifecycle) do
+                if record.decisionId == 'forge-tui-main1' and record.disposition == 'OBSERVED' then probeObserved = true end
+                if record.decisionId == 'forge-tui-main1' and record.disposition == 'ACCEPTED' then probeAccepted = true end
+                if record.decisionId == 'forge-tui-main1' and record.disposition == 'RENDERED' then probeRendered = true end
+            end
+        ");
+        Assert.True(lua.Globals.Get("probeObserved").Boolean);
+        Assert.True(lua.Globals.Get("probeAccepted").Boolean);
+        Assert.True(lua.Globals.Get("probeRendered").Boolean);
         if (mode == "YIELD") Assert.Null(lua.Globals.Get("BridgeState").Table.Get("yieldPolicyTurnNumber").ToObject());
     }
 }

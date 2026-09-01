@@ -459,7 +459,12 @@ function BridgeArmYieldPolicy(activeSeat, reason)
     BridgeState.yieldPolicyTurnNumber = tonumber(BridgeState.tableTurnCount or 0) or 0
     BridgeState.yieldPolicyActiveSeatId = activeSeat
     BridgeState.yieldPolicySessionId = BridgeState.eventSessionId
-    BridgeSetStatus("YIELD TURN ARMED", "Forge will continue passing opponent priority until human intervention is required.")
+    BridgeState.yieldPolicyOwnTurn = activeSeat == "forge-player-1"
+    if BridgeState.yieldPolicyOwnTurn then
+        BridgeSetStatus("YIELDING REST OF TURN", "Forge will pass optional priority and finish your attack step using exact Forge actions.")
+    else
+        BridgeSetStatus("YIELD ARMED — STOPPING ON INTERACTION", "Forge will pass only empty opponent-turn priority windows.")
+    end
     if BridgeState.eventSessionId ~= nil and BridgeState.gameEnded == nil then
         if not BridgeState.eventPolling then
             BridgeStartEventPolling(BridgeState.eventSessionId, false)
@@ -469,6 +474,7 @@ function BridgeArmYieldPolicy(activeSeat, reason)
         end
     end
     BridgeLog("[Bridge] yield policy armed activeSeat=" .. tostring(activeSeat)
+        .. " ownTurn=" .. tostring(BridgeState.yieldPolicyOwnTurn)
         .. " reason=" .. tostring(reason or "user"))
 end
 
@@ -488,12 +494,33 @@ function BridgeDisarmYieldPolicy(reason)
         BridgeState.yieldPolicyTurnNumber = nil
         BridgeState.yieldPolicyActiveSeatId = nil
         BridgeState.yieldPolicySessionId = nil
+        BridgeState.yieldPolicyOwnTurn = false
         if BridgeState.ui ~= nil and BridgeState.ui.autoAdvanceMode == "YIELD" then
             BridgeState.ui.autoAdvanceMode = "SMART"
             BridgeUiMarkDirty("yield-policy-stopped")
         end
         BridgeLog("[Bridge] yield policy stopped reason=" .. tostring(reason))
     end
+end
+
+function BridgeConsiderYieldAutomaticAction(decision, action, policy)
+    if decision == nil or action == nil then return false end
+    local actionType = tostring(action.type or action.actionType or "unknown")
+    local result = "submitted"
+    if BridgeAutomaticPassBackpressured() then
+        result = "blocked_backpressure"
+        BridgeRecordDecisionLifecycle(decision, "yield", "AUTO_ACTION_BLOCKED", "event-backpressure",
+            action.actionId, actionType, policy, result)
+        return false
+    end
+    BridgeRecordDecisionLifecycle(decision, "yield", "AUTO_ACTION_CONSIDERED", "yield-policy",
+        action.actionId, actionType, policy, result)
+    local submitSource = policy == "OWN_TURN_YIELD"
+        and ((actionType == "finish_attacking" or actionType == "choose_none")
+            and "own_turn_yield_auto_finish_attacking" or "own_turn_yield_auto_pass")
+        or "yield_policy_auto_pass"
+    BridgeSubmitChoice(decision.decisionId, action.actionId, submitSource)
+    return true
 end
 
 function BridgeHudMode(player, value, id)
@@ -902,11 +929,29 @@ end
 function BridgeLogChoiceAttempt(source, decisionId, actionId, transactionState)
     BridgeState.choiceAttemptSequence = (BridgeState.choiceAttemptSequence or 0) + 1
     local attempt = BridgeState.choiceAttemptSequence
+    BridgeState.lastChoiceAttempt = {
+        timestamp = os.clock(),
+        decisionId = decisionId,
+        actionId = actionId,
+        source = source,
+        transactionState = transactionState
+    }
     BridgeLog(string.format(
         "[Bridge] choice-attempt=%s source=%s session=%s decision=%s action=%s submitting=%s transactionState=%s yieldSeat=%s",
         tostring(attempt), tostring(source or "unknown"), tostring(BridgeState.eventSessionId or "nil"),
         tostring(decisionId), tostring(actionId), tostring(BridgeState.submitting == true),
         tostring(transactionState or "none"), tostring(BridgeState.yieldPolicyActiveSeatId or "nil")))
+    local decision = BridgeState.lastDecision
+    if decision ~= nil and decision.decisionId == decisionId then
+        local actionType = "unknown"
+        for _, action in ipairs(decision.actions or {}) do
+            if action.actionId == actionId then actionType = action.type or action.actionType or "unknown"; break end
+        end
+        local policy = string.find(tostring(source or ""), "own_turn_yield_auto_", 1, true) == 1 and "OWN_TURN_YIELD"
+            or (source == "yield_policy_auto_pass" and "OPPONENT_YIELD" or nil)
+        BridgeRecordDecisionLifecycle(decision, source, "CHOICE_ATTEMPT", "choice-submit",
+            actionId, actionType, policy, "submitted")
+    end
     return attempt
 end
 
@@ -958,6 +1003,39 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         return
     end
     local activeDecision = BridgeState.lastDecision
+    if activeDecision == nil or activeDecision.decisionId ~= decisionId then
+        return
+    end
+    if activeDecision ~= nil and activeDecision.decisionId == decisionId
+        and activeDecision.kind == "main_priority"
+        and activeDecision.seatId == "forge-player-1"
+        and string.find(string.lower(tostring(activeDecision.phaseName or "")), "main", 1, true) ~= nil
+        and actionId ~= nil
+        and BridgeDecisionOffersActionType(activeDecision, "pass_priority")
+        and (source == "empty_priority_auto_pass" or source == "yield_policy_auto_pass"
+            or string.find(tostring(source or ""), "auto_", 1, true) ~= nil)
+        and source ~= "own_turn_yield_auto_pass" then
+        BridgeRecordDecisionLifecycle(activeDecision, source, "AUTO_ACTION_BLOCKED",
+            "HUMAN_MAIN1_AUTOPASS_BLOCKED", actionId, "pass_priority", "UNAUTHORIZED", "wrong-policy")
+        BridgeLog("[Bridge] HUMAN_MAIN1_AUTOPASS_BLOCKED decision=" .. tostring(decisionId)
+            .. " source=" .. tostring(source) .. " action=" .. tostring(actionId))
+        return
+    end
+    local ownTurnYieldSource = string.find(tostring(source or ""), "own_turn_yield_auto_", 1, true) == 1
+    if ownTurnYieldSource
+        and (BridgeState.yieldPolicyOwnTurn ~= true
+            or BridgeState.yieldPolicySessionId ~= BridgeState.eventSessionId
+            or BridgeState.yieldPolicyActiveSeatId ~= BridgeState.currentTurnSeatId
+            or (tonumber(BridgeState.yieldPolicyTurnNumber or 0) or 0) ~= (tonumber(BridgeState.tableTurnCount or 0) or 0)) then
+        BridgeRecordDecisionLifecycle(activeDecision, source, "AUTO_ACTION_BLOCKED",
+            "own-turn-yield-policy-no-longer-authorized", actionId, "unknown", "OWN_TURN_YIELD", "stale-policy")
+        BridgeLog("[Bridge] own-turn yield action blocked: policy is no longer authoritative")
+        return
+    end
+    local activeActionType = "unknown"
+    for _, action in ipairs(activeDecision.actions or {}) do
+        if action.actionId == actionId then activeActionType = action.type or action.actionType or "unknown"; break end
+    end
     if activeDecision ~= nil and activeDecision.decisionId == decisionId
         and activeDecision.kind == "mulligan"
         and tostring(activeDecision.mulliganStage or "") == "bottom_selection" then
@@ -1031,6 +1109,7 @@ function BridgeSubmitChoice(decisionId, actionId, source)
     -- duplicate physical callbacks from needlessly reaching that boundary.
     transaction = {
         actionId = actionId,
+        actionType = activeActionType,
         state = "posting",
         source = source,
         sessionId = BridgeState.eventSessionId,
@@ -1042,6 +1121,9 @@ function BridgeSubmitChoice(decisionId, actionId, source)
     BridgeState.pendingDecisionDeferredCursor = 0
     BridgeState.pendingDecisionDeferredApplied = 0
     BridgeState.submitting = true
+    BridgeRecordDecisionLifecycle(activeDecision, source, "CHOICE_POST", "choice-post",
+        actionId, transaction.actionType, string.find(tostring(transaction.source or ""), "own_turn_yield_auto_", 1, true) == 1 and "OWN_TURN_YIELD"
+            or (transaction.source == "yield_policy_auto_pass" and "OPPONENT_YIELD" or nil), "posted")
     local submittedAt = os.clock()
     BridgeState.latencyProbe = {
         actionId = actionId,
@@ -1098,6 +1180,12 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         end
         if not ok then
             activeTransaction.state = "rejected"
+            local rejectedDecision = BridgeState.lastDecision
+            if rejectedDecision ~= nil and rejectedDecision.decisionId == decisionId then
+                BridgeRecordDecisionLifecycle(rejectedDecision, activeTransaction.source, "CHOICE_REJECTED",
+                    tostring(body and body.errorCode or err or "request-failed"), actionId,
+                    activeTransaction.actionType, nil, "rejected")
+            end
             -- No authoritative mulligan transition follows a rejected
             -- MULLIGAN action. Retire the pre-marked hand identities so a
             -- later unrelated library move cannot be misrouted to bottom.
@@ -1140,6 +1228,11 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         end
 
         activeTransaction.state = "accepted"
+        local acceptedDecision = BridgeState.lastDecision
+        if acceptedDecision ~= nil and acceptedDecision.decisionId == decisionId then
+            BridgeRecordDecisionLifecycle(acceptedDecision, activeTransaction.source, "CHOICE_ACCEPTED",
+                "forge-accepted", actionId, activeTransaction.actionType, nil, "accepted")
+        end
         BridgeLog("[Bridge] choice accepted.")
         local probe = BridgeState.latencyProbe
         if probe ~= nil then
@@ -3090,13 +3183,17 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         return
     end
 
+    BridgeRecordDecisionLifecycle(decision, origin, "OBSERVED", "decision-payload")
+
     if expectedSessionId ~= nil and (expectedSessionId ~= BridgeState.eventSessionId
         or presentationGeneration ~= BridgeState.decisionPresentationGeneration) then
+        BridgeRecordDecisionLifecycle(decision, origin, "REJECTED_STALE", "replaced-generation")
         BridgeLog("[Bridge] DECISION_REJECT origin=" .. tostring(origin) .. " reason=replaced_generation decision=" .. tostring(decision.decisionId))
         return
     end
 
     if decision.sessionId == nil or decision.sessionId ~= BridgeState.eventSessionId then
+        BridgeRecordDecisionLifecycle(decision, origin, "REJECTED_STALE", "wrong-session")
         BridgeLog("[Bridge] DECISION_REJECT origin=" .. tostring(origin) .. " reason=wrong_session decision="
             .. tostring(decision.decisionId) .. " decisionSession=" .. tostring(decision.sessionId)
             .. " activeSession=" .. tostring(BridgeState.eventSessionId))
@@ -3105,6 +3202,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
 
     if BridgeState.retiredChoiceDecisionIds[decision.decisionId] == true
         or BridgeState.choiceTransactions[decision.decisionId] ~= nil then
+        BridgeRecordDecisionLifecycle(decision, origin, "REJECTED_STALE", "decision-retired-or-submitting")
         -- A delayed GET/render callback must never make a consumed decision
         -- actionable again. The next distinct Forge decision will retire the
         -- old transaction and render normally.
@@ -3123,6 +3221,25 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     end
 
     if BridgeState.lastDecision == nil or BridgeState.lastDecision.decisionId ~= decision.decisionId then
+        local previousDecision = BridgeState.lastDecision
+        if previousDecision ~= nil and previousDecision.decisionId ~= decision.decisionId
+            and previousDecision.kind == "main_priority"
+            and previousDecision.seatId == "forge-player-1"
+            and string.find(string.lower(tostring(previousDecision.phaseName or "")), "main", 1, true) ~= nil
+            and decision.kind == "attacker_selection"
+            and BridgeState.choiceTransactions[previousDecision.decisionId] == nil
+            and BridgeState.retiredChoiceDecisionIds[previousDecision.decisionId] ~= true then
+            BridgeRecordDecisionLifecycle(previousDecision, "main1", "RETIRED",
+                "advanced-to-attacker-without-choice")
+            BridgeLog(string.format(
+                "[Bridge] MAIN1_ADVANCED_WITHOUT_BRIDGE_CHOICE previousDecision=%s newDecision=%s previousCursor=%s newCursor=%s eventCursorDelta=%s lastChoiceDecision=%s lastChoiceAction=%s lastChoiceSource=%s",
+                tostring(previousDecision.decisionId), tostring(decision.decisionId),
+                tostring(previousDecision.eventCursor), tostring(decision.eventCursor),
+                tostring((tonumber(decision.eventCursor or 0) or 0) - (tonumber(previousDecision.eventCursor or 0) or 0)),
+                tostring(BridgeState.lastChoiceAttempt and BridgeState.lastChoiceAttempt.decisionId or nil),
+                tostring(BridgeState.lastChoiceAttempt and BridgeState.lastChoiceAttempt.actionId or nil),
+                tostring(BridgeState.lastChoiceAttempt and BridgeState.lastChoiceAttempt.source or nil)))
+        end
         BridgeCreatureTypeClearDraft("decision-replaced")
         BridgeGraveyardClear("decision-replaced")
         -- A card context is only a convenience filter for the decision in
@@ -3135,6 +3252,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
 
     local ignoreStale, eventCursor, applied = BridgeShouldIgnoreStaleDecision(decision)
     if ignoreStale then
+        BridgeRecordDecisionLifecycle(decision, origin, "REJECTED_STALE", "stale-event-cursor")
         BridgeLog(string.format(
             "[Bridge] ignoring stale decision %s kind=%s (cursor=%s, applied=%s)",
             tostring(decision.decisionId), tostring(eventCursor), tostring(applied)))
@@ -3167,6 +3285,9 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
 
     local deferDecision, deferCursor, deferApplied, deferReason = BridgeShouldDeferDecision(decision)
     if deferDecision then
+        BridgeRecordDecisionLifecycle(decision, origin,
+            deferReason == "opening_hand_readiness" and "DEFERRED_HAND_READINESS" or "DEFERRED_CURSOR",
+            deferReason)
         BridgeState.pendingDecision = decision
         -- A pending decision is not yet presentation-safe.  In particular, a
         -- post-draw menu can describe a card whose extraction from the
@@ -3222,6 +3343,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     end
 
     BridgeState.lastDecision = decision
+    BridgeRecordDecisionLifecycle(decision, origin, "ACCEPTED", "authoritative-current")
     BridgeLog(string.format(
         "[Bridge] DECISION_ACCEPT origin=%s runtime=%s revision=%s epoch=%s session=%s decision=%s eventCursor=%s forgeSequence=%s presentationGeneration=%s",
         tostring(origin), tostring(BRIDGE_CLIENT_RUNTIME_ID), tostring(BRIDGE_SCRIPT_REVISION),
@@ -3265,6 +3387,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         BridgeSetStatus(priorityHeadline, BridgeTurnLabel() .. " - " .. tostring(actor) .. " - " .. tostring(BridgeState.currentPhase or "Forge decision"))
     end
     BridgeRenderDecision(decision)
+    BridgeRecordDecisionLifecycle(decision, origin, "RENDERED", "decision-accepted")
 
     BridgeLog("[Bridge] decision " .. tostring(decision.decisionId) .. " kind=" .. tostring(decision.kind))
 

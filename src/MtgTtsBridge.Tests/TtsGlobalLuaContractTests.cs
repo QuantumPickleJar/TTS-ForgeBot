@@ -2556,21 +2556,26 @@ public sealed class TtsGlobalLuaContractTests
         Assert.True(hudStart >= 0 && hudEnd > hudStart && physicalStart >= 0 && physicalEnd > physicalStart);
         Assert.Contains("BridgeArmYieldPolicy(activeSeat", Script[hudStart..hudEnd]);
         Assert.Contains("BridgeArmYieldPolicy(BridgeState.currentTurnSeatId", Script[physicalStart..physicalEnd]);
-        Assert.DoesNotContain("BridgeSubmitChoice", Script[hudStart..hudEnd]);
-        Assert.DoesNotContain("BridgeSubmitChoice", Script[physicalStart..physicalEnd]);
+        Assert.Contains("BridgeArmYieldPolicy", Script[hudStart..hudEnd]);
+        Assert.Contains("BridgeArmYieldPolicy", Script[physicalStart..physicalEnd]);
     }
 
     [Fact]
-    public void OwnTurnYield_PassesOnlyEmptyHumanPriorityAndStopsForMeaningfulActions()
+    public void OwnTurnYield_WaivesOptionalMainActionsAndFinishesAttackersOnlyByForgeAction()
     {
         var start = Script.IndexOf("local policyTurn =", StringComparison.Ordinal);
         var end = Script.IndexOf("-- Keep passive auto-pass off", start, StringComparison.Ordinal);
         Assert.True(start >= 0 && end > start);
         var body = Script[start..end];
         Assert.Contains("decision.seatId == \"forge-player-1\"", body);
-        Assert.Contains("not BridgeDecisionHasNonPassAction(decision)", body);
-        Assert.Contains("BridgeSubmitChoice(decision.decisionId, action.actionId, \"yield_policy_auto_pass\")", body);
-        Assert.Contains("BridgeDisarmYieldPolicy(\"meaningful-human-decision\")", body);
+        Assert.Contains("policyOwnTurn", body);
+        Assert.Contains("decision.kind == \"attacker_selection\"", body);
+        Assert.Contains("action.type == \"finish_attacking\"", body);
+        Assert.Contains("BridgeConsiderYieldAutomaticAction(decision, automaticAction, \"OWN_TURN_YIELD\")", body);
+        Assert.Contains("BridgeConsiderYieldAutomaticAction(decision, action, \"OPPONENT_YIELD\")", body);
+        Assert.Contains("BridgeDisarmYieldPolicy(\"mandatory-human-decision\")", body);
+        Assert.Contains("own_turn_yield_auto_pass", Script);
+        Assert.Contains("own_turn_yield_auto_finish_attacking", Script);
         Assert.Contains("BridgeState.ui.autoAdvanceMode = \"SMART\"", Script);
     }
 

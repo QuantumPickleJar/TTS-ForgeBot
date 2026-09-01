@@ -1197,6 +1197,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.lastAppliedEventSequence = 0
     BridgeState.eventQueue = {}
     BridgeState.animationRunning = false
+    BridgeState.decisionLifecycle = {}
+    BridgeState.lastChoiceAttempt = nil
+    BridgeState.yieldPolicyOwnTurn = false
     BridgeCreatureTypeClearDraft("session-replaced")
     BridgeGraveyardClear("session-replaced")
     BridgeState.physicalByInstanceId = {}
@@ -1769,6 +1772,7 @@ function BridgeApplyAuthoritativeEvent(event)
             BridgeState.yieldPolicyTurnNumber = nil
             BridgeState.yieldPolicyActiveSeatId = nil
             BridgeState.yieldPolicySessionId = nil
+            BridgeState.yieldPolicyOwnTurn = false
             BridgeLog("[Bridge] cleared HUD yield policy at authoritative turn transition")
         end
         -- A turn boundary retires any decision belonging to the previous

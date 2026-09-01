@@ -778,6 +778,7 @@ end
 
 function BridgeRenderDecision(decision, force)
     BridgePresentationMetric("decisionRenderAttempts")
+    BridgeRecordDecisionLifecycle(decision, "render", "RENDER_BEGIN", force == true and "forced" or "normal")
     local key = BridgeDecisionPresentationKey(decision)
     if force ~= true
         and key == BridgeState.renderedDecisionPresentationKey
@@ -812,40 +813,67 @@ function BridgeRenderDecision(decision, force)
     end
 
     -- A YIELD TURN request may be made while Blue/AI is still consuming its
-    -- priority windows and no human decision exists.  Once Forge presents a
-    -- human main-priority decision in that same authoritative turn, consume
-    -- only a pass-only window.  Meaningful actions remain visible and stop
-    -- the yield, while the next exact Forge decision is awaited.
+    -- priority windows and no human decision exists. The policy records which
+    -- authoritative turn was active when it was armed. Own-turn yield is an
+    -- explicit waiver of optional actions; opponent-turn yield remains
+    -- conservative and stops at any meaningful human response.
     local policyTurn = tonumber(BridgeState.yieldPolicyTurnNumber or 0) or 0
     local policyActiveSeat = BridgeState.yieldPolicyActiveSeatId
+    local policyOwnTurn = BridgeState.yieldPolicyOwnTurn == true
     local policySessionMatches = BridgeState.yieldPolicySessionId == nil
         or BridgeState.yieldPolicySessionId == BridgeState.eventSessionId
     local policyTurnMatches = policyTurn == 0
         or (tonumber(BridgeState.tableTurnCount or 0) or 0) == policyTurn
     local policySeatMatches = policyActiveSeat == nil
         or BridgeState.currentTurnSeatId == policyActiveSeat
-    if BridgeState.yieldPolicyTurnNumber ~= nil
-        and (decision.kind ~= "main_priority" or BridgeDecisionHasNonPassAction(decision)) then
-        BridgeDisarmYieldPolicy("meaningful-human-decision")
-        policyTurnMatches = false
-    end
     -- A freshly started match may expose the opponent turn before Forge has
     -- emitted its first numeric turn counter. In that bootstrap window, the
     -- active-seat fence remains authoritative; turn_changed retires the
     -- policy once the real boundary is observed.
     if BridgeState.ui ~= nil and BridgeState.ui.autoAdvanceMode == "YIELD"
-        and policyTurnMatches and policySeatMatches and policySessionMatches
-        and decision.kind == "main_priority"
-        and decision.seatId == "forge-player-1"
-        and BridgeDecisionOffersActionType(decision, "pass_priority")
-        and not BridgeDecisionHasNonPassAction(decision) then
-        for _, action in ipairs(decision.actions) do
-            if action.type == "pass_priority" then
-                if BridgeAutomaticPassBackpressured() then return end
-                BridgeSubmitChoice(decision.decisionId, action.actionId, "yield_policy_auto_pass")
+        and policyTurnMatches and policySeatMatches and policySessionMatches then
+        local humanDecision = decision.seatId == "forge-player-1"
+        local automaticAction = nil
+        if humanDecision and decision.kind == "main_priority" then
+            for _, action in ipairs(decision.actions or {}) do
+                if action.type == "pass_priority" then automaticAction = action; break end
+            end
+        elseif humanDecision and decision.kind == "attacker_selection" then
+            for _, action in ipairs(decision.actions or {}) do
+                if action.type == "finish_attacking" or action.type == "choose_none" then
+                    automaticAction = action
+                    break
+                end
+            end
+        end
+
+        if policyOwnTurn and automaticAction ~= nil then
+            if BridgeConsiderYieldAutomaticAction(decision, automaticAction, "OWN_TURN_YIELD") then
                 BridgeRecordDecisionPresentationRendered(key)
                 return
             end
+        elseif not policyOwnTurn
+            and decision.kind == "main_priority"
+            and BridgeDecisionOffersActionType(decision, "pass_priority")
+            and not BridgeDecisionHasNonPassAction(decision) then
+            for _, action in ipairs(decision.actions or {}) do
+                if action.type == "pass_priority" then
+                    if BridgeConsiderYieldAutomaticAction(decision, action, "OPPONENT_YIELD") then
+                        BridgeRecordDecisionPresentationRendered(key)
+                        return
+                    end
+                    break
+                end
+            end
+        elseif humanDecision and (policyOwnTurn or decision.kind ~= "main_priority"
+            or BridgeDecisionHasNonPassAction(decision)
+            or not BridgeDecisionOffersActionType(decision, "pass_priority")) then
+            BridgeRecordDecisionLifecycle(decision, "yield", "AUTO_ACTION_CONSIDERED",
+                "stopped_meaningful_choice", nil, nil,
+                policyOwnTurn and "OWN_TURN_YIELD" or "OPPONENT_YIELD",
+                "stopped_meaningful_choice")
+            BridgeDisarmYieldPolicy("mandatory-human-decision")
+            policyTurnMatches = false
         end
     end
 
@@ -862,7 +890,13 @@ function BridgeRenderDecision(decision, force)
         and not BridgeDecisionHasNonPassAction(decision) then
         for _, action in ipairs(decision.actions) do
             if action.type == "pass_priority" then
-                if BridgeAutomaticPassBackpressured() then return end
+                if BridgeAutomaticPassBackpressured() then
+                    BridgeRecordDecisionLifecycle(decision, "smart", "AUTO_ACTION_BLOCKED",
+                        "event-backpressure", action.actionId, action.type, "SMART", "blocked_backpressure")
+                    return
+                end
+                BridgeRecordDecisionLifecycle(decision, "smart", "AUTO_ACTION_CONSIDERED",
+                    "pass-only-opponent-window", action.actionId, action.type, "SMART", "submitted")
                 BridgeSubmitChoice(decision.decisionId, action.actionId, "empty_priority_auto_pass")
                 BridgeRecordDecisionPresentationRendered(key)
                 return
