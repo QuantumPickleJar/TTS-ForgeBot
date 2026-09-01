@@ -617,11 +617,9 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
     -- Seat counters and mana are loaded as one authoritative row update;
     -- avoid a transient half-populated row during snapshot reconciliation.
     BridgeSetManaBank(seatSnapshot.seatId, seatSnapshot.manaPool or {}, true)
-    BridgeApplySeatTrackers(seatSnapshot)
-    -- Trackers normally refresh the unified row, but keep an explicit final
-    -- refresh here so a snapshot containing only mana (for example after a
-    -- Dark/Cabal Ritual) cannot leave the row at its previous values while
-    -- the seat's other counters are unchanged.
+    BridgeApplySeatTrackers(seatSnapshot, true)
+    -- All authoritative seat values are now in memory. Reconcile the row once
+    -- so a snapshot never paints a half-old/half-new resource state.
     BridgeRefreshResourceRow(seatSnapshot.seatId)
     local battlefieldInstances = {}
     for _, zone in ipairs(seatSnapshot.zones or {}) do
@@ -659,6 +657,7 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
                 if object ~= nil then
                     BridgeSetPhysicalTapped(object, card.tapped == true)
                     BridgeState.counterStateByInstanceId[card.cardInstanceId] = BridgeCopyCounterMap(card.counters)
+                    BridgePresentationMetric("snapshotVisualCounters")
                     local countersApplied, counterError = BridgeSetCardCounters(object, card.counters)
                     if not countersApplied then BridgeLog("[Bridge] counter visual unsupported: " .. tostring(counterError)) end
                     local keywords = {}
@@ -666,15 +665,18 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
                         keywords[BridgeNormalizeKeywordName(keyword)] = true
                     end
                     BridgeState.keywordStateByInstanceId[card.cardInstanceId] = keywords
+                    BridgePresentationMetric("snapshotVisualKeywords")
                     local keywordsApplied, keywordError = BridgeSetCardKeywords(object, card.keywords)
                     if not keywordsApplied then BridgeLog("[Bridge] keyword visual unsupported: " .. tostring(keywordError)) end
                     -- Encoder rebuilds performed by counters/keywords may
                     -- recreate the card UI.  Apply Unified P/T and ownership
                     -- last so a static characteristic update remains visible.
+                    BridgePresentationMetric("snapshotVisualCharacteristics")
                     local presentationApplied, presentationError = BridgeApplyCardPresentationSnapshot(object, card)
                     if not presentationApplied then
                         BridgeLog("[Bridge] optional card presentation skipped: " .. tostring(presentationError))
                     end
+                    BridgePresentationMetric("snapshotVisualDesignations")
                     BridgeSetPreparedDesignationPresentation(object, isPrepared)
                     BridgeEnsurePreparedBadge(object, card.cardInstanceId, isPrepared)
                     -- A snapshot establishes persistent truth; only a change
@@ -776,21 +778,59 @@ function BridgeShowResourceCounter(counter, position, seat)
     pcall(function() counter.setPosition(position) end)
 end
 
+-- Resource-row and Monarch objects are presentation-owned, named objects. A
+-- single hydration pass indexes objects that survived Save & Play; steady
+-- state must use the index and never scan the whole table to prove that a
+-- zero-valued object is absent.
+function BridgeHydratePresentationObjectIndexes()
+    if BridgeState.resourceCounterIndexHydrated == true
+        and BridgeState.monarchHelperIndexHydrated == true then return end
+
+    BridgePresentationMetric("worldScanCount")
+    BridgePresentationMetric("resourceWorldScanCount")
+    local resourceObjects = {}
+    for _, object in ipairs(getAllObjects()) do
+        if BridgeObjectIsUsable(object) then
+            local guid = BridgeSafeObjectGuid(object)
+            local name = tostring(BridgeSafeObjectName(object) or "")
+            local manaKind, manaSeat = string.match(name, "^Forge Mana ([WUBRGC]) (forge%-player%-[12])$")
+            local trackerKind, trackerSeat = string.match(name, "^Forge (energy|experience|poison|speed) (forge%-player%-[12])$")
+            local kind = manaKind or trackerKind
+            local seatId = manaSeat or trackerSeat
+            if guid ~= nil and kind ~= nil and seatId ~= nil then
+                BridgeRegisterPresentationObject(object, "resource_row_" .. tostring(kind))
+                resourceObjects[seatId] = resourceObjects[seatId] or {}
+                if resourceObjects[seatId][kind] == nil then
+                    resourceObjects[seatId][kind] = guid
+                end
+            end
+            if BridgeState.monarchHelperGuid == nil and object.tag == "Card"
+                and string.sub(string.lower(name), 1, 10) == "the monarch" then
+                BridgeRegisterPresentationObject(object, "monarch_helper")
+                BridgeState.monarchHelperGuid = guid
+            end
+        end
+    end
+    for seatId, resources in pairs(resourceObjects) do
+        BridgeState.resourceCounterGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId] or {}
+        for kind, guid in pairs(resources) do
+            if BridgeState.resourceCounterGuidBySeatId[seatId][kind] == nil then
+                BridgeState.resourceCounterGuidBySeatId[seatId][kind] = guid
+            end
+        end
+    end
+    BridgeState.resourceCounterIndexHydrated = true
+    BridgeState.monarchHelperIndexHydrated = true
+end
+
 function BridgeFindResourceCounter(seatId, kind, definition)
     BridgeState.resourceCounterGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId] or {}
     local guid = BridgeState.resourceCounterGuidBySeatId[seatId][kind]
     local counter = guid and BridgeGetLiveObjectByGuid(guid) or nil
     if counter ~= nil then return counter end
-
-    local expectedName = definition.name .. " " .. tostring(seatId)
-    for _, object in ipairs(getAllObjects()) do
-        if BridgeObjectIsUsable(object) and BridgeSafeObjectName(object) == expectedName then
-            counter = object
-            BridgeRegisterPresentationObject(counter, "resource_row_" .. tostring(kind))
-            BridgeState.resourceCounterGuidBySeatId[seatId][kind] = BridgeSafeObjectGuid(counter)
-            return counter
-        end
-    end
+    -- A missing cached GUID is an ordinary zero-resource state, not evidence
+    -- that the world needs to be searched. Hydration is performed once at the
+    -- session boundary; positive values can create a new presentation object.
     return nil
 end
 
@@ -858,8 +898,13 @@ end
 -- resources are hidden/retired and never occupy a slot; remaining counters
 -- are packed contiguously in the stable order above.
 function BridgeRefreshResourceRow(seatId)
+    BridgePresentationMetric("resourceRowRefreshCount")
+    local resourceToken = BridgePerformanceBegin("resource_row_total")
     local seat = BRIDGE_SEATS[seatId]
-    if seat == nil or BridgeResourceRowPosition(seatId, 1) == nil then return false end
+    if seat == nil or BridgeResourceRowPosition(seatId, 1) == nil then
+        BridgePerformanceEnd(resourceToken, "resource_row_total_end", "resourceRow")
+        return false
+    end
     BridgeState.resourceCounterGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId] or {}
     BridgeState.manaCounterGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId]
     BridgeState.playerTrackerGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId]
@@ -867,7 +912,12 @@ function BridgeRefreshResourceRow(seatId)
     for _, kind in ipairs(BRIDGE_RESOURCE_ORDER) do
         local definition = BridgeResourceDefinition(kind)
         local value = BridgeResourceValue(seatId, kind)
-        local counter = BridgeFindResourceCounter(seatId, kind, definition)
+        -- Do not look up absent zero-valued resources. A cached object is still
+        -- hidden in O(1), while an uncached zero needs no physical operation.
+        local counter = nil
+        if value > 0 or BridgeState.resourceCounterGuidBySeatId[seatId][kind] ~= nil then
+            counter = BridgeFindResourceCounter(seatId, kind, definition)
+        end
         if value > 0 then
             slot = slot + 1
             local position = BridgeResourceRowPosition(seatId, slot)
@@ -880,6 +930,7 @@ function BridgeRefreshResourceRow(seatId)
             BridgeHideResourceCounter(counter)
         end
     end
+    BridgePerformanceEnd(resourceToken, "resource_row_total_end", "resourceRow", slot)
     return true
 end
 
@@ -952,7 +1003,7 @@ function BridgeSetSeatTracker(seatId, kind, value)
     return true, nil
 end
 
-function BridgeApplySeatTrackers(seatSnapshot)
+function BridgeApplySeatTrackers(seatSnapshot, deferRefresh)
     if seatSnapshot == nil then return end
     local counters = BridgeState.playerCountersBySeatId[seatSnapshot.seatId] or {}
     counters.poison = math.max(0, tonumber(seatSnapshot.poison or counters.poison or 0) or 0)
@@ -960,19 +1011,17 @@ function BridgeApplySeatTrackers(seatSnapshot)
     BridgeState.playerCountersBySeatId[seatSnapshot.seatId] = counters
     BridgeState.playerStateBySeatId[seatSnapshot.seatId] = BridgeState.playerStateBySeatId[seatSnapshot.seatId] or {}
     BridgeState.playerStateBySeatId[seatSnapshot.seatId].counters = counters
-    BridgeRefreshResourceRow(seatSnapshot.seatId)
+    if not deferRefresh then BridgeRefreshResourceRow(seatSnapshot.seatId) end
 end
 
 function BridgeFindLiveMonarchHelper()
     local known = BridgeState.monarchHelperGuid and BridgeGetLiveObjectByGuid(BridgeState.monarchHelperGuid) or nil
     if known ~= nil then return known end
-    for _, object in ipairs(getAllObjects()) do
-        local name = string.lower(tostring(BridgeSafeObjectName(object) or ""))
-        if BridgeObjectIsUsable(object) and object.tag == "Card" and string.sub(name, 1, 10) == "the monarch" then
-            BridgeRegisterPresentationObject(object, "monarch_helper")
-            BridgeState.monarchHelperGuid = BridgeSafeObjectGuid(object)
-            return object
-        end
+    BridgeState.monarchHelperGuid = nil
+    if BridgeState.monarchHelperIndexHydrated ~= true then
+        BridgeHydratePresentationObjectIndexes()
+        local hydrated = BridgeState.monarchHelperGuid and BridgeGetLiveObjectByGuid(BridgeState.monarchHelperGuid) or nil
+        if hydrated ~= nil then return hydrated end
     end
     return nil
 end
@@ -993,7 +1042,9 @@ function BridgePositionMonarchHelper(helper, seatId)
 end
 
 function BridgeReturnMonarchHelper()
-    local helper = BridgeFindLiveMonarchHelper()
+    -- No monarch is the normal steady state. Do not rediscover an absent
+    -- helper with a full-world scan during every snapshot.
+    local helper = BridgeState.monarchHelperGuid and BridgeGetLiveObjectByGuid(BridgeState.monarchHelperGuid) or nil
     local utilityDeck = BridgeGetLiveObjectByGuid("946716")
     if helper ~= nil and utilityDeck ~= nil and utilityDeck.tag == "Deck" then
         BridgeSafeObjectCall(utilityDeck, function(deck) deck.putObject(helper) end)
@@ -1065,41 +1116,12 @@ function BridgeStartEventPolling(sessionId, skipExisting)
 end
 
 function BridgeRetireResourceRowObjects()
-    local retired = {}
     for seatId, resources in pairs(BridgeState.resourceCounterGuidBySeatId or {}) do
         for _, guid in pairs(resources or {}) do
-            local object = BridgeGetLiveObjectByGuid(guid)
-            if object ~= nil and not retired[guid] then
-                retired[guid] = true
-                -- These GUIDs are registered only after a source has been
-                -- cloned/taken, so native source/template objects are never
-                -- destroyed during a session reset.
-                if BridgeIsPresentationOnlyObject(object) then
-                    BridgeSafeObjectCall(object, function(o) o.destruct() end)
-                end
-            end
+            BridgeHideResourceCounter(BridgeGetLiveObjectByGuid(guid))
         end
     end
-    -- A Save & Play can reload Lua after the old GUID maps were cleared. Find
-    -- only our explicitly named spawned instances in that case, excluding all
-    -- configured native source GUIDs/templates.
-    local sourceGuids = {}
-    for _, guid in pairs(BRIDGE_MANA_COUNTER_SOURCES or {}) do sourceGuids[guid] = true end
-    for _, guid in pairs(BRIDGE_PLAYER_TRACKER_SOURCES or {}) do sourceGuids[guid] = true end
-    for _, object in ipairs(getAllObjects()) do
-        local guid = BridgeSafeObjectGuid(object)
-        local name = tostring(BridgeSafeObjectName(object) or "")
-        local spawned = string.match(name, "^Forge Mana [WUBRGC] forge%-player%-[12]$")
-            or string.match(name, "^Forge (energy|experience|poison|speed) forge%-player%-[12]$")
-        if guid ~= nil and spawned and not sourceGuids[guid] and not retired[guid] then
-            retired[guid] = true
-            BridgeSafeObjectCall(object, function(o) o.destruct() end)
-        end
-    end
-    BridgeState.resourceCounterGuidBySeatId = {}
     BridgeState.resourceCounterSpawnInFlightBySeatId = {}
-    BridgeState.manaCounterGuidBySeatId = {}
-    BridgeState.playerTrackerGuidBySeatId = {}
 end
 
 function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
@@ -1127,6 +1149,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeStopDecisionPolling()
     BridgeReturnAttackPresentation(nil)
     BridgeRetireResourceRowObjects()
+    -- One world scan recovers named row/helper objects after Save & Play.
+    -- Subsequent snapshots use the indexed GUIDs, including the all-zero case.
+    BridgeHydratePresentationObjectIndexes()
     BridgeClearPreparedPresentationObjects()
     BridgeState.decisionPresentationGeneration = BridgeState.decisionPresentationGeneration + 1
     BridgeAdvancePhysicalPresentationGeneration("session-replaced")
@@ -1160,6 +1185,14 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         keywordPropWriteCount = 0,
         decalWriteCount = 0,
         fullSnapshotReconcileCount = 0,
+        resourceRowRefreshCount = 0,
+        resourceWorldScanCount = 0,
+        worldScanCount = 0,
+        yieldBackpressurePauseCount = 0,
+        snapshotVisualCounters = 0,
+        snapshotVisualKeywords = 0,
+        snapshotVisualCharacteristics = 0,
+        snapshotVisualDesignations = 0,
         decisionRenderAttempts = 0,
         decisionRenderExecuted = 0,
         decisionRenderSkippedIdentical = 0
@@ -1211,6 +1244,12 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.attackLaneGuidBySeatId = {}
     BridgeState.snapshotForgeSequence = 0
     BridgeState.deferredSnapshotReconcile = nil
+    BridgeState.snapshotReconcilePending = false
+    BridgeState.snapshotReconcilePendingRequest = nil
+    BridgeState.snapshotReconcileRequestGeneration = 0
+    BridgeState.snapshotReconcileLastAppliedCursor = 0
+    BridgeState.snapshotReconcileLastAppliedGeneration = 0
+    BridgeState.snapshotReconcileLastAppliedCategory = nil
     BridgeState.lastTurnEventSignature = nil
     BridgeState.lastPhaseEventSignature = nil
     BridgeState.lastPriorityEventSignature = nil
@@ -1381,7 +1420,14 @@ function BridgePollEvents(generation)
 end
 
 function BridgeProcessEventQueue()
-    if BridgeState.animationRunning or not BridgeState.eventPolling or #BridgeState.eventQueue == 0 then
+    if BridgeState.animationRunning or not BridgeState.eventPolling then
+        return
+    end
+    if #BridgeState.eventQueue == 0 then
+        -- Routine verification is allowed only at a quiescent boundary. The
+        -- exact event stream gets first chance to establish the physical state.
+        BridgeTryApplyDeferredSnapshotReconcile("event-drain")
+        BridgeTryStartPendingSnapshotReconcile("event-drain")
         return
     end
 
@@ -1416,7 +1462,6 @@ function BridgeProcessEventQueue()
 
     table.remove(BridgeState.eventQueue, 1)
     BridgeState.lastAppliedEventSequence = event.sequence
-    BridgeTryApplyDeferredSnapshotReconcile("event " .. tostring(event.sequence))
     BridgeTryPresentPendingDecision("event-applied")
     if event.kind == "draw" or event.kind == "turn_changed" or event.kind == "phase_changed" then
         -- The old menu may still be rendered when Forge changes state. Ask
@@ -1425,7 +1470,7 @@ function BridgeProcessEventQueue()
         BridgeRefreshDecisionAfterStateTransition(event.kind)
     end
     if BridgeShouldReconcileAfterEvent(event) then
-        BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence))
+        BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence) .. " recovery", "RECOVERY")
     end
     local generation = BridgeState.eventPollGeneration
     local nextDelay = delay or 0.1

@@ -68,6 +68,20 @@ function BridgePresentationMetric(name)
     BridgeState.presentationMetrics[name] = (BridgeState.presentationMetrics[name] or 0) + 1
 end
 
+-- Automated pass/yield is presentation convenience, so it must not let Forge
+-- outrun a TTS event backlog created by local rendering work. Manual choices
+-- remain unaffected and the next authoritative decision resumes automation.
+function BridgeAutomaticPassBackpressured()
+    local received = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    local backlog = math.max(#(BridgeState.eventQueue or {}), math.max(0, received - applied))
+    if backlog <= 0 and not BridgeState.animationRunning
+        and not BridgeState.snapshotReconcileInFlight then return false end
+    BridgePresentationMetric("yieldBackpressurePauseCount")
+    BridgeLog("[Bridge] automated pass held behind presentation backlog=" .. tostring(backlog))
+    return true
+end
+
 -- Freeze-flight telemetry is deliberately local to this Lua runtime.  TTS's
 -- documented Time.time member is the game-runtime clock; probe it because
 -- MoonSharp-based test hosts and older/non-TTS runtimes may not expose Time.
@@ -216,6 +230,16 @@ function BridgePerformanceDiagnosticPayload()
     summary.keywordPropWriteCount = tonumber(metrics.keywordPropWriteCount or 0) or 0
     summary.decalWriteCount = tonumber(metrics.decalWriteCount or 0) or 0
     summary.fullSnapshotReconcileCount = tonumber(metrics.fullSnapshotReconcileCount or 0) or 0
+    summary.resourceRowRefreshCount = tonumber(metrics.resourceRowRefreshCount or 0) or 0
+    summary.resourceWorldScanCount = tonumber(metrics.resourceWorldScanCount or 0) or 0
+    summary.worldScanCount = tonumber(metrics.worldScanCount or 0) or 0
+    summary.yieldBackpressurePauseCount = tonumber(metrics.yieldBackpressurePauseCount or 0) or 0
+    summary.snapshotVisualCounters = tonumber(metrics.snapshotVisualCounters or 0) or 0
+    summary.snapshotVisualKeywords = tonumber(metrics.snapshotVisualKeywords or 0) or 0
+    summary.snapshotVisualCharacteristics = tonumber(metrics.snapshotVisualCharacteristics or 0) or 0
+    summary.snapshotVisualDesignations = tonumber(metrics.snapshotVisualDesignations or 0) or 0
+    summary.snapshotReconcileLastAppliedCursor = BridgeState.snapshotReconcileLastAppliedCursor
+    summary.snapshotReconcileLastAppliedGeneration = BridgeState.snapshotReconcileLastAppliedGeneration
     canary.turnNumber = tonumber(BridgeState.tableTurnCount or 0) or nil
     canary.phase = BridgeState.currentPhase
     canary.activeSeatId = BridgeState.currentTurnSeatId
@@ -258,7 +282,7 @@ end
 function BridgeLogPresentationMetrics(label)
     local metrics = BridgeState.presentationMetrics or {}
     BridgeLog(string.format(
-        "[Bridge] presentation-metrics label=%s decisionAttempts=%d decisionExecuted=%d decisionSkippedIdentical=%d uiAttempts=%d uiWrites=%d uiSkippedIdentical=%d encoderRebuilds=%d keywordWrites=%d decalWrites=%d snapshotReconciles=%d",
+        "[Bridge] presentation-metrics label=%s decisionAttempts=%d decisionExecuted=%d decisionSkippedIdentical=%d uiAttempts=%d uiWrites=%d uiSkippedIdentical=%d encoderRebuilds=%d keywordWrites=%d decalWrites=%d snapshotReconciles=%d resourceRows=%d resourceScans=%d worldScans=%d yieldPaused=%d snapshotCounters=%d snapshotKeywords=%d snapshotCharacteristics=%d snapshotDesignations=%d",
         tostring(label or "manual"), tonumber(metrics.decisionRenderAttempts or 0),
         tonumber(metrics.decisionRenderExecuted or 0),
         tonumber(metrics.decisionRenderSkippedIdentical or 0),
@@ -266,7 +290,11 @@ function BridgeLogPresentationMetrics(label)
         tonumber(BridgeState.ui and BridgeState.ui.uiAttributeWriteCount or 0),
         tonumber(BridgeState.ui and BridgeState.ui.uiAttributeSkippedCount or 0),
         tonumber(metrics.encoderRebuildCount or 0), tonumber(metrics.keywordPropWriteCount or 0),
-        tonumber(metrics.decalWriteCount or 0), tonumber(metrics.fullSnapshotReconcileCount or 0)))
+        tonumber(metrics.decalWriteCount or 0), tonumber(metrics.fullSnapshotReconcileCount or 0),
+        tonumber(metrics.resourceRowRefreshCount or 0), tonumber(metrics.resourceWorldScanCount or 0),
+        tonumber(metrics.worldScanCount or 0), tonumber(metrics.yieldBackpressurePauseCount or 0),
+        tonumber(metrics.snapshotVisualCounters or 0), tonumber(metrics.snapshotVisualKeywords or 0),
+        tonumber(metrics.snapshotVisualCharacteristics or 0), tonumber(metrics.snapshotVisualDesignations or 0)))
 end
 
 function BridgeWaitTime(callback, delay)
@@ -470,6 +498,10 @@ BridgeState = {
         keywordPropWriteCount = 0,
         decalWriteCount = 0,
         fullSnapshotReconcileCount = 0,
+        resourceRowRefreshCount = 0,
+        resourceWorldScanCount = 0,
+        worldScanCount = 0,
+        yieldBackpressurePauseCount = 0,
         decisionRenderAttempts = 0,
         decisionRenderExecuted = 0,
         decisionRenderSkippedIdentical = 0
@@ -545,6 +577,11 @@ BridgeState = {
     snapshotForgeSequence = 0,
     snapshotReconcileInFlight = false,
     snapshotReconcilePending = false,
+    snapshotReconcilePendingRequest = nil,
+    snapshotReconcileRequestGeneration = 0,
+    snapshotReconcileLastAppliedCursor = 0,
+    snapshotReconcileLastAppliedGeneration = 0,
+    snapshotReconcileLastAppliedCategory = nil,
     deferredSnapshotReconcile = nil,
     lastTurnEventSignature = nil,
     lastPhaseEventSignature = nil,
@@ -564,6 +601,8 @@ BridgeState = {
     battlefieldKindByInstanceId = {},
     presentedCombatSignature = nil,
     zoneAnchorGuidBySeatAndZone = {},
+    resourceCounterIndexHydrated = false,
+    monarchHelperIndexHydrated = false,
     bootstrapping = false,
     setupBusy = false,
     doctorInitializedUi = false,
@@ -3983,11 +4022,12 @@ function BridgeZoneIsPublicForReconcile(zoneName)
 end
 
 function BridgeShouldReconcileAfterEvent(event)
-    return event.kind == "spell_resolved"
-        or event.kind == "land_played"
-        or (event.kind == "card_moved"
-            and (BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId] == nil
-                or BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId].applied ~= true))
+    -- Exact land/spell/card events are already the authoritative physical
+    -- delta. Full snapshots are recovery authority only; routine verification
+    -- here used to repaint the whole table after every ordinary mutation.
+    local transition = event ~= nil and event.kind == "card_moved"
+        and BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId] or nil
+    return transition ~= nil and transition.applied ~= true
 end
 
 function BridgeResumeChoiceProtocol(reason)
@@ -4074,6 +4114,56 @@ function BridgePhysicalLibraryQueuesIdle()
     return true
 end
 
+function BridgeSnapshotRequestCategory(reason, category)
+    if category ~= nil then return string.upper(tostring(category)) end
+    local text = string.lower(tostring(reason or ""))
+    if string.find(text, "final", 1, true) or string.find(text, "game_ended", 1, true) then return "FINAL" end
+    if string.sub(text, 1, 6) == "event " then return "ROUTINE_VERIFY" end
+    return "RECOVERY"
+end
+
+function BridgeEventBacklogCount()
+    local received = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    return math.max(#(BridgeState.eventQueue or {}), math.max(0, received - applied))
+end
+
+function BridgeRoutineSnapshotBlocked()
+    return BridgeEventBacklogCount() > 0 or BridgeState.animationRunning == true
+end
+
+function BridgeSnapshotRequestPriority(category)
+    if category == "FINAL" then return 3 end
+    if category == "RECOVERY" then return 2 end
+    return 1
+end
+
+function BridgeRememberSnapshotRequest(reason, category)
+    BridgeState.snapshotReconcileRequestGeneration = (BridgeState.snapshotReconcileRequestGeneration or 0) + 1
+    local request = {
+        reason = reason,
+        category = category,
+        generation = BridgeState.snapshotReconcileRequestGeneration
+    }
+    local prior = BridgeState.snapshotReconcilePendingRequest
+    if prior == nil or BridgeSnapshotRequestPriority(category) >= BridgeSnapshotRequestPriority(prior.category) then
+        -- Routine requests are latest-wins. Recovery/final requests retain
+        -- priority over a routine request arriving in the same burst.
+        BridgeState.snapshotReconcilePendingRequest = request
+    end
+    BridgeState.snapshotReconcilePending = true
+end
+
+function BridgeTryStartPendingSnapshotReconcile(reason)
+    local request = BridgeState.snapshotReconcilePendingRequest
+    if request == nil or BridgeState.snapshotReconcileInFlight then return false end
+    if request.category == "ROUTINE_VERIFY" and BridgeRoutineSnapshotBlocked() then return false end
+    BridgeState.snapshotReconcilePendingRequest = nil
+    BridgeState.snapshotReconcilePending = false
+    BridgeScheduleSnapshotReconcile(request.reason or reason or "pending", request.category)
+    return true
+end
+
 function BridgeApplyCombatSnapshot(combat)
     local parts = {}
     for _, attack in ipairs((combat and combat.attacks) or {}) do table.insert(parts, tostring(attack.attackerCardInstanceId) .. "|" .. table.concat(attack.blockerCardInstanceIds or {}, ",")) end
@@ -4096,13 +4186,24 @@ end
 
 function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     local movedCount = 0
+    local queueBefore = #(BridgeState.eventQueue or {})
+    local receivedBefore = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local appliedBefore = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    local scansBefore = tonumber(BridgeState.presentationMetrics and BridgeState.presentationMetrics.worldScanCount or 0) or 0
+    BridgePerformanceTrace("snapshot_reconcile.queue_lag_before", nil,
+        math.max(0, receivedBefore - appliedBefore), queueBefore)
     BridgePresentationMetric("fullSnapshotReconcileCount")
     local pending = BridgeState.pendingDecision
     local requiredSeatId = pending ~= nil and pending.kind == "mulligan"
         and tostring(pending.mulliganStage or "") == "keep_or_mulligan"
         and pending.seatId or nil
+    local handToken = BridgePerformanceBegin("snapshot_reconcile.hand_identity")
     BridgeRecordExpectedHandIdentities(snapshot, requiredSeatId)
+    BridgePerformanceEnd(handToken, "snapshot_reconcile.hand_identity.end", "snapshotReconcileHandIdentity")
+    local monarchToken = BridgePerformanceBegin("snapshot_reconcile.monarch")
     BridgeSetMonarchSeat(snapshot and snapshot.monarchSeatId or nil)
+    BridgePerformanceEnd(monarchToken, "snapshot_reconcile.monarch.end", "snapshotReconcileMonarch")
+    local stackToken = BridgePerformanceBegin("snapshot_reconcile.stack")
     BridgeState.stackSummary = {}
     for _, card in ipairs(snapshot and snapshot.stack or {}) do
         table.insert(BridgeState.stackSummary, tostring(card.currentCardName or card.cardName or "Forge stack object"))
@@ -4117,6 +4218,8 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
         }
     end
     BridgeUiMarkDirty("stack")
+    BridgePerformanceEnd(stackToken, "snapshot_reconcile.stack.end", "snapshotReconcileStack")
+    local publicZoneToken = BridgePerformanceBegin("snapshot_reconcile.public_zone_diff")
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
         for _, zone in ipairs(seatSnapshot.zones or {}) do
             local zoneName = string.lower(tostring(zone.name or ""))
@@ -4202,12 +4305,18 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
         -- GUID when the first visual pass ran. Reapply the same authoritative
         -- snapshot after zone reconciliation so persistent designations and
         -- their badges appear without waiting for another Forge mutation.
+        local seatVisualToken = BridgePerformanceBegin("snapshot_reconcile.seat_visual")
         BridgeApplySeatSnapshotVisualState(seatSnapshot)
+        BridgePerformanceEnd(seatVisualToken, "snapshot_reconcile.seat_visual.end", "snapshotReconcileSeatVisual")
     end
+    BridgePerformanceEnd(publicZoneToken, "snapshot_reconcile.public_zone_diff.end", "snapshotReconcilePublicZoneDiff", movedCount)
+    local combatToken = BridgePerformanceBegin("snapshot_reconcile.combat")
     BridgeApplyCombatSnapshot(snapshot.combat)
+    BridgePerformanceEnd(combatToken, "snapshot_reconcile.combat.end", "snapshotReconcileCombat")
     -- Snapshot reconciliation is also recovery authority for the turn
     -- pipeline. These values come directly from Forge; they never advance a
     -- phase or infer legality in Lua.
+    local turnStateToken = BridgePerformanceBegin("snapshot_reconcile.turn_state")
     if snapshot.turnNumber ~= nil then BridgeState.tableTurnCount = snapshot.turnNumber end
     if snapshot.activeSeatId ~= nil then BridgeState.currentTurnSeatId = snapshot.activeSeatId end
     if snapshot.prioritySeatId ~= nil then BridgeState.prioritySeatId = snapshot.prioritySeatId end
@@ -4216,7 +4325,21 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     end
     BridgeUiMarkDirty("authoritative-snapshot-turn-state")
     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
+    BridgeState.snapshotReconcileLastAppliedCursor = tonumber(snapshot.eventCursor or 0) or 0
+    BridgeState.snapshotReconcileLastAppliedGeneration = BridgeState.snapshotReconcileRequestGeneration or 0
+    BridgeState.snapshotReconcileLastAppliedCategory = BridgeSnapshotRequestCategory(reason)
+    BridgePerformanceEnd(turnStateToken, "snapshot_reconcile.turn_state.end", "snapshotReconcileTurnState")
+    local receivedAfter = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local appliedAfter = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    local queueAfter = #(BridgeState.eventQueue or {})
+    local scansAfter = tonumber(BridgeState.presentationMetrics and BridgeState.presentationMetrics.worldScanCount or 0) or 0
+    BridgePerformanceTrace("snapshot_reconcile.queue_lag_after", nil,
+        math.max(0, receivedAfter - appliedAfter), queueAfter)
     BridgeLogSnapshotOrdering("applied", snapshot, reason)
+    BridgeLog(string.format(
+        "[Bridge] snapshot reconcile metrics cursor=%s received=%s applied=%s queueBefore=%s queueAfter=%s reason=%s corrected=%s physicalCorrection=%s worldScans=%s",
+        tostring(snapshot.eventCursor), tostring(receivedAfter), tostring(appliedAfter), tostring(queueBefore),
+        tostring(queueAfter), tostring(reason), tostring(movedCount), tostring(movedCount > 0), tostring(scansAfter - scansBefore)))
     if movedCount > 0 then
         BridgeLog(string.format("[Bridge] snapshot reconcile (%s): corrected %d public card location(s)", tostring(reason), movedCount))
     end
@@ -4225,19 +4348,39 @@ end
 function BridgeTryApplyDeferredSnapshotReconcile(reason)
     local pending = BridgeState.deferredSnapshotReconcile
     if pending == nil or not BridgeSnapshotMayMutatePublicZones(pending.snapshot)
-        or not BridgePhysicalLibraryQueuesIdle() then return end
+        or not BridgePhysicalLibraryQueuesIdle() then return false end
+    if pending.category == "ROUTINE_VERIFY" and BridgeRoutineSnapshotBlocked() then
+        return false
+    end
+    local snapshotCursor = tonumber(pending.snapshot and pending.snapshot.eventCursor or 0) or 0
+    if pending.category == "ROUTINE_VERIFY"
+        and snapshotCursor <= tonumber(BridgeState.snapshotReconcileLastAppliedCursor or 0) then
+        BridgeState.deferredSnapshotReconcile = nil
+        BridgeLogSnapshotOrdering("skipped-superseded", pending.snapshot, pending.reason or reason)
+        return false
+    end
     BridgeState.deferredSnapshotReconcile = nil
     BridgeState.pendingStructuredZoneTransitionByInstanceId = {}
     BridgeApplySafeSnapshotReconcile(pending.snapshot, pending.reason or reason or "deferred")
+    return true
 end
 
-function BridgeScheduleSnapshotReconcile(reason)
+function BridgeScheduleSnapshotReconcile(reason, category)
     if BridgeState.eventSessionId == nil then return end
+    category = BridgeSnapshotRequestCategory(reason, category)
+    if category == "ROUTINE_VERIFY" and BridgeRoutineSnapshotBlocked() then
+        BridgeRememberSnapshotRequest(reason, category)
+        BridgeLog("[Bridge] routine snapshot held behind event drain reason=" .. tostring(reason)
+            .. " backlog=" .. tostring(BridgeEventBacklogCount()))
+        return
+    end
     if BridgeState.snapshotReconcileInFlight then
-        BridgeState.snapshotReconcilePending = true
+        BridgeRememberSnapshotRequest(reason, category)
         return
     end
     BridgeState.snapshotReconcileInFlight = true
+    local requestGeneration = (BridgeState.snapshotReconcileRequestGeneration or 0) + 1
+    BridgeState.snapshotReconcileRequestGeneration = requestGeneration
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
         BridgeState.snapshotReconcileInFlight = false
         if ok and snapshot ~= nil and snapshot.sessionId == BridgeState.eventSessionId then
@@ -4250,10 +4393,29 @@ function BridgeScheduleSnapshotReconcile(reason)
                 BridgeState.openingHandReadinessSnapshotRequested = false
                 BridgeLog("[Bridge] opening-hand-readiness snapshot contained no exact hand identities; retrying")
             end
-            if BridgeSnapshotMayMutatePublicZones(snapshot) and BridgePhysicalLibraryQueuesIdle() then
+            local snapshotCursor = tonumber(snapshot.eventCursor or 0) or 0
+            local alreadyCovered = category == "ROUTINE_VERIFY"
+                and snapshotCursor <= tonumber(BridgeState.snapshotReconcileLastAppliedCursor or 0)
+            local canApply = not alreadyCovered
+                and BridgeSnapshotMayMutatePublicZones(snapshot)
+                and BridgePhysicalLibraryQueuesIdle()
+                and (category ~= "ROUTINE_VERIFY" or not BridgeRoutineSnapshotBlocked())
+            if canApply then
                 BridgeApplySafeSnapshotReconcile(snapshot, reason)
+            elseif alreadyCovered then
+                BridgeLogSnapshotOrdering("skipped-superseded", snapshot, reason)
             else
-                BridgeState.deferredSnapshotReconcile = {snapshot = snapshot, reason = reason}
+                local prior = BridgeState.deferredSnapshotReconcile
+                if prior == nil or BridgeSnapshotRequestPriority(category) >= BridgeSnapshotRequestPriority(prior.category) then
+                    -- Keep one latest useful payload. Never let an older routine
+                    -- response replace an explicit recovery snapshot.
+                    BridgeState.deferredSnapshotReconcile = {
+                        snapshot = snapshot,
+                        reason = reason,
+                        category = category,
+                        generation = requestGeneration
+                    }
+                end
                 local queueState = BridgePhysicalLibraryQueuesIdle() and "event-cursor" or "physical-library-queue"
                 BridgeLogSnapshotOrdering("deferred-" .. queueState, snapshot, reason)
             end
@@ -4267,10 +4429,7 @@ function BridgeScheduleSnapshotReconcile(reason)
             BridgeTryPresentPendingDecision("snapshot-reconcile")
         end
 
-        if BridgeState.snapshotReconcilePending then
-            BridgeState.snapshotReconcilePending = false
-            BridgeScheduleSnapshotReconcile("pending")
-        end
+        BridgeTryStartPendingSnapshotReconcile("pending")
     end)
 end
 
@@ -6416,6 +6575,7 @@ function BridgeRenderDecision(decision, force)
         and not BridgeDecisionHasNonPassAction(decision) then
         for _, action in ipairs(decision.actions) do
             if action.type == "pass_priority" then
+                if BridgeAutomaticPassBackpressured() then return end
                 BridgeSubmitChoice(decision.decisionId, action.actionId, "yield_policy_auto_pass")
                 BridgeRecordDecisionPresentationRendered(key)
                 return
@@ -6436,6 +6596,7 @@ function BridgeRenderDecision(decision, force)
         and not BridgeDecisionHasNonPassAction(decision) then
         for _, action in ipairs(decision.actions) do
             if action.type == "pass_priority" then
+                if BridgeAutomaticPassBackpressured() then return end
                 BridgeSubmitChoice(decision.decisionId, action.actionId, "empty_priority_auto_pass")
                 BridgeRecordDecisionPresentationRendered(key)
                 return
@@ -8054,11 +8215,9 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
     -- Seat counters and mana are loaded as one authoritative row update;
     -- avoid a transient half-populated row during snapshot reconciliation.
     BridgeSetManaBank(seatSnapshot.seatId, seatSnapshot.manaPool or {}, true)
-    BridgeApplySeatTrackers(seatSnapshot)
-    -- Trackers normally refresh the unified row, but keep an explicit final
-    -- refresh here so a snapshot containing only mana (for example after a
-    -- Dark/Cabal Ritual) cannot leave the row at its previous values while
-    -- the seat's other counters are unchanged.
+    BridgeApplySeatTrackers(seatSnapshot, true)
+    -- All authoritative seat values are now in memory. Reconcile the row once
+    -- so a snapshot never paints a half-old/half-new resource state.
     BridgeRefreshResourceRow(seatSnapshot.seatId)
     local battlefieldInstances = {}
     for _, zone in ipairs(seatSnapshot.zones or {}) do
@@ -8096,6 +8255,7 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
                 if object ~= nil then
                     BridgeSetPhysicalTapped(object, card.tapped == true)
                     BridgeState.counterStateByInstanceId[card.cardInstanceId] = BridgeCopyCounterMap(card.counters)
+                    BridgePresentationMetric("snapshotVisualCounters")
                     local countersApplied, counterError = BridgeSetCardCounters(object, card.counters)
                     if not countersApplied then BridgeLog("[Bridge] counter visual unsupported: " .. tostring(counterError)) end
                     local keywords = {}
@@ -8103,15 +8263,18 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
                         keywords[BridgeNormalizeKeywordName(keyword)] = true
                     end
                     BridgeState.keywordStateByInstanceId[card.cardInstanceId] = keywords
+                    BridgePresentationMetric("snapshotVisualKeywords")
                     local keywordsApplied, keywordError = BridgeSetCardKeywords(object, card.keywords)
                     if not keywordsApplied then BridgeLog("[Bridge] keyword visual unsupported: " .. tostring(keywordError)) end
                     -- Encoder rebuilds performed by counters/keywords may
                     -- recreate the card UI.  Apply Unified P/T and ownership
                     -- last so a static characteristic update remains visible.
+                    BridgePresentationMetric("snapshotVisualCharacteristics")
                     local presentationApplied, presentationError = BridgeApplyCardPresentationSnapshot(object, card)
                     if not presentationApplied then
                         BridgeLog("[Bridge] optional card presentation skipped: " .. tostring(presentationError))
                     end
+                    BridgePresentationMetric("snapshotVisualDesignations")
                     BridgeSetPreparedDesignationPresentation(object, isPrepared)
                     BridgeEnsurePreparedBadge(object, card.cardInstanceId, isPrepared)
                     -- A snapshot establishes persistent truth; only a change
@@ -8213,21 +8376,59 @@ function BridgeShowResourceCounter(counter, position, seat)
     pcall(function() counter.setPosition(position) end)
 end
 
+-- Resource-row and Monarch objects are presentation-owned, named objects. A
+-- single hydration pass indexes objects that survived Save & Play; steady
+-- state must use the index and never scan the whole table to prove that a
+-- zero-valued object is absent.
+function BridgeHydratePresentationObjectIndexes()
+    if BridgeState.resourceCounterIndexHydrated == true
+        and BridgeState.monarchHelperIndexHydrated == true then return end
+
+    BridgePresentationMetric("worldScanCount")
+    BridgePresentationMetric("resourceWorldScanCount")
+    local resourceObjects = {}
+    for _, object in ipairs(getAllObjects()) do
+        if BridgeObjectIsUsable(object) then
+            local guid = BridgeSafeObjectGuid(object)
+            local name = tostring(BridgeSafeObjectName(object) or "")
+            local manaKind, manaSeat = string.match(name, "^Forge Mana ([WUBRGC]) (forge%-player%-[12])$")
+            local trackerKind, trackerSeat = string.match(name, "^Forge (energy|experience|poison|speed) (forge%-player%-[12])$")
+            local kind = manaKind or trackerKind
+            local seatId = manaSeat or trackerSeat
+            if guid ~= nil and kind ~= nil and seatId ~= nil then
+                BridgeRegisterPresentationObject(object, "resource_row_" .. tostring(kind))
+                resourceObjects[seatId] = resourceObjects[seatId] or {}
+                if resourceObjects[seatId][kind] == nil then
+                    resourceObjects[seatId][kind] = guid
+                end
+            end
+            if BridgeState.monarchHelperGuid == nil and object.tag == "Card"
+                and string.sub(string.lower(name), 1, 10) == "the monarch" then
+                BridgeRegisterPresentationObject(object, "monarch_helper")
+                BridgeState.monarchHelperGuid = guid
+            end
+        end
+    end
+    for seatId, resources in pairs(resourceObjects) do
+        BridgeState.resourceCounterGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId] or {}
+        for kind, guid in pairs(resources) do
+            if BridgeState.resourceCounterGuidBySeatId[seatId][kind] == nil then
+                BridgeState.resourceCounterGuidBySeatId[seatId][kind] = guid
+            end
+        end
+    end
+    BridgeState.resourceCounterIndexHydrated = true
+    BridgeState.monarchHelperIndexHydrated = true
+end
+
 function BridgeFindResourceCounter(seatId, kind, definition)
     BridgeState.resourceCounterGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId] or {}
     local guid = BridgeState.resourceCounterGuidBySeatId[seatId][kind]
     local counter = guid and BridgeGetLiveObjectByGuid(guid) or nil
     if counter ~= nil then return counter end
-
-    local expectedName = definition.name .. " " .. tostring(seatId)
-    for _, object in ipairs(getAllObjects()) do
-        if BridgeObjectIsUsable(object) and BridgeSafeObjectName(object) == expectedName then
-            counter = object
-            BridgeRegisterPresentationObject(counter, "resource_row_" .. tostring(kind))
-            BridgeState.resourceCounterGuidBySeatId[seatId][kind] = BridgeSafeObjectGuid(counter)
-            return counter
-        end
-    end
+    -- A missing cached GUID is an ordinary zero-resource state, not evidence
+    -- that the world needs to be searched. Hydration is performed once at the
+    -- session boundary; positive values can create a new presentation object.
     return nil
 end
 
@@ -8295,8 +8496,13 @@ end
 -- resources are hidden/retired and never occupy a slot; remaining counters
 -- are packed contiguously in the stable order above.
 function BridgeRefreshResourceRow(seatId)
+    BridgePresentationMetric("resourceRowRefreshCount")
+    local resourceToken = BridgePerformanceBegin("resource_row_total")
     local seat = BRIDGE_SEATS[seatId]
-    if seat == nil or BridgeResourceRowPosition(seatId, 1) == nil then return false end
+    if seat == nil or BridgeResourceRowPosition(seatId, 1) == nil then
+        BridgePerformanceEnd(resourceToken, "resource_row_total_end", "resourceRow")
+        return false
+    end
     BridgeState.resourceCounterGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId] or {}
     BridgeState.manaCounterGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId]
     BridgeState.playerTrackerGuidBySeatId[seatId] = BridgeState.resourceCounterGuidBySeatId[seatId]
@@ -8304,7 +8510,12 @@ function BridgeRefreshResourceRow(seatId)
     for _, kind in ipairs(BRIDGE_RESOURCE_ORDER) do
         local definition = BridgeResourceDefinition(kind)
         local value = BridgeResourceValue(seatId, kind)
-        local counter = BridgeFindResourceCounter(seatId, kind, definition)
+        -- Do not look up absent zero-valued resources. A cached object is still
+        -- hidden in O(1), while an uncached zero needs no physical operation.
+        local counter = nil
+        if value > 0 or BridgeState.resourceCounterGuidBySeatId[seatId][kind] ~= nil then
+            counter = BridgeFindResourceCounter(seatId, kind, definition)
+        end
         if value > 0 then
             slot = slot + 1
             local position = BridgeResourceRowPosition(seatId, slot)
@@ -8317,6 +8528,7 @@ function BridgeRefreshResourceRow(seatId)
             BridgeHideResourceCounter(counter)
         end
     end
+    BridgePerformanceEnd(resourceToken, "resource_row_total_end", "resourceRow", slot)
     return true
 end
 
@@ -8389,7 +8601,7 @@ function BridgeSetSeatTracker(seatId, kind, value)
     return true, nil
 end
 
-function BridgeApplySeatTrackers(seatSnapshot)
+function BridgeApplySeatTrackers(seatSnapshot, deferRefresh)
     if seatSnapshot == nil then return end
     local counters = BridgeState.playerCountersBySeatId[seatSnapshot.seatId] or {}
     counters.poison = math.max(0, tonumber(seatSnapshot.poison or counters.poison or 0) or 0)
@@ -8397,19 +8609,17 @@ function BridgeApplySeatTrackers(seatSnapshot)
     BridgeState.playerCountersBySeatId[seatSnapshot.seatId] = counters
     BridgeState.playerStateBySeatId[seatSnapshot.seatId] = BridgeState.playerStateBySeatId[seatSnapshot.seatId] or {}
     BridgeState.playerStateBySeatId[seatSnapshot.seatId].counters = counters
-    BridgeRefreshResourceRow(seatSnapshot.seatId)
+    if not deferRefresh then BridgeRefreshResourceRow(seatSnapshot.seatId) end
 end
 
 function BridgeFindLiveMonarchHelper()
     local known = BridgeState.monarchHelperGuid and BridgeGetLiveObjectByGuid(BridgeState.monarchHelperGuid) or nil
     if known ~= nil then return known end
-    for _, object in ipairs(getAllObjects()) do
-        local name = string.lower(tostring(BridgeSafeObjectName(object) or ""))
-        if BridgeObjectIsUsable(object) and object.tag == "Card" and string.sub(name, 1, 10) == "the monarch" then
-            BridgeRegisterPresentationObject(object, "monarch_helper")
-            BridgeState.monarchHelperGuid = BridgeSafeObjectGuid(object)
-            return object
-        end
+    BridgeState.monarchHelperGuid = nil
+    if BridgeState.monarchHelperIndexHydrated ~= true then
+        BridgeHydratePresentationObjectIndexes()
+        local hydrated = BridgeState.monarchHelperGuid and BridgeGetLiveObjectByGuid(BridgeState.monarchHelperGuid) or nil
+        if hydrated ~= nil then return hydrated end
     end
     return nil
 end
@@ -8430,7 +8640,9 @@ function BridgePositionMonarchHelper(helper, seatId)
 end
 
 function BridgeReturnMonarchHelper()
-    local helper = BridgeFindLiveMonarchHelper()
+    -- No monarch is the normal steady state. Do not rediscover an absent
+    -- helper with a full-world scan during every snapshot.
+    local helper = BridgeState.monarchHelperGuid and BridgeGetLiveObjectByGuid(BridgeState.monarchHelperGuid) or nil
     local utilityDeck = BridgeGetLiveObjectByGuid("946716")
     if helper ~= nil and utilityDeck ~= nil and utilityDeck.tag == "Deck" then
         BridgeSafeObjectCall(utilityDeck, function(deck) deck.putObject(helper) end)
@@ -8502,41 +8714,12 @@ function BridgeStartEventPolling(sessionId, skipExisting)
 end
 
 function BridgeRetireResourceRowObjects()
-    local retired = {}
     for seatId, resources in pairs(BridgeState.resourceCounterGuidBySeatId or {}) do
         for _, guid in pairs(resources or {}) do
-            local object = BridgeGetLiveObjectByGuid(guid)
-            if object ~= nil and not retired[guid] then
-                retired[guid] = true
-                -- These GUIDs are registered only after a source has been
-                -- cloned/taken, so native source/template objects are never
-                -- destroyed during a session reset.
-                if BridgeIsPresentationOnlyObject(object) then
-                    BridgeSafeObjectCall(object, function(o) o.destruct() end)
-                end
-            end
+            BridgeHideResourceCounter(BridgeGetLiveObjectByGuid(guid))
         end
     end
-    -- A Save & Play can reload Lua after the old GUID maps were cleared. Find
-    -- only our explicitly named spawned instances in that case, excluding all
-    -- configured native source GUIDs/templates.
-    local sourceGuids = {}
-    for _, guid in pairs(BRIDGE_MANA_COUNTER_SOURCES or {}) do sourceGuids[guid] = true end
-    for _, guid in pairs(BRIDGE_PLAYER_TRACKER_SOURCES or {}) do sourceGuids[guid] = true end
-    for _, object in ipairs(getAllObjects()) do
-        local guid = BridgeSafeObjectGuid(object)
-        local name = tostring(BridgeSafeObjectName(object) or "")
-        local spawned = string.match(name, "^Forge Mana [WUBRGC] forge%-player%-[12]$")
-            or string.match(name, "^Forge (energy|experience|poison|speed) forge%-player%-[12]$")
-        if guid ~= nil and spawned and not sourceGuids[guid] and not retired[guid] then
-            retired[guid] = true
-            BridgeSafeObjectCall(object, function(o) o.destruct() end)
-        end
-    end
-    BridgeState.resourceCounterGuidBySeatId = {}
     BridgeState.resourceCounterSpawnInFlightBySeatId = {}
-    BridgeState.manaCounterGuidBySeatId = {}
-    BridgeState.playerTrackerGuidBySeatId = {}
 end
 
 function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
@@ -8564,6 +8747,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeStopDecisionPolling()
     BridgeReturnAttackPresentation(nil)
     BridgeRetireResourceRowObjects()
+    -- One world scan recovers named row/helper objects after Save & Play.
+    -- Subsequent snapshots use the indexed GUIDs, including the all-zero case.
+    BridgeHydratePresentationObjectIndexes()
     BridgeClearPreparedPresentationObjects()
     BridgeState.decisionPresentationGeneration = BridgeState.decisionPresentationGeneration + 1
     BridgeAdvancePhysicalPresentationGeneration("session-replaced")
@@ -8597,6 +8783,14 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         keywordPropWriteCount = 0,
         decalWriteCount = 0,
         fullSnapshotReconcileCount = 0,
+        resourceRowRefreshCount = 0,
+        resourceWorldScanCount = 0,
+        worldScanCount = 0,
+        yieldBackpressurePauseCount = 0,
+        snapshotVisualCounters = 0,
+        snapshotVisualKeywords = 0,
+        snapshotVisualCharacteristics = 0,
+        snapshotVisualDesignations = 0,
         decisionRenderAttempts = 0,
         decisionRenderExecuted = 0,
         decisionRenderSkippedIdentical = 0
@@ -8648,6 +8842,12 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.attackLaneGuidBySeatId = {}
     BridgeState.snapshotForgeSequence = 0
     BridgeState.deferredSnapshotReconcile = nil
+    BridgeState.snapshotReconcilePending = false
+    BridgeState.snapshotReconcilePendingRequest = nil
+    BridgeState.snapshotReconcileRequestGeneration = 0
+    BridgeState.snapshotReconcileLastAppliedCursor = 0
+    BridgeState.snapshotReconcileLastAppliedGeneration = 0
+    BridgeState.snapshotReconcileLastAppliedCategory = nil
     BridgeState.lastTurnEventSignature = nil
     BridgeState.lastPhaseEventSignature = nil
     BridgeState.lastPriorityEventSignature = nil
@@ -8818,7 +9018,14 @@ function BridgePollEvents(generation)
 end
 
 function BridgeProcessEventQueue()
-    if BridgeState.animationRunning or not BridgeState.eventPolling or #BridgeState.eventQueue == 0 then
+    if BridgeState.animationRunning or not BridgeState.eventPolling then
+        return
+    end
+    if #BridgeState.eventQueue == 0 then
+        -- Routine verification is allowed only at a quiescent boundary. The
+        -- exact event stream gets first chance to establish the physical state.
+        BridgeTryApplyDeferredSnapshotReconcile("event-drain")
+        BridgeTryStartPendingSnapshotReconcile("event-drain")
         return
     end
 
@@ -8853,7 +9060,6 @@ function BridgeProcessEventQueue()
 
     table.remove(BridgeState.eventQueue, 1)
     BridgeState.lastAppliedEventSequence = event.sequence
-    BridgeTryApplyDeferredSnapshotReconcile("event " .. tostring(event.sequence))
     BridgeTryPresentPendingDecision("event-applied")
     if event.kind == "draw" or event.kind == "turn_changed" or event.kind == "phase_changed" then
         -- The old menu may still be rendered when Forge changes state. Ask
@@ -8862,7 +9068,7 @@ function BridgeProcessEventQueue()
         BridgeRefreshDecisionAfterStateTransition(event.kind)
     end
     if BridgeShouldReconcileAfterEvent(event) then
-        BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence))
+        BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence) .. " recovery", "RECOVERY")
     end
     local generation = BridgeState.eventPollGeneration
     local nextDelay = delay or 0.1
@@ -13074,9 +13280,11 @@ end
 
 local BridgeSnapshotReconcileFlightRecorderBase = BridgeApplySafeSnapshotReconcile
 function BridgeApplySafeSnapshotReconcile(snapshot, reason)
+    local totalToken = BridgePerformanceBegin("snapshot_reconcile.total", snapshot and snapshot.eventCursor)
     local token = BridgePerformanceBegin("snapshot_reconcile_begin", snapshot and snapshot.eventCursor)
     BridgeSnapshotReconcileFlightRecorderBase(snapshot, reason)
     BridgePerformanceEnd(token, "snapshot_reconcile_end", "snapshotReconcile")
+    BridgePerformanceEnd(totalToken, "snapshot_reconcile.total.end", "snapshotReconcile")
 end
 
 local BridgeMoveToBattlefieldFlightRecorderBase = BridgeMoveToBattlefield

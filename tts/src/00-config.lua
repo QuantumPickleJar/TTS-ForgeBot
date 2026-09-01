@@ -67,6 +67,20 @@ function BridgePresentationMetric(name)
     BridgeState.presentationMetrics[name] = (BridgeState.presentationMetrics[name] or 0) + 1
 end
 
+-- Automated pass/yield is presentation convenience, so it must not let Forge
+-- outrun a TTS event backlog created by local rendering work. Manual choices
+-- remain unaffected and the next authoritative decision resumes automation.
+function BridgeAutomaticPassBackpressured()
+    local received = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    local backlog = math.max(#(BridgeState.eventQueue or {}), math.max(0, received - applied))
+    if backlog <= 0 and not BridgeState.animationRunning
+        and not BridgeState.snapshotReconcileInFlight then return false end
+    BridgePresentationMetric("yieldBackpressurePauseCount")
+    BridgeLog("[Bridge] automated pass held behind presentation backlog=" .. tostring(backlog))
+    return true
+end
+
 -- Freeze-flight telemetry is deliberately local to this Lua runtime.  TTS's
 -- documented Time.time member is the game-runtime clock; probe it because
 -- MoonSharp-based test hosts and older/non-TTS runtimes may not expose Time.
@@ -215,6 +229,16 @@ function BridgePerformanceDiagnosticPayload()
     summary.keywordPropWriteCount = tonumber(metrics.keywordPropWriteCount or 0) or 0
     summary.decalWriteCount = tonumber(metrics.decalWriteCount or 0) or 0
     summary.fullSnapshotReconcileCount = tonumber(metrics.fullSnapshotReconcileCount or 0) or 0
+    summary.resourceRowRefreshCount = tonumber(metrics.resourceRowRefreshCount or 0) or 0
+    summary.resourceWorldScanCount = tonumber(metrics.resourceWorldScanCount or 0) or 0
+    summary.worldScanCount = tonumber(metrics.worldScanCount or 0) or 0
+    summary.yieldBackpressurePauseCount = tonumber(metrics.yieldBackpressurePauseCount or 0) or 0
+    summary.snapshotVisualCounters = tonumber(metrics.snapshotVisualCounters or 0) or 0
+    summary.snapshotVisualKeywords = tonumber(metrics.snapshotVisualKeywords or 0) or 0
+    summary.snapshotVisualCharacteristics = tonumber(metrics.snapshotVisualCharacteristics or 0) or 0
+    summary.snapshotVisualDesignations = tonumber(metrics.snapshotVisualDesignations or 0) or 0
+    summary.snapshotReconcileLastAppliedCursor = BridgeState.snapshotReconcileLastAppliedCursor
+    summary.snapshotReconcileLastAppliedGeneration = BridgeState.snapshotReconcileLastAppliedGeneration
     canary.turnNumber = tonumber(BridgeState.tableTurnCount or 0) or nil
     canary.phase = BridgeState.currentPhase
     canary.activeSeatId = BridgeState.currentTurnSeatId
@@ -257,7 +281,7 @@ end
 function BridgeLogPresentationMetrics(label)
     local metrics = BridgeState.presentationMetrics or {}
     BridgeLog(string.format(
-        "[Bridge] presentation-metrics label=%s decisionAttempts=%d decisionExecuted=%d decisionSkippedIdentical=%d uiAttempts=%d uiWrites=%d uiSkippedIdentical=%d encoderRebuilds=%d keywordWrites=%d decalWrites=%d snapshotReconciles=%d",
+        "[Bridge] presentation-metrics label=%s decisionAttempts=%d decisionExecuted=%d decisionSkippedIdentical=%d uiAttempts=%d uiWrites=%d uiSkippedIdentical=%d encoderRebuilds=%d keywordWrites=%d decalWrites=%d snapshotReconciles=%d resourceRows=%d resourceScans=%d worldScans=%d yieldPaused=%d snapshotCounters=%d snapshotKeywords=%d snapshotCharacteristics=%d snapshotDesignations=%d",
         tostring(label or "manual"), tonumber(metrics.decisionRenderAttempts or 0),
         tonumber(metrics.decisionRenderExecuted or 0),
         tonumber(metrics.decisionRenderSkippedIdentical or 0),
@@ -265,7 +289,11 @@ function BridgeLogPresentationMetrics(label)
         tonumber(BridgeState.ui and BridgeState.ui.uiAttributeWriteCount or 0),
         tonumber(BridgeState.ui and BridgeState.ui.uiAttributeSkippedCount or 0),
         tonumber(metrics.encoderRebuildCount or 0), tonumber(metrics.keywordPropWriteCount or 0),
-        tonumber(metrics.decalWriteCount or 0), tonumber(metrics.fullSnapshotReconcileCount or 0)))
+        tonumber(metrics.decalWriteCount or 0), tonumber(metrics.fullSnapshotReconcileCount or 0),
+        tonumber(metrics.resourceRowRefreshCount or 0), tonumber(metrics.resourceWorldScanCount or 0),
+        tonumber(metrics.worldScanCount or 0), tonumber(metrics.yieldBackpressurePauseCount or 0),
+        tonumber(metrics.snapshotVisualCounters or 0), tonumber(metrics.snapshotVisualKeywords or 0),
+        tonumber(metrics.snapshotVisualCharacteristics or 0), tonumber(metrics.snapshotVisualDesignations or 0)))
 end
 
 function BridgeWaitTime(callback, delay)
@@ -469,6 +497,10 @@ BridgeState = {
         keywordPropWriteCount = 0,
         decalWriteCount = 0,
         fullSnapshotReconcileCount = 0,
+        resourceRowRefreshCount = 0,
+        resourceWorldScanCount = 0,
+        worldScanCount = 0,
+        yieldBackpressurePauseCount = 0,
         decisionRenderAttempts = 0,
         decisionRenderExecuted = 0,
         decisionRenderSkippedIdentical = 0
@@ -544,6 +576,11 @@ BridgeState = {
     snapshotForgeSequence = 0,
     snapshotReconcileInFlight = false,
     snapshotReconcilePending = false,
+    snapshotReconcilePendingRequest = nil,
+    snapshotReconcileRequestGeneration = 0,
+    snapshotReconcileLastAppliedCursor = 0,
+    snapshotReconcileLastAppliedGeneration = 0,
+    snapshotReconcileLastAppliedCategory = nil,
     deferredSnapshotReconcile = nil,
     lastTurnEventSignature = nil,
     lastPhaseEventSignature = nil,
@@ -563,6 +600,8 @@ BridgeState = {
     battlefieldKindByInstanceId = {},
     presentedCombatSignature = nil,
     zoneAnchorGuidBySeatAndZone = {},
+    resourceCounterIndexHydrated = false,
+    monarchHelperIndexHydrated = false,
     bootstrapping = false,
     setupBusy = false,
     doctorInitializedUi = false,

@@ -1719,11 +1719,12 @@ function BridgeZoneIsPublicForReconcile(zoneName)
 end
 
 function BridgeShouldReconcileAfterEvent(event)
-    return event.kind == "spell_resolved"
-        or event.kind == "land_played"
-        or (event.kind == "card_moved"
-            and (BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId] == nil
-                or BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId].applied ~= true))
+    -- Exact land/spell/card events are already the authoritative physical
+    -- delta. Full snapshots are recovery authority only; routine verification
+    -- here used to repaint the whole table after every ordinary mutation.
+    local transition = event ~= nil and event.kind == "card_moved"
+        and BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId] or nil
+    return transition ~= nil and transition.applied ~= true
 end
 
 function BridgeResumeChoiceProtocol(reason)
@@ -1810,6 +1811,56 @@ function BridgePhysicalLibraryQueuesIdle()
     return true
 end
 
+function BridgeSnapshotRequestCategory(reason, category)
+    if category ~= nil then return string.upper(tostring(category)) end
+    local text = string.lower(tostring(reason or ""))
+    if string.find(text, "final", 1, true) or string.find(text, "game_ended", 1, true) then return "FINAL" end
+    if string.sub(text, 1, 6) == "event " then return "ROUTINE_VERIFY" end
+    return "RECOVERY"
+end
+
+function BridgeEventBacklogCount()
+    local received = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    return math.max(#(BridgeState.eventQueue or {}), math.max(0, received - applied))
+end
+
+function BridgeRoutineSnapshotBlocked()
+    return BridgeEventBacklogCount() > 0 or BridgeState.animationRunning == true
+end
+
+function BridgeSnapshotRequestPriority(category)
+    if category == "FINAL" then return 3 end
+    if category == "RECOVERY" then return 2 end
+    return 1
+end
+
+function BridgeRememberSnapshotRequest(reason, category)
+    BridgeState.snapshotReconcileRequestGeneration = (BridgeState.snapshotReconcileRequestGeneration or 0) + 1
+    local request = {
+        reason = reason,
+        category = category,
+        generation = BridgeState.snapshotReconcileRequestGeneration
+    }
+    local prior = BridgeState.snapshotReconcilePendingRequest
+    if prior == nil or BridgeSnapshotRequestPriority(category) >= BridgeSnapshotRequestPriority(prior.category) then
+        -- Routine requests are latest-wins. Recovery/final requests retain
+        -- priority over a routine request arriving in the same burst.
+        BridgeState.snapshotReconcilePendingRequest = request
+    end
+    BridgeState.snapshotReconcilePending = true
+end
+
+function BridgeTryStartPendingSnapshotReconcile(reason)
+    local request = BridgeState.snapshotReconcilePendingRequest
+    if request == nil or BridgeState.snapshotReconcileInFlight then return false end
+    if request.category == "ROUTINE_VERIFY" and BridgeRoutineSnapshotBlocked() then return false end
+    BridgeState.snapshotReconcilePendingRequest = nil
+    BridgeState.snapshotReconcilePending = false
+    BridgeScheduleSnapshotReconcile(request.reason or reason or "pending", request.category)
+    return true
+end
+
 function BridgeApplyCombatSnapshot(combat)
     local parts = {}
     for _, attack in ipairs((combat and combat.attacks) or {}) do table.insert(parts, tostring(attack.attackerCardInstanceId) .. "|" .. table.concat(attack.blockerCardInstanceIds or {}, ",")) end
@@ -1832,13 +1883,24 @@ end
 
 function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     local movedCount = 0
+    local queueBefore = #(BridgeState.eventQueue or {})
+    local receivedBefore = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local appliedBefore = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    local scansBefore = tonumber(BridgeState.presentationMetrics and BridgeState.presentationMetrics.worldScanCount or 0) or 0
+    BridgePerformanceTrace("snapshot_reconcile.queue_lag_before", nil,
+        math.max(0, receivedBefore - appliedBefore), queueBefore)
     BridgePresentationMetric("fullSnapshotReconcileCount")
     local pending = BridgeState.pendingDecision
     local requiredSeatId = pending ~= nil and pending.kind == "mulligan"
         and tostring(pending.mulliganStage or "") == "keep_or_mulligan"
         and pending.seatId or nil
+    local handToken = BridgePerformanceBegin("snapshot_reconcile.hand_identity")
     BridgeRecordExpectedHandIdentities(snapshot, requiredSeatId)
+    BridgePerformanceEnd(handToken, "snapshot_reconcile.hand_identity.end", "snapshotReconcileHandIdentity")
+    local monarchToken = BridgePerformanceBegin("snapshot_reconcile.monarch")
     BridgeSetMonarchSeat(snapshot and snapshot.monarchSeatId or nil)
+    BridgePerformanceEnd(monarchToken, "snapshot_reconcile.monarch.end", "snapshotReconcileMonarch")
+    local stackToken = BridgePerformanceBegin("snapshot_reconcile.stack")
     BridgeState.stackSummary = {}
     for _, card in ipairs(snapshot and snapshot.stack or {}) do
         table.insert(BridgeState.stackSummary, tostring(card.currentCardName or card.cardName or "Forge stack object"))
@@ -1853,6 +1915,8 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
         }
     end
     BridgeUiMarkDirty("stack")
+    BridgePerformanceEnd(stackToken, "snapshot_reconcile.stack.end", "snapshotReconcileStack")
+    local publicZoneToken = BridgePerformanceBegin("snapshot_reconcile.public_zone_diff")
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
         for _, zone in ipairs(seatSnapshot.zones or {}) do
             local zoneName = string.lower(tostring(zone.name or ""))
@@ -1938,12 +2002,18 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
         -- GUID when the first visual pass ran. Reapply the same authoritative
         -- snapshot after zone reconciliation so persistent designations and
         -- their badges appear without waiting for another Forge mutation.
+        local seatVisualToken = BridgePerformanceBegin("snapshot_reconcile.seat_visual")
         BridgeApplySeatSnapshotVisualState(seatSnapshot)
+        BridgePerformanceEnd(seatVisualToken, "snapshot_reconcile.seat_visual.end", "snapshotReconcileSeatVisual")
     end
+    BridgePerformanceEnd(publicZoneToken, "snapshot_reconcile.public_zone_diff.end", "snapshotReconcilePublicZoneDiff", movedCount)
+    local combatToken = BridgePerformanceBegin("snapshot_reconcile.combat")
     BridgeApplyCombatSnapshot(snapshot.combat)
+    BridgePerformanceEnd(combatToken, "snapshot_reconcile.combat.end", "snapshotReconcileCombat")
     -- Snapshot reconciliation is also recovery authority for the turn
     -- pipeline. These values come directly from Forge; they never advance a
     -- phase or infer legality in Lua.
+    local turnStateToken = BridgePerformanceBegin("snapshot_reconcile.turn_state")
     if snapshot.turnNumber ~= nil then BridgeState.tableTurnCount = snapshot.turnNumber end
     if snapshot.activeSeatId ~= nil then BridgeState.currentTurnSeatId = snapshot.activeSeatId end
     if snapshot.prioritySeatId ~= nil then BridgeState.prioritySeatId = snapshot.prioritySeatId end
@@ -1952,7 +2022,21 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     end
     BridgeUiMarkDirty("authoritative-snapshot-turn-state")
     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
+    BridgeState.snapshotReconcileLastAppliedCursor = tonumber(snapshot.eventCursor or 0) or 0
+    BridgeState.snapshotReconcileLastAppliedGeneration = BridgeState.snapshotReconcileRequestGeneration or 0
+    BridgeState.snapshotReconcileLastAppliedCategory = BridgeSnapshotRequestCategory(reason)
+    BridgePerformanceEnd(turnStateToken, "snapshot_reconcile.turn_state.end", "snapshotReconcileTurnState")
+    local receivedAfter = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local appliedAfter = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    local queueAfter = #(BridgeState.eventQueue or {})
+    local scansAfter = tonumber(BridgeState.presentationMetrics and BridgeState.presentationMetrics.worldScanCount or 0) or 0
+    BridgePerformanceTrace("snapshot_reconcile.queue_lag_after", nil,
+        math.max(0, receivedAfter - appliedAfter), queueAfter)
     BridgeLogSnapshotOrdering("applied", snapshot, reason)
+    BridgeLog(string.format(
+        "[Bridge] snapshot reconcile metrics cursor=%s received=%s applied=%s queueBefore=%s queueAfter=%s reason=%s corrected=%s physicalCorrection=%s worldScans=%s",
+        tostring(snapshot.eventCursor), tostring(receivedAfter), tostring(appliedAfter), tostring(queueBefore),
+        tostring(queueAfter), tostring(reason), tostring(movedCount), tostring(movedCount > 0), tostring(scansAfter - scansBefore)))
     if movedCount > 0 then
         BridgeLog(string.format("[Bridge] snapshot reconcile (%s): corrected %d public card location(s)", tostring(reason), movedCount))
     end
@@ -1961,19 +2045,39 @@ end
 function BridgeTryApplyDeferredSnapshotReconcile(reason)
     local pending = BridgeState.deferredSnapshotReconcile
     if pending == nil or not BridgeSnapshotMayMutatePublicZones(pending.snapshot)
-        or not BridgePhysicalLibraryQueuesIdle() then return end
+        or not BridgePhysicalLibraryQueuesIdle() then return false end
+    if pending.category == "ROUTINE_VERIFY" and BridgeRoutineSnapshotBlocked() then
+        return false
+    end
+    local snapshotCursor = tonumber(pending.snapshot and pending.snapshot.eventCursor or 0) or 0
+    if pending.category == "ROUTINE_VERIFY"
+        and snapshotCursor <= tonumber(BridgeState.snapshotReconcileLastAppliedCursor or 0) then
+        BridgeState.deferredSnapshotReconcile = nil
+        BridgeLogSnapshotOrdering("skipped-superseded", pending.snapshot, pending.reason or reason)
+        return false
+    end
     BridgeState.deferredSnapshotReconcile = nil
     BridgeState.pendingStructuredZoneTransitionByInstanceId = {}
     BridgeApplySafeSnapshotReconcile(pending.snapshot, pending.reason or reason or "deferred")
+    return true
 end
 
-function BridgeScheduleSnapshotReconcile(reason)
+function BridgeScheduleSnapshotReconcile(reason, category)
     if BridgeState.eventSessionId == nil then return end
+    category = BridgeSnapshotRequestCategory(reason, category)
+    if category == "ROUTINE_VERIFY" and BridgeRoutineSnapshotBlocked() then
+        BridgeRememberSnapshotRequest(reason, category)
+        BridgeLog("[Bridge] routine snapshot held behind event drain reason=" .. tostring(reason)
+            .. " backlog=" .. tostring(BridgeEventBacklogCount()))
+        return
+    end
     if BridgeState.snapshotReconcileInFlight then
-        BridgeState.snapshotReconcilePending = true
+        BridgeRememberSnapshotRequest(reason, category)
         return
     end
     BridgeState.snapshotReconcileInFlight = true
+    local requestGeneration = (BridgeState.snapshotReconcileRequestGeneration or 0) + 1
+    BridgeState.snapshotReconcileRequestGeneration = requestGeneration
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
         BridgeState.snapshotReconcileInFlight = false
         if ok and snapshot ~= nil and snapshot.sessionId == BridgeState.eventSessionId then
@@ -1986,10 +2090,29 @@ function BridgeScheduleSnapshotReconcile(reason)
                 BridgeState.openingHandReadinessSnapshotRequested = false
                 BridgeLog("[Bridge] opening-hand-readiness snapshot contained no exact hand identities; retrying")
             end
-            if BridgeSnapshotMayMutatePublicZones(snapshot) and BridgePhysicalLibraryQueuesIdle() then
+            local snapshotCursor = tonumber(snapshot.eventCursor or 0) or 0
+            local alreadyCovered = category == "ROUTINE_VERIFY"
+                and snapshotCursor <= tonumber(BridgeState.snapshotReconcileLastAppliedCursor or 0)
+            local canApply = not alreadyCovered
+                and BridgeSnapshotMayMutatePublicZones(snapshot)
+                and BridgePhysicalLibraryQueuesIdle()
+                and (category ~= "ROUTINE_VERIFY" or not BridgeRoutineSnapshotBlocked())
+            if canApply then
                 BridgeApplySafeSnapshotReconcile(snapshot, reason)
+            elseif alreadyCovered then
+                BridgeLogSnapshotOrdering("skipped-superseded", snapshot, reason)
             else
-                BridgeState.deferredSnapshotReconcile = {snapshot = snapshot, reason = reason}
+                local prior = BridgeState.deferredSnapshotReconcile
+                if prior == nil or BridgeSnapshotRequestPriority(category) >= BridgeSnapshotRequestPriority(prior.category) then
+                    -- Keep one latest useful payload. Never let an older routine
+                    -- response replace an explicit recovery snapshot.
+                    BridgeState.deferredSnapshotReconcile = {
+                        snapshot = snapshot,
+                        reason = reason,
+                        category = category,
+                        generation = requestGeneration
+                    }
+                end
                 local queueState = BridgePhysicalLibraryQueuesIdle() and "event-cursor" or "physical-library-queue"
                 BridgeLogSnapshotOrdering("deferred-" .. queueState, snapshot, reason)
             end
@@ -2003,10 +2126,7 @@ function BridgeScheduleSnapshotReconcile(reason)
             BridgeTryPresentPendingDecision("snapshot-reconcile")
         end
 
-        if BridgeState.snapshotReconcilePending then
-            BridgeState.snapshotReconcilePending = false
-            BridgeScheduleSnapshotReconcile("pending")
-        end
+        BridgeTryStartPendingSnapshotReconcile("pending")
     end)
 end
 

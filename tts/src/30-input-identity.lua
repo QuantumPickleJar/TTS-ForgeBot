@@ -841,6 +841,7 @@ function BridgeRenderDecision(decision, force)
         and not BridgeDecisionHasNonPassAction(decision) then
         for _, action in ipairs(decision.actions) do
             if action.type == "pass_priority" then
+                if BridgeAutomaticPassBackpressured() then return end
                 BridgeSubmitChoice(decision.decisionId, action.actionId, "yield_policy_auto_pass")
                 BridgeRecordDecisionPresentationRendered(key)
                 return
@@ -861,6 +862,7 @@ function BridgeRenderDecision(decision, force)
         and not BridgeDecisionHasNonPassAction(decision) then
         for _, action in ipairs(decision.actions) do
             if action.type == "pass_priority" then
+                if BridgeAutomaticPassBackpressured() then return end
                 BridgeSubmitChoice(decision.decisionId, action.actionId, "empty_priority_auto_pass")
                 BridgeRecordDecisionPresentationRendered(key)
                 return

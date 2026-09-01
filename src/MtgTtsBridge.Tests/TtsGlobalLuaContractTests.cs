@@ -820,7 +820,10 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgePhysicalLibraryQueuesIdle()", Script);
         Assert.Contains("BridgeState.libraryExtractionActiveBySeatId[seatId] == true", Script);
         Assert.Contains("mulliganBottomInsertionActiveBySeatId[seatId] == true", Script);
-        Assert.Contains("BridgeSnapshotMayMutatePublicZones(snapshot) and BridgePhysicalLibraryQueuesIdle()", Script);
+        Assert.Contains("BridgeSnapshotMayMutatePublicZones(snapshot)", Script);
+        Assert.Contains("BridgePhysicalLibraryQueuesIdle()", Script);
+        Assert.Contains("snapshotReconcilePendingRequest", Script);
+        Assert.Contains("BridgeTryStartPendingSnapshotReconcile(\"event-drain\")", Script);
         Assert.Contains("local queueState = BridgePhysicalLibraryQueuesIdle() and \"event-cursor\" or \"physical-library-queue\"", Script);
         Assert.Contains("library-extraction-complete", Script);
     }
@@ -1431,7 +1434,12 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgeScheduleSnapshotReconcile", Script);
         Assert.Contains("BridgeShouldReconcileAfterEvent(event)", Script);
-        Assert.Contains("or (event.kind == \"card_moved\"", Script);
+        var policyStart = Script.IndexOf("function BridgeShouldReconcileAfterEvent", StringComparison.Ordinal);
+        var policyEnd = Script.IndexOf("function BridgeResumeChoiceProtocol", policyStart, StringComparison.Ordinal);
+        Assert.True(policyStart >= 0 && policyEnd > policyStart);
+        var policy = Script[policyStart..policyEnd];
+        Assert.DoesNotContain("event.kind == \"spell_resolved\"", policy);
+        Assert.DoesNotContain("event.kind == \"land_played\"", policy);
         Assert.Contains("pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId]", Script);
         Assert.Contains(".applied ~= true", Script);
         Assert.Contains("BridgeZoneIsPublicForReconcile(zoneName)", Script);
@@ -1620,8 +1628,8 @@ public sealed class TtsGlobalLuaContractTests
             Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "MtgTtsBridge", "Forge", "ForgeTuiAdapter.cs")));
         Assert.Contains("function BridgeSnapshotMayMutatePublicZones", Script);
         Assert.Contains("snapshotCursor <= tonumber(BridgeState.lastAppliedEventSequence", Script);
-        Assert.Contains("BridgeState.deferredSnapshotReconcile = {snapshot = snapshot, reason = reason}", Script);
-        Assert.Contains("BridgeTryApplyDeferredSnapshotReconcile(\"event \" .. tostring(event.sequence))", Script);
+        Assert.Contains("deferredSnapshotReconcile =", Script);
+        Assert.Contains("BridgeTryApplyDeferredSnapshotReconcile(\"event-drain\")", Script);
         Assert.Contains("forgeSequence=%s eventCursor=%s received=%s applied=%s queued=%s..%s", Script);
     }
 
@@ -1730,9 +1738,9 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("source.clone({position = position})", Script);
         Assert.Contains("source.takeObject({position = position", Script);
-        Assert.Contains("if BridgeIsPresentationOnlyObject(object) then", Script);
         Assert.Contains("function BridgeRetireResourceRowObjects()", Script);
-        Assert.Contains("BridgeState.resourceCounterGuidBySeatId = {}", Script);
+        Assert.Contains("BridgeHydratePresentationObjectIndexes()", Script);
+        Assert.Contains("resourceCounterIndexHydrated", Script);
         Assert.Contains("sessionId ~= BridgeState.eventSessionId", Script);
     }
 
@@ -2658,7 +2666,11 @@ public sealed class TtsGlobalLuaContractTests
             "clear_highlights_begin", "clear_highlights_end", "prepared_presentation_begin", "prepared_presentation_end",
             "candidate_collection_begin", "candidate_collection_end", "action_matching_begin", "action_matching_end",
             "ui_flush_begin", "ui_flush_end", "authoritative_event_begin", "authoritative_event_end",
-            "physical_move_begin", "physical_move_end", "snapshot_reconcile_begin", "snapshot_reconcile_end"
+            "physical_move_begin", "physical_move_end", "snapshot_reconcile_begin", "snapshot_reconcile_end",
+            "snapshot_reconcile.total", "snapshot_reconcile.queue_lag_before", "snapshot_reconcile.queue_lag_after",
+            "snapshot_reconcile.hand_identity", "snapshot_reconcile.monarch", "snapshot_reconcile.stack",
+            "snapshot_reconcile.public_zone_diff", "snapshot_reconcile.seat_visual", "snapshot_reconcile.combat",
+            "snapshot_reconcile.turn_state", "resource_row_total"
         }) Assert.Contains(marker, Script);
     }
 

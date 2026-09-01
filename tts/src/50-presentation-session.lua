@@ -2422,9 +2422,11 @@ end
 
 local BridgeSnapshotReconcileFlightRecorderBase = BridgeApplySafeSnapshotReconcile
 function BridgeApplySafeSnapshotReconcile(snapshot, reason)
+    local totalToken = BridgePerformanceBegin("snapshot_reconcile.total", snapshot and snapshot.eventCursor)
     local token = BridgePerformanceBegin("snapshot_reconcile_begin", snapshot and snapshot.eventCursor)
     BridgeSnapshotReconcileFlightRecorderBase(snapshot, reason)
     BridgePerformanceEnd(token, "snapshot_reconcile_end", "snapshotReconcile")
+    BridgePerformanceEnd(totalToken, "snapshot_reconcile.total.end", "snapshotReconcile")
 end
 
 local BridgeMoveToBattlefieldFlightRecorderBase = BridgeMoveToBattlefield
