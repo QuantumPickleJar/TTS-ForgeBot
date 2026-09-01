@@ -6866,9 +6866,17 @@ function onObjectPickUp(playerColor, object)
         -- decision.  The normal decision/event pipeline owns the replacement
         -- render.
         local capturedDecisionId = decision.decisionId
+        local capturedSessionId = BridgeState.eventSessionId
+        local capturedRuntimeEpoch = BRIDGE_RUNTIME_EPOCH_LOCAL
         BridgeWaitFrames(function()
             local current = BridgeState.lastDecision
-            if current ~= nil and current.decisionId == capturedDecisionId then
+            local decisionIsUnsubmitted = BridgeState.choiceTransactions[capturedDecisionId] == nil
+                and BridgeState.retiredChoiceDecisionIds[capturedDecisionId] ~= true
+            local sameRuntime = BridgeRuntimeIsCurrent(capturedRuntimeEpoch)
+            local sameSession = BridgeState.eventSessionId == capturedSessionId
+            local actionable = current ~= nil and #(current.actions or {}) > 0
+            if sameRuntime and sameSession and decisionIsUnsubmitted
+                and actionable and current.decisionId == capturedDecisionId then
                 BridgeRenderDecision(current, true)
             end
         end, 2)

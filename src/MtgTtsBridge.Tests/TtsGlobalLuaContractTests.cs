@@ -3128,8 +3128,27 @@ public sealed class TtsGlobalLuaContractTests
     public void DelayedPhysicalRedraw_CannotResurrectRetiredDecisionHighlights()
     {
         Assert.Contains("local capturedDecisionId = decision.decisionId", Script);
-        Assert.Contains("if current ~= nil and current.decisionId == capturedDecisionId then", Script);
+        Assert.Contains("local capturedSessionId = BridgeState.eventSessionId", Script);
+        Assert.Contains("local capturedRuntimeEpoch = BRIDGE_RUNTIME_EPOCH_LOCAL", Script);
+        Assert.Contains("BridgeState.choiceTransactions[capturedDecisionId] == nil", Script);
+        Assert.Contains("BridgeState.retiredChoiceDecisionIds[capturedDecisionId] ~= true", Script);
+        Assert.Contains("BridgeRuntimeIsCurrent(capturedRuntimeEpoch)", Script);
+        Assert.Contains("BridgeState.eventSessionId == capturedSessionId", Script);
+        Assert.Contains("local actionable = current ~= nil and #(current.actions or {}) > 0", Script);
+        Assert.Contains("and actionable and current.decisionId == capturedDecisionId then", Script);
         Assert.Contains("BridgeRenderDecision(current, true)", Script);
+    }
+
+    [Fact]
+    public void DelayedPhysicalRedraw_PreservesUnsubmittedLocalRollback()
+    {
+        var start = Script.IndexOf("local capturedDecisionId = decision.decisionId", StringComparison.Ordinal);
+        var end = Script.IndexOf("end, 2)", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        Assert.Contains("choiceTransactions[capturedDecisionId] == nil", body);
+        Assert.Contains("retiredChoiceDecisionIds[capturedDecisionId] ~= true", body);
+        Assert.Contains("BridgeRenderDecision(current, true)", body);
     }
 
     [Fact]
