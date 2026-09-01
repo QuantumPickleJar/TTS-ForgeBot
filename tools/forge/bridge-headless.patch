@@ -2022,7 +2022,7 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..006a742909581af966cb6ed3c89c5089
 +            String title, int min, int max, boolean isOptional, Map<String, Object> params) {
 +        CardCollection result = new CardCollection();
 +        result.addAll(chooseEntitiesThroughTui("entity_selection", sourceList,
-+            isOptional ? 0 : min, max, title, false));
++            isOptional ? 0 : min, max, bridgeResolveCardNamePlaceholders(title, sa), false));
 +        return result;
 +    }
 +
@@ -2032,7 +2032,7 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..006a742909581af966cb6ed3c89c5089
 +            boolean isOptional, Player relatedPlayer, Map<String, Object> params) {
 +        if (delayedReveal != null) reveal(delayedReveal);
 +        List<T> result = chooseEntitiesThroughTui("entity_selection", optionList,
-+            isOptional ? 0 : 1, 1, title, false);
++            isOptional ? 0 : 1, 1, bridgeResolveCardNamePlaceholders(title, sa), false);
 +        return result.isEmpty() ? null : result.get(0);
 +    }
 +
@@ -2043,7 +2043,8 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..006a742909581af966cb6ed3c89c5089
 +        if (delayedReveal != null) reveal(delayedReveal);
 +        String metadata = sa != null && sa.getApi() == ApiType.Proliferate
 +            ? "selectionKind=proliferate" : "";
-+        return chooseEntitiesThroughTui("entity_selection", optionList, min, max, title, false, metadata);
++        return chooseEntitiesThroughTui("entity_selection", optionList, min, max,
++            bridgeResolveCardNamePlaceholders(title, sa), false, metadata);
 +    }
 +
 +    @Override

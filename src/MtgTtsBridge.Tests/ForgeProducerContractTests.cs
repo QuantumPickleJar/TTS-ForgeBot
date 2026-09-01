@@ -104,6 +104,18 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void EffectPromptsResolveCardPlaceholdersFromTheOriginatingSpellAbility()
+    {
+        Assert.Contains("chooseCardsForEffect(CardCollectionView sourceList", Patch);
+        Assert.Contains("bridgeResolveCardNamePlaceholders(title, sa), false", Patch);
+        Assert.Contains("chooseSingleEntityForEffect(FCollectionView<T> optionList", Patch);
+        Assert.Contains("chooseEntitiesForEffect(FCollectionView<T> optionList", Patch);
+        Assert.Contains(".replace(\"CARDNAME\", sourceName).replace(\"NICKNAME\", sourceName)", Patch);
+        Assert.DoesNotContain("isOptional ? 0 : min, max, title, false", Patch);
+        Assert.DoesNotContain("isOptional ? 0 : 1, 1, title, false", Patch);
+    }
+
+    [Fact]
     public void DelveAndMulliganRemainNativeForgeControllerTransactions()
     {
         Assert.Contains("chooseCardsToDelve(int genericAmount, CardCollection grave)", Patch);
