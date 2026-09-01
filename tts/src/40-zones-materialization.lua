@@ -436,7 +436,11 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
             BridgeState.physicalSeatByGuid[guid] = nil
             BridgeState.physicalZoneByGuid[guid] = nil
         end
-        BridgeRecordLooseCardIdentity(card.cardInstanceId, actualGuid, seatSnapshot.seatId, zone.name)
+        local recorded, recordError = BridgeRecordLooseCardIdentity(card.cardInstanceId, actualGuid, seatSnapshot.seatId, zone.name)
+        if not recorded then
+            callback(false, recordError or "snapshot physical identity registration failed")
+            return
+        end
         BridgeState.cardNameByInstanceId[card.cardInstanceId] = card.cardName
         local placed, placeError = BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
         if not placed then
@@ -452,12 +456,14 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
     if object ~= nil then continueWith(object); return end
 
     -- A Forge copy of a permanent has no deck inventory entry. When Forge
-    -- supplies its exact origin identity, clone that already-materialized
-    -- physical presentation as a starting surface, then apply the copy's
-    -- authoritative characteristics below. The clone receives the copy's
-    -- own CardInstanceId and never steals the source mapping.
-    if card.isCopy == true and card.originObjectId ~= nil then
-        local originGuid = BridgeState.physicalByInstanceId[card.originObjectId]
+    -- supplies the exact copied-permanent identity, clone that already-
+    -- materialized physical presentation as a starting surface, then apply
+    -- the copy's authoritative characteristics below. The creating effect
+    -- (originObjectId) is provenance, not the clone source. The clone receives
+    -- the copy's own CardInstanceId and never steals the source mapping.
+    local copySourceObjectId = card.copySourceObjectId or card.originObjectId
+    if card.isCopy == true and copySourceObjectId ~= nil then
+        local originGuid = BridgeState.physicalByInstanceId[copySourceObjectId]
         local origin = originGuid and BridgeGetLiveObjectByGuid(originGuid) or nil
         if origin ~= nil and type(origin.clone) == "function" then
             local cloned = nil
@@ -2950,6 +2956,24 @@ function BridgeApplyStructuredCardMove(event)
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then return false, "structured zone change has no configured seat" end
 
+    -- Preserve the complete producer descriptor alongside the physical map.
+    -- Identity/provenance is authoritative transport data; it is never
+    -- reconstructed from the card's display name or from a chosen candidate.
+    BridgeState.authoritativeObjectByInstanceId[event.cardInstanceId] = {
+        objectId = event.authoritativeObjectId or event.cardInstanceId,
+        originObjectId = event.originObjectId,
+        copySourceObjectId = event.copySourceObjectId,
+        objectKind = event.objectKind,
+        isCopy = event.isCopy == true,
+        isToken = event.isToken == true,
+        isVirtual = event.isVirtual == true,
+        materializationPolicy = event.materializationPolicy,
+        ownerSeatId = event.ownerSeatId,
+        controllerSeatId = event.controllerSeatId,
+        battlefieldKind = event.battlefieldKind,
+        characteristics = event.characteristics
+    }
+
     local staleMappedGuid = nil
     local attemptedZones = {}
     local resolveError = nil
@@ -3238,6 +3262,40 @@ function BridgeApplyStructuredCardMove(event)
         return true, nil
     end
 
+    local function moveFromCopySourceToBattlefield()
+        local copySourceObjectId = event.copySourceObjectId or event.originObjectId
+        local sourceGuid = copySourceObjectId ~= nil
+            and BridgeState.physicalByInstanceId[copySourceObjectId] or nil
+        local source = sourceGuid and BridgeGetLiveObjectByGuid(sourceGuid) or nil
+        if source == nil or source.tag ~= "Card" or type(source.clone) ~= "function" then
+            return false
+        end
+        local sessionId = BridgeState.eventSessionId
+        local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+        local started, state = BridgeBeginTokenMaterialization(event.cardInstanceId)
+        if not started then
+            BridgeLog("[Bridge] copy materialization suppressed instance=" .. tostring(event.cardInstanceId)
+                .. " state=" .. tostring(state))
+            return true
+        end
+        local cloned = nil
+        local ok = pcall(function()
+            cloned = source.clone({position = source.getPosition(), rotation = source.getRotation()})
+        end)
+        if not ok or cloned == nil then
+            BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "FAILED"
+            return false
+        end
+        local moved, moveError = BridgeBindTokenMaterialization(event, cloned,
+            BridgeBattlefieldRowForEvent(event, "creature"), sessionId, epoch)
+        if not moved then
+            BridgeLog("[Bridge] copy materialization deferred instance="
+                .. tostring(event.cardInstanceId) .. " reason=" .. tostring(moveError))
+            BridgeScheduleSnapshotReconcile("copy materialization deferred")
+        end
+        return true
+    end
+
     if object == nil then
         object = tryResolveFromZone(event.sourceZone)
     end
@@ -3289,6 +3347,9 @@ function BridgeApplyStructuredCardMove(event)
 
     if object == nil and event.destinationZone == "battlefield"
         and (event.isToken == true or event.sourceZone == "token" or event.sourceZone == "tokens") then
+        if event.isCopy == true and moveFromCopySourceToBattlefield() then
+            return true, nil
+        end
         return moveFromTokenFetcherToBattlefield()
     end
 

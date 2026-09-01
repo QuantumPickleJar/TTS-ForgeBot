@@ -125,8 +125,6 @@ public sealed class DiagnosticSelfTestRunner
     private static DiagnosticSelfTestCheck CheckCardMappings(GameSnapshotDto? snapshot, DiagnosticReportRequestDto request)
     {
         if (snapshot is null) return Check("snapshot_card_mappings", "info", "unavailable", "No snapshot is available for mapping comparison.");
-        if (request.MappedCardInstanceIds is null) return Check("snapshot_card_mappings", "info", "unavailable", "TTS did not supply card instance mapping information.");
-        var mapped = request.MappedCardInstanceIds.ToHashSet(StringComparer.Ordinal);
         // Cards still contained in an opaque Forge/TTS library Deck do not
         // have distinct loose TTS embodiments. Requiring their instance IDs
         // here turns a normal early-turn snapshot into a false mapping alarm.
@@ -134,16 +132,61 @@ public sealed class DiagnosticSelfTestRunner
             .SelectMany(seat => seat.Zones)
             .Where(zone => !string.Equals(zone.Name, "library", StringComparison.OrdinalIgnoreCase))
             .SelectMany(zone => zone.Cards)
-            .Concat(snapshot.Stack)
-            .Select(card => card.CardInstanceId);
+            .Where(card => !card.IsVirtual
+                && !string.Equals(card.MaterializationPolicy, "virtual", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(card.MaterializationPolicy, "virtual-stack", StringComparison.OrdinalIgnoreCase));
+        var snapshotStackCards = snapshot.Stack
+            .Where(card => !card.IsVirtual
+                && !string.Equals(card.MaterializationPolicy, "virtual", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(card.MaterializationPolicy, "virtual-stack", StringComparison.OrdinalIgnoreCase));
         var combatCards = snapshot.Combat?.Attacks
             .SelectMany(item => new[] { item.AttackerCardInstanceId }.Concat(item.BlockerCardInstanceIds))
             ?? [];
-        var referenced = snapshotCards.Concat(combatCards).Distinct(StringComparer.Ordinal).ToArray();
-        var missing = referenced.Where(item => !mapped.Contains(item)).ToArray();
-        return missing.Length == 0
+        var referenced = snapshotCards
+            .Concat(snapshotStackCards)
+            .Select(card => card.CardInstanceId)
+            .Concat(combatCards)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (request.PhysicalMappings is not null)
+        {
+            var mappings = request.PhysicalMappings;
+            var duplicateInstances = mappings.GroupBy(item => item.CardInstanceId, StringComparer.Ordinal)
+                .Where(group => group.Count() > 1).Select(group => group.Key).ToArray();
+            var duplicateGuids = mappings.GroupBy(item => item.Guid, StringComparer.Ordinal)
+                .Where(group => group.Count() > 1).Select(group => group.Key).ToArray();
+            var invalid = mappings.Where(item => string.IsNullOrWhiteSpace(item.Guid)
+                    || !item.IsLive
+                    || string.IsNullOrWhiteSpace(item.AdvertisedCardInstanceId)
+                    || !string.Equals(item.CardInstanceId, item.AdvertisedCardInstanceId, StringComparison.Ordinal))
+                .Select(item => item.CardInstanceId).Distinct(StringComparer.Ordinal).ToArray();
+            var mappingByInstance = mappings
+                .GroupBy(item => item.CardInstanceId, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+            var missing = referenced.Where(item => !mappingByInstance.ContainsKey(item)).ToArray();
+            if (duplicateInstances.Length > 0 || duplicateGuids.Length > 0 || invalid.Length > 0 || missing.Length > 0)
+            {
+                return Check("snapshot_card_mappings", "error", "fail",
+                    "Authoritative physical mappings are not live and unique.",
+                    new Dictionary<string, object?>
+                    {
+                        ["missingCardInstanceIds"] = missing,
+                        ["duplicateCardInstanceIds"] = duplicateInstances,
+                        ["duplicateGuids"] = duplicateGuids,
+                        ["invalidMappings"] = invalid,
+                        ["referencedCount"] = referenced.Length
+                    });
+            }
+            return Check("snapshot_card_mappings", "info", "pass",
+                "Authoritative physical mappings are live, unique, and identity-consistent.",
+                new Dictionary<string, object?> { ["referencedCount"] = referenced.Length, ["mappingCount"] = mappings.Count });
+        }
+        if (request.MappedCardInstanceIds is null) return Check("snapshot_card_mappings", "info", "unavailable", "TTS did not supply card instance mapping information.");
+        var mapped = request.MappedCardInstanceIds.ToHashSet(StringComparer.Ordinal);
+        var missingLegacy = referenced.Where(item => !mapped.Contains(item)).ToArray();
+        return missingLegacy.Length == 0
             ? Check("snapshot_card_mappings", "info", "pass", "Snapshot combat card instances are represented in TTS mapping information.", new Dictionary<string, object?> { ["referencedCount"] = referenced.Length })
-            : Check("snapshot_card_mappings", "error", "fail", "Authoritative combat card instances are missing from TTS mapping information.", new Dictionary<string, object?> { ["missingCardInstanceIds"] = missing, ["referencedCount"] = referenced.Length });
+            : Check("snapshot_card_mappings", "error", "fail", "Authoritative combat card instances are missing from TTS mapping information.", new Dictionary<string, object?> { ["missingCardInstanceIds"] = missingLegacy, ["referencedCount"] = referenced.Length });
     }
 
     private static DiagnosticSelfTestCheck Check(string id, string severity, string status, string message, Dictionary<string, object?>? evidence = null) =>

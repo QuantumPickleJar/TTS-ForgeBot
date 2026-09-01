@@ -19,7 +19,8 @@ public sealed class TtsMain1TransactionLuaTests
             function broadcastToAll(message, color) end
             function printToAll(message, color) end
             function getAllObjects() return {} end
-            function getObjectFromGUID(guid) return nil end
+            probeObject = {tag = 'Card', getGUID = function() return 'hand-guid' end, getName = function() return 'Mountain' end, highlightOn = function() end}
+            function getObjectFromGUID(guid) if guid == 'hand-guid' then return probeObject end return nil end
             function getObjectsWithTag(tag) return {} end
             Wait = {time = function(callback, delay) end, frames = function(callback, frames) end}
             Time = {time = 0}

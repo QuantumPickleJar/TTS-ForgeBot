@@ -776,6 +776,28 @@ function BridgeRecordDecisionPresentationRendered(key)
         BridgeState.currentPhysicalPresentationGeneration or 0
 end
 
+function BridgeDecisionPhysicalMappingsReady(decision)
+    if decision == nil then return true, nil end
+    for _, action in ipairs(decision.actions or {}) do
+        local instanceId = action.preparedSourceCardInstanceId or action.sourceCardInstanceId or action.cardInstanceId
+        if instanceId ~= nil then
+            local descriptor = BridgeState.authoritativeObjectByInstanceId[instanceId]
+            local policy = descriptor and tostring(descriptor.materializationPolicy or "") or ""
+            local physicalRequired = descriptor == nil
+                or (descriptor.isVirtual ~= true and policy ~= "virtual" and policy ~= "virtual-stack")
+            if physicalRequired then
+                local guid = BridgeState.physicalByInstanceId[instanceId]
+                local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
+                local inverse = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+                if object == nil or object.tag ~= "Card" or inverse ~= instanceId then
+                    return false, instanceId
+                end
+            end
+        end
+    end
+    return true, nil
+end
+
 function BridgeRenderDecision(decision, force)
     BridgePresentationMetric("decisionRenderAttempts")
     BridgeRecordDecisionLifecycle(decision, "render", "RENDER_BEGIN", force == true and "forced" or "normal")
@@ -785,6 +807,21 @@ function BridgeRenderDecision(decision, force)
         and BridgeState.renderedDecisionPhysicalGeneration
             == (BridgeState.currentPhysicalPresentationGeneration or 0) then
         BridgePresentationMetric("decisionRenderSkippedIdentical")
+        return
+    end
+    local mappingsReady, missingInstanceId = BridgeDecisionPhysicalMappingsReady(decision)
+    if not mappingsReady then
+        BridgeRecordDecisionLifecycle(decision, "render", "DEFERRED_PHYSICAL_MAPPING",
+            "missing-live-physical-mapping", missingInstanceId)
+        if BridgeState.lastPhysicalDecisionBarrier ~= decision.decisionId then
+            BridgeState.lastPhysicalDecisionBarrier = decision.decisionId
+            BridgeLog("[Bridge] decision presentation deferred: missing live physical mapping instance="
+                .. tostring(missingInstanceId) .. " decision=" .. tostring(decision.decisionId))
+            BridgeShowError("Forge decision is waiting for a physical card mapping; retrying authoritative recovery")
+        end
+        if BridgeScheduleSnapshotReconcile ~= nil then
+            BridgeScheduleSnapshotReconcile("decision physical mapping missing", "RECOVERY")
+        end
         return
     end
     BridgePresentationMetric("decisionRenderExecuted")

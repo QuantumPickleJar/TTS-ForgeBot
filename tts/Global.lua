@@ -1078,6 +1078,20 @@ function BridgeSafeObjectCall(object, action)
     return ok
 end
 
+local BRIDGE_PHYSICAL_ID_KEY = "bridgeCardInstanceId"
+
+function BridgeReadPhysicalIdentity(object)
+    if not BridgeObjectIsUsable(object) or type(object.getVar) ~= "function" then return nil end
+    local ok, value = pcall(function() return object.getVar(BRIDGE_PHYSICAL_ID_KEY) end)
+    if not ok or value == nil or tostring(value) == "" then return nil end
+    return tostring(value)
+end
+
+function BridgeWritePhysicalIdentity(object, cardInstanceId)
+    if not BridgeObjectIsUsable(object) or cardInstanceId == nil or type(object.setVar) ~= "function" then return end
+    pcall(function() object.setVar(BRIDGE_PHYSICAL_ID_KEY, tostring(cardInstanceId)) end)
+end
+
 function BridgeAdvancePhysicalPresentationGeneration(reason)
     BridgeState.currentPhysicalPresentationGeneration =
         (BridgeState.currentPhysicalPresentationGeneration or 0) + 1
@@ -1100,32 +1114,57 @@ function BridgeAdvancePhysicalTransactionGeneration(reason)
 end
 
 function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
+    if cardInstanceId == nil or guid == nil or tostring(guid) == "" then
+        BridgeLog("[Bridge] refusing incomplete Forge mapping")
+        return false
+    end
     if BridgeIsPresentationOnlyObject(guid) then
         BridgeLog("[Bridge] refusing Forge mapping for presentation object " .. tostring(guid))
         return false
     end
-    local changed = cardInstanceId ~= nil
-        and (BridgeState.physicalByInstanceId[cardInstanceId] ~= guid
-            or BridgeState.physicalInstanceIdByGuid[guid] ~= cardInstanceId)
+    local object = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
+    local advertised = BridgeReadPhysicalIdentity(object)
+    if advertised ~= nil and advertised ~= tostring(cardInstanceId) then
+        BridgeLog("[Bridge] refusing mapping whose physical object advertises another card instance guid="
+            .. tostring(guid) .. " advertised=" .. advertised .. " requested=" .. tostring(cardInstanceId))
+        return false
+    end
+    local previousGuid = BridgeState.physicalByInstanceId[cardInstanceId]
+    if previousGuid ~= nil and previousGuid ~= guid then
+        local previousObject = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(previousGuid) or nil
+        if previousObject ~= nil then
+            BridgeLog("[Bridge] refusing to reassign live card instance " .. tostring(cardInstanceId)
+                .. " from guid=" .. tostring(previousGuid) .. " to guid=" .. tostring(guid))
+            return false
+        end
+        BridgeState.physicalInstanceIdByGuid[previousGuid] = nil
+        BridgeState.physicalSeatByGuid[previousGuid] = nil
+        BridgeState.physicalZoneByGuid[previousGuid] = nil
+    end
+    local previousInstanceId = BridgeState.physicalInstanceIdByGuid[guid]
+    if previousInstanceId ~= nil and previousInstanceId ~= cardInstanceId then
+        -- A live GUID already owned by another authoritative identity can
+        -- never be silently stolen by a same-name token/copy.
+        if object ~= nil then
+            BridgeLog("[Bridge] refusing to reassign live guid=" .. tostring(guid)
+                .. " from card instance=" .. tostring(previousInstanceId)
+                .. " to " .. tostring(cardInstanceId))
+            return false
+        end
+        BridgeState.physicalByInstanceId[previousInstanceId] = nil
+    end
+    local changed = BridgeState.physicalByInstanceId[cardInstanceId] ~= guid
+        or BridgeState.physicalInstanceIdByGuid[guid] ~= cardInstanceId
     changed = changed
         or BridgeState.physicalSeatByGuid[guid] ~= seatId
         or BridgeState.physicalZoneByGuid[guid] ~= zoneName
-    if cardInstanceId ~= nil then
-        local previousGuid = BridgeState.physicalByInstanceId[cardInstanceId]
-        if previousGuid ~= nil and previousGuid ~= guid then
-            BridgeState.physicalInstanceIdByGuid[previousGuid] = nil
-        end
-        local previousInstanceId = BridgeState.physicalInstanceIdByGuid[guid]
-        if previousInstanceId ~= nil and previousInstanceId ~= cardInstanceId then
-            BridgeState.physicalByInstanceId[previousInstanceId] = nil
-        end
-        BridgeState.physicalByInstanceId[cardInstanceId] = guid
-        BridgeState.physicalInstanceIdByGuid[guid] = cardInstanceId
-    end
+    BridgeState.physicalByInstanceId[cardInstanceId] = guid
+    BridgeState.physicalInstanceIdByGuid[guid] = cardInstanceId
     BridgeState.physicalSeatByGuid[guid] = seatId
     BridgeState.physicalZoneByGuid[guid] = zoneName
+    BridgeWritePhysicalIdentity(object, cardInstanceId)
     if changed then BridgeAdvancePhysicalPresentationGeneration("card-mapping") end
-    if BridgeCaptureCanonicalCardScale ~= nil then BridgeCaptureCanonicalCardScale(BridgeGetLiveObjectByGuid(guid)) end
+    if BridgeCaptureCanonicalCardScale ~= nil then BridgeCaptureCanonicalCardScale(object) end
     return true
 end
 
@@ -1168,7 +1207,11 @@ function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)
     end
     -- Bind the exact Forge identity before moving the object. Snapshot and
     -- event reconciliation now see BOUND instead of creating a second token.
-    BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "battlefield")
+    local recorded, recordError = BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "battlefield")
+    if not recorded then
+        BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "FAILED"
+        return false, recordError or "token identity registration failed"
+    end
     BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "BOUND"
     local moved, moveError = BridgeMoveToBattlefield(event, object, row)
     if not moved then
@@ -7055,6 +7098,28 @@ function BridgeRecordDecisionPresentationRendered(key)
         BridgeState.currentPhysicalPresentationGeneration or 0
 end
 
+function BridgeDecisionPhysicalMappingsReady(decision)
+    if decision == nil then return true, nil end
+    for _, action in ipairs(decision.actions or {}) do
+        local instanceId = action.preparedSourceCardInstanceId or action.sourceCardInstanceId or action.cardInstanceId
+        if instanceId ~= nil then
+            local descriptor = BridgeState.authoritativeObjectByInstanceId[instanceId]
+            local policy = descriptor and tostring(descriptor.materializationPolicy or "") or ""
+            local physicalRequired = descriptor == nil
+                or (descriptor.isVirtual ~= true and policy ~= "virtual" and policy ~= "virtual-stack")
+            if physicalRequired then
+                local guid = BridgeState.physicalByInstanceId[instanceId]
+                local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
+                local inverse = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+                if object == nil or object.tag ~= "Card" or inverse ~= instanceId then
+                    return false, instanceId
+                end
+            end
+        end
+    end
+    return true, nil
+end
+
 function BridgeRenderDecision(decision, force)
     BridgePresentationMetric("decisionRenderAttempts")
     BridgeRecordDecisionLifecycle(decision, "render", "RENDER_BEGIN", force == true and "forced" or "normal")
@@ -7064,6 +7129,21 @@ function BridgeRenderDecision(decision, force)
         and BridgeState.renderedDecisionPhysicalGeneration
             == (BridgeState.currentPhysicalPresentationGeneration or 0) then
         BridgePresentationMetric("decisionRenderSkippedIdentical")
+        return
+    end
+    local mappingsReady, missingInstanceId = BridgeDecisionPhysicalMappingsReady(decision)
+    if not mappingsReady then
+        BridgeRecordDecisionLifecycle(decision, "render", "DEFERRED_PHYSICAL_MAPPING",
+            "missing-live-physical-mapping", missingInstanceId)
+        if BridgeState.lastPhysicalDecisionBarrier ~= decision.decisionId then
+            BridgeState.lastPhysicalDecisionBarrier = decision.decisionId
+            BridgeLog("[Bridge] decision presentation deferred: missing live physical mapping instance="
+                .. tostring(missingInstanceId) .. " decision=" .. tostring(decision.decisionId))
+            BridgeShowError("Forge decision is waiting for a physical card mapping; retrying authoritative recovery")
+        end
+        if BridgeScheduleSnapshotReconcile ~= nil then
+            BridgeScheduleSnapshotReconcile("decision physical mapping missing", "RECOVERY")
+        end
         return
     end
     BridgePresentationMetric("decisionRenderExecuted")
@@ -8707,7 +8787,11 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
             BridgeState.physicalSeatByGuid[guid] = nil
             BridgeState.physicalZoneByGuid[guid] = nil
         end
-        BridgeRecordLooseCardIdentity(card.cardInstanceId, actualGuid, seatSnapshot.seatId, zone.name)
+        local recorded, recordError = BridgeRecordLooseCardIdentity(card.cardInstanceId, actualGuid, seatSnapshot.seatId, zone.name)
+        if not recorded then
+            callback(false, recordError or "snapshot physical identity registration failed")
+            return
+        end
         BridgeState.cardNameByInstanceId[card.cardInstanceId] = card.cardName
         local placed, placeError = BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
         if not placed then
@@ -8723,12 +8807,14 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
     if object ~= nil then continueWith(object); return end
 
     -- A Forge copy of a permanent has no deck inventory entry. When Forge
-    -- supplies its exact origin identity, clone that already-materialized
-    -- physical presentation as a starting surface, then apply the copy's
-    -- authoritative characteristics below. The clone receives the copy's
-    -- own CardInstanceId and never steals the source mapping.
-    if card.isCopy == true and card.originObjectId ~= nil then
-        local originGuid = BridgeState.physicalByInstanceId[card.originObjectId]
+    -- supplies the exact copied-permanent identity, clone that already-
+    -- materialized physical presentation as a starting surface, then apply
+    -- the copy's authoritative characteristics below. The creating effect
+    -- (originObjectId) is provenance, not the clone source. The clone receives
+    -- the copy's own CardInstanceId and never steals the source mapping.
+    local copySourceObjectId = card.copySourceObjectId or card.originObjectId
+    if card.isCopy == true and copySourceObjectId ~= nil then
+        local originGuid = BridgeState.physicalByInstanceId[copySourceObjectId]
         local origin = originGuid and BridgeGetLiveObjectByGuid(originGuid) or nil
         if origin ~= nil and type(origin.clone) == "function" then
             local cloned = nil
@@ -11221,6 +11307,24 @@ function BridgeApplyStructuredCardMove(event)
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then return false, "structured zone change has no configured seat" end
 
+    -- Preserve the complete producer descriptor alongside the physical map.
+    -- Identity/provenance is authoritative transport data; it is never
+    -- reconstructed from the card's display name or from a chosen candidate.
+    BridgeState.authoritativeObjectByInstanceId[event.cardInstanceId] = {
+        objectId = event.authoritativeObjectId or event.cardInstanceId,
+        originObjectId = event.originObjectId,
+        copySourceObjectId = event.copySourceObjectId,
+        objectKind = event.objectKind,
+        isCopy = event.isCopy == true,
+        isToken = event.isToken == true,
+        isVirtual = event.isVirtual == true,
+        materializationPolicy = event.materializationPolicy,
+        ownerSeatId = event.ownerSeatId,
+        controllerSeatId = event.controllerSeatId,
+        battlefieldKind = event.battlefieldKind,
+        characteristics = event.characteristics
+    }
+
     local staleMappedGuid = nil
     local attemptedZones = {}
     local resolveError = nil
@@ -11509,6 +11613,40 @@ function BridgeApplyStructuredCardMove(event)
         return true, nil
     end
 
+    local function moveFromCopySourceToBattlefield()
+        local copySourceObjectId = event.copySourceObjectId or event.originObjectId
+        local sourceGuid = copySourceObjectId ~= nil
+            and BridgeState.physicalByInstanceId[copySourceObjectId] or nil
+        local source = sourceGuid and BridgeGetLiveObjectByGuid(sourceGuid) or nil
+        if source == nil or source.tag ~= "Card" or type(source.clone) ~= "function" then
+            return false
+        end
+        local sessionId = BridgeState.eventSessionId
+        local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+        local started, state = BridgeBeginTokenMaterialization(event.cardInstanceId)
+        if not started then
+            BridgeLog("[Bridge] copy materialization suppressed instance=" .. tostring(event.cardInstanceId)
+                .. " state=" .. tostring(state))
+            return true
+        end
+        local cloned = nil
+        local ok = pcall(function()
+            cloned = source.clone({position = source.getPosition(), rotation = source.getRotation()})
+        end)
+        if not ok or cloned == nil then
+            BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "FAILED"
+            return false
+        end
+        local moved, moveError = BridgeBindTokenMaterialization(event, cloned,
+            BridgeBattlefieldRowForEvent(event, "creature"), sessionId, epoch)
+        if not moved then
+            BridgeLog("[Bridge] copy materialization deferred instance="
+                .. tostring(event.cardInstanceId) .. " reason=" .. tostring(moveError))
+            BridgeScheduleSnapshotReconcile("copy materialization deferred")
+        end
+        return true
+    end
+
     if object == nil then
         object = tryResolveFromZone(event.sourceZone)
     end
@@ -11560,6 +11698,9 @@ function BridgeApplyStructuredCardMove(event)
 
     if object == nil and event.destinationZone == "battlefield"
         and (event.isToken == true or event.sourceZone == "token" or event.sourceZone == "tokens") then
+        if event.isCopy == true and moveFromCopySourceToBattlefield() then
+            return true, nil
+        end
         return moveFromTokenFetcherToBattlefield()
     end
 
@@ -13661,6 +13802,47 @@ function BridgeHudReportMappedCardInstanceIds()
     return ids
 end
 
+function BridgeHudReportPhysicalMappings()
+    local mappings = {}
+    local seenGuids = {}
+    for cardInstanceId, guid in pairs(BridgeState.physicalByInstanceId or {}) do
+        local object = BridgeGetLiveObjectByGuid(guid)
+        table.insert(mappings, {
+            cardInstanceId = cardInstanceId,
+            guid = guid,
+            zone = BridgeState.physicalZoneByGuid[guid],
+            isLive = object ~= nil,
+            advertisedCardInstanceId = BridgeReadPhysicalIdentity(object)
+        })
+        seenGuids[guid] = true
+    end
+    -- A mapped table entry cannot reveal an extra physical duplicate.  Only
+    -- inspect cards that explicitly advertise a Bridge identity; foreign or
+    -- importer-owned cards remain outside Forge mapping ownership.
+    if type(getAllObjects) == "function" then
+        for _, object in ipairs(getAllObjects() or {}) do
+            if object ~= nil and object.tag == "Card" then
+                local guid = BridgeSafeObjectGuid(object)
+                local advertised = BridgeReadPhysicalIdentity(object)
+                if guid ~= nil and advertised ~= nil and not seenGuids[guid] then
+                    table.insert(mappings, {
+                        cardInstanceId = advertised,
+                        guid = guid,
+                        zone = nil,
+                        isLive = true,
+                        advertisedCardInstanceId = advertised
+                    })
+                    seenGuids[guid] = true
+                end
+            end
+        end
+    end
+    table.sort(mappings, function(left, right)
+        return tostring(left.cardInstanceId) < tostring(right.cardInstanceId)
+    end)
+    return mappings
+end
+
 function BridgeHudReportSummaryText()
     local ok, value = pcall(function() return UI.getAttribute("BridgeHudReportSummary", "text") end)
     if not ok or value == nil then return nil end
@@ -13880,6 +14062,7 @@ function BridgeHudSubmitReport(category, summary)
         activePlayer = BridgeState.currentTurnSeatId,
         priorityPlayer = BridgeState.prioritySeatId,
         mappedCardInstanceIds = BridgeHudReportMappedCardInstanceIds(),
+        physicalMappings = BridgeHudReportPhysicalMappings(),
         status = BridgeState.statusHeadline,
         performanceSummary = performance.performanceSummary,
         recentTtsTrace = performance.recentTtsTrace,

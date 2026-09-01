@@ -1910,6 +1910,47 @@ function BridgeHudReportMappedCardInstanceIds()
     return ids
 end
 
+function BridgeHudReportPhysicalMappings()
+    local mappings = {}
+    local seenGuids = {}
+    for cardInstanceId, guid in pairs(BridgeState.physicalByInstanceId or {}) do
+        local object = BridgeGetLiveObjectByGuid(guid)
+        table.insert(mappings, {
+            cardInstanceId = cardInstanceId,
+            guid = guid,
+            zone = BridgeState.physicalZoneByGuid[guid],
+            isLive = object ~= nil,
+            advertisedCardInstanceId = BridgeReadPhysicalIdentity(object)
+        })
+        seenGuids[guid] = true
+    end
+    -- A mapped table entry cannot reveal an extra physical duplicate.  Only
+    -- inspect cards that explicitly advertise a Bridge identity; foreign or
+    -- importer-owned cards remain outside Forge mapping ownership.
+    if type(getAllObjects) == "function" then
+        for _, object in ipairs(getAllObjects() or {}) do
+            if object ~= nil and object.tag == "Card" then
+                local guid = BridgeSafeObjectGuid(object)
+                local advertised = BridgeReadPhysicalIdentity(object)
+                if guid ~= nil and advertised ~= nil and not seenGuids[guid] then
+                    table.insert(mappings, {
+                        cardInstanceId = advertised,
+                        guid = guid,
+                        zone = nil,
+                        isLive = true,
+                        advertisedCardInstanceId = advertised
+                    })
+                    seenGuids[guid] = true
+                end
+            end
+        end
+    end
+    table.sort(mappings, function(left, right)
+        return tostring(left.cardInstanceId) < tostring(right.cardInstanceId)
+    end)
+    return mappings
+end
+
 function BridgeHudReportSummaryText()
     local ok, value = pcall(function() return UI.getAttribute("BridgeHudReportSummary", "text") end)
     if not ok or value == nil then return nil end
@@ -2129,6 +2170,7 @@ function BridgeHudSubmitReport(category, summary)
         activePlayer = BridgeState.currentTurnSeatId,
         priorityPlayer = BridgeState.prioritySeatId,
         mappedCardInstanceIds = BridgeHudReportMappedCardInstanceIds(),
+        physicalMappings = BridgeHudReportPhysicalMappings(),
         status = BridgeState.statusHeadline,
         performanceSummary = performance.performanceSummary,
         recentTtsTrace = performance.recentTtsTrace,

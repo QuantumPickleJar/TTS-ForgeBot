@@ -2208,6 +2208,29 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void PhysicalIdentityCannotBeSilentlyStolenAndCopiesUseCopiedPermanentIdentity()
+    {
+        Assert.Contains("function BridgeReadPhysicalIdentity", Script);
+        Assert.Contains("refusing to reassign live card instance", Script);
+        Assert.Contains("refusing to reassign live guid", Script);
+        Assert.Contains("BridgeWritePhysicalIdentity", Script);
+        Assert.Contains("local copySourceObjectId = card.copySourceObjectId or card.originObjectId", Script);
+        Assert.Contains("local copySourceObjectId = event.copySourceObjectId or event.originObjectId", Script);
+        Assert.Contains("BridgeBindTokenMaterialization(event, cloned", Script);
+        Assert.Contains("DEFERRED_PHYSICAL_MAPPING", Script);
+        Assert.Contains("BridgeDecisionPhysicalMappingsReady", Script);
+    }
+
+    [Fact]
+    public void DiagnosticMappingSelfTestReceivesLiveIdentityEvidence()
+    {
+        Assert.Contains("function BridgeHudReportPhysicalMappings", Script);
+        Assert.Contains("physicalMappings = BridgeHudReportPhysicalMappings()", Script);
+        Assert.Contains("advertisedCardInstanceId", Script);
+        Assert.Contains("isLive = object ~= nil", Script);
+    }
+
+    [Fact]
     public void TokenMaterialization_UsesRequestedNameForRikrassenVisualLookupWithoutSourcePermanentInference()
     {
         var importerStart = Script.IndexOf("function BridgeImportExactTokenVisual", StringComparison.Ordinal);

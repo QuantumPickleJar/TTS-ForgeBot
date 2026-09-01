@@ -708,6 +708,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         var cardInstanceId = rawEvent.ForgeObjectId is null
             ? null
             : $"forge:{_sessionId}:{rawEvent.ForgeObjectId.Value}";
+        string? NormalizeObjectId(string? value) => string.IsNullOrWhiteSpace(value)
+            ? null
+            : value.StartsWith("forge:", StringComparison.Ordinal)
+                ? value
+                : $"forge:{_sessionId}:{(value.StartsWith("forge-object:", StringComparison.Ordinal) ? value[13..] : value)}";
         var authoritativeEvent = new AuthoritativeEventDto(
             Sequence: _latestEventSequence,
             EventId: $"forge-event-{_sessionId}-{_latestEventSequence}",
@@ -751,6 +756,13 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             GameEndReason: rawEvent.GameEndReason,
             Counters: rawEvent.Counters,
             BattlefieldKind: rawEvent.BattlefieldKind,
+            AuthoritativeObjectId: NormalizeObjectId(rawEvent.AuthoritativeObjectId) ?? cardInstanceId,
+            OriginObjectId: NormalizeObjectId(rawEvent.OriginObjectId),
+            CopySourceObjectId: NormalizeObjectId(rawEvent.CopySourceObjectId),
+            ObjectKind: rawEvent.ObjectKind,
+            IsCopy: rawEvent.IsCopy,
+            IsVirtual: rawEvent.IsVirtual,
+            MaterializationPolicy: rawEvent.MaterializationPolicy,
             IsToken: rawEvent.IsToken)
         {
             Characteristics = rawEvent.Characteristics

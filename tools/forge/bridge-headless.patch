@@ -746,6 +746,10 @@ index 0000000000000000000000000000000000000000..cb4c5481c7aae85ed730dc73d535bab0
 +        }
 +        final String canonicalName = card.getPaperCard() == null ? card.getName() : card.getPaperCard().getName();
 +        final Card cloneOrigin = card.getCloneOrigin();
++        // Forge keeps the creating effect and the copied permanent as
++        // separate relationships.  The effect is provenance; the copied
++        // permanent is the identity whose characteristics were copied.
++        final Card copySource = card.getCopiedPermanent();
 +        final boolean copied = card.isCloned() || card.getCopiedPermanent() != null;
 +        final String objectKind = card.isRealToken() || card.isTokenCard()
 +                ? "forge-token" : (copied ? ("stack".equals(zone) ? "copy-spell" : "copy-permanent") : "physical-original");
@@ -772,7 +776,7 @@ index 0000000000000000000000000000000000000000..cb4c5481c7aae85ed730dc73d535bab0
 +        property(json, "isToken", card.isToken() || card.isTokenCard()).append(',');
 +        property(json, "authoritativeObjectId", "forge-object:" + card.getId()).append(',');
 +        property(json, "originObjectId", cloneOrigin == null ? null : "forge-object:" + cloneOrigin.getId()).append(',');
-+        property(json, "copySourceObjectId", cloneOrigin == null ? null : "forge-object:" + cloneOrigin.getId()).append(',');
++        property(json, "copySourceObjectId", copySource == null ? null : "forge-object:" + copySource.getId()).append(',');
 +        property(json, "objectKind", objectKind).append(',');
 +        property(json, "isCopy", copied).append(',');
 +        property(json, "isVirtual", "stack".equals(zone) && copied).append(',');

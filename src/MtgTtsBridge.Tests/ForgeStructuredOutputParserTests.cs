@@ -764,6 +764,27 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void NewlyAppearedCopyPermanentEvent_PreservesCreatorAndCopiedObjectSeparately()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        var original = """{"forgeCardId":4,"cardName":"Young Pyromancer","currentCardName":"Young Pyromancer","zone":"battlefield","zonePosition":0,"ownerSeatId":"forge-player-1","controllerSeatId":"forge-player-1","tapped":false,"faceDown":false,"phasedOut":false,"counters":{},"keywords":[],"currentTypes":["creature"],"authoritativeObjectId":"forge-object:4","objectKind":"physical-original"}""";
+        var copy = """{"forgeCardId":126,"cardName":"Young Pyromancer","currentCardName":"Young Pyromancer","zone":"battlefield","zonePosition":1,"ownerSeatId":"forge-player-1","controllerSeatId":"forge-player-1","tapped":false,"faceDown":false,"phasedOut":false,"counters":{},"keywords":["Haste"],"currentTypes":["creature"],"isToken":true,"authoritativeObjectId":"forge-object:126","originObjectId":"forge-object:30","copySourceObjectId":"forge-object:4","objectKind":"copy-permanent","isCopy":true,"materializationPolicy":"physical"}""";
+
+        _ = reconciler.Apply("session-copy", Parse(parser, Frame(1, Player(battlefield: [original]))));
+        var events = reconciler.Apply("session-copy", Parse(parser, Frame(2, Player(battlefield: [original, copy]))));
+
+        var moved = Assert.Single(events, item => item.Kind == "card_moved" && item.ForgeObjectId == 126);
+        Assert.True(moved.IsToken);
+        Assert.True(moved.IsCopy);
+        Assert.Equal("forge:session-copy:126", moved.AuthoritativeObjectId);
+        Assert.Equal("forge:session-copy:30", moved.OriginObjectId);
+        Assert.Equal("forge:session-copy:4", moved.CopySourceObjectId);
+        Assert.Equal("copy-permanent", moved.ObjectKind);
+        Assert.Equal("physical", moved.MaterializationPolicy);
+    }
+
+    [Fact]
     public void CharacteristicChangedEvent_CarriesStructuredCharacteristics()
     {
         var parser = new ForgeStructuredOutputParser();

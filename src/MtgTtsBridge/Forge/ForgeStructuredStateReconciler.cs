@@ -340,7 +340,30 @@ public sealed class ForgeStructuredStateReconciler
                     BattlefieldKind: string.Equals(card.Zone, "battlefield", StringComparison.OrdinalIgnoreCase)
                         ? (HasLandType(card.CurrentTypes) ? "land" : "creature")
                         : null,
-                    IsToken: card.IsToken));
+                    IsToken: card.IsToken,
+                    AuthoritativeObjectId: card.AuthoritativeObjectId,
+                    OriginObjectId: card.OriginObjectId,
+                    CopySourceObjectId: card.CopySourceObjectId,
+                    ObjectKind: card.ObjectKind,
+                    IsCopy: card.IsCopy,
+                    IsVirtual: card.IsVirtual,
+                    MaterializationPolicy: card.MaterializationPolicy,
+                    OwnerSeatId: card.OwnerSeatId,
+                    ControllerSeatId: card.ControllerSeatId,
+                    Tapped: card.Tapped,
+                    FaceDown: card.FaceDown,
+                    PhasedOut: card.PhasedOut,
+                    NetPower: card.NetPower,
+                    NetToughness: card.NetToughness,
+                    CurrentPower: card.CurrentPower,
+                    CurrentToughness: card.CurrentToughness,
+                    CurrentTypes: card.CurrentTypes,
+                    CurrentCardName: card.CurrentCardName,
+                    Counters: card.Counters,
+                    Designations: card.CardDesignations)
+                {
+                    Characteristics = card.Characteristics
+                });
             }
 
             if (oldCard is not null && oldCard.Tapped != card.Tapped)

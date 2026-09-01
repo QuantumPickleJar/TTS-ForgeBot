@@ -156,6 +156,35 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public void SelfTests_RejectDeadOrDuplicatePhysicalMappings()
+    {
+        var card = new GameCardSnapshotDto(
+            "card-1", 1, "Young Pyromancer", "Young Pyromancer", "battlefield", 0,
+            "forge-player-1", "forge-player-1", false, false, false,
+            new Dictionary<string, int>(), ["creature"]);
+        var seat = new GameSeatSnapshotDto(
+            "forge-player-1", 1, "Human", 20, 0, new Dictionary<string, int>(),
+            [new GameZoneSnapshotDto("battlefield", [card])]);
+        var snapshot = new GameSnapshotDto("session", 4, "GameEventCardChangeZone", [seat], [], EventCursor: 4);
+
+        var result = new DiagnosticSelfTestRunner().Run(
+            null, null, snapshot,
+            new DiagnosticReportRequestDto(
+                SessionId: "session",
+                PhysicalMappings:
+                [
+                    new DiagnosticPhysicalMappingDto("card-1", "guid-a", "battlefield", IsLive: false),
+                    new DiagnosticPhysicalMappingDto("other-card", "guid-a", "battlefield", IsLive: true)
+                ]),
+            new BridgeProcessIdentity());
+
+        var mapping = Assert.Single(result.Checks, check => check.Id == "snapshot_card_mappings");
+        Assert.Equal("fail", mapping.Status);
+        Assert.Contains("duplicateGuids", mapping.Evidence!.Keys);
+        Assert.Contains("invalidMappings", mapping.Evidence.Keys);
+    }
+
+    [Fact]
     public async Task DiagnosticEndpoint_ReturnsIdentityAndPath()
     {
         using var factory = new TestWebApplicationFactory();

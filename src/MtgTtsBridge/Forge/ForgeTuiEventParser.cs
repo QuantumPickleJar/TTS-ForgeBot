@@ -319,7 +319,14 @@ public sealed record ForgeTuiRawEvent(
     string? GameEndReason = null,
     IReadOnlyDictionary<string, int>? Counters = null,
     string? BattlefieldKind = null,
-    bool IsToken = false)
+    bool IsToken = false,
+    string? AuthoritativeObjectId = null,
+    string? OriginObjectId = null,
+    string? CopySourceObjectId = null,
+    string? ObjectKind = null,
+    bool IsCopy = false,
+    bool IsVirtual = false,
+    string? MaterializationPolicy = null)
 {
     public MtgTtsBridge.Contracts.State.CurrentCharacteristicsDto? Characteristics { get; init; }
 };

@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Reflection;
 using MtgTtsBridge.Contracts.Actions;
+using MtgTtsBridge.Contracts.Events;
 using MtgTtsBridge.Contracts.State;
 using MtgTtsBridge.Forge;
 
@@ -292,6 +293,35 @@ public sealed class ForgeTuiAdapterTests
 
         var events = Assert.IsAssignableFrom<System.Collections.ICollection>(eventsField!.GetValue(adapter));
         Assert.True(events.Count == 1);
+    }
+
+    [Fact]
+    public async Task EnqueuedStructuredCopyEvent_PreservesNormalizedProvenance()
+    {
+        await using var adapter = new ForgeTuiAdapter(
+            Options.Create(new ForgeTuiOptions { Executable = "unused" }),
+            NullLogger<ForgeTuiAdapter>.Instance);
+        var enqueue = typeof(ForgeTuiAdapter).GetMethod("EnqueueEvent", BindingFlags.Instance | BindingFlags.NonPublic);
+        var eventsField = typeof(ForgeTuiAdapter).GetField("_events", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(enqueue);
+        Assert.NotNull(eventsField);
+
+        enqueue!.Invoke(adapter, [new ForgeTuiRawEvent(
+            "card_moved", "forge-player-1", "Young Pyromancer", 126, "stack", "battlefield",
+            "copy entered battlefield", IsToken: true,
+            AuthoritativeObjectId: "forge-object:126", OriginObjectId: "forge-object:30",
+            CopySourceObjectId: "forge-object:4", ObjectKind: "copy-permanent", IsCopy: true,
+            MaterializationPolicy: "physical")]);
+
+        var events = Assert.IsAssignableFrom<System.Collections.IEnumerable>(eventsField!.GetValue(adapter));
+        var item = Assert.Single(events.Cast<AuthoritativeEventDto>());
+        Assert.True(item.IsToken);
+        Assert.True(item.IsCopy);
+        Assert.Equal("forge:session-not-started:126", item.AuthoritativeObjectId);
+        Assert.Equal("forge:session-not-started:30", item.OriginObjectId);
+        Assert.Equal("forge:session-not-started:4", item.CopySourceObjectId);
+        Assert.Equal("copy-permanent", item.ObjectKind);
+        Assert.Equal("physical", item.MaterializationPolicy);
     }
 
     [Fact]

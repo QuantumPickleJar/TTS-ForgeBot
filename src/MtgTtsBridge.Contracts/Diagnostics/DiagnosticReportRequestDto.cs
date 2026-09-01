@@ -14,11 +14,20 @@ public sealed record DiagnosticReportRequestDto(
     string? ActivePlayer = null,
     string? PriorityPlayer = null,
     IReadOnlyList<string>? MappedCardInstanceIds = null,
+    IReadOnlyList<DiagnosticPhysicalMappingDto>? PhysicalMappings = null,
     string? Status = null,
     DiagnosticPerformanceSummaryDto? PerformanceSummary = null,
     IReadOnlyList<TtsPerformanceTraceRecordDto>? RecentTtsTrace = null,
     IReadOnlyList<DiagnosticCaptureLifecycleRecordDto>? DiagnosticCaptureLifecycle = null,
     DiagnosticEventDrainDiagnosticsDto? EventDrainDiagnostics = null);
+
+/// <summary>Live TTS evidence for one authoritative physical mapping.</summary>
+public sealed record DiagnosticPhysicalMappingDto(
+    string CardInstanceId,
+    string Guid,
+    string? Zone = null,
+    bool IsLive = false,
+    string? AdvertisedCardInstanceId = null);
 
 /// <summary>Bounded scheduler state captured when the TTS event head cannot start.</summary>
 public sealed record DiagnosticEventDrainDiagnosticsDto(

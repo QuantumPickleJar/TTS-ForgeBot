@@ -29,6 +29,17 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void TrackedBridgeStateFeed_SeparatesCopySourceFromCreatingEffect()
+    {
+        Assert.Contains("final Card cloneOrigin = card.getCloneOrigin();", Patch);
+        Assert.Contains("final Card copySource = card.getCopiedPermanent();", Patch);
+        Assert.Contains("property(json, \"originObjectId\", cloneOrigin", Patch);
+        Assert.Contains("property(json, \"copySourceObjectId\", copySource", Patch);
+        Assert.Contains("copy-permanent", Patch);
+        Assert.Contains("materializationPolicy", Patch);
+    }
+
+    [Fact]
     public void TrackedBridgeStateFeed_UsesADirtyGenerationInsteadOfLossyOneShotCoalescing()
     {
         Assert.Contains("AtomicLong mutationGeneration", Patch);

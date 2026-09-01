@@ -1077,6 +1077,20 @@ function BridgeSafeObjectCall(object, action)
     return ok
 end
 
+local BRIDGE_PHYSICAL_ID_KEY = "bridgeCardInstanceId"
+
+function BridgeReadPhysicalIdentity(object)
+    if not BridgeObjectIsUsable(object) or type(object.getVar) ~= "function" then return nil end
+    local ok, value = pcall(function() return object.getVar(BRIDGE_PHYSICAL_ID_KEY) end)
+    if not ok or value == nil or tostring(value) == "" then return nil end
+    return tostring(value)
+end
+
+function BridgeWritePhysicalIdentity(object, cardInstanceId)
+    if not BridgeObjectIsUsable(object) or cardInstanceId == nil or type(object.setVar) ~= "function" then return end
+    pcall(function() object.setVar(BRIDGE_PHYSICAL_ID_KEY, tostring(cardInstanceId)) end)
+end
+
 function BridgeAdvancePhysicalPresentationGeneration(reason)
     BridgeState.currentPhysicalPresentationGeneration =
         (BridgeState.currentPhysicalPresentationGeneration or 0) + 1
@@ -1099,32 +1113,57 @@ function BridgeAdvancePhysicalTransactionGeneration(reason)
 end
 
 function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
+    if cardInstanceId == nil or guid == nil or tostring(guid) == "" then
+        BridgeLog("[Bridge] refusing incomplete Forge mapping")
+        return false
+    end
     if BridgeIsPresentationOnlyObject(guid) then
         BridgeLog("[Bridge] refusing Forge mapping for presentation object " .. tostring(guid))
         return false
     end
-    local changed = cardInstanceId ~= nil
-        and (BridgeState.physicalByInstanceId[cardInstanceId] ~= guid
-            or BridgeState.physicalInstanceIdByGuid[guid] ~= cardInstanceId)
+    local object = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
+    local advertised = BridgeReadPhysicalIdentity(object)
+    if advertised ~= nil and advertised ~= tostring(cardInstanceId) then
+        BridgeLog("[Bridge] refusing mapping whose physical object advertises another card instance guid="
+            .. tostring(guid) .. " advertised=" .. advertised .. " requested=" .. tostring(cardInstanceId))
+        return false
+    end
+    local previousGuid = BridgeState.physicalByInstanceId[cardInstanceId]
+    if previousGuid ~= nil and previousGuid ~= guid then
+        local previousObject = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(previousGuid) or nil
+        if previousObject ~= nil then
+            BridgeLog("[Bridge] refusing to reassign live card instance " .. tostring(cardInstanceId)
+                .. " from guid=" .. tostring(previousGuid) .. " to guid=" .. tostring(guid))
+            return false
+        end
+        BridgeState.physicalInstanceIdByGuid[previousGuid] = nil
+        BridgeState.physicalSeatByGuid[previousGuid] = nil
+        BridgeState.physicalZoneByGuid[previousGuid] = nil
+    end
+    local previousInstanceId = BridgeState.physicalInstanceIdByGuid[guid]
+    if previousInstanceId ~= nil and previousInstanceId ~= cardInstanceId then
+        -- A live GUID already owned by another authoritative identity can
+        -- never be silently stolen by a same-name token/copy.
+        if object ~= nil then
+            BridgeLog("[Bridge] refusing to reassign live guid=" .. tostring(guid)
+                .. " from card instance=" .. tostring(previousInstanceId)
+                .. " to " .. tostring(cardInstanceId))
+            return false
+        end
+        BridgeState.physicalByInstanceId[previousInstanceId] = nil
+    end
+    local changed = BridgeState.physicalByInstanceId[cardInstanceId] ~= guid
+        or BridgeState.physicalInstanceIdByGuid[guid] ~= cardInstanceId
     changed = changed
         or BridgeState.physicalSeatByGuid[guid] ~= seatId
         or BridgeState.physicalZoneByGuid[guid] ~= zoneName
-    if cardInstanceId ~= nil then
-        local previousGuid = BridgeState.physicalByInstanceId[cardInstanceId]
-        if previousGuid ~= nil and previousGuid ~= guid then
-            BridgeState.physicalInstanceIdByGuid[previousGuid] = nil
-        end
-        local previousInstanceId = BridgeState.physicalInstanceIdByGuid[guid]
-        if previousInstanceId ~= nil and previousInstanceId ~= cardInstanceId then
-            BridgeState.physicalByInstanceId[previousInstanceId] = nil
-        end
-        BridgeState.physicalByInstanceId[cardInstanceId] = guid
-        BridgeState.physicalInstanceIdByGuid[guid] = cardInstanceId
-    end
+    BridgeState.physicalByInstanceId[cardInstanceId] = guid
+    BridgeState.physicalInstanceIdByGuid[guid] = cardInstanceId
     BridgeState.physicalSeatByGuid[guid] = seatId
     BridgeState.physicalZoneByGuid[guid] = zoneName
+    BridgeWritePhysicalIdentity(object, cardInstanceId)
     if changed then BridgeAdvancePhysicalPresentationGeneration("card-mapping") end
-    if BridgeCaptureCanonicalCardScale ~= nil then BridgeCaptureCanonicalCardScale(BridgeGetLiveObjectByGuid(guid)) end
+    if BridgeCaptureCanonicalCardScale ~= nil then BridgeCaptureCanonicalCardScale(object) end
     return true
 end
 
@@ -1167,7 +1206,11 @@ function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)
     end
     -- Bind the exact Forge identity before moving the object. Snapshot and
     -- event reconciliation now see BOUND instead of creating a second token.
-    BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "battlefield")
+    local recorded, recordError = BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "battlefield")
+    if not recorded then
+        BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "FAILED"
+        return false, recordError or "token identity registration failed"
+    end
     BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "BOUND"
     local moved, moveError = BridgeMoveToBattlefield(event, object, row)
     if not moved then
