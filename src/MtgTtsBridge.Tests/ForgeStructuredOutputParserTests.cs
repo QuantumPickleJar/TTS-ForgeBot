@@ -158,6 +158,25 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void Reconciliation_CarriesForgeTokenProvenanceOnAnExactBattlefieldMove()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        Assert.Empty(reconciler.Apply("session-a", Parse(parser, Frame(1, Player()))));
+
+        var events = reconciler.Apply("session-a", Parse(parser, Frame(2, Player(
+            battlefield: [Card(123, "Elemental Token", "battlefield", 0,
+                currentTypes: "[\"creature\",\"elemental\"]", isToken: true)]))));
+
+        var moved = Assert.Single(events, item => item.Kind == "card_moved");
+        Assert.Equal(123, moved.ForgeObjectId);
+        Assert.True(moved.IsToken);
+        var snapshotCard = Assert.Single(reconciler.Current!.Seats[0].Zones
+            .Single(zone => zone.Name == "battlefield").Cards);
+        Assert.True(snapshotCard.IsToken);
+    }
+
+    [Fact]
     public void Reconciliation_DiffsLiveGameEventReasonsWithoutRequiringGameStartedReason()
     {
         var parser = new ForgeStructuredOutputParser();
@@ -571,8 +590,9 @@ public sealed class ForgeStructuredOutputParserTests
         bool faceDown = false,
         bool phasedOut = false,
         string currentTypes = "[]",
-        string ownerSeatId = "forge-player-1") =>
-        $$"""{"forgeCardId":{{id}},"cardName":"{{name}}","currentCardName":"{{name}}","zone":"{{zone}}","zonePosition":{{position}},"ownerSeatId":"{{ownerSeatId}}","controllerSeatId":"{{controllerSeatId}}","tapped":{{tapped.ToString().ToLowerInvariant()}},"faceDown":{{faceDown.ToString().ToLowerInvariant()}},"phasedOut":{{phasedOut.ToString().ToLowerInvariant()}},"netPower":{{(netPower?.ToString() ?? "null")}},"netToughness":{{(netToughness?.ToString() ?? "null")}},"currentPower":{{(netPower?.ToString() ?? "null")}},"currentToughness":{{(netToughness?.ToString() ?? "null")}},"currentTypes":{{currentTypes}},"counters":{{counters}},"keywords":{{keywords}}}""";
+        string ownerSeatId = "forge-player-1",
+        bool isToken = false) =>
+        $$"""{"forgeCardId":{{id}},"cardName":"{{name}}","currentCardName":"{{name}}","zone":"{{zone}}","zonePosition":{{position}},"ownerSeatId":"{{ownerSeatId}}","controllerSeatId":"{{controllerSeatId}}","tapped":{{tapped.ToString().ToLowerInvariant()}},"faceDown":{{faceDown.ToString().ToLowerInvariant()}},"phasedOut":{{phasedOut.ToString().ToLowerInvariant()}},"isToken":{{isToken.ToString().ToLowerInvariant()}},"netPower":{{(netPower?.ToString() ?? "null")}},"netToughness":{{(netToughness?.ToString() ?? "null")}},"currentPower":{{(netPower?.ToString() ?? "null")}},"currentToughness":{{(netToughness?.ToString() ?? "null")}},"currentTypes":{{currentTypes}},"counters":{{counters}},"keywords":{{keywords}}}""";
 
     [Fact]
     public void SnapshotReconstruction_UsesForgeStructuredCharacteristicsPayload()

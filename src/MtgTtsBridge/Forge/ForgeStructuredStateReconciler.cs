@@ -323,7 +323,8 @@ public sealed class ForgeStructuredStateReconciler
                     ContainsHiddenIdentity: containsHiddenIdentity,
                     BattlefieldKind: string.Equals(card.Zone, "battlefield", StringComparison.OrdinalIgnoreCase)
                         ? (HasLandType(card.CurrentTypes) ? "land" : "creature")
-                        : null));
+                        : null,
+                    IsToken: card.IsToken));
             }
 
             if (oldCard is not null && oldCard.Tapped != card.Tapped)

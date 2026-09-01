@@ -11981,10 +11981,29 @@ function BridgeHudReportSummaryText()
     return value ~= "" and value or nil
 end
 
+function BridgeRestorePollingAfterDiagnosticCapture(captureToken, reason)
+    local ui = BridgeState.ui
+    if ui == nil or ui.reportCaptureToken ~= captureToken then return end
+    if not BridgeState.eventPolling and BridgeState.eventSessionId ~= nil and not BridgeState.desyncLatched then
+        BridgeLog("[Bridge] diagnostic capture recovery restarting event polling reason=" .. tostring(reason))
+        BridgeStartEventPolling(BridgeState.eventSessionId, false)
+    end
+    -- Reporting must never retire a live decision or submit a choice. If the
+    -- decision loop stopped while the report was in flight, resume only its
+    -- ordinary polling mechanism and let Forge remain authoritative.
+    if not BridgeState.decisionPollInFlight and not BridgeState.decisionPollScheduled
+        and not BridgeState.submitting and not BridgeState.desyncLatched then
+        BridgeLog("[Bridge] diagnostic capture recovery restarting decision polling reason=" .. tostring(reason))
+        BridgeStartDecisionPolling()
+    end
+end
+
 function BridgeHudSubmitReport(category, summary)
     local ui = BridgeState.ui
     if ui == nil or ui.reportCaptureInFlight then return end
     ui.reportCaptureInFlight = true
+    ui.reportCaptureToken = (tonumber(ui.reportCaptureToken or 0) or 0) + 1
+    local captureToken = ui.reportCaptureToken
     ui.reportStatus = "Capturing..."
     BridgeUiMarkDirty("report-capture-start")
 
@@ -12007,6 +12026,7 @@ function BridgeHudSubmitReport(category, summary)
         recentTtsTrace = performance.recentTtsTrace
     }
     BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
+        if ui.reportCaptureToken ~= captureToken then return end
         ui.reportCaptureInFlight = false
         if ok and body ~= nil and body.success == true then
             local reportId = tostring(body.reportId or "unknown")
@@ -12019,7 +12039,18 @@ function BridgeHudSubmitReport(category, summary)
             BridgeLog("[Bridge] diagnostic report failed: " .. detail)
         end
         BridgeUiMarkDirty("report-capture-result")
+        BridgeRestorePollingAfterDiagnosticCapture(captureToken, "callback")
     end)
+    -- TTS WebRequest has no reliable request cancellation callback. A failed
+    -- diagnostic request must not strand one match's ordinary polling loop.
+    BridgeWaitTime(function()
+        if ui.reportCaptureToken ~= captureToken or not ui.reportCaptureInFlight then return end
+        ui.reportCaptureInFlight = false
+        ui.reportStatus = "CAPTURE TIMEOUT — match polling restored"
+        BridgeLog("[Bridge] diagnostic capture watchdog expired; restoring polling")
+        BridgeUiMarkDirty("report-capture-timeout")
+        BridgeRestorePollingAfterDiagnosticCapture(captureToken, "watchdog")
+    end, 15)
 end
 
 function BridgeHudReportCapture(player, value, id)

@@ -42,7 +42,11 @@ public sealed record AuthoritativeEventDto(
     IReadOnlyList<string>? LoserSeatIds = null,
     string? GameEndReason = null,
     IReadOnlyDictionary<string, int>? Counters = null,
-    string? BattlefieldKind = null)
+    string? BattlefieldKind = null,
+    // A Forge-created token has no printed-deck embodiment. This flag is
+    // producer truth and permits TTS to select its token materializer without
+    // inferring from a display name or an unmapped battlefield object.
+    bool IsToken = false)
 {
     /// <summary>
     /// Complete current characteristics change when present. Provides structured

@@ -750,7 +750,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             LoserSeatIds: rawEvent.LoserSeatIds,
             GameEndReason: rawEvent.GameEndReason,
             Counters: rawEvent.Counters,
-            BattlefieldKind: rawEvent.BattlefieldKind)
+            BattlefieldKind: rawEvent.BattlefieldKind,
+            IsToken: rawEvent.IsToken)
         {
             Characteristics = rawEvent.Characteristics
         };

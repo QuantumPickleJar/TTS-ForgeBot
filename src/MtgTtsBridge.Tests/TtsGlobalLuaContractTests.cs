@@ -2579,6 +2579,21 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void DiagnosticCapture_RecoversOrdinaryPollingAfterCallbackOrTimeout()
+    {
+        var start = Script.IndexOf("function BridgeRestorePollingAfterDiagnosticCapture", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeHudReportCapture", start, StringComparison.Ordinal);
+        var report = Script[start..end];
+
+        Assert.Contains("BridgeStartEventPolling(BridgeState.eventSessionId, false)", report);
+        Assert.Contains("BridgeStartDecisionPolling()", report);
+        Assert.Contains("reportCaptureToken", report);
+        Assert.Contains("diagnostic capture watchdog expired; restoring polling", report);
+        Assert.Contains("CAPTURE TIMEOUT — match polling restored", report);
+        Assert.Contains("end, 15)", report);
+    }
+
+    [Fact]
     public void LibraryInsertion_UsesSamePrimitiveForMulliganGraveyardAndNewMatchPaths()
     {
         Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(seatId, item.object, \"BOTTOM\"", Script);
