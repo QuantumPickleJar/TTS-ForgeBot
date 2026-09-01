@@ -1419,14 +1419,10 @@ function BridgeProcessEventQueue()
     BridgeTryApplyDeferredSnapshotReconcile("event " .. tostring(event.sequence))
     BridgeTryPresentPendingDecision("event-applied")
     if event.kind == "draw" or event.kind == "turn_changed" or event.kind == "phase_changed" then
-        -- A draw/phase transition can invalidate the previously rendered
-        -- priority menu. If no replacement decision was already released,
-        -- fetch Forge's current menu so newly available hand actions (notably
-        -- a land drawn during upkeep) are rendered in the next window.
-        if BridgeState.lastDecision == nil and BridgeState.pendingDecision == nil
-            and not BridgeState.submitting then
-            BridgeStartDecisionPolling()
-        end
+        -- The old menu may still be rendered when Forge changes state. Ask
+        -- Forge for the replacement directly; the refresh is bounded and
+        -- single-flight, and acceptance preserves hand-action readiness.
+        BridgeRefreshDecisionAfterStateTransition(event.kind)
     end
     if BridgeShouldReconcileAfterEvent(event) then
         BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence))

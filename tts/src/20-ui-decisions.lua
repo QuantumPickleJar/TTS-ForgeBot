@@ -706,6 +706,36 @@ function BridgeStartDecisionPolling()
     BridgeScheduleDecisionPoll(BridgeTransitionExpected() and 0.1 or 0.25, BridgeState.decisionPollGeneration, 1)
 end
 
+-- State-changing events can invalidate the currently rendered decision even
+-- while it is still non-nil. Fetch exactly one authoritative replacement and
+-- feed it through the normal decision acceptance/readiness path.
+function BridgeRefreshDecisionAfterStateTransition(reason)
+    if BridgeState.eventSessionId == nil or BridgeState.gameEnded ~= nil
+        or BridgeState.desyncLatched or BridgeState.decisionRefreshInFlight then
+        return
+    end
+
+    local expectedSessionId = BridgeState.eventSessionId
+    local presentationGeneration = BridgeState.decisionPresentationGeneration
+    BridgeState.decisionRefreshInFlight = true
+    BridgeLog("[Bridge] requesting authoritative decision refresh reason=" .. tostring(reason))
+    BridgeGetDecision(function(ok, body, err)
+        if expectedSessionId ~= BridgeState.eventSessionId
+            or presentationGeneration ~= BridgeState.decisionPresentationGeneration then
+            BridgeState.decisionRefreshInFlight = false
+            BridgeLog("[Bridge] ignored delayed transition decision refresh")
+            return
+        end
+
+        BridgeState.decisionRefreshInFlight = false
+        if ok and body ~= nil then
+            BridgeAcceptDecision(body, "state_transition_refresh", expectedSessionId, presentationGeneration)
+        else
+            BridgeLog("[Bridge] state transition decision refresh failed: " .. tostring(err))
+        end
+    end)
+end
+
 function BridgeDecisionHasAction(decision, actionId)
     if decision == nil or actionId == nil then return false end
     for _, action in ipairs(decision.actions or {}) do

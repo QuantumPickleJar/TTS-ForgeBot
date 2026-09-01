@@ -1876,11 +1876,21 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void AuthoritativeDrawAndPhaseTransitionsRefreshTheCurrentDecision()
+    public void AuthoritativeTransitionsRefreshEvenWithAnExistingDecision()
     {
         Assert.Contains("if event.kind == \"draw\" or event.kind == \"turn_changed\" or event.kind == \"phase_changed\" then", Script);
-        Assert.Contains("BridgeStartDecisionPolling()", Script);
-        Assert.Contains("newly available hand actions", Script);
+        var start = Script.IndexOf("function BridgeRefreshDecisionAfterStateTransition", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeDecisionHasAction", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var refresh = Script[start..end];
+        Assert.Contains("decisionRefreshInFlight", refresh);
+        Assert.Contains("BridgeGetDecision(function(ok, body, err)", refresh);
+        Assert.Contains("BridgeAcceptDecision(body, \"state_transition_refresh\"", refresh);
+        Assert.DoesNotContain("BridgeState.lastDecision = nil", refresh);
+        Assert.Contains("decisionRefreshInFlight then", refresh);
+        Assert.Contains("BridgeState.pendingDecision", Script);
+        Assert.Contains("BridgeTryPresentPendingDecision", Script);
+        Assert.DoesNotContain("lastDecision == nil", Script[Script.IndexOf("if event.kind == \"draw\"", StringComparison.Ordinal)..Script.IndexOf("if BridgeShouldReconcileAfterEvent", StringComparison.Ordinal)]);
     }
 
     [Fact]

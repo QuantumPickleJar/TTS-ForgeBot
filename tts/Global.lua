@@ -438,6 +438,7 @@ BridgeState = {
     decisionPresentationGeneration = 0,
     decisionPollInFlight = false,
     decisionPollScheduled = false,
+    decisionRefreshInFlight = false,
     eventRetryCount = 0,
     skipExistingEventsOnAttach = false,
     eventQueue = {},
@@ -2952,6 +2953,36 @@ function BridgeStartDecisionPolling()
     if BridgeState.gameEnded ~= nil then return end
     BridgeStopDecisionPolling()
     BridgeScheduleDecisionPoll(BridgeTransitionExpected() and 0.1 or 0.25, BridgeState.decisionPollGeneration, 1)
+end
+
+-- State-changing events can invalidate the currently rendered decision even
+-- while it is still non-nil. Fetch exactly one authoritative replacement and
+-- feed it through the normal decision acceptance/readiness path.
+function BridgeRefreshDecisionAfterStateTransition(reason)
+    if BridgeState.eventSessionId == nil or BridgeState.gameEnded ~= nil
+        or BridgeState.desyncLatched or BridgeState.decisionRefreshInFlight then
+        return
+    end
+
+    local expectedSessionId = BridgeState.eventSessionId
+    local presentationGeneration = BridgeState.decisionPresentationGeneration
+    BridgeState.decisionRefreshInFlight = true
+    BridgeLog("[Bridge] requesting authoritative decision refresh reason=" .. tostring(reason))
+    BridgeGetDecision(function(ok, body, err)
+        if expectedSessionId ~= BridgeState.eventSessionId
+            or presentationGeneration ~= BridgeState.decisionPresentationGeneration then
+            BridgeState.decisionRefreshInFlight = false
+            BridgeLog("[Bridge] ignored delayed transition decision refresh")
+            return
+        end
+
+        BridgeState.decisionRefreshInFlight = false
+        if ok and body ~= nil then
+            BridgeAcceptDecision(body, "state_transition_refresh", expectedSessionId, presentationGeneration)
+        else
+            BridgeLog("[Bridge] state transition decision refresh failed: " .. tostring(err))
+        end
+    end)
 end
 
 function BridgeDecisionHasAction(decision, actionId)
@@ -8841,14 +8872,10 @@ function BridgeProcessEventQueue()
     BridgeTryApplyDeferredSnapshotReconcile("event " .. tostring(event.sequence))
     BridgeTryPresentPendingDecision("event-applied")
     if event.kind == "draw" or event.kind == "turn_changed" or event.kind == "phase_changed" then
-        -- A draw/phase transition can invalidate the previously rendered
-        -- priority menu. If no replacement decision was already released,
-        -- fetch Forge's current menu so newly available hand actions (notably
-        -- a land drawn during upkeep) are rendered in the next window.
-        if BridgeState.lastDecision == nil and BridgeState.pendingDecision == nil
-            and not BridgeState.submitting then
-            BridgeStartDecisionPolling()
-        end
+        -- The old menu may still be rendered when Forge changes state. Ask
+        -- Forge for the replacement directly; the refresh is bounded and
+        -- single-flight, and acceptance preserves hand-action readiness.
+        BridgeRefreshDecisionAfterStateTransition(event.kind)
     end
     if BridgeShouldReconcileAfterEvent(event) then
         BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence))

@@ -437,6 +437,7 @@ BridgeState = {
     decisionPresentationGeneration = 0,
     decisionPollInFlight = false,
     decisionPollScheduled = false,
+    decisionRefreshInFlight = false,
     eventRetryCount = 0,
     skipExistingEventsOnAttach = false,
     eventQueue = {},
