@@ -74,6 +74,7 @@ FIXED
 CRITICAL BUG: attempting to play a land on your draw step results in skipping straight to combat phase
 NOT A BUG — lands are normally illegal during Draw; verify the subsequent Main 1 decision instead
 
+
 Bug: lands can get misplacedin the creatures row, vice versa for  blue seats
 FIXED GENERICALLY — battlefield row fallback derives from Forge current types; LIVE CONFIRMATION PENDING
 
@@ -81,7 +82,7 @@ bug: UI presents your next card before you should have access to this informatio
 FIXED 122d25d
 
 Bug: cannot cast sorceries before combat
-NEEDS LIVE CONFIRMATION
+FIXED
 
 CRITICAL: sorceries with graveyard return is failing. the choice accepts but no functionality ensues and the card goes unconsumed despite it advancing the phases which is inappropriate--see logs using Tune Up
 NEEDS LIVE CONFIRMATION
@@ -90,7 +91,7 @@ Bug: Casting a creature can  take up to an entire  turn for it to move from this
 NEEDS LIVE CONFIRMATION
 
 Bug: Main 1 still gets skipped 
-NOT FIXED
+FIXED
 
 Bug: the option to play a land does not get checked until  the next phase, it needs to be checked on every relevant choice
 FIXED
@@ -109,7 +110,7 @@ NOT FIXED
 bug: you can only highlight one card max for attacker selection, multiple ones are available if done through the UI
 
 BUG: main 1 phase is skipped on to combat turn 1
-IMPLEMENTED — active empty-stack Main 1 priority window is retained through transient Forge priority-holder mismatch (`0eab0f2`); NEEDS LIVE CONFIRMATION
+FIXED
 
 BUG: valid choices are not presented until both are satisfied - A the combat step is reached and B - the user has clicked Done on the UI
 FIXED?
@@ -150,8 +151,8 @@ Bug:
 opening the card importer breaks the custom UI such that it takes up the entire screen
 WAS FIXED - HAS RESURFACED
 
-Bug: cannot play lands already in hand on draw nor upkeep steps, must wait for main 1 to pass
-NOT A BUG — lands are normally illegal during Draw/Upkeep; Main 1 action freshness is tracked above
+Bug: cannot play lands already in hand on draw nor upkeep steps, must wait for combat to pass
+NOT FIXED 
 
 Bug: casting stitcher's suppplier failed to trigger the mill-adjacent effect that mental note shares
 FIXED
@@ -160,7 +161,7 @@ Bug: you can select spent instants as attackers
 NOT FIXED
 
 Bug: passing priority on the upkeep step skips Main 
-AWAITING CONFIRMATION
+NOT FIXED
 
 Bug: YIELD TURN does not pass priority during opponent's steps, seems to be defunct
 NOT FIXED
@@ -170,7 +171,9 @@ NOT FIXED
 
 CRITCAL: Effects from Young Pyromancer fail to trigger.
 
+
 Bug: Land cannot be played before combat due to main 1 consistently being skipped
+NOT FIXED
 
 Bug: YIELD TURN is missing during Blue's turn (should advance until human intervention required OR turn change)
 FIXED
@@ -190,6 +193,8 @@ NEEDS LIVE CONFIRMATION
 
 bug: sacrifice cards say "sacrifice CARDNAME" instead of the actual card's name
 NOT FIXED
+
+Bug: Consider does not resolve at the appropriate speed
 
 Bug: Sacrificing a tapped permanent does not untap it before transporting to its destination (exile or graveyard) is complete
 NOT FIXED
