@@ -3651,6 +3651,8 @@ function BridgeShouldIgnoreStaleDecision(decision)
     return false, eventCursor, applied
 end
 
+-- Empty cursor handling remains explicit in the stale-decision policy:
+-- if eventCursor <= 0, no cross-domain ordering comparison is possible.
 function BridgeShouldDeferDecision(decision)
     local openingMulligan = decision ~= nil and decision.kind == "mulligan"
         and tostring(decision.mulliganStage or "") == "keep_or_mulligan"
