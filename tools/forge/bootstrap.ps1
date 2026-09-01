@@ -27,7 +27,7 @@ function Require-Command([string]$name) {
 
 Require-Command git
 Require-Command java
-Require-Command mvn
+if ($Build) { Require-Command mvn }
 
 function Get-NativeVersionLine([string]$commandLine, [string]$displayName) {
     $output = & cmd.exe /d /c "$commandLine 2>&1"
@@ -38,10 +38,49 @@ function Get-NativeVersionLine([string]$commandLine, [string]$displayName) {
     return $output | Select-Object -First 1
 }
 
+function Get-ForgePatchPaths([string]$patchPath) {
+    return @(Select-String -LiteralPath $patchPath -Pattern '^\+\+\+ b/(.+)$' |
+        ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique)
+}
+
+function Get-ForgeExpectedSources([string]$forgePath, [string]$upstreamCommit, [string]$patchPath) {
+    $worktree = Join-Path ([System.IO.Path]::GetTempPath()) ('forge-patch-check-' + [guid]::NewGuid())
+    New-Item -ItemType Directory -Force -Path $worktree | Out-Null
+    try {
+        $null = & git -C $forgePath worktree add --detach $worktree $upstreamCommit
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create clean Forge verification worktree." }
+        $null = & git -C $worktree apply --recount --check $patchPath
+        if ($LASTEXITCODE -ne 0) { throw "Current bridge patch does not apply to upstream Forge commit $upstreamCommit." }
+        $null = & git -C $worktree apply --recount $patchPath
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to apply the current Forge bridge patch in the clean verification worktree.' }
+
+        $expected = [ordered]@{}
+        foreach ($relative in (Get-ForgePatchPaths $patchPath)) {
+            $source = Join-Path $worktree $relative
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                throw "Current bridge patch did not produce expected source: $relative"
+            }
+            $expected[$relative] = [ordered]@{
+                sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash
+                bytes = [System.IO.File]::ReadAllBytes($source)
+            }
+        }
+        return $expected
+    }
+    finally {
+        & git -C $forgePath worktree remove --force $worktree 2>$null
+        if (Test-Path -LiteralPath $worktree) {
+            Remove-Item -LiteralPath $worktree -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 $javaVersion = Get-NativeVersionLine 'java -version' 'Java'
-$mavenVersion = Get-NativeVersionLine 'mvn -version' 'Maven'
 Write-Host "Java: $javaVersion"
-Write-Host "Maven: $mavenVersion"
+if ($Build) {
+    $mavenVersion = Get-NativeVersionLine 'mvn -version' 'Maven'
+    Write-Host "Maven: $mavenVersion"
+}
 
 if (-not (Test-Path (Join-Path $forgeDirectory '.git'))) {
     New-Item -ItemType Directory -Force -Path (Split-Path $forgeDirectory -Parent) | Out-Null
@@ -72,21 +111,43 @@ try {
     if (-not (Test-Path -LiteralPath $bridgePatch)) {
         throw "Required Forge bridge patch is missing: $bridgePatch"
     }
-    if ($hasLocalChanges) {
-        # This checkout already contains the bridge implementation. Applying
-        # the patch again is not an idempotent operation and produces normal
-        # hunk failures, which PowerShell promotes to terminating errors under
-        # ErrorActionPreference=Stop. Preserve the checked-out bridge sources;
-        # the build stamp records their exact hashes below.
-        Write-Host 'Skipping patch application because Forge has local bridge changes.'
+    # Never treat a dirty checkout as proof that the current patch is present.
+    # Reconstruct the expected patch result from a clean upstream worktree and
+    # replace only patch-touched files. An existing build stamp may identify
+    # old bridge-generated edits; it is not itself accepted as correspondence
+    # evidence.
+    $expectedSources = Get-ForgeExpectedSources $forgeDirectory $commit $bridgePatch
+    $previousStamp = $null
+    $previousStampPath = Get-ChildItem 'forge-headless\target\forge-headless-bridge-build.json' -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty FullName
+    if ($previousStampPath) {
+        try { $previousStamp = Get-Content -Raw -LiteralPath $previousStampPath | ConvertFrom-Json } catch { $previousStamp = $null }
     }
-    else {
-        & git apply --recount --check $bridgePatch
-        if ($LASTEXITCODE -ne 0) { throw 'Forge bridge patch does not apply cleanly to the requested ref.' }
-        & git apply --recount $bridgePatch
-        if ($LASTEXITCODE -ne 0) { throw 'Failed to apply the Forge bridge patch.' }
-        Write-Host 'Applied Forge bridge patch.'
+    foreach ($relative in $expectedSources.Keys) {
+        $target = Join-Path $forgeDirectory $relative
+        $expectedHash = $expectedSources[$relative].sha256
+        $currentHash = if (Test-Path -LiteralPath $target -PathType Leaf) { (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash } else { $null }
+        $currentIsBase = $false
+        if ($currentHash -ne $null) {
+            & git diff --quiet $commit -- $relative
+            $currentIsBase = $LASTEXITCODE -eq 0
+        }
+        if ($currentHash -ne $expectedHash -and -not $currentIsBase) {
+            $previousHash = if ($previousStamp -and $previousStamp.patchedSourceSha256) {
+                $property = $previousStamp.patchedSourceSha256.PSObject.Properties[$relative]
+                if ($property) { $property.Value } else { $null }
+            } else { $null }
+            if ($currentHash -ne $previousHash) {
+                throw "Forge patch-touched file has unrelated local edits; refusing to overwrite: $relative"
+            }
+        }
     }
+    foreach ($relative in $expectedSources.Keys) {
+        $target = Join-Path $forgeDirectory $relative
+        New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
+        [System.IO.File]::WriteAllBytes($target, [byte[]]$expectedSources[$relative].bytes)
+    }
+    Write-Host 'Reconstructed patch-touched Forge sources from clean upstream plus the current bridge patch.'
 
     if ($Build) {
         & mvn -pl forge-headless -am package -DskipTests
@@ -95,20 +156,23 @@ try {
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if (-not $jar) { throw 'Forge headless build completed without the assembled JAR.' }
         $patchedSources = [ordered]@{}
-        foreach ($line in (Get-Content -LiteralPath $bridgePatch)) {
-            if ($line -match '^\+\+\+ b/(.+)$') {
-                $relative = $Matches[1]
-                $source = Join-Path $forgeDirectory $relative
-                if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-                    throw "Patched Forge source is missing after build: $relative"
-                }
-                $patchedSources[$relative] = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash
+        foreach ($relative in $expectedSources.Keys) {
+            $source = Join-Path $forgeDirectory $relative
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                throw "Patched Forge source is missing after build: $relative"
             }
+            $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash
+            if ($actualHash -ne $expectedSources[$relative].sha256) {
+                throw "Patched Forge source differs from clean upstream plus current bridge patch: $relative"
+            }
+            $patchedSources[$relative] = $actualHash
         }
         $stamp = [ordered]@{
-            schemaVersion = 2
+            schemaVersion = 3
             upstreamForgeCommit = $commit
+            upstreamForgeRef = $Ref
             bridgePatchSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $bridgePatch).Hash
+            patchApplication = 'clean-upstream-plus-current-bridge-patch'
             patchedSourceSha256 = $patchedSources
             jarFileName = $jar.Name
             jarSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $jar.FullName).Hash

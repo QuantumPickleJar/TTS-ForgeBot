@@ -288,12 +288,18 @@ public sealed class ForgeProducerContractTests
     public void ForgeBuildStamp_BindsJarToPatchAndUpstreamCommit()
     {
         Assert.Contains("forge-headless-bridge-build.json", Bootstrap);
-        Assert.Contains("Skipping patch application because Forge has local bridge changes", Bootstrap);
+        Assert.Contains("Get-ForgeExpectedSources", Bootstrap);
+        Assert.Contains("clean verification worktree", Bootstrap);
+        Assert.Contains("Reconstructed patch-touched Forge sources", Bootstrap);
+        Assert.Contains("patch-touched file has unrelated local edits", Bootstrap);
         Assert.Contains("if ($hasLocalChanges)", Bootstrap);
         Assert.Contains("bridgePatchSha256", Bootstrap);
         Assert.Contains("upstreamForgeCommit", Bootstrap);
+        Assert.Contains("patchApplication = 'clean-upstream-plus-current-bridge-patch'", Bootstrap);
+        Assert.Contains("schemaVersion = 3", Bootstrap);
         Assert.Contains("jarSha256", Bootstrap);
         Assert.Contains("patchedSourceSha256", Bootstrap);
+        Assert.Contains("patchApplication -ne 'clean-upstream-plus-current-bridge-patch'", Launcher);
         Assert.Contains("bridgePatchSha256", Launcher);
         Assert.Contains("patchedSourceSha256", Launcher);
         Assert.Contains("BridgeStateFeed source is newer than the assembled JAR", Launcher);

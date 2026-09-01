@@ -37,9 +37,10 @@ $buildStamp = Get-Content -Raw -LiteralPath $buildStampPath | ConvertFrom-Json
 $currentForgeCommit = (& git -C $forgeRoot rev-parse HEAD).Trim()
 $currentPatchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bridgePatch).Hash
 $currentJarHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $jar.FullName).Hash
-if ($buildStamp.schemaVersion -ne 2 `
+if ($buildStamp.schemaVersion -ne 3 `
     -or $buildStamp.upstreamForgeCommit -ne $currentForgeCommit `
     -or $buildStamp.bridgePatchSha256 -ne $currentPatchHash `
+    -or $buildStamp.patchApplication -ne 'clean-upstream-plus-current-bridge-patch' `
     -or $buildStamp.jarFileName -ne $jar.Name `
     -or $buildStamp.jarSha256 -ne $currentJarHash `
     -or $null -eq $buildStamp.patchedSourceSha256) {
