@@ -3523,10 +3523,27 @@ function BridgeDecisionHasNonPassAction(decision)
     return false
 end
 
+-- Keep phase-family normalization shared by stale-decision checks and
+-- diagnostics. It is descriptive only; Forge remains legality authority.
+function BridgePriorityPhaseFamily(value)
+    local phase = string.upper(tostring(value or ""))
+    if phase == "" then return "" end
+    if string.find(phase, "UPKEEP", 1, true) then return "UPKEEP" end
+    if string.find(phase, "DRAW", 1, true) then return "DRAW" end
+    if string.find(phase, "MAIN", 1, true) then return "MAIN" end
+    if string.find(phase, "ATTACK", 1, true)
+        or string.find(phase, "BLOCK", 1, true)
+        or string.find(phase, "DAMAGE", 1, true)
+        or string.find(phase, "COMBAT", 1, true) then return "COMBAT" end
+    if string.find(phase, "CLEANUP", 1, true) then return "CLEANUP" end
+    if string.find(phase, "END", 1, true) then return "END" end
+    return phase
+end
+
 function BridgeShouldIgnoreStaleDecision(decision)
     local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
     local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
-    if eventCursor <= 0 or eventCursor >= applied then
+    if eventCursor < 1 or eventCursor >= applied then
         if decision ~= nil and (decision.kind == "attacker_selection"
             or decision.kind == "blocker_selection" or decision.kind == "blocker_assignment") then
             -- A valid combat decision can arrive in the same transport window
@@ -3590,22 +3607,8 @@ function BridgeShouldIgnoreStaleDecision(decision)
     -- already become authoritative, effectively consuming the Main 1 window.
     -- A menu carrying a real Forge action remains eligible to bridge the
     -- short event-publication gap; legality is still Forge-owned.
-    local function phaseFamily(value)
-        local phase = string.upper(tostring(value or ""))
-        if phase == "" then return "" end
-        if string.find(phase, "UPKEEP", 1, true) then return "UPKEEP" end
-        if string.find(phase, "DRAW", 1, true) then return "DRAW" end
-        if string.find(phase, "MAIN", 1, true) then return "MAIN" end
-        if string.find(phase, "ATTACK", 1, true)
-            or string.find(phase, "BLOCK", 1, true)
-            or string.find(phase, "DAMAGE", 1, true)
-            or string.find(phase, "COMBAT", 1, true) then return "COMBAT" end
-        if string.find(phase, "CLEANUP", 1, true) then return "CLEANUP" end
-        if string.find(phase, "END", 1, true) then return "END" end
-        return phase
-    end
-    local decisionFamily = phaseFamily(decision.phaseName)
-    local authoritativeFamily = phaseFamily(BridgeState.currentPhase)
+    local decisionFamily = BridgePriorityPhaseFamily(decision.phaseName)
+    local authoritativeFamily = BridgePriorityPhaseFamily(BridgeState.currentPhase)
     local contradictoryPassOnly = decisionFamily ~= "" and authoritativeFamily ~= ""
         and decisionFamily ~= authoritativeFamily
         and not BridgeDecisionHasNonPassAction(decision)
@@ -10098,8 +10101,10 @@ function BridgePreparePhysicalCardForPublicZoneMove(object, destinationZone)
     if object == nil or object.tag ~= "Card" then
         return false, "public-zone move requires a physical game card"
     end
-    if destinationZone == "graveyard" or destinationZone == "library" then
-        return true, nil
+    if destinationZone ~= "battlefield" then
+        if destinationZone == "graveyard" or destinationZone == "library" then
+            return true, nil
+        end
     end
     -- Graveyard cards are intentionally locked for readable pile presentation.
     -- A later authoritative public-zone transition must unlock that exact card

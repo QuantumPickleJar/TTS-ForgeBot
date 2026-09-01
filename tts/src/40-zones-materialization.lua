@@ -2689,8 +2689,10 @@ function BridgePreparePhysicalCardForPublicZoneMove(object, destinationZone)
     if object == nil or object.tag ~= "Card" then
         return false, "public-zone move requires a physical game card"
     end
-    if destinationZone == "graveyard" or destinationZone == "library" then
-        return true, nil
+    if destinationZone ~= "battlefield" then
+        if destinationZone == "graveyard" or destinationZone == "library" then
+            return true, nil
+        end
     end
     -- Graveyard cards are intentionally locked for readable pile presentation.
     -- A later authoritative public-zone transition must unlock that exact card
