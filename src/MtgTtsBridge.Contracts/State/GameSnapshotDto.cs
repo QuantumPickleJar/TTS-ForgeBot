@@ -17,7 +17,14 @@ public sealed record GameSnapshotDto(
     // table-native Monarch helper without implementing Monarch in Lua.
     string? MonarchSeatId = null,
     GameCombatSnapshotDto? Combat = null,
-    GameResultDto? Result = null);
+    GameResultDto? Result = null,
+    // These are continuous Forge state, not UI-derived values. Keeping them
+    // in snapshots lets reconciliation recover the turn pipeline even when a
+    // diagnostic line or transient phase event is missed.
+    int? TurnNumber = null,
+    string? ActiveSeatId = null,
+    string? PrioritySeatId = null,
+    string? Phase = null);
 
 public sealed record GameCombatSnapshotDto(IReadOnlyList<GameCombatAttackSnapshotDto> Attacks);
 public sealed record GameCombatAttackSnapshotDto(string AttackerCardInstanceId, string? DefenderSeatId, int? DefenderForgeObjectId, IReadOnlyList<string> BlockerCardInstanceIds);

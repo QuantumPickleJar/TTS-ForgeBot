@@ -49,7 +49,11 @@ public sealed record AuthoritativeEventDto(
     string? ObjectKind = null,
     bool IsCopy = false,
     bool IsVirtual = false,
-    string? MaterializationPolicy = null)
+    string? MaterializationPolicy = null,
+    // A Forge-created token has no printed-deck embodiment. This flag is
+    // producer truth and permits TTS to select its token materializer without
+    // inferring from a display name or an unmapped battlefield object.
+    bool IsToken = false)
 {
     /// <summary>
     /// Complete current characteristics change when present. Provides structured

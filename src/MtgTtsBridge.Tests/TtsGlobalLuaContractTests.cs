@@ -2746,6 +2746,21 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void DiagnosticCapture_RecoversOrdinaryPollingAfterCallbackOrTimeout()
+    {
+        var start = Script.IndexOf("function BridgeRestorePollingAfterDiagnosticCapture", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeHudReportCapture", start, StringComparison.Ordinal);
+        var report = Script[start..end];
+
+        Assert.Contains("BridgeStartEventPolling(BridgeState.eventSessionId, false)", report);
+        Assert.Contains("BridgeStartDecisionPolling()", report);
+        Assert.Contains("reportCaptureToken", report);
+        Assert.Contains("diagnostic capture watchdog expired; restoring polling", report);
+        Assert.Contains("CAPTURE TIMEOUT — match polling restored", report);
+        Assert.Contains("end, 15)", report);
+    }
+
+    [Fact]
     public void LibraryInsertion_UsesSamePrimitiveForMulliganGraveyardAndNewMatchPaths()
     {
         Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(seatId, item.object, \"BOTTOM\"", Script);
@@ -2899,6 +2914,62 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeRetirePendingCastForInstance(", move);
         Assert.Contains("event.cardInstanceId, guid, \"graveyard-move\"", move);
         Assert.DoesNotContain("BridgeState.pendingCastBySeatId[event.seatId] = nil", move);
+    }
+
+    [Fact]
+    public void AuthoritativeZoneChangeClearsOldTappedPresentationBeforePublicDestinationPlacement()
+    {
+        var prepareStart = Script.IndexOf("function BridgePreparePhysicalCardForPublicZoneMove", StringComparison.Ordinal);
+        var prepareEnd = Script.IndexOf("function BridgeApplyStructuredCardMove", prepareStart, StringComparison.Ordinal);
+        Assert.True(prepareStart >= 0 && prepareEnd > prepareStart);
+        var prepare = Script[prepareStart..prepareEnd];
+        Assert.Contains("if destinationZone ~= \"battlefield\" then", prepare);
+        Assert.Contains("BridgeSetPhysicalTapped(object, false)", prepare);
+
+        var graveyardStart = Script.IndexOf("function BridgeMoveToGraveyard", StringComparison.Ordinal);
+        var graveyardEnd = Script.IndexOf("function BridgeFindSeatLibraryDeckWithCard", graveyardStart, StringComparison.Ordinal);
+        var graveyard = Script[graveyardStart..graveyardEnd];
+        Assert.True(graveyard.IndexOf("BridgeSetPhysicalTapped(object, false)", StringComparison.Ordinal)
+            < graveyard.IndexOf("BridgeSetPhysicalFaceDown(object, seat, false)", StringComparison.Ordinal));
+
+        var moveStart = Script.IndexOf("function BridgeApplyStructuredCardMove", StringComparison.Ordinal);
+        var moveEnd = Script.IndexOf("function BridgeMoveToGraveyard", moveStart, StringComparison.Ordinal);
+        var move = Script[moveStart..moveEnd];
+        var exile = move.IndexOf("elseif event.destinationZone == \"exile\" then", StringComparison.Ordinal);
+        Assert.True(exile >= 0);
+        Assert.Contains("BridgeSetPhysicalTapped(object, false)", move[exile..]);
+    }
+
+    [Fact]
+    public void StaleUpkeepPassCannotReplaceRegeneratedMainOneActionMenu()
+    {
+        var start = Script.IndexOf("function BridgeShouldIgnoreStaleDecision", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeShouldDeferDecision", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var policy = Script[start..end];
+
+        Assert.Contains("BridgePriorityPhaseFamily(decision.phaseName)", policy);
+        Assert.Contains("BridgePriorityPhaseFamily(BridgeState.currentPhase)", policy);
+        Assert.Contains("not BridgeDecisionHasNonPassAction(decision)", policy);
+        Assert.Contains("ignoring stale pass-only priority menu", policy);
+        Assert.Contains("retaining regenerated Forge action menu", policy);
+        Assert.True(policy.IndexOf("if eventCursor <= 0", StringComparison.Ordinal)
+            > policy.IndexOf("BridgePriorityPhaseFamily(decision.phaseName)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AuthoritativeSnapshotRestoresTurnPhaseAndPriorityState()
+    {
+        var start = Script.IndexOf("function BridgeApplySafeSnapshotReconcile", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeTryApplyDeferredSnapshotReconcile", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var reconcile = Script[start..end];
+
+        Assert.Contains("BridgeState.tableTurnCount = snapshot.turnNumber", reconcile);
+        Assert.Contains("BridgeState.currentTurnSeatId = snapshot.activeSeatId", reconcile);
+        Assert.Contains("BridgeState.prioritySeatId = snapshot.prioritySeatId", reconcile);
+        Assert.Contains("BridgeState.currentPhase = snapshot.phase", reconcile);
+        Assert.Contains("authoritative-snapshot-turn-state", reconcile);
     }
 
     [Fact]

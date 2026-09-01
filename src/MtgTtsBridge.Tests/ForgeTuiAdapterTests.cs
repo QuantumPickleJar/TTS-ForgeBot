@@ -167,6 +167,48 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
+    public async Task StructuredSnapshotSuppliesMainOneStateBeforeThePriorityMenu()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-structured-main-{Guid.NewGuid():N}.cmd");
+        await File.WriteAllTextAsync(script, """
+            @echo off
+            echo @@FORGE_BRIDGE_STATE@@{"version":1,"type":"snapshot","sequence":1,"reason":"main","turnNumber":1,"activeSeatId":"forge-player-1","prioritySeatId":"forge-player-1","phase":"Main phase, precombat","players":[],"stack":[]}
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            echo   1. Play land: Plains [id=42] [bridge actionKind=play_land sourceZone=hand]
+            <nul set /p "=Enter choice (0-1): "
+            set /p choice=
+            """);
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                }),
+                NullLogger<ForgeTuiAdapter>.Instance);
+
+            var state = await adapter.StartSessionAsync(CancellationToken.None);
+            var decision = Assert.IsType<DecisionDto>(state.CurrentDecision);
+            Assert.Equal("Main phase, precombat", decision.PhaseName);
+            Assert.Equal(1, decision.TurnNumber);
+            Assert.Equal("forge-player-1", decision.ActiveSeatId);
+            Assert.Equal("forge-player-1", decision.PrioritySeatId);
+            Assert.Contains(decision.Actions, action => action.Type == "play_land");
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
     public async Task RichPriorityDiagnosticSuppressesItsEquivalentLegacyPhaseLine()
     {
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
