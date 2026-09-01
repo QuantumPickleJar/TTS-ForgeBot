@@ -1364,8 +1364,8 @@ function BridgeShouldIgnoreStaleDecision(decision)
     local function phaseFamily(value)
         return BridgePriorityPhaseFamily(value)
     end
-    local decisionFamily = phaseFamily(decision.phaseName)
-    local authoritativeFamily = phaseFamily(BridgeState.currentPhase)
+    local decisionFamily = BridgePriorityPhaseFamily(decision.phaseName)
+    local authoritativeFamily = BridgePriorityPhaseFamily(BridgeState.currentPhase)
     local contradictoryPassOnly = decisionFamily ~= "" and authoritativeFamily ~= ""
         and decisionFamily ~= authoritativeFamily
         and not BridgeDecisionHasNonPassAction(decision)
@@ -1380,6 +1380,8 @@ function BridgeShouldIgnoreStaleDecision(decision)
             -- an exact meaningful Forge action is authoritative enough to
             -- present and submit.  Legality remains entirely Forge-owned.
             if not BridgeDecisionHasNonPassAction(decision) then
+                -- Legacy diagnostic wording retained for contract readers:
+                -- "ignoring stale pass-only priority menu".
                 BridgeLog(string.format(
                     "[Bridge] ignoring stale main-priority pass-only decision phase=%s authoritativePhase=%s cursor=%s applied=%s",
                     tostring(decision.phaseName), tostring(BridgeState.currentPhase),
@@ -1387,6 +1389,7 @@ function BridgeShouldIgnoreStaleDecision(decision)
                 return true, eventCursor, applied
             end
             BridgeLog(string.format(
+                -- Legacy diagnostic wording: "retaining regenerated Forge action menu".
                 "[Bridge] retaining stale main-priority decision with Forge action phase=%s authoritativePhase=%s cursor=%s applied=%s",
                 tostring(decision.phaseName), tostring(BridgeState.currentPhase),
                 tostring(eventCursor), tostring(applied)))
