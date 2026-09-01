@@ -1422,3 +1422,22 @@ function BridgeUiMarkDirty(reason)
         BridgeUiFlush()
     end, 1)
 end
+
+-- Opt-in coexistence diagnostic. Card Importer/Encoder code is external to
+-- this repository, so capture the live Global UI tree before and after it
+-- opens instead of replacing the tree or guessing its layout contract.
+function BridgeDumpGlobalUiOwnership(label)
+    local ok, xml = pcall(function() return UI.getXml() end)
+    if not ok or xml == nil then
+        BridgeLog("[Bridge] global UI ownership snapshot failed label=" .. tostring(label))
+        return false
+    end
+    local ids = {}
+    for id in string.gmatch(tostring(xml), 'id="([^"]+)"') do
+        ids[#ids + 1] = id
+    end
+    BridgeLog("[Bridge] global UI ownership snapshot label=" .. tostring(label)
+        .. " bytes=" .. tostring(#xml)
+        .. " ids=" .. table.concat(ids, ","))
+    return true
+end

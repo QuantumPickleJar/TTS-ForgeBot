@@ -1015,6 +1015,16 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void GlobalUiCoexistence_UsesOptInSnapshotWithoutReplacingForeignUi()
+    {
+        Assert.Contains("function BridgeDumpGlobalUiOwnership(label)", Script);
+        Assert.Contains("UI.getXml()", Script);
+        Assert.Contains("global UI ownership snapshot", Script);
+        Assert.DoesNotContain("UI.setXml(", Script);
+        Assert.DoesNotContain("UI.setXmlTable(", Script);
+    }
+
+    [Fact]
     public void HudLayout_DoesNotLetNestedLayoutExpandGlobalHudToTheScreen()
     {
         var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
