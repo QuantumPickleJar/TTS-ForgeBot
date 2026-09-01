@@ -2063,19 +2063,24 @@ function BridgeHudPhaseElementId(phase)
     if string.find(value, "UNTAP", 1, true) then return "BridgePhaseUntap" end
     if string.find(value, "UPKEEP", 1, true) then return "BridgePhaseUpkeep" end
     if string.find(value, "DRAW", 1, true) then return "BridgePhaseDraw" end
+    if string.find(value, "MAIN", 1, true) then
+        if string.find(value, "POSTCOMBAT", 1, true)
+            or string.find(value, "MAIN 2", 1, true)
+            or string.find(value, "SECOND", 1, true) then
+            return "BridgePhaseMain2"
+        end
+        if string.find(value, "PRECOMBAT", 1, true)
+            or string.find(value, "MAIN 1", 1, true)
+            or string.find(value, "FIRST", 1, true) then
+            return "BridgePhaseMain1"
+        end
+        return "BridgePhaseMain1"
+    end
     if string.find(value, "COMBAT", 1, true)
         or string.find(value, "ATTACK", 1, true)
         or string.find(value, "BLOCK", 1, true)
         or string.find(value, "DAMAGE", 1, true) then
         return "BridgePhaseCombat"
-    end
-    if string.find(value, "MAIN", 1, true) then
-        if string.find(value, "2", 1, true)
-            or string.find(value, "SECOND", 1, true)
-            or string.find(value, "POST", 1, true) then
-            return "BridgePhaseMain2"
-        end
-        return "BridgePhaseMain1"
     end
     if string.find(value, "END", 1, true) or string.find(value, "CLEANUP", 1, true) then
         return "BridgePhaseEnd"
