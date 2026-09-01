@@ -3624,7 +3624,7 @@ function BridgeShouldIgnoreStaleDecision(decision)
             -- present and submit.  Legality remains entirely Forge-owned.
             if not BridgeDecisionHasNonPassAction(decision) then
                 BridgeLog(string.format(
-                    "[Bridge] ignoring stale main-priority pass-only decision phase=%s authoritativePhase=%s cursor=%s applied=%s",
+                    "[Bridge] ignoring stale pass-only priority menu (main-priority decision) phase=%s authoritativePhase=%s cursor=%s applied=%s",
                     tostring(decision.phaseName), tostring(BridgeState.currentPhase),
                     tostring(eventCursor), tostring(applied)))
                 return true, eventCursor, applied
@@ -10102,6 +10102,10 @@ function BridgePreparePhysicalCardForPublicZoneMove(object, destinationZone)
         return false, "public-zone move requires a physical game card"
     end
     if destinationZone ~= "battlefield" then
+        -- Zone transitions clear presentation-only tap orientation before the
+        -- object is placed in a public pile. Forge remains authoritative for
+        -- the destination and final tapped state.
+        BridgeSetPhysicalTapped(object, false)
         if destinationZone == "graveyard" or destinationZone == "library" then
             return true, nil
         end
