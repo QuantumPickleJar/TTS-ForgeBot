@@ -3902,6 +3902,16 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
         BridgeApplySeatSnapshotVisualState(seatSnapshot)
     end
     BridgeApplyCombatSnapshot(snapshot.combat)
+    -- Snapshot reconciliation is also the recovery authority for the turn
+    -- pipeline. These values come directly from the Forge snapshot; they do
+    -- not advance a phase or infer legality in Lua.
+    if snapshot.turnNumber ~= nil then BridgeState.tableTurnCount = snapshot.turnNumber end
+    if snapshot.activeSeatId ~= nil then BridgeState.currentTurnSeatId = snapshot.activeSeatId end
+    if snapshot.prioritySeatId ~= nil then BridgeState.prioritySeatId = snapshot.prioritySeatId end
+    if snapshot.phase ~= nil and tostring(snapshot.phase) ~= "" then
+        BridgeState.currentPhase = snapshot.phase
+    end
+    BridgeUiMarkDirty("authoritative-snapshot-turn-state")
     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
     BridgeLogSnapshotOrdering("applied", snapshot, reason)
     if movedCount > 0 then

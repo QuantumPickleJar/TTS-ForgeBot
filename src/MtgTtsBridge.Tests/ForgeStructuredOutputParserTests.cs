@@ -505,12 +505,42 @@ public sealed class ForgeStructuredOutputParserTests
         Assert.Null(reconciler.Current);
     }
 
+    [Fact]
+    public void StructuredTurnStateDrivesMainOneWithoutWaitingForLegacyTuiText()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        Assert.Empty(reconciler.Apply("session-a", Parse(parser, Frame(
+            1, Player(), turnNumber: 1, activeSeatId: "forge-player-1",
+            prioritySeatId: "forge-player-1", phase: "Draw Step"))));
+
+        var events = reconciler.Apply("session-a", Parse(parser, Frame(
+            2, Player(), turnNumber: 1, activeSeatId: "forge-player-1",
+            prioritySeatId: "forge-player-1", phase: "Main phase, precombat")));
+
+        Assert.Contains(events, item => item.Kind == "phase_changed"
+            && item.Phase == "Main phase, precombat"
+            && item.TurnNumber == 1
+            && item.ActiveSeatId == "forge-player-1"
+            && item.PrioritySeatId == "forge-player-1");
+        Assert.Equal("Main phase, precombat", reconciler.Current!.Phase);
+        Assert.Equal("forge-player-1", reconciler.Current.PrioritySeatId);
+    }
+
     private static ForgeStructuredSnapshot Parse(ForgeStructuredOutputParser parser, string frame) =>
         Assert.Single(parser.Append(frame + "\n").Snapshots);
 
-    private static string Frame(long sequence, string player, string reason = "test", string? monarchSeatId = null) =>
+    private static string Frame(
+        long sequence,
+        string player,
+        string reason = "test",
+        string? monarchSeatId = null,
+        int? turnNumber = null,
+        string? activeSeatId = null,
+        string? prioritySeatId = null,
+        string? phase = null) =>
         ForgeStructuredOutputParser.Sentinel
-        + $$"""{"version":1,"type":"snapshot","sequence":{{sequence}},"reason":"{{reason}}","monarchSeatId":{{(monarchSeatId is null ? "null" : "\"" + monarchSeatId + "\"")}},"players":[{{player}}],"stack":[]}""";
+        + $$"""{"version":1,"type":"snapshot","sequence":{{sequence}},"reason":"{{reason}}","monarchSeatId":{{(monarchSeatId is null ? "null" : "\"" + monarchSeatId + "\"")}},"turnNumber":{{(turnNumber is null ? "null" : turnNumber.Value.ToString())}},"activeSeatId":{{(activeSeatId is null ? "null" : "\"" + activeSeatId + "\"")}},"prioritySeatId":{{(prioritySeatId is null ? "null" : "\"" + prioritySeatId + "\"")}},"phase":{{(phase is null ? "null" : "\"" + phase + "\"")}},"players":[{{player}}],"stack":[]}""";
 
     private static string Players(params string[] players) => string.Join(',', players);
 

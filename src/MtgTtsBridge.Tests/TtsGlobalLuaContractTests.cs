@@ -2776,6 +2776,21 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void AuthoritativeSnapshotRestoresTurnPhaseAndPriorityState()
+    {
+        var start = Script.IndexOf("function BridgeApplySafeSnapshotReconcile", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeTryApplyDeferredSnapshotReconcile", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var reconcile = Script[start..end];
+
+        Assert.Contains("BridgeState.tableTurnCount = snapshot.turnNumber", reconcile);
+        Assert.Contains("BridgeState.currentTurnSeatId = snapshot.activeSeatId", reconcile);
+        Assert.Contains("BridgeState.prioritySeatId = snapshot.prioritySeatId", reconcile);
+        Assert.Contains("BridgeState.currentPhase = snapshot.phase", reconcile);
+        Assert.Contains("authoritative-snapshot-turn-state", reconcile);
+    }
+
+    [Fact]
     public void PublicZoneReturn_UnlocksExactGraveyardCardBeforeReuse()
     {
         var prepareStart = Script.IndexOf("function BridgePreparePhysicalCardForPublicZoneMove", StringComparison.Ordinal);

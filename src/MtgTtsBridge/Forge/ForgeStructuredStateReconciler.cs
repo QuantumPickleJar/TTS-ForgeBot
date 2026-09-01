@@ -195,12 +195,47 @@ public sealed class ForgeStructuredStateReconciler
             Result: source.GameEnded is null ? null : new GameResultDto(
                 source.GameEnded.WinnerSeatIds,
                 source.GameEnded.LoserSeatIds,
-                source.GameEnded.Reason));
+                source.GameEnded.Reason),
+            TurnNumber: source.TurnNumber,
+            ActiveSeatId: source.ActiveSeatId,
+            PrioritySeatId: source.PrioritySeatId,
+            Phase: source.Phase);
     }
 
     private static IReadOnlyList<ForgeTuiRawEvent> Diff(string sessionId, GameSnapshotDto previous, GameSnapshotDto next)
     {
         var events = new List<ForgeTuiRawEvent>();
+        if (previous.TurnNumber != next.TurnNumber
+            || !string.Equals(previous.ActiveSeatId, next.ActiveSeatId, StringComparison.Ordinal))
+        {
+            events.Add(new ForgeTuiRawEvent(
+                "turn_changed", next.ActiveSeatId, null, null, null, null,
+                "Authoritative structured turn changed.",
+                TurnNumber: next.TurnNumber,
+                ActiveSeatId: next.ActiveSeatId,
+                PrioritySeatId: next.PrioritySeatId,
+                Phase: next.Phase));
+        }
+        if (!string.Equals(previous.Phase, next.Phase, StringComparison.Ordinal))
+        {
+            events.Add(new ForgeTuiRawEvent(
+                "phase_changed", next.ActiveSeatId, null, null, null, null,
+                "Authoritative structured phase changed.",
+                Phase: next.Phase,
+                TurnNumber: next.TurnNumber,
+                ActiveSeatId: next.ActiveSeatId,
+                PrioritySeatId: next.PrioritySeatId));
+        }
+        if (!string.Equals(previous.PrioritySeatId, next.PrioritySeatId, StringComparison.Ordinal))
+        {
+            events.Add(new ForgeTuiRawEvent(
+                "priority_changed", next.PrioritySeatId, null, null, null, null,
+                "Authoritative structured priority changed.",
+                Phase: next.Phase,
+                TurnNumber: next.TurnNumber,
+                ActiveSeatId: next.ActiveSeatId,
+                PrioritySeatId: next.PrioritySeatId));
+        }
         if (!CombatEqual(previous.Combat, next.Combat))
         {
             foreach (var attack in next.Combat?.Attacks ?? [])

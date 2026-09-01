@@ -111,7 +111,11 @@ public sealed record ForgeStructuredSnapshot(
     IReadOnlyList<ForgeStructuredCard> Stack,
     string? MonarchSeatId = null,
     ForgeStructuredCombat? Combat = null,
-    ForgeStructuredGameEnded? GameEnded = null);
+    ForgeStructuredGameEnded? GameEnded = null,
+    int? TurnNumber = null,
+    string? ActiveSeatId = null,
+    string? PrioritySeatId = null,
+    string? Phase = null);
 
 public sealed record ForgeStructuredCombat(IReadOnlyList<ForgeStructuredCombatAttack> Attacks);
 public sealed record ForgeStructuredCombatAttack(int AttackerForgeObjectId, string? DefenderSeatId, int? DefenderForgeObjectId, IReadOnlyList<int> BlockerForgeObjectIds);

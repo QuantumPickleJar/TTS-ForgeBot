@@ -487,6 +487,14 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     {
                         _latestObservedForgeSequence = snapshot.Sequence;
                         foreach (var rawEvent in _structuredState.Apply(_sessionId, snapshot)) EnqueueEvent(rawEvent);
+                        var current = _structuredState.Current;
+                        if (current is not null)
+                        {
+                            _latestObservedTurnNumber = current.TurnNumber ?? _latestObservedTurnNumber;
+                            _latestObservedActiveSeatId = current.ActiveSeatId ?? _latestObservedActiveSeatId;
+                            _latestObservedPrioritySeatId = current.PrioritySeatId ?? _latestObservedPrioritySeatId;
+                            _latestObservedPhaseName = current.Phase ?? _latestObservedPhaseName;
+                        }
                         if (_structuredState.Current?.Result is not null) MarkGameEnded(_structuredState.Current.Result);
                         _logger.LogTrace(
                             "Forge structured snapshot {ForgeSequence} ({Reason}); hidden payload redacted",
@@ -515,10 +523,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                                     rawEvent.Summary);
                                 continue;
                             }
-                            // Structured snapshots currently do not carry
-                            // turn/phase/priority state. Keep the continuous
-                            // Forge TUI authority for those transitions until
-                            // an equivalent structured contract exists.
+                            // Structured snapshots are authoritative for
+                            // turn/phase/priority whenever present. Legacy
+                            // TUI text remains a compatibility fallback for
+                            // older producer frames that omit those fields.
                             if (_structuredState.Current is not null
                                 && rawEvent.Kind is "player_state" or "card_moved") continue;
                             EnqueueEvent(rawEvent);
