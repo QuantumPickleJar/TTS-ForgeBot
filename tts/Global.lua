@@ -3630,7 +3630,7 @@ function BridgeShouldIgnoreStaleDecision(decision)
                 return true, eventCursor, applied
             end
             BridgeLog(string.format(
-                "[Bridge] retaining stale main-priority decision with Forge action phase=%s authoritativePhase=%s cursor=%s applied=%s",
+                "[Bridge] retaining regenerated Forge action menu (stale main-priority decision) phase=%s authoritativePhase=%s cursor=%s applied=%s",
                 tostring(decision.phaseName), tostring(BridgeState.currentPhase),
                 tostring(eventCursor), tostring(applied)))
         end
@@ -10545,6 +10545,7 @@ function BridgeApplyStructuredCardMove(event)
         if not moved then return false, moveError end
     elseif event.destinationZone == "exile" then
         object.use_hands = false
+        BridgeSetPhysicalTapped(object, false)
         local exilePosition = BridgeResolveSeatZoneAnchor(event.seatId, "exile")
         if exilePosition == nil then
             return false, "no exile anchor configured for seat " .. tostring(event.seatId)

@@ -3133,6 +3133,7 @@ function BridgeApplyStructuredCardMove(event)
         if not moved then return false, moveError end
     elseif event.destinationZone == "exile" then
         object.use_hands = false
+        BridgeSetPhysicalTapped(object, false)
         local exilePosition = BridgeResolveSeatZoneAnchor(event.seatId, "exile")
         if exilePosition == nil then
             return false, "no exile anchor configured for seat " .. tostring(event.seatId)

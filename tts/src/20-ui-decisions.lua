@@ -1382,7 +1382,7 @@ function BridgeShouldIgnoreStaleDecision(decision)
                 return true, eventCursor, applied
             end
             BridgeLog(string.format(
-                "[Bridge] retaining stale main-priority decision with Forge action phase=%s authoritativePhase=%s cursor=%s applied=%s",
+                "[Bridge] retaining regenerated Forge action menu (stale main-priority decision) phase=%s authoritativePhase=%s cursor=%s applied=%s",
                 tostring(decision.phaseName), tostring(BridgeState.currentPhase),
                 tostring(eventCursor), tostring(applied)))
         end
