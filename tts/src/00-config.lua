@@ -36,6 +36,12 @@ BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_INTERVAL_SECONDS = 0.5
 -- promptly after a draw so a burst (for example, a draw per creature) cannot
 -- hold later authoritative phase/priority events behind animation delays.
 BRIDGE_DRAW_EVENT_PRESENTATION_DELAY = 0.25
+-- A queue head that cannot start for this long is a scheduler fault worth
+-- recording.  It is intentionally diagnostic-only; authoritative events are
+-- never dropped or cursor-advanced by the watchdog.
+BRIDGE_EVENT_DRAIN_STALL_SECONDS = 2.0
+BRIDGE_RESYNC_PHYSICAL_QUEUE_GRACE_SECONDS = 1.0
+BRIDGE_RESYNC_STALL_SECONDS = 30.0
 BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
 -- Configuration, not rules: FREEFORM permits a player to arrange their own
 -- lands after they enter. STRICT re-applies the persistent land row only on
@@ -169,6 +175,12 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         yieldPolicyOwnTurn = BridgeState.yieldPolicyOwnTurn == true,
         presentationGeneration = BridgeState.decisionPresentationGeneration,
         physicalPresentationGeneration = BridgeState.currentPhysicalPresentationGeneration,
+        physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
+        eventDrainBlockReason = BridgeEventDrainBlockReason(),
+        resyncInFlight = BridgeState.resyncInFlight == true,
+        resyncOrigin = BridgeState.resyncOrigin,
+        resyncStartedAt = BridgeState.resyncStartedAt,
+        resyncDeferredReason = BridgeState.resyncDeferredReason,
         reportCaptureInFlight = ui.reportCaptureInFlight == true
     }
     local lifecycle = BridgeState.diagnosticCaptureLifecycle
@@ -253,6 +265,152 @@ function BridgeAutomaticPassBackpressured()
     BridgePresentationMetric("yieldBackpressurePauseCount")
     BridgeLog("[Bridge] automated pass held behind presentation backlog=" .. tostring(backlog))
     return true
+end
+
+-- Return the actual fence preventing the queue head from starting.  This is
+-- deliberately kept separate from the event cursor: a non-empty queue with a
+-- stagnant cursor is only useful diagnostically when the scheduler says why
+-- it is not being entered.
+function BridgeEventDrainBlockReason()
+    local queue = BridgeState.eventQueue or {}
+    if #queue == 0 then return "queue_empty" end
+    if BridgeState.animationRunning == true then return "animationRunning" end
+    if BridgeState.eventPolling ~= true then return "eventPolling_disabled" end
+    if BridgeState.desyncLatched == true then return "desyncLatched" end
+    if BridgeState.resyncInFlight == true then return "resyncInFlight" end
+    if BridgeState.bootstrapping == true then return "bootstrapping" end
+
+    -- Physical library queues are reported by BridgeEventDrainQueueState, but
+    -- are not an implicit event-drain fence.  Exact authoritative events and
+    -- their serialized physical work are separate lifetimes; making the
+    -- event pump wait here would turn a local queue delay into a second
+    -- circular recovery failure.
+    return "none"
+end
+
+function BridgeEventDrainQueueState()
+    local queue = BridgeState.eventQueue or {}
+    local head = queue[1]
+    local physical = {}
+    local physicalIdle = true
+    for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+        local extractionActive = BridgeState.libraryExtractionActiveBySeatId[seatId] == true
+        local extractionLength = #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {})
+        local mulliganActive = BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
+        local mulliganLength = #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {})
+        if extractionActive or extractionLength > 0 or mulliganActive or mulliganLength > 0 then
+            physicalIdle = false
+        end
+        physical[seatId] = {
+            libraryExtractionActive = extractionActive,
+            libraryExtractionLength = extractionLength,
+            mulliganInsertionActive = mulliganActive,
+            mulliganInsertionLength = mulliganLength,
+            generation = BridgeState.physicalTransactionGeneration
+        }
+    end
+    return {
+        headSequence = head and head.sequence or nil,
+        headKind = head and head.kind or nil,
+        headSourceZone = head and head.sourceZone or nil,
+        headDestinationZone = head and head.destinationZone or nil,
+        queueLength = #queue,
+        lastReceived = BridgeState.lastReceivedEventSequence,
+        lastApplied = BridgeState.lastAppliedEventSequence,
+        blockReason = BridgeEventDrainBlockReason(),
+        animationRunning = BridgeState.animationRunning == true,
+        physicalLibraryQueuesIdle = physicalIdle,
+        physicalQueues = physical,
+        snapshotReconcilePending = BridgeState.snapshotReconcilePending == true,
+        snapshotReconcileInFlight = BridgeState.snapshotReconcileInFlight == true,
+        eventPolling = BridgeState.eventPolling == true,
+        eventRequestInFlight = BridgeState.eventRequestInFlight == true,
+        eventPollScheduled = BridgeState.eventPollScheduled == true,
+        desyncLatched = BridgeState.desyncLatched == true,
+        resyncInFlight = BridgeState.resyncInFlight == true,
+        bootstrapping = BridgeState.bootstrapping == true
+    }
+end
+
+function BridgeRecordEventDrainStall(state)
+    local queueState = state or BridgeEventDrainQueueState()
+    local watchdog = BridgeState.eventDrainWatchdog or {}
+    watchdog.lastBlockReason = queueState.blockReason
+    BridgeState.eventDrainWatchdog = watchdog
+    if watchdog.logged then return end
+    watchdog.logged = true
+    BridgeLog(string.format(
+        "[Bridge] EVENT_DRAIN_STALLED head=%s kind=%s source=%s destination=%s received=%s applied=%s queueLength=%s blockReason=%s animationRunning=%s physicalLibraryQueuesIdle=%s eventPolling=%s eventRequestInFlight=%s eventPollScheduled=%s snapshotPending=%s snapshotInFlight=%s desyncLatched=%s resyncInFlight=%s bootstrapping=%s physicalQueues=%s",
+        tostring(queueState.headSequence), tostring(queueState.headKind),
+        tostring(queueState.headSourceZone), tostring(queueState.headDestinationZone),
+        tostring(queueState.lastReceived), tostring(queueState.lastApplied),
+        tostring(queueState.queueLength), tostring(queueState.blockReason),
+        tostring(queueState.animationRunning), tostring(queueState.physicalLibraryQueuesIdle),
+        tostring(queueState.eventPolling), tostring(queueState.eventRequestInFlight),
+        tostring(queueState.eventPollScheduled), tostring(queueState.snapshotReconcilePending),
+        tostring(queueState.snapshotReconcileInFlight), tostring(queueState.desyncLatched),
+        tostring(queueState.resyncInFlight), tostring(queueState.bootstrapping),
+        JSON.encode(queueState.physicalQueues or {})))
+end
+
+function BridgeObserveEventDrainBlocked(reason)
+    local queue = BridgeState.eventQueue or {}
+    local head = queue[1]
+    if head == nil then return end
+    local now = os.clock()
+    local watchdog = BridgeState.eventDrainWatchdog or {}
+    local sameHead = watchdog.sessionId == BridgeState.eventSessionId
+        and watchdog.sessionGeneration == BridgeState.eventSessionGeneration
+        and watchdog.eventSequence == head.sequence
+        and watchdog.lastAppliedEventSequence == BridgeState.lastAppliedEventSequence
+    if not sameHead then
+        watchdog = {
+            sessionId = BridgeState.eventSessionId,
+            sessionGeneration = BridgeState.eventSessionGeneration,
+            eventSequence = head.sequence,
+            lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
+            blockedSince = now,
+            lastBlockReason = reason,
+            logged = false,
+            scheduled = false
+        }
+        BridgeState.eventDrainWatchdog = watchdog
+    else
+        watchdog.lastBlockReason = reason
+    end
+    if not watchdog.scheduled then
+        watchdog.scheduled = true
+        local sessionId = watchdog.sessionId
+        local sessionGeneration = watchdog.sessionGeneration
+        local sequence = watchdog.eventSequence
+        BridgeWaitTime(function()
+            local current = BridgeState.eventDrainWatchdog
+            if current == nil or current.eventSequence ~= sequence
+                or current.sessionId ~= sessionId
+                or current.sessionGeneration ~= sessionGeneration then return end
+            current.scheduled = false
+            local currentHead = (BridgeState.eventQueue or {})[1]
+            local currentReason = BridgeEventDrainBlockReason()
+            if currentHead ~= nil and currentHead.sequence == sequence
+                and current.lastAppliedEventSequence == BridgeState.lastAppliedEventSequence
+                and currentReason ~= "queue_empty" then
+                local observed = BridgeEventDrainQueueState()
+                if currentReason == "none" then
+                    -- The fence may have cleared between the blocked pump and
+                    -- this watchdog frame. Preserve the fence that actually
+                    -- caused the wait in the diagnostic record.
+                    observed.blockReason = current.lastBlockReason or "cleared-before-watchdog"
+                end
+                BridgeRecordEventDrainStall(observed)
+                if currentReason == "none" and not BridgeState.animationRunning then
+                    -- The fence cleared without another caller entering the
+                    -- pump. One state-aware retry repairs a lost scheduler
+                    -- callback; it never skips or drops the queue head.
+                    BridgeProcessEventQueue()
+                end
+            end
+        end, BRIDGE_EVENT_DRAIN_STALL_SECONDS)
+    end
 end
 
 -- Freeze-flight telemetry is deliberately local to this Lua runtime.  TTS's
@@ -436,7 +594,8 @@ function BridgePerformanceDiagnosticPayload()
     return {
         performanceSummary = summary,
         recentTtsTrace = BridgePerformanceTraceSnapshot(),
-        diagnosticCaptureLifecycle = BridgeState.diagnosticCaptureLifecycle or {}
+        diagnosticCaptureLifecycle = BridgeState.diagnosticCaptureLifecycle or {},
+        eventDrainDiagnostics = BridgeEventDrainQueueState()
     }
 end
 
@@ -655,7 +814,19 @@ BridgeState = {
         firstAttemptTimestamp = nil,
         lastAbortReason = nil
     },
+    eventDrainTransaction = nil,
+    eventDrainWatchdog = {
+        sessionId = nil,
+        sessionGeneration = nil,
+        eventSequence = nil,
+        lastAppliedEventSequence = nil,
+        blockedSince = nil,
+        lastBlockReason = nil,
+        logged = false,
+        scheduled = false
+    },
     currentPhysicalPresentationGeneration = 0,
+    physicalTransactionGeneration = 0,
     renderedDecisionPresentationKey = nil,
     renderedDecisionPhysicalGeneration = nil,
     physicalByInstanceId = {},
@@ -807,6 +978,11 @@ BridgeState = {
     transitionExpectedUntil = 0,
     latencyProbe = nil,
     sessionRecoveryInFlight = false,
+    resyncToken = 0,
+    resyncStartedAt = nil,
+    resyncOrigin = nil,
+    resyncDeferredReason = nil,
+    manualResyncGraceUntil = 0,
     -- A physical-sync failure is terminal for the current presentation
     -- generation.  Async movement/snapshot callbacks may still finish after
     -- the stop (and while an explicit resync is rebuilding the table); keep
@@ -907,6 +1083,19 @@ function BridgeAdvancePhysicalPresentationGeneration(reason)
     if reason ~= nil then
         BridgeState.lastPhysicalPresentationInvalidationReason = tostring(reason)
     end
+end
+
+function BridgePhysicalPresentationIsCurrent(sessionId, generation)
+    return sessionId == BridgeState.eventSessionId
+        and generation == (BridgeState.physicalTransactionGeneration or 0)
+end
+
+function BridgeAdvancePhysicalTransactionGeneration(reason)
+    BridgeState.physicalTransactionGeneration = (BridgeState.physicalTransactionGeneration or 0) + 1
+    if reason ~= nil then
+        BridgeState.lastPhysicalTransactionInvalidationReason = tostring(reason)
+    end
+    return BridgeState.physicalTransactionGeneration
 end
 
 function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)

@@ -86,6 +86,93 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Contains("EVENT_COMMIT_LIVELOCK", lua.Globals.Get("desyncReason").String);
     }
 
+    [Fact]
+    public void QueueHeadStallReportsTheActualSchedulerFenceWithoutApplyingTheEvent()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.animationRunning = true
+            BridgeState.eventQueue = {{sequence=78, kind='card_moved', seatId='forge-player-2', sourceZone='hand', destinationZone='library', containsHiddenIdentity=true}}
+            applyCount = 0
+            function BridgeApplyAuthoritativeEvent(event) applyCount = applyCount + 1; return true, 0 end
+            log = function(message) lastLog = message end
+            function BridgeWaitTime(callback, delay) end
+            directBlockReason = tostring(BridgeEventDrainBlockReason())
+            BridgeProcessEventQueue()
+            BridgeRecordEventDrainStall(BridgeEventDrainQueueState())
+        ");
+
+        Assert.Equal("animationRunning", lua.Globals.Get("directBlockReason").String);
+        Assert.Equal(0, lua.Globals.Get("applyCount").Number);
+        Assert.Equal(7, lua.Globals.Get("BridgeState").Table.Get("lastAppliedEventSequence").Number);
+        Assert.Equal("animationRunning", lua.Globals.Get("BridgeState").Table.Get("eventDrainWatchdog").Table.Get("lastBlockReason").ToPrintString());
+        Assert.Contains("EVENT_DRAIN_STALLED", lua.Globals.Get("lastLog").String);
+    }
+
+    [Fact]
+    public void ManualResyncRetiresWedgeAndSupersedesTheOldEventQueue()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            probeClock = 0
+            os.clock = function() return probeClock end
+            BridgeState.eventSessionId = 'session'
+            BridgeState.eventQueue = {{sequence=78, kind='card_moved'}}
+            BridgeState.lastAppliedEventSequence = 77
+            BridgeState.lastReceivedEventSequence = 96
+            BridgeState.libraryExtractionActiveBySeatId['forge-player-1'] = true
+            BridgeState.libraryExtractionQueueBySeatId['forge-player-1'] = {{}}
+            BridgeState.ui = {resyncInFlight=false}
+            function BridgeWaitFrames(callback, frames) probeClock = probeClock + 1; callback() end
+            function BridgeWaitTime(callback, delay) end
+            function BridgeStopEventPolling(reason) end
+            function BridgeStopDecisionPolling() end
+            function BridgeResumeChoiceProtocol(reason) end
+            function BridgeClearHighlights() end
+            function BridgeResetSelectionState() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeSetStatus(headline, detail) end
+            function BridgeUiMarkDirty(reason) end
+            function BridgeStartEventPolling(sessionId, skipExisting) end
+            function BridgeStartDecisionPolling() end
+            function BridgeBootstrapCurrentSnapshot(sessionId, callback, resume, origin)
+                BridgeState.lastReceivedEventSequence = 96
+                BridgeState.lastAppliedEventSequence = 96
+                BridgeState.eventQueue = {}
+                callback(true, nil)
+            end
+            BridgeResyncFromAuthoritativeSnapshot('hud')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(96, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(0, state.Get("eventQueue").Table.Length);
+        Assert.False(state.Get("resyncInFlight").Boolean);
+        Assert.Equal(0, state.Get("ui").Table.Get("resyncInFlight").Boolean ? 1 : 0);
+    }
+
+    [Fact]
+    public void RetiredLibraryCallbackCannotMutateThePostResyncQueues()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            capturedGeneration = BridgeState.physicalTransactionGeneration
+            staleCallbackWouldMutate = false
+            function staleCallback()
+                if BridgePhysicalPresentationIsCurrent('session', capturedGeneration) then
+                    staleCallbackWouldMutate = true
+                end
+            end
+            BridgeRetireLocalPhysicalTransactions('manual-resync-force')
+            staleCallback()
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.False(lua.Globals.Get("staleCallbackWouldMutate").Boolean);
+        Assert.Equal(1, state.Get("physicalTransactionGeneration").Number);
+    }
+
     private static Script NewQueueProbe()
     {
         var lua = new Script();
@@ -120,6 +207,11 @@ public sealed class TtsEventQueueLivelockTests
             BridgeState.eventQueue = {}
             BridgeState.animationRunning = false
             BridgeState.eventCommitWatchdog = nil
+            BridgeState.eventDrainWatchdog = {}
+            BridgeState.libraryExtractionQueueBySeatId = {}
+            BridgeState.libraryExtractionActiveBySeatId = {}
+            BridgeState.mulliganBottomQueueBySeatId = {}
+            BridgeState.mulliganBottomInsertionActiveBySeatId = {}
         ");
         return lua;
     }

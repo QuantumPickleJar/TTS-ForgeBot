@@ -835,7 +835,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("preservedLiveMappings", Script);
         Assert.Contains("BridgeState.physicalByInstanceId[instanceId] = mapping.guid", Script);
         Assert.Contains("mapping.zoneName", Script);
-        Assert.Contains("authoritative resync deferred until physical library queues are idle", Script);
+        Assert.Contains("BridgeIsExplicitResyncOrigin(origin)", Script);
+        Assert.Contains("RESYNC_FORCE_LOCAL_RETIRE", Script);
+        Assert.Contains("BridgeRetireLocalPhysicalTransactions(\"manual-resync-force\")", Script);
     }
 
     [Fact]

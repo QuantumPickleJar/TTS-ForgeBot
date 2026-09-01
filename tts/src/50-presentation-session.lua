@@ -2132,7 +2132,8 @@ function BridgeHudSubmitReport(category, summary)
         status = BridgeState.statusHeadline,
         performanceSummary = performance.performanceSummary,
         recentTtsTrace = performance.recentTtsTrace,
-        diagnosticCaptureLifecycle = performance.diagnosticCaptureLifecycle
+        diagnosticCaptureLifecycle = performance.diagnosticCaptureLifecycle,
+        eventDrainDiagnostics = performance.eventDrainDiagnostics
     }
     local requestOk, requestError = pcall(function()
         BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
@@ -2176,8 +2177,26 @@ function BridgeHudRollingCapture(player, value, id)
 end
 
 function BridgeHudResyncFromForge(player, value, id)
-    if BridgeState.ui == nil or BridgeState.ui.resyncInFlight == true then return end
-    BridgeResyncFromAuthoritativeSnapshot("hud")
+    local ui = BridgeState.ui
+    if ui == nil then
+        BridgeLog("[Bridge] RESYNC_CLICK ignored reason=ui-unavailable")
+        return
+    end
+    local queueState = BridgeEventDrainQueueState()
+    BridgeLog(string.format(
+        "[Bridge] RESYNC_CLICK session=%s resyncInFlight=%s physicalQueuesIdle=%s eventQueueHead=%s eventQueueLength=%s desyncLatched=%s bootstrapping=%s runtimeEpoch=%s",
+        tostring(BridgeState.eventSessionId), tostring(ui.resyncInFlight),
+        tostring(queueState.physicalLibraryQueuesIdle), tostring(queueState.headSequence),
+        tostring(queueState.queueLength), tostring(queueState.desyncLatched),
+        tostring(queueState.bootstrapping), tostring(BRIDGE_RUNTIME_EPOCH_LOCAL)))
+    if ui.resyncInFlight == true then
+        BridgeLog("[Bridge] RESYNC_DEFERRED reason=ui-latched")
+        return
+    end
+    local started = BridgeResyncFromAuthoritativeSnapshot("hud")
+    if started ~= true then
+        BridgeLog("[Bridge] RESYNC_DEFERRED reason=local-recovery-path")
+    end
 end
 
 function BridgeHudPhaseElementId(phase)

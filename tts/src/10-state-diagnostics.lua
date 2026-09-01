@@ -966,7 +966,18 @@ function BridgeProcessMulliganBottomQueue(seatId)
     if item == nil then return end
     BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] = true
 
+    local transactionSessionId = BridgeState.eventSessionId
+    local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
+    local function current()
+        return transactionSessionId == BridgeState.eventSessionId
+            and transactionGeneration == (BridgeState.physicalTransactionGeneration or 0)
+    end
     local function complete()
+        if not current() then
+            BridgeLog("[Bridge] ignored stale mulligan library callback seat=" .. tostring(seatId)
+                .. " generation=" .. tostring(transactionGeneration))
+            return
+        end
         local current = BridgeState.mulliganBottomQueueBySeatId[seatId]
         if current ~= nil then table.remove(current, 1) end
         BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] = nil
@@ -980,6 +991,7 @@ function BridgeProcessMulliganBottomQueue(seatId)
     local guid = BridgeSafeObjectGuid(item.object)
     local instanceId = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
     BridgeInsertPhysicalCardIntoLibrary(seatId, item.object, "BOTTOM", function(ok, err)
+        if not current() then return end
         if not ok then
             BridgeStopOnDesync("mulligan bottom library insertion failed: " .. tostring(err))
             -- Do not drain the remaining rejected-hand queue after a physical
@@ -1019,10 +1031,21 @@ function BridgeProcessLibraryExtractionQueue(seatId)
     local job = queue and queue[1] or nil
     if job == nil then return end
     BridgeState.libraryExtractionActiveBySeatId[seatId] = true
+    local transactionSessionId = BridgeState.eventSessionId
+    local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
     local finished = false
+    local function current()
+        return transactionSessionId == BridgeState.eventSessionId
+            and transactionGeneration == (BridgeState.physicalTransactionGeneration or 0)
+    end
     local function complete()
         if finished then return end
         finished = true
+        if not current() then
+            BridgeLog("[Bridge] ignored stale library extraction callback seat=" .. tostring(seatId)
+                .. " generation=" .. tostring(transactionGeneration))
+            return
+        end
         local current = BridgeState.libraryExtractionQueueBySeatId[seatId]
         if current ~= nil then table.remove(current, 1) end
     BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
@@ -1033,7 +1056,18 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         end
         BridgeTryApplyDeferredSnapshotReconcile("library-extraction-complete")
     end
-    job(complete)
+    local started, startError = pcall(function() job(function(...)
+        if not current() then
+            BridgeLog("[Bridge] ignored stale library extraction completion seat=" .. tostring(seatId)
+                .. " generation=" .. tostring(transactionGeneration))
+            return
+        end
+        complete(...)
+    end) end)
+    if not started then
+        complete()
+        BridgeStopOnDesync("library extraction transaction failed to start: " .. tostring(startError))
+    end
 end
 
 function BridgeQueueLibraryExtraction(seatId, job)

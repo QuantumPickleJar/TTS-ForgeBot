@@ -127,8 +127,12 @@ public sealed class DiagnosticSelfTestRunner
         if (snapshot is null) return Check("snapshot_card_mappings", "info", "unavailable", "No snapshot is available for mapping comparison.");
         if (request.MappedCardInstanceIds is null) return Check("snapshot_card_mappings", "info", "unavailable", "TTS did not supply card instance mapping information.");
         var mapped = request.MappedCardInstanceIds.ToHashSet(StringComparer.Ordinal);
+        // Cards still contained in an opaque Forge/TTS library Deck do not
+        // have distinct loose TTS embodiments. Requiring their instance IDs
+        // here turns a normal early-turn snapshot into a false mapping alarm.
         var snapshotCards = snapshot.Seats
             .SelectMany(seat => seat.Zones)
+            .Where(zone => !string.Equals(zone.Name, "library", StringComparison.OrdinalIgnoreCase))
             .SelectMany(zone => zone.Cards)
             .Concat(snapshot.Stack)
             .Select(card => card.CardInstanceId);

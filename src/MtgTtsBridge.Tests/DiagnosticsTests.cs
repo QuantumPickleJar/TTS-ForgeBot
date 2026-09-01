@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using MtgTtsBridge.Contracts.Diagnostics;
+using MtgTtsBridge.Contracts.State;
 using MtgTtsBridge.Diagnostics;
 using MtgTtsBridge.Forge;
 
@@ -132,6 +133,26 @@ public sealed class DiagnosticsTests
         Assert.Contains("\"checks\"", json);
         Assert.Contains("active_session_exists", json);
         Assert.Contains("unavailable", json);
+    }
+
+    [Fact]
+    public void SelfTests_DoNotRequireOpaqueLibraryCardsAsLooseMappings()
+    {
+        var libraryCard = new GameCardSnapshotDto(
+            "library-instance", 1, "Island", "Island", "library", 0, "forge-player-1",
+            "forge-player-1", false, true, false, new Dictionary<string, int>(), []);
+        var seat = new GameSeatSnapshotDto(
+            "forge-player-1", 1, "Human", 20, 0, new Dictionary<string, int>(),
+            [new GameZoneSnapshotDto("library", [libraryCard])]);
+        var snapshot = new GameSnapshotDto("session", 2, "GameEventStarted", [seat], [], EventCursor: 2);
+
+        var result = new DiagnosticSelfTestRunner().Run(
+            null, null, snapshot,
+            new DiagnosticReportRequestDto(SessionId: "session", MappedCardInstanceIds: []),
+            new BridgeProcessIdentity());
+
+        var mapping = Assert.Single(result.Checks, check => check.Id == "snapshot_card_mappings");
+        Assert.Equal("pass", mapping.Status);
     }
 
     [Fact]

@@ -17,7 +17,37 @@ public sealed record DiagnosticReportRequestDto(
     string? Status = null,
     DiagnosticPerformanceSummaryDto? PerformanceSummary = null,
     IReadOnlyList<TtsPerformanceTraceRecordDto>? RecentTtsTrace = null,
-    IReadOnlyList<DiagnosticCaptureLifecycleRecordDto>? DiagnosticCaptureLifecycle = null);
+    IReadOnlyList<DiagnosticCaptureLifecycleRecordDto>? DiagnosticCaptureLifecycle = null,
+    DiagnosticEventDrainDiagnosticsDto? EventDrainDiagnostics = null);
+
+/// <summary>Bounded scheduler state captured when the TTS event head cannot start.</summary>
+public sealed record DiagnosticEventDrainDiagnosticsDto(
+    long? HeadSequence = null,
+    string? HeadKind = null,
+    string? HeadSourceZone = null,
+    string? HeadDestinationZone = null,
+    int QueueLength = 0,
+    long? LastReceived = null,
+    long? LastApplied = null,
+    string? BlockReason = null,
+    bool AnimationRunning = false,
+    bool PhysicalLibraryQueuesIdle = true,
+    bool EventPolling = false,
+    bool EventRequestInFlight = false,
+    bool EventPollScheduled = false,
+    bool SnapshotReconcilePending = false,
+    bool SnapshotReconcileInFlight = false,
+    bool DesyncLatched = false,
+    bool ResyncInFlight = false,
+    bool Bootstrapping = false,
+    IReadOnlyDictionary<string, DiagnosticPhysicalQueueStateDto>? PhysicalQueues = null);
+
+public sealed record DiagnosticPhysicalQueueStateDto(
+    bool LibraryExtractionActive = false,
+    int LibraryExtractionLength = 0,
+    bool MulliganInsertionActive = false,
+    int MulliganInsertionLength = 0,
+    int? Generation = null);
 
 /// <summary>Bounded TTS-side liveness evidence around a diagnostic capture.</summary>
 public sealed record DiagnosticCaptureLifecycleRecordDto(
@@ -50,6 +80,12 @@ public sealed record DiagnosticCaptureLifecycleRecordDto(
     bool YieldPolicyOwnTurn = false,
     int PresentationGeneration = 0,
     int PhysicalPresentationGeneration = 0,
+    int PhysicalTransactionGeneration = 0,
+    string? EventDrainBlockReason = null,
+    bool ResyncInFlight = false,
+    string? ResyncOrigin = null,
+    double? ResyncStartedAt = null,
+    string? ResyncDeferredReason = null,
     bool ReportCaptureInFlight = false);
 
 /// <summary>Compact, client-side performance counters supplied only at capture time.</summary>

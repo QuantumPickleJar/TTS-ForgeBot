@@ -1187,6 +1187,7 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeClearPreparedPresentationObjects()
     BridgeState.decisionPresentationGeneration = BridgeState.decisionPresentationGeneration + 1
     BridgeAdvancePhysicalPresentationGeneration("session-replaced")
+    BridgeAdvancePhysicalTransactionGeneration("session-replaced")
     BridgeState.renderedDecisionPresentationKey = nil
     BridgeState.renderedDecisionPhysicalGeneration = nil
     BridgeState.eventSessionId = sessionId
@@ -1197,6 +1198,17 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.lastAppliedEventSequence = 0
     BridgeState.eventQueue = {}
     BridgeState.animationRunning = false
+    BridgeState.eventDrainTransaction = nil
+    BridgeState.eventDrainWatchdog = {
+        sessionId = sessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
+        eventSequence = nil,
+        lastAppliedEventSequence = 0,
+        blockedSince = nil,
+        lastBlockReason = nil,
+        logged = false,
+        scheduled = false
+    }
     BridgeState.decisionLifecycle = {}
     BridgeState.diagnosticCaptureLifecycle = {}
     BridgeState.diagnosticCaptureFollowupToken = nil
@@ -1499,10 +1511,18 @@ function BridgeRecordEventCommitAbort(event, reason, sessionId, sessionGeneratio
 end
 
 function BridgeProcessEventQueue()
-    if BridgeState.animationRunning or not BridgeState.eventPolling then
-        return
-    end
-    if #BridgeState.eventQueue == 0 then
+    local queue = BridgeState.eventQueue or {}
+    if #queue == 0 then
+        BridgeState.eventDrainWatchdog = {
+            sessionId = BridgeState.eventSessionId,
+            sessionGeneration = BridgeState.eventSessionGeneration,
+            eventSequence = nil,
+            lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
+            blockedSince = nil,
+            lastBlockReason = nil,
+            logged = false,
+            scheduled = false
+        }
         -- Routine verification is allowed only at a quiescent boundary. The
         -- exact event stream gets first chance to establish the physical state.
         BridgeTryApplyDeferredSnapshotReconcile("event-drain")
@@ -1510,8 +1530,18 @@ function BridgeProcessEventQueue()
         return
     end
 
+    local blockReason = BridgeEventDrainBlockReason()
+    if blockReason ~= "none" then
+        -- Never turn a scheduler fence into a silent cursor stall. The
+        -- watchdog records the exact state and, if the fence clears without a
+        -- normal callback, performs one state-aware retry.
+        BridgeObserveEventDrainBlocked(blockReason)
+        return
+    end
+
     local processingSessionId = BridgeState.eventSessionId
     local processingSessionGeneration = BridgeState.eventSessionGeneration or 0
+    local processingPhysicalTransactionGeneration = BridgeState.physicalTransactionGeneration or 0
     local processingQueue = BridgeState.eventQueue
     local event = BridgeState.eventQueue[1]
     local expected = BridgeState.lastAppliedEventSequence + 1
@@ -1521,13 +1551,39 @@ function BridgeProcessEventQueue()
     end
 
     BridgeState.animationRunning = true
+    BridgeState.eventDrainTransaction = {
+        sessionId = processingSessionId,
+        sessionGeneration = processingSessionGeneration,
+        physicalTransactionGeneration = processingPhysicalTransactionGeneration,
+        eventSequence = event.sequence,
+        startedAt = os.clock(),
+        continuationScheduled = false
+    }
+    BridgeState.eventDrainWatchdog = {
+        sessionId = processingSessionId,
+        sessionGeneration = processingSessionGeneration,
+        eventSequence = event.sequence,
+        lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
+        blockedSince = nil,
+        lastBlockReason = nil,
+        logged = false,
+        scheduled = false
+    }
     BridgeLog(string.format(
         "[Bridge] EVENT_TX_BEGIN eventSequence=%s eventKind=%s session=%s sessionGeneration=%s pollGeneration=%s eventPolling=%s queueHead=%s received=%s applied=%s",
         tostring(event.sequence), tostring(event.kind), tostring(processingSessionId),
         tostring(processingSessionGeneration), tostring(BridgeState.eventPollGeneration),
         tostring(BridgeState.eventPolling), tostring(event.sequence),
         tostring(BridgeState.lastReceivedEventSequence), tostring(BridgeState.lastAppliedEventSequence)))
-    local applied, delay, applyError = BridgeApplyAuthoritativeEvent(event)
+    local applyCallOk, applied, delay, applyError = pcall(BridgeApplyAuthoritativeEvent, event)
+    if not applyCallOk then
+        applyError = applied
+        applied = false
+        delay = nil
+        BridgeLog(string.format(
+            "[Bridge] EVENT_TX_APPLY_EXCEPTION eventSequence=%s error=%s",
+            tostring(event.sequence), tostring(applyError)))
+    end
     BridgeLog(string.format(
         "[Bridge] EVENT_TX_APPLY_RESULT eventSequence=%s applied=%s error=%s sessionGenerationBefore=%s sessionGenerationAfter=%s pollGeneration=%s eventPolling=%s queueHead=%s",
         tostring(event.sequence), tostring(applied), tostring(applyError),
@@ -1537,6 +1593,7 @@ function BridgeProcessEventQueue()
             and BridgeState.eventQueue[1].sequence or nil)))
     if not applied then
         BridgeState.animationRunning = false
+        BridgeState.eventDrainTransaction = nil
         BridgeLog(string.format("[Bridge] EVENT_TX_ABORT eventSequence=%s reason=apply_failed", tostring(event.sequence)))
         BridgeStopOnDesync(applyError or ("failed to apply event " .. tostring(event.sequence)))
         return
@@ -1549,6 +1606,7 @@ function BridgeProcessEventQueue()
     if processingSessionId ~= BridgeState.eventSessionId
         or processingSessionGeneration ~= (BridgeState.eventSessionGeneration or 0) then
         BridgeState.animationRunning = false
+        BridgeState.eventDrainTransaction = nil
         BridgeLog(string.format(
             "[Bridge] EVENT_TX_ABORT eventSequence=%s reason=session_replaced sessionBefore=%s sessionAfter=%s sessionGenerationBefore=%s sessionGenerationAfter=%s",
             tostring(event.sequence), tostring(processingSessionId), tostring(BridgeState.eventSessionId),
@@ -1557,12 +1615,14 @@ function BridgeProcessEventQueue()
     end
     if BridgeState.eventQueue ~= processingQueue then
         BridgeState.animationRunning = false
+        BridgeState.eventDrainTransaction = nil
         BridgeRecordEventCommitAbort(event, "queue_replaced", processingSessionId, processingSessionGeneration)
         BridgeStopOnDesync("event queue replaced while applying event " .. tostring(event.sequence))
         return
     end
     if BridgeState.eventQueue[1] ~= event then
         BridgeState.animationRunning = false
+        BridgeState.eventDrainTransaction = nil
         BridgeRecordEventCommitAbort(event, "queue_head_changed", processingSessionId, processingSessionGeneration)
         BridgeStopOnDesync("event queue changed while applying event " .. tostring(event.sequence))
         return
@@ -1576,27 +1636,52 @@ function BridgeProcessEventQueue()
         "[Bridge] EVENT_TX_COMMIT eventSequence=%s oldLastApplied=%s newLastApplied=%s queueLength=%s",
         tostring(event.sequence), tostring(oldLastApplied), tostring(BridgeState.lastAppliedEventSequence),
         tostring(#BridgeState.eventQueue)))
-    BridgeTryPresentPendingDecision("event-applied")
-    if event.kind == "draw" or event.kind == "turn_changed" or event.kind == "phase_changed" then
-        -- The old menu may still be rendered when Forge changes state. Ask
-        -- Forge for the replacement directly; the refresh is bounded and
-        -- single-flight, and acceptance preserves hand-action readiness.
-        BridgeRefreshDecisionAfterStateTransition(event.kind)
-    end
-    if BridgeShouldReconcileAfterEvent(event) then
-        BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence) .. " recovery", "RECOVERY")
-    end
-    local nextDelay = delay or 0.1
-    if BridgeState.ui ~= nil and BridgeState.ui.fastPlaytest then nextDelay = math.min(nextDelay, 0.05) end
+    local transaction = BridgeState.eventDrainTransaction
+    if transaction ~= nil then transaction.continuationScheduled = true end
+
+    -- Install the serialized continuation immediately after the cursor commit.
+    -- Optional post-commit presentation work is allowed to fail without
+    -- stranding animationRunning and blocking the next authoritative event.
     BridgeWaitTime(function()
-        if processingSessionId ~= BridgeState.eventSessionId
-            or processingSessionGeneration ~= (BridgeState.eventSessionGeneration or 0) then
+        local ok, continuationError = pcall(function()
+            if processingSessionId ~= BridgeState.eventSessionId
+                or processingSessionGeneration ~= (BridgeState.eventSessionGeneration or 0)
+                or not BridgePhysicalPresentationIsCurrent(processingSessionId, processingPhysicalTransactionGeneration) then
+                return
+            end
             BridgeState.animationRunning = false
-            return
+            BridgeState.eventDrainTransaction = nil
+            BridgeProcessEventQueue()
+        end)
+        if not ok then
+            BridgeState.animationRunning = false
+            BridgeState.eventDrainTransaction = nil
+            BridgeLog("[Bridge] EVENT_DRAIN_CONTINUATION_FAILED error=" .. tostring(continuationError))
+            BridgeStopOnDesync("event drain continuation failed: " .. tostring(continuationError))
         end
-        BridgeState.animationRunning = false
-        BridgeProcessEventQueue()
-    end, nextDelay)
+    end, (function()
+        local nextDelay = delay or 0.1
+        if BridgeState.ui ~= nil and BridgeState.ui.fastPlaytest then nextDelay = math.min(nextDelay, 0.05) end
+        return nextDelay
+    end)())
+
+    local postCommitOk, postCommitError = pcall(function()
+        BridgeTryPresentPendingDecision("event-applied")
+        if event.kind == "draw" or event.kind == "turn_changed" or event.kind == "phase_changed" then
+            -- The old menu may still be rendered when Forge changes state. Ask
+            -- Forge for the replacement directly; the refresh is bounded and
+            -- single-flight, and acceptance preserves hand-action readiness.
+            BridgeRefreshDecisionAfterStateTransition(event.kind)
+        end
+        if BridgeShouldReconcileAfterEvent(event) then
+            BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence) .. " recovery", "RECOVERY")
+        end
+    end)
+    if not postCommitOk then
+        BridgeLog("[Bridge] EVENT_TX_POST_COMMIT_FAILED eventSequence=" .. tostring(event.sequence)
+            .. " error=" .. tostring(postCommitError))
+        BridgeStopOnDesync("event post-commit failed: " .. tostring(postCommitError))
+    end
 end
 
 -- Decisions are fetched from Forge independently of the animation queue.
@@ -2984,7 +3069,10 @@ function BridgeApplyStructuredCardMove(event)
         local hand, handError = BridgeTryGetSeatHandTransform(event.seatId)
         if hand == nil then return false, handError end
         local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
+        local transactionSessionId = BridgeState.eventSessionId
+        local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
+            if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete(); return end
             local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
             if liveDeck == nil then
                 BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued extraction"))
@@ -2992,6 +3080,7 @@ function BridgeApplyStructuredCardMove(event)
                 return
             end
             BridgeTakeTopCardFromLibrary(liveDeck, expectedName, hand.position, true, function(drawn, takeError)
+                if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then return end
                 if drawn == nil then
                     if BridgeRecoverFromLibraryOrderMismatch(takeError) then complete(); return end
                     BridgeStopOnDesync(libraryDrawError(takeError))
@@ -3025,7 +3114,10 @@ function BridgeApplyStructuredCardMove(event)
             return false, "library zone is unavailable for authoritative library-to-battlefield move"
         end
         local staging = libraryZone.getPosition()
+        local transactionSessionId = BridgeState.eventSessionId
+        local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
+            if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete(); return end
             local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
             if liveDeck == nil then
                 BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued extraction"))
@@ -3034,6 +3126,7 @@ function BridgeApplyStructuredCardMove(event)
             end
             BridgeTakeTopCardFromLibrary(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
                 function(taken, takeError)
+                    if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then return end
                     if taken == nil then
                         if BridgeRecoverFromLibraryOrderMismatch(takeError) then complete(); return end
                         BridgeStopOnDesync(libraryDrawError(takeError))
@@ -3066,7 +3159,10 @@ function BridgeApplyStructuredCardMove(event)
             return false, "library zone is unavailable for authoritative library-to-graveyard move"
         end
         local staging = libraryZone.getPosition()
+        local transactionSessionId = BridgeState.eventSessionId
+        local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
+            if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete(); return end
             local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
             if liveDeck == nil then
                 BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued graveyard extraction"))
@@ -3075,6 +3171,7 @@ function BridgeApplyStructuredCardMove(event)
             end
             BridgeTakeTopCardFromLibrary(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
                 function(taken, takeError)
+                    if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then return end
                     if taken == nil then
                         if BridgeRecoverFromLibraryOrderMismatch(takeError) then complete(); return end
                         BridgeStopOnDesync(libraryDrawError(takeError))
@@ -3319,7 +3416,14 @@ function BridgeApplyStructuredCardMove(event)
             BridgeState.mulliganBottomInstanceIds[event.cardInstanceId] = nil
             BridgeQueueMulliganBottomInsertion(event.seatId, object)
         else
+            local transactionSessionId = BridgeState.eventSessionId
+            local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
             BridgeInsertPhysicalCardIntoLibrary(event.seatId, object, "NORMAL", function(inserted, insertError)
+                if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then
+                    BridgeLog("[Bridge] ignored stale library insertion callback event=" .. tostring(event.sequence)
+                        .. " generation=" .. tostring(transactionGeneration))
+                    return
+                end
                 if not inserted then
                     BridgeStopOnDesync(BridgePhysicalMappingError(
                         event, "library", 0,

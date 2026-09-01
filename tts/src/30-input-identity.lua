@@ -1724,25 +1724,106 @@ end
 -- It never infers a card, replays a stale event, or changes Forge state. The
 -- snapshot's bridge event cursor becomes the new resume point only after every
 -- seat has been materially reconciled.
+function BridgeIsExplicitResyncOrigin(origin)
+    local value = string.lower(tostring(origin or ""))
+    return value == "hud" or value == "manual" or value == "manual-control"
+        or value == "user" or value == "user-resync"
+end
+
+function BridgeResyncClockNow()
+    if BridgePerformanceWallNow ~= nil then
+        local wall = BridgePerformanceWallNow()
+        if wall ~= nil then return wall end
+    end
+    return os.clock()
+end
+
+function BridgeRetireLocalPhysicalTransactions(reason)
+    -- This only abandons TTS presentation work. Forge is not contacted and
+    -- the authoritative event queue/cursors remain intact until the snapshot
+    -- successfully replaces them.
+    BridgeAdvancePhysicalPresentationGeneration(reason or "manual-resync-force")
+    BridgeAdvancePhysicalTransactionGeneration(reason or "manual-resync-force")
+    BridgeState.libraryExtractionQueueBySeatId = {}
+    BridgeState.libraryExtractionActiveBySeatId = {}
+    BridgeState.mulliganBottomQueueBySeatId = {}
+    BridgeState.mulliganBottomInsertionActiveBySeatId = {}
+    BridgeState.mulliganReturningInstanceIds = {}
+    BridgeState.mulliganBottomInstanceIds = {}
+    BridgeState.animationRunning = false
+    BridgeState.eventDrainTransaction = nil
+    BridgeLog("[Bridge] local physical transaction queues retired reason=" .. tostring(reason or "unspecified")
+        .. " generation=" .. tostring(BridgeState.currentPhysicalPresentationGeneration))
+end
+
+function BridgeScheduleResyncWatchdog(sessionId, token)
+    BridgeWaitTime(function()
+        if BridgeState.eventSessionId ~= sessionId
+            or BridgeState.resyncToken ~= token
+            or BridgeState.resyncInFlight ~= true then return end
+        BridgeLog(string.format(
+            "[Bridge] RESYNC_STALLED origin=%s session=%s token=%s startedAt=%s received=%s applied=%s queueLength=%s",
+            tostring(BridgeState.resyncOrigin), tostring(sessionId), tostring(token),
+            tostring(BridgeState.resyncStartedAt), tostring(BridgeState.lastReceivedEventSequence),
+            tostring(BridgeState.lastAppliedEventSequence), tostring(#(BridgeState.eventQueue or {}))))
+        -- Release only the local UI/pump latch. The in-flight callback is
+        -- fenced by the token below and cannot replace a later recovery.
+        BridgeState.resyncToken = (BridgeState.resyncToken or token) + 1
+        BridgeState.resyncInFlight = false
+        BridgeState.resyncStartedAt = nil
+        if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
+        BridgeSetStatus("RESYNC AVAILABLE", "Authoritative recovery stalled; try RESYNC FORGE again.")
+        BridgeUiMarkDirty("resync-stalled")
+    end, BRIDGE_RESYNC_STALL_SECONDS)
+end
+
 function BridgeResyncFromAuthoritativeSnapshot(origin)
-    if BridgeState.resyncInFlight == true then return end
+    if BridgeState.resyncInFlight == true then
+        BridgeLog("[Bridge] RESYNC_DEFERRED reason=already-in-flight origin=" .. tostring(origin))
+        return false
+    end
     local sessionId = BridgeState.eventSessionId
     if sessionId == nil then
         BridgeShowError("cannot resync before Forge has started a session")
-        return
+        BridgeLog("[Bridge] RESYNC_FAILED reason=no-session origin=" .. tostring(origin))
+        return false
     end
     -- A resync requested from a library-order mismatch commonly arrives from
     -- inside the active extraction callback. Do not rebuild the snapshot while
     -- that physical transaction is still mutating the Deck; the callback's
     -- completion retires the queue and this bounded retry then starts from a
     -- stable physical order.
+    local explicit = BridgeIsExplicitResyncOrigin(origin)
     if not BridgePhysicalLibraryQueuesIdle() then
-        BridgeLog("[Bridge] authoritative resync deferred until physical library queues are idle")
-        BridgeWaitFrames(function()
-            BridgeResyncFromAuthoritativeSnapshot(origin)
-        end, 2)
-        return
+        local now = BridgeResyncClockNow()
+        if explicit and (BridgeState.manualResyncGraceUntil or 0) <= 0 then
+            BridgeState.manualResyncGraceUntil = now + BRIDGE_RESYNC_PHYSICAL_QUEUE_GRACE_SECONDS
+        end
+        if explicit and now >= (BridgeState.manualResyncGraceUntil or 0) then
+            BridgeLog("[Bridge] RESYNC_FORCE_LOCAL_RETIRE origin=" .. tostring(origin)
+                .. " reason=physical-library-queue-timeout")
+            BridgeRetireLocalPhysicalTransactions("manual-resync-force")
+        else
+            BridgeState.resyncDeferredReason = "physical-library-queue"
+            BridgeLog("[Bridge] RESYNC_DEFERRED reason=physical-library-queue origin=" .. tostring(origin)
+                .. " graceUntil=" .. tostring(BridgeState.manualResyncGraceUntil))
+            BridgeWaitFrames(function()
+                BridgeResyncFromAuthoritativeSnapshot(origin)
+            end, 2)
+            return false
+        end
     end
+    if explicit then
+        -- Invalidate delayed local callbacks even when the physical queues
+        -- happened to look idle.  An event-drain continuation or other frame
+        -- callback from the pre-resync presentation must not run against the
+        -- table while the authoritative snapshot is rebuilding it.
+        BridgeAdvancePhysicalTransactionGeneration("explicit-authoritative-resync")
+        BridgeState.animationRunning = false
+        BridgeState.eventDrainTransaction = nil
+    end
+    BridgeState.manualResyncGraceUntil = 0
+    BridgeState.resyncDeferredReason = nil
     -- The previous failure stopped both pollers.  Opening an explicit
     -- resync starts a new presentation generation; failures from that old
     -- generation must not remain latched against the recovery attempt.
@@ -1754,8 +1835,13 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         prioritySeatId = BridgeState.prioritySeatId,
         tableTurnCount = BridgeState.tableTurnCount
     }
+    BridgeState.resyncToken = (BridgeState.resyncToken or 0) + 1
+    local resyncToken = BridgeState.resyncToken
+    BridgeState.resyncOrigin = origin
+    BridgeState.resyncStartedAt = BridgeResyncClockNow()
     BridgeState.resyncInFlight = true
     if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = true end
+    BridgeScheduleResyncWatchdog(sessionId, resyncToken)
     -- Recovery is an explicit way out of a stale-choice/protocol pause.  Any
     -- outstanding request belongs to the pre-rebuild presentation and must
     -- not keep the replacement decision pipeline permanently blocked.
@@ -1768,15 +1854,21 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     BridgeHideMainPriorityControls()
     BridgeSetStatus("RESYNCING FROM FORGE", "Rebuilding physical cards from the authoritative snapshot...")
     BridgeUiMarkDirty("resync-start")
-    BridgeLog("[Bridge] authoritative resync requested origin=" .. tostring(origin or "unknown")
-        .. " session=" .. tostring(sessionId))
+    BridgeLog("[Bridge] RESYNC_STARTED origin=" .. tostring(origin or "unknown")
+        .. " session=" .. tostring(sessionId) .. " token=" .. tostring(resyncToken))
     BridgeBootstrapCurrentSnapshot(sessionId, function(ok, err)
+        if BridgeState.resyncToken ~= resyncToken or BridgeState.eventSessionId ~= sessionId then
+            BridgeLog("[Bridge] RESYNC_FAILED reason=stale-callback token=" .. tostring(resyncToken))
+            return
+        end
         BridgeState.resyncInFlight = false
+        BridgeState.resyncStartedAt = nil
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
         if not ok then
             BridgeState.desyncLatched = true
             BridgeStopOnDesync("authoritative resync failed: " .. tostring(err))
             BridgeUiMarkDirty("resync-failed")
+            BridgeLog("[Bridge] RESYNC_FAILED reason=" .. tostring(err))
             return
         end
         BridgeStartEventPolling(sessionId, false)
@@ -1786,9 +1878,10 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeState.desyncLastMessage = nil
         BridgeSetStatus("MATCH ACTIVE", "Physical table resynced from Forge.")
         BridgeUiMarkDirty("resync-complete")
-        BridgeLog("[Bridge] authoritative resync complete at event cursor="
+        BridgeLog("[Bridge] RESYNC_COMPLETE eventCursor="
             .. tostring(BridgeState.lastAppliedEventSequence))
     end, true, origin)
+    return true
 end
 
 -- Forge's snapshot is the only authoritative library order after its shuffle.
