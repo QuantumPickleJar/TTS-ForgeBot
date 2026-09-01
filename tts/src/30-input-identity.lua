@@ -820,6 +820,10 @@ function BridgeRenderDecision(decision, force)
     local policyActiveSeat = BridgeState.yieldPolicyActiveSeatId
     local policySessionMatches = BridgeState.yieldPolicySessionId == nil
         or BridgeState.yieldPolicySessionId == BridgeState.eventSessionId
+    local policyTurnMatches = policyTurn == 0
+        or (tonumber(BridgeState.tableTurnCount or 0) or 0) == policyTurn
+    local policySeatMatches = policyActiveSeat == nil
+        or BridgeState.currentTurnSeatId == policyActiveSeat
     if BridgeState.yieldPolicyTurnNumber ~= nil
         and (decision.kind ~= "main_priority" or BridgeDecisionHasNonPassAction(decision)) then
         BridgeDisarmYieldPolicy("meaningful-human-decision")
@@ -829,10 +833,6 @@ function BridgeRenderDecision(decision, force)
     -- emitted its first numeric turn counter. In that bootstrap window, the
     -- active-seat fence remains authoritative; turn_changed retires the
     -- policy once the real boundary is observed.
-    local policyTurnMatches = policyTurn == 0
-        or (tonumber(BridgeState.tableTurnCount or 0) or 0) == policyTurn
-    local policySeatMatches = policyActiveSeat == nil
-        or BridgeState.currentTurnSeatId == policyActiveSeat
     if BridgeState.ui ~= nil and BridgeState.ui.autoAdvanceMode == "YIELD"
         and policyTurnMatches and policySeatMatches and policySessionMatches
         and decision.kind == "main_priority"

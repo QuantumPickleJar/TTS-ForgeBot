@@ -2543,6 +2543,20 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void OwnTurnYield_PassesOnlyEmptyHumanPriorityAndStopsForMeaningfulActions()
+    {
+        var start = Script.IndexOf("local policyTurn =", StringComparison.Ordinal);
+        var end = Script.IndexOf("-- Keep passive auto-pass off", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        Assert.Contains("decision.seatId == \"forge-player-1\"", body);
+        Assert.Contains("not BridgeDecisionHasNonPassAction(decision)", body);
+        Assert.Contains("BridgeSubmitChoice(decision.decisionId, action.actionId, \"yield_policy_auto_pass\")", body);
+        Assert.Contains("BridgeDisarmYieldPolicy(\"meaningful-human-decision\")", body);
+        Assert.Contains("BridgeState.ui.autoAdvanceMode = \"SMART\"", Script);
+    }
+
+    [Fact]
     public void ManaPoolUpdatesNormalizeAbsoluteForgeColorsBeforeRefreshingRow()
     {
         var start = Script.IndexOf("function BridgeSetManaBank", StringComparison.Ordinal);

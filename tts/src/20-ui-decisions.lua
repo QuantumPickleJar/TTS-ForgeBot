@@ -488,6 +488,10 @@ function BridgeDisarmYieldPolicy(reason)
         BridgeState.yieldPolicyTurnNumber = nil
         BridgeState.yieldPolicyActiveSeatId = nil
         BridgeState.yieldPolicySessionId = nil
+        if BridgeState.ui ~= nil and BridgeState.ui.autoAdvanceMode == "YIELD" then
+            BridgeState.ui.autoAdvanceMode = "SMART"
+            BridgeUiMarkDirty("yield-policy-stopped")
+        end
         BridgeLog("[Bridge] yield policy stopped reason=" .. tostring(reason))
     end
 end
