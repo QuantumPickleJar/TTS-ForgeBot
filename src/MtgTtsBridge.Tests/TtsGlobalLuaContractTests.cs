@@ -1118,7 +1118,7 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("if event.kind == \"game_ended\" then", Script);
         Assert.Contains("BridgeStopDecisionPolling()", Script);
-        Assert.Contains("BridgeStopEventPolling()", Script);
+        Assert.Contains("BridgeStopEventPolling(\"game-ended\")", Script);
         Assert.Contains("BridgeScheduleSnapshotReconcile(\"game_ended final state\")", Script);
         Assert.Contains("BridgeState.gameEnded", Script);
     }
@@ -2784,17 +2784,25 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void EventQueue_DoesNotRemoveAnEventAfterSessionReplacementOrQueueMutation()
+    public void EventQueue_UsesSessionLifetimeFenceInsteadOfPollingGeneration()
     {
         var start = Script.IndexOf("function BridgeProcessEventQueue", StringComparison.Ordinal);
         var end = Script.IndexOf("-- Decisions are fetched from Forge independently", start, StringComparison.Ordinal);
         var processor = Script[start..end];
 
-        Assert.Contains("not BridgeState.eventPolling", processor);
-        Assert.Contains("local processingGeneration = BridgeState.eventPollGeneration", processor);
-        Assert.Contains("processingGeneration ~= BridgeState.eventPollGeneration", processor);
+        Assert.Contains("local processingSessionId = BridgeState.eventSessionId", processor);
+        Assert.Contains("local processingSessionGeneration = BridgeState.eventSessionGeneration or 0", processor);
+        Assert.Contains("processingSessionId ~= BridgeState.eventSessionId", processor);
+        Assert.Contains("processingSessionGeneration ~= (BridgeState.eventSessionGeneration or 0)", processor);
+        Assert.DoesNotContain("processingGeneration ~= BridgeState.eventPollGeneration", processor);
+        Assert.Contains("EVENT_TX_BEGIN", processor);
+        Assert.Contains("EVENT_TX_APPLY_RESULT", processor);
+        Assert.Contains("EVENT_TX_COMMIT", processor);
+        Assert.Contains("EVENT_TX_ABORT", processor);
         Assert.Contains("BridgeState.eventQueue[1] ~= event", processor);
         Assert.Contains("event queue changed while applying event", processor);
+        Assert.Contains("function BridgeRecordEventCommitAbort", Script);
+        Assert.Contains("EVENT_COMMIT_LIVELOCK", Script);
     }
 
     [Fact]

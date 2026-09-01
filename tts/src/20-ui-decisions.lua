@@ -1240,7 +1240,7 @@ function BridgeRecoverFromStaleSession(body, requestId)
     BridgeResetSelectionState()
     BridgeHideMainPriorityControls()
     BridgeStopDecisionPolling()
-    BridgeStopEventPolling()
+    BridgeStopEventPolling("stale-session-recovery")
     BridgeLog("[Bridge] STALE_SESSION requestId=" .. tostring(requestId)
         .. " expectedSession=" .. tostring(body.expectedSessionId)
         .. " receivedSession=" .. tostring(body.receivedSessionId)
@@ -3039,7 +3039,7 @@ function BridgeStartSessionIfNone(done)
 end
 
 function BridgeResetSession()
-    BridgeStopEventPolling()
+    BridgeStopEventPolling("session-reset")
     BridgeClearHighlights()
     BridgeState.lastDecision = nil
 

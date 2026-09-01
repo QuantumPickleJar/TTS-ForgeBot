@@ -1726,7 +1726,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     -- not keep the replacement decision pipeline permanently blocked.
     BridgeState.submitting = false
     BridgeResumeChoiceProtocol("authoritative_resync")
-    BridgeStopEventPolling()
+    BridgeStopEventPolling("authoritative-resync")
     BridgeStopDecisionPolling()
     BridgeClearHighlights()
     BridgeResetSelectionState()

@@ -456,6 +456,7 @@ BridgeState = {
     handReadinessRecoverySessionId = nil,
     handReadinessRecoveryAttempts = 0,
     eventSessionId = nil,
+    eventSessionGeneration = 0,
     lastReceivedEventSequence = 0,
     lastAppliedEventSequence = 0,
     eventPolling = false,
@@ -471,6 +472,12 @@ BridgeState = {
     skipExistingEventsOnAttach = false,
     eventQueue = {},
     animationRunning = false,
+    eventCommitWatchdog = {
+        eventSequence = nil,
+        successfulApplyAttemptsWithoutCommit = 0,
+        firstAttemptTimestamp = nil,
+        lastAbortReason = nil
+    },
     currentPhysicalPresentationGeneration = 0,
     renderedDecisionPresentationKey = nil,
     renderedDecisionPhysicalGeneration = nil,
@@ -3543,7 +3550,7 @@ function BridgeRecoverFromStaleSession(body, requestId)
     BridgeResetSelectionState()
     BridgeHideMainPriorityControls()
     BridgeStopDecisionPolling()
-    BridgeStopEventPolling()
+    BridgeStopEventPolling("stale-session-recovery")
     BridgeLog("[Bridge] STALE_SESSION requestId=" .. tostring(requestId)
         .. " expectedSession=" .. tostring(body.expectedSessionId)
         .. " receivedSession=" .. tostring(body.receivedSessionId)
@@ -5342,7 +5349,7 @@ function BridgeStartSessionIfNone(done)
 end
 
 function BridgeResetSession()
-    BridgeStopEventPolling()
+    BridgeStopEventPolling("session-reset")
     BridgeClearHighlights()
     BridgeState.lastDecision = nil
 
@@ -7460,7 +7467,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     -- not keep the replacement decision pipeline permanently blocked.
     BridgeState.submitting = false
     BridgeResumeChoiceProtocol("authoritative_resync")
-    BridgeStopEventPolling()
+    BridgeStopEventPolling("authoritative-resync")
     BridgeStopDecisionPolling()
     BridgeClearHighlights()
     BridgeResetSelectionState()
@@ -8694,6 +8701,37 @@ function BridgeSetMonarchSeat(seatId)
     })
 end
 
+function BridgeAdvanceEventPollGeneration(reason)
+    local oldGeneration = BridgeState.eventPollGeneration or 0
+    BridgeState.eventPollGeneration = oldGeneration + 1
+    local head = BridgeState.eventQueue ~= nil and BridgeState.eventQueue[1] or nil
+    BridgeLog(string.format(
+        "[Bridge] EVENT_POLL_GENERATION old=%d new=%d reason=%s session=%s received=%s applied=%s queueHead=%s animation=%s",
+        oldGeneration,
+        BridgeState.eventPollGeneration,
+        tostring(reason or "unspecified"),
+        tostring(BridgeState.eventSessionId),
+        tostring(BridgeState.lastReceivedEventSequence),
+        tostring(BridgeState.lastAppliedEventSequence),
+        tostring(head ~= nil and head.sequence or nil),
+        tostring(BridgeState.animationRunning)))
+    return BridgeState.eventPollGeneration
+end
+
+function BridgeAdvanceEventSessionGeneration(reason)
+    local oldGeneration = BridgeState.eventSessionGeneration or 0
+    BridgeState.eventSessionGeneration = oldGeneration + 1
+    BridgeLog(string.format(
+        "[Bridge] EVENT_SESSION_GENERATION old=%d new=%d reason=%s session=%s received=%s applied=%s",
+        oldGeneration,
+        BridgeState.eventSessionGeneration,
+        tostring(reason or "unspecified"),
+        tostring(BridgeState.eventSessionId),
+        tostring(BridgeState.lastReceivedEventSequence),
+        tostring(BridgeState.lastAppliedEventSequence)))
+    return BridgeState.eventSessionGeneration
+end
+
 function BridgeStartEventPolling(sessionId, skipExisting)
     if sessionId == nil then
         BridgeStopOnDesync("cannot poll events without a sessionId")
@@ -8709,8 +8747,8 @@ function BridgeStartEventPolling(sessionId, skipExisting)
     BridgeState.skipExistingEventsOnAttach = skipExisting == true
     BridgeState.eventPolling = true
     BridgeState.eventRetryCount = 0
-    BridgeState.eventPollGeneration = BridgeState.eventPollGeneration + 1
-    BridgePollEvents(BridgeState.eventPollGeneration)
+    local generation = BridgeAdvanceEventPollGeneration("start")
+    BridgePollEvents(generation)
 end
 
 function BridgeRetireResourceRowObjects()
@@ -8743,7 +8781,8 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         end
     end
 
-    BridgeStopEventPolling()
+    BridgeStopEventPolling("session-prepare")
+    BridgeAdvanceEventSessionGeneration("session-prepare")
     BridgeStopDecisionPolling()
     BridgeReturnAttackPresentation(nil)
     BridgeRetireResourceRowObjects()
@@ -8926,9 +8965,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     end
 end
 
-function BridgeStopEventPolling()
+function BridgeStopEventPolling(reason)
     BridgeState.eventPolling = false
-    BridgeState.eventPollGeneration = BridgeState.eventPollGeneration + 1
+    BridgeAdvanceEventPollGeneration(reason or "stop")
     BridgeState.eventRequestInFlight = false
     BridgeState.eventPollScheduled = false
 end
@@ -9017,6 +9056,47 @@ function BridgePollEvents(generation)
     end)
 end
 
+function BridgeResetEventCommitWatchdog()
+    BridgeState.eventCommitWatchdog = {
+        eventSequence = nil,
+        successfulApplyAttemptsWithoutCommit = 0,
+        firstAttemptTimestamp = nil,
+        lastAbortReason = nil
+    }
+end
+
+function BridgeRecordEventCommitAbort(event, reason, sessionId, sessionGeneration)
+    local watchdog = BridgeState.eventCommitWatchdog or {}
+    if watchdog.eventSequence ~= event.sequence
+        or watchdog.sessionId ~= sessionId
+        or watchdog.sessionGeneration ~= sessionGeneration then
+        watchdog = {
+            eventSequence = event.sequence,
+            sessionId = sessionId,
+            sessionGeneration = sessionGeneration,
+            successfulApplyAttemptsWithoutCommit = 0,
+            firstAttemptTimestamp = os.clock(),
+            lastAbortReason = nil
+        }
+        BridgeState.eventCommitWatchdog = watchdog
+    end
+    watchdog.successfulApplyAttemptsWithoutCommit = watchdog.successfulApplyAttemptsWithoutCommit + 1
+    watchdog.lastAbortReason = reason
+    BridgeLog(string.format(
+        "[Bridge] EVENT_TX_ABORT eventSequence=%s eventKind=%s reason=%s session=%s sessionGeneration=%s pollGeneration=%s eventPolling=%s received=%s applied=%s queueLength=%s successfulApplyAttemptsWithoutCommit=%s",
+        tostring(event.sequence), tostring(event.kind), tostring(reason), tostring(sessionId),
+        tostring(sessionGeneration), tostring(BridgeState.eventPollGeneration),
+        tostring(BridgeState.eventPolling), tostring(BridgeState.lastReceivedEventSequence),
+        tostring(BridgeState.lastAppliedEventSequence), tostring(#BridgeState.eventQueue),
+        tostring(watchdog.successfulApplyAttemptsWithoutCommit)))
+    if watchdog.successfulApplyAttemptsWithoutCommit >= 3 then
+        BridgeLog(string.format(
+            "[Bridge] EVENT_COMMIT_LIVELOCK eventSequence=%s eventKind=%s session=%s lastAbortReason=%s",
+            tostring(event.sequence), tostring(event.kind), tostring(sessionId), tostring(reason)))
+        BridgeStopOnDesync("EVENT_COMMIT_LIVELOCK event " .. tostring(event.sequence))
+    end
+end
+
 function BridgeProcessEventQueue()
     if BridgeState.animationRunning or not BridgeState.eventPolling then
         return
@@ -9029,7 +9109,9 @@ function BridgeProcessEventQueue()
         return
     end
 
-    local processingGeneration = BridgeState.eventPollGeneration
+    local processingSessionId = BridgeState.eventSessionId
+    local processingSessionGeneration = BridgeState.eventSessionGeneration or 0
+    local processingQueue = BridgeState.eventQueue
     local event = BridgeState.eventQueue[1]
     local expected = BridgeState.lastAppliedEventSequence + 1
     if event.sequence ~= expected then
@@ -9038,28 +9120,61 @@ function BridgeProcessEventQueue()
     end
 
     BridgeState.animationRunning = true
+    BridgeLog(string.format(
+        "[Bridge] EVENT_TX_BEGIN eventSequence=%s eventKind=%s session=%s sessionGeneration=%s pollGeneration=%s eventPolling=%s queueHead=%s received=%s applied=%s",
+        tostring(event.sequence), tostring(event.kind), tostring(processingSessionId),
+        tostring(processingSessionGeneration), tostring(BridgeState.eventPollGeneration),
+        tostring(BridgeState.eventPolling), tostring(event.sequence),
+        tostring(BridgeState.lastReceivedEventSequence), tostring(BridgeState.lastAppliedEventSequence)))
     local applied, delay, applyError = BridgeApplyAuthoritativeEvent(event)
+    BridgeLog(string.format(
+        "[Bridge] EVENT_TX_APPLY_RESULT eventSequence=%s applied=%s error=%s sessionGenerationBefore=%s sessionGenerationAfter=%s pollGeneration=%s eventPolling=%s queueHead=%s",
+        tostring(event.sequence), tostring(applied), tostring(applyError),
+        tostring(processingSessionGeneration), tostring(BridgeState.eventSessionGeneration or 0),
+        tostring(BridgeState.eventPollGeneration), tostring(BridgeState.eventPolling),
+        tostring(BridgeState.eventQueue ~= nil and BridgeState.eventQueue[1] ~= nil
+            and BridgeState.eventQueue[1].sequence or nil)))
     if not applied then
         BridgeState.animationRunning = false
+        BridgeLog(string.format("[Bridge] EVENT_TX_ABORT eventSequence=%s reason=apply_failed", tostring(event.sequence)))
         BridgeStopOnDesync(applyError or ("failed to apply event " .. tostring(event.sequence)))
         return
     end
 
-    -- Event application can schedule a session replacement or another
-    -- recovery path through a TTS callback.  Never remove position 1 from a
-    -- queue that was replaced while the event was being applied.
-    if processingGeneration ~= BridgeState.eventPollGeneration or not BridgeState.eventPolling then
+    -- Polling generation belongs to HTTP callback freshness.  It may change
+    -- while this synchronous event transaction is applying and must not turn
+    -- a successful physical mutation into a replay.  Only replacement of the
+    -- authoritative session/queue can abandon this transaction.
+    if processingSessionId ~= BridgeState.eventSessionId
+        or processingSessionGeneration ~= (BridgeState.eventSessionGeneration or 0) then
         BridgeState.animationRunning = false
+        BridgeLog(string.format(
+            "[Bridge] EVENT_TX_ABORT eventSequence=%s reason=session_replaced sessionBefore=%s sessionAfter=%s sessionGenerationBefore=%s sessionGenerationAfter=%s",
+            tostring(event.sequence), tostring(processingSessionId), tostring(BridgeState.eventSessionId),
+            tostring(processingSessionGeneration), tostring(BridgeState.eventSessionGeneration or 0)))
+        return
+    end
+    if BridgeState.eventQueue ~= processingQueue then
+        BridgeState.animationRunning = false
+        BridgeRecordEventCommitAbort(event, "queue_replaced", processingSessionId, processingSessionGeneration)
+        BridgeStopOnDesync("event queue replaced while applying event " .. tostring(event.sequence))
         return
     end
     if BridgeState.eventQueue[1] ~= event then
         BridgeState.animationRunning = false
+        BridgeRecordEventCommitAbort(event, "queue_head_changed", processingSessionId, processingSessionGeneration)
         BridgeStopOnDesync("event queue changed while applying event " .. tostring(event.sequence))
         return
     end
 
+    local oldLastApplied = BridgeState.lastAppliedEventSequence
     table.remove(BridgeState.eventQueue, 1)
     BridgeState.lastAppliedEventSequence = event.sequence
+    BridgeResetEventCommitWatchdog()
+    BridgeLog(string.format(
+        "[Bridge] EVENT_TX_COMMIT eventSequence=%s oldLastApplied=%s newLastApplied=%s queueLength=%s",
+        tostring(event.sequence), tostring(oldLastApplied), tostring(BridgeState.lastAppliedEventSequence),
+        tostring(#BridgeState.eventQueue)))
     BridgeTryPresentPendingDecision("event-applied")
     if event.kind == "draw" or event.kind == "turn_changed" or event.kind == "phase_changed" then
         -- The old menu may still be rendered when Forge changes state. Ask
@@ -9070,11 +9185,12 @@ function BridgeProcessEventQueue()
     if BridgeShouldReconcileAfterEvent(event) then
         BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence) .. " recovery", "RECOVERY")
     end
-    local generation = BridgeState.eventPollGeneration
     local nextDelay = delay or 0.1
     if BridgeState.ui ~= nil and BridgeState.ui.fastPlaytest then nextDelay = math.min(nextDelay, 0.05) end
     BridgeWaitTime(function()
-        if generation ~= BridgeState.eventPollGeneration then
+        if processingSessionId ~= BridgeState.eventSessionId
+            or processingSessionGeneration ~= (BridgeState.eventSessionGeneration or 0) then
+            BridgeState.animationRunning = false
             return
         end
         BridgeState.animationRunning = false
@@ -9180,7 +9296,7 @@ function BridgeApplyAuthoritativeEvent(event)
         BridgeResetSelectionState()
         BridgeHideMainPriorityControls()
         BridgeStopDecisionPolling()
-        BridgeStopEventPolling()
+        BridgeStopEventPolling("game-ended")
         BridgeScheduleSnapshotReconcile("game_ended final state")
         local humanWon = false
         for _, seatId in ipairs(BridgeState.gameEnded.winnerSeatIds) do
@@ -12640,7 +12756,7 @@ function BridgeStopOnDesync(message)
     BridgeState.desyncLatched = true
     BridgeState.desyncFailureCount = (BridgeState.desyncFailureCount or 0) + 1
     BridgeState.desyncLastMessage = diagnostic
-    BridgeStopEventPolling()
+    BridgeStopEventPolling("desync-latched")
     BridgeStopDecisionPolling()
     BridgeState.animationRunning = false
     BridgeState.pendingDecision = nil

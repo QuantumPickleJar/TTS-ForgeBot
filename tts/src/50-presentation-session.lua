@@ -1782,7 +1782,7 @@ function BridgeStopOnDesync(message)
     BridgeState.desyncLatched = true
     BridgeState.desyncFailureCount = (BridgeState.desyncFailureCount or 0) + 1
     BridgeState.desyncLastMessage = diagnostic
-    BridgeStopEventPolling()
+    BridgeStopEventPolling("desync-latched")
     BridgeStopDecisionPolling()
     BridgeState.animationRunning = false
     BridgeState.pendingDecision = nil
