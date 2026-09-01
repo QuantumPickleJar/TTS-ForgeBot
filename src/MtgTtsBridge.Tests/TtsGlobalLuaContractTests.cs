@@ -2748,16 +2748,18 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void DiagnosticCapture_RecoversOrdinaryPollingAfterCallbackOrTimeout()
     {
-        var start = Script.IndexOf("function BridgeRestorePollingAfterDiagnosticCapture", StringComparison.Ordinal);
+        var start = Script.IndexOf("function BridgeHudSubmitReport", StringComparison.Ordinal);
         var end = Script.IndexOf("function BridgeHudReportCapture", start, StringComparison.Ordinal);
         var report = Script[start..end];
 
-        Assert.Contains("BridgeStartEventPolling(BridgeState.eventSessionId, false)", report);
+        Assert.Contains("local function resumeGameplayPumps()", report);
+        Assert.Contains("BridgeStartEventPolling(requestSession, false)", report);
         Assert.Contains("BridgeStartDecisionPolling()", report);
-        Assert.Contains("reportCaptureToken", report);
-        Assert.Contains("diagnostic capture watchdog expired; restoring polling", report);
-        Assert.Contains("CAPTURE TIMEOUT — match polling restored", report);
-        Assert.Contains("end, 15)", report);
+        Assert.Contains("local completed = false", report);
+        Assert.Contains("if completed then return end", report);
+        Assert.Contains("BridgePerformanceDiagnosticPayload", report);
+        Assert.Contains("diagnostic capture timed out after", report);
+        Assert.Contains("BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS", report);
     }
 
     [Fact]
