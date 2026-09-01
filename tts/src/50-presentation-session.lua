@@ -2338,6 +2338,27 @@ function BridgeUiFlush()
     local devExpanded = devEnabled and ui.diagnosticsVisible == true
     BridgeUiSet("BridgeHudDevToggle", "active", devEnabled and "true" or "false")
     BridgeUiSet("BridgeHudDevRoot", "active", devExpanded and "true" or "false")
+    local yieldUi = ui.fastForwardActive and "FAST-FORWARD" or (ui.autoPassEmpty and "AUTO-PASS: ON" or "AUTO-PASS: OFF")
+    BridgeUiSet("BridgeHudMode", "text", yieldUi)
+    BridgeUiSet("BridgeHudFastForward", "text", ui.fastForwardActive and "CANCEL FAST-FORWARD" or "FAST-FORWARD")
+    BridgeUiSet("BridgeHudYieldStopScope", "text", ui.fastForwardStopScope == "other_turn" and "STOPS: OTHER TURNS" or "STOPS: YOUR TURN")
+    local stops = ui.fastForwardStops or {own_turn = {}, other_turn = {}}
+    local stopButtons = {
+        BridgeHudStopOwn_Upkeep = {"own_turn", "upkeep"}, BridgeHudStopOwn_Draw = {"own_turn", "draw"},
+        BridgeHudStopOwn_MainPre = {"own_turn", "main_precombat"}, BridgeHudStopOwn_BeginningCombat = {"own_turn", "beginning_combat"},
+        BridgeHudStopOwn_Attackers = {"own_turn", "declare_attackers"}, BridgeHudStopOwn_Blockers = {"own_turn", "declare_blockers"},
+        BridgeHudStopOwn_Damage = {"own_turn", "combat_damage"}, BridgeHudStopOwn_EndCombat = {"own_turn", "end_combat"},
+        BridgeHudStopOwn_MainPost = {"own_turn", "main_postcombat"}, BridgeHudStopOwn_EndStep = {"own_turn", "end_step"},
+        BridgeHudStopOther_Upkeep = {"other_turn", "upkeep"}, BridgeHudStopOther_Draw = {"other_turn", "draw"},
+        BridgeHudStopOther_MainPre = {"other_turn", "main_precombat"}, BridgeHudStopOther_BeginningCombat = {"other_turn", "beginning_combat"},
+        BridgeHudStopOther_Attackers = {"other_turn", "declare_attackers"}, BridgeHudStopOther_Blockers = {"other_turn", "declare_blockers"},
+        BridgeHudStopOther_Damage = {"other_turn", "combat_damage"}, BridgeHudStopOther_EndCombat = {"other_turn", "end_combat"},
+        BridgeHudStopOther_MainPost = {"other_turn", "main_postcombat"}, BridgeHudStopOther_EndStep = {"other_turn", "end_step"}
+    }
+    for id, value in pairs(stopButtons) do
+        local active = stops[value[1]] and stops[value[1]][value[2]] == true
+        BridgeUiSet(id, "color", active and "#A16207EE" or "#334155CC")
+    end
     BridgeUiSet("BridgeHudDevToggle", "text", devExpanded and "DEV ▲" or "DEV ▼")
     local reportVisible = devExpanded and ui.reportPanelVisible == true
     local reportCategoryIndex = tonumber(ui.reportCategoryIndex or 1) or 1

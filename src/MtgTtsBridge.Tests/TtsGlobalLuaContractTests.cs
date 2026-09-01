@@ -2597,12 +2597,13 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("policyOwnTurn", body);
         Assert.Contains("decision.kind == \"attacker_selection\"", body);
         Assert.Contains("action.type == \"finish_attacking\"", body);
-        Assert.Contains("BridgeConsiderYieldAutomaticAction(decision, automaticAction, \"OWN_TURN_YIELD\")", body);
-        Assert.Contains("BridgeConsiderYieldAutomaticAction(decision, action, \"OPPONENT_YIELD\")", body);
-        Assert.Contains("BridgeDisarmYieldPolicy(\"mandatory-human-decision\")", body);
-        Assert.Contains("own_turn_yield_auto_pass", Script);
-        Assert.Contains("own_turn_yield_auto_finish_attacking", Script);
-        Assert.Contains("BridgeState.ui.autoAdvanceMode = \"SMART\"", Script);
+        Assert.Contains("BridgeConsiderYieldAutomaticAction(decision, automaticAction, \"FAST_FORWARD\")", body);
+        Assert.Contains("BridgeConsiderYieldAutomaticAction(decision, action, \"AUTO_PASS_EMPTY\")", body);
+        Assert.Contains("BridgeYieldPhaseKey", body);
+        Assert.Contains("BridgeYieldScopeForDecision", body);
+        Assert.Contains("BridgeCancelFastForward(\"required-human-choice\")", body);
+        Assert.Contains("function BridgeYieldControllerMode", Script);
+        Assert.Contains("function BridgeSetAutoPassEmpty", Script);
     }
 
     [Fact]
@@ -2675,6 +2676,19 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("diagnostic report failed", Script);
         Assert.Contains("BridgeState.ui.reportStatus", Script);
         Assert.Contains("BridgeHudReportStatus", File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml")));
+    }
+
+    [Fact]
+    public void DevHud_ExposesSharedYieldControllerAndBothStopScopes()
+    {
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+        Assert.Contains("id=\"BridgeHudMode\"", xml);
+        Assert.Contains("id=\"BridgeHudFastForward\"", xml);
+        Assert.Contains("id=\"BridgeHudStopOwn_MainPre\"", xml);
+        Assert.Contains("id=\"BridgeHudStopOther_MainPre\"", xml);
+        Assert.Contains("onClick=\"BridgeHudClearYieldStops\"", xml);
+        Assert.Contains("function BridgeHudYieldPhaseStop", Script);
+        Assert.Contains("function BridgeClearYieldPhaseStops", Script);
     }
 
     [Fact]

@@ -1166,6 +1166,7 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         return
     end
 
+    local replacingMatch = BridgeState.eventSessionId ~= nil and BridgeState.eventSessionId ~= sessionId
     local preservedLiveMappings = nil
     if preserveLiveMappings == true and BridgeState.eventSessionId == sessionId then
         preservedLiveMappings = {}
@@ -1313,6 +1314,14 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.yieldPolicyTurnNumber = nil
     BridgeState.yieldPolicyActiveSeatId = nil
     BridgeState.yieldPolicySessionId = nil
+    if BridgeState.ui ~= nil then
+        BridgeState.ui.fastForwardActive = false
+        BridgeState.ui.fastForwardSessionId = nil
+        BridgeState.ui.fastForwardTurnNumber = nil
+        BridgeState.ui.fastForwardActiveSeatId = nil
+        if replacingMatch then BridgeState.ui.autoPassEmpty = false end
+        BridgeState.ui.autoAdvanceMode = BridgeState.ui.autoPassEmpty and "AUTO-PASS EMPTY" or "NORMAL"
+    end
     BridgeState.gameEnded = nil
     BridgeState.playerStateBySeatId = {}
     BridgeState.playerCountersBySeatId = {}
@@ -1783,6 +1792,7 @@ function BridgeApplyAuthoritativeEvent(event)
         BridgeState.pendingDecision = nil
         BridgeState.lastDecision = nil
         BridgeState.submitting = false
+        if BridgeCancelFastForward ~= nil then BridgeCancelFastForward("game-ended") end
         BridgeClearHighlights()
         BridgeRollbackPendingIntent()
         BridgeResetSelectionState()
@@ -1869,6 +1879,7 @@ function BridgeApplyAuthoritativeEvent(event)
             BridgeState.yieldPolicyOwnTurn = false
             BridgeLog("[Bridge] cleared HUD yield policy at authoritative turn transition")
         end
+        if BridgeCancelFastForward ~= nil then BridgeCancelFastForward("turn-change") end
         -- A turn boundary retires any decision belonging to the previous
         -- priority/phase transaction. BridgeCurrentDecisionOutrunsEvent above
         -- protects a genuinely newer decision that arrived before this event;

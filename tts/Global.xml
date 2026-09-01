@@ -138,12 +138,39 @@
     <!-- Host/Admin developer drawer. -->
     <VerticalLayout id="BridgeHudDevRoot" active="false" visibility="Host|Admin" minHeight="230" preferredHeight="230" flexibleHeight="0" spacing="5" padding="7 7 7 7" childForceExpandHeight="false" childForceExpandWidth="true" color="#070C13F0">
       <HorizontalLayout minHeight="29" preferredHeight="29" flexibleHeight="0" spacing="5" childForceExpandWidth="false" childForceExpandHeight="true">
-        <Button id="BridgeHudMode" onClick="BridgeHudMode" text="SMART" tooltip="Cycle SMART, YIELD, and MANUAL priority behavior." minWidth="105" preferredWidth="105" flexibleWidth="0" fontSize="11" color="#1E293BCC" textColor="#CBD5E1" />
+        <Button id="BridgeHudMode" onClick="BridgeHudMode" text="AUTO-PASS: OFF" tooltip="Toggle automatic passing of human priority only when Forge offers no non-pass action." minWidth="125" preferredWidth="125" flexibleWidth="0" fontSize="11" color="#1E293BCC" textColor="#CBD5E1" />
+        <Button id="BridgeHudFastForward" onClick="BridgeHudFastForward" text="FAST-FORWARD" tooltip="Temporarily pass explicit Forge priority actions until a stop gate or required choice." minWidth="115" preferredWidth="115" flexibleWidth="0" fontSize="11" color="#7C3AEDCC" textColor="#FFFFFF" />
+        <Button id="BridgeHudYieldStopScope" onClick="BridgeHudYieldStopScope" text="STOPS: YOUR TURN" tooltip="Choose whether phase stops apply to your turn or other turns." minWidth="130" preferredWidth="130" flexibleWidth="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudClearYieldStops" onClick="BridgeHudClearYieldStops" text="CLEAR STOPS" tooltip="Clear all configured phase stop gates." minWidth="95" preferredWidth="95" flexibleWidth="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
         <Button id="BridgeHudFast" onClick="BridgeHudFast" text="FAST: OFF" tooltip="Fast Playtest shortens cosmetic movement and UI delays. It never skips Forge decisions or rules events." minWidth="105" preferredWidth="105" flexibleWidth="0" fontSize="11" color="#81a8e6cc" textColor="#CBD5E1" />
         <Button id="BridgeHudMana" onClick="BridgeHudMana" text="MANA: AUTO" tooltip="AUTO lets Forge choose payment sources. Manual source choices require launching ForgeBot with -ManualMana." minWidth="135" preferredWidth="135" flexibleWidth="0" fontSize="11" color="#9aadcdcc" textColor="#CBD5E1" />
         <Button id="BridgeHudLog" onClick="BridgeHudLog" text="LOG: ON" tooltip="Show or hide the latest player-facing Forge event message." minWidth="95" preferredWidth="95" flexibleWidth="0" fontSize="11" color="#1E293BCC" textColor="#CBD5E1" />
       </HorizontalLayout>
-      <Text id="BridgeHudHelp" text="SMART: Forge auto-advances only when it has no meaningful human choice." minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="11" color="#AAB7C6" alignment="MiddleLeft" />
+      <Text id="BridgeHudHelp" text="NORMAL: every human Forge decision requires input." minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="11" color="#AAB7C6" alignment="MiddleLeft" />
+      <HorizontalLayout minHeight="20" preferredHeight="20" flexibleHeight="0" spacing="1" childForceExpandWidth="true" childForceExpandHeight="true">
+        <Button id="BridgeHudStopOwn_Upkeep" onClick="BridgeHudYieldPhaseStop" text="UPK" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOwn_Draw" onClick="BridgeHudYieldPhaseStop" text="DRAW" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOwn_MainPre" onClick="BridgeHudYieldPhaseStop" text="MAIN 1" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOwn_BeginningCombat" onClick="BridgeHudYieldPhaseStop" text="BEGIN C" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOwn_Attackers" onClick="BridgeHudYieldPhaseStop" text="ATK" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOwn_Blockers" onClick="BridgeHudYieldPhaseStop" text="BLK" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOwn_Damage" onClick="BridgeHudYieldPhaseStop" text="DMG" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOwn_EndCombat" onClick="BridgeHudYieldPhaseStop" text="END C" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOwn_MainPost" onClick="BridgeHudYieldPhaseStop" text="MAIN 2" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOwn_EndStep" onClick="BridgeHudYieldPhaseStop" text="END" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+      </HorizontalLayout>
+      <HorizontalLayout minHeight="20" preferredHeight="20" flexibleHeight="0" spacing="1" childForceExpandWidth="true" childForceExpandHeight="true">
+        <Button id="BridgeHudStopOther_Upkeep" onClick="BridgeHudYieldPhaseStop" text="UPK" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOther_Draw" onClick="BridgeHudYieldPhaseStop" text="DRAW" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOther_MainPre" onClick="BridgeHudYieldPhaseStop" text="MAIN 1" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOther_BeginningCombat" onClick="BridgeHudYieldPhaseStop" text="BEGIN C" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOther_Attackers" onClick="BridgeHudYieldPhaseStop" text="ATK" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOther_Blockers" onClick="BridgeHudYieldPhaseStop" text="BLK" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOther_Damage" onClick="BridgeHudYieldPhaseStop" text="DMG" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOther_EndCombat" onClick="BridgeHudYieldPhaseStop" text="END C" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOther_MainPost" onClick="BridgeHudYieldPhaseStop" text="MAIN 2" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudStopOther_EndStep" onClick="BridgeHudYieldPhaseStop" text="END" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
+      </HorizontalLayout>
       <HorizontalLayout id="BridgeHudReportActions" minHeight="28" preferredHeight="28" flexibleHeight="0" spacing="5" childForceExpandWidth="false" childForceExpandHeight="true">
         <Button id="BridgeHudReportOpen" onClick="BridgeHudReportOpen" text="REPORT BUG" tooltip="Capture a local diagnostic ZIP without changing the Forge match." minWidth="135" preferredWidth="135" flexibleWidth="0" fontSize="11" color="#7F1D1DCC" textColor="#FFFFFF" />
         <Button id="BridgeHudReportCategoryPrevious" active="false" onClick="BridgeHudReportCategoryPrevious" text="&lt;" tooltip="Previous diagnostic category." minWidth="28" preferredWidth="28" flexibleWidth="0" fontSize="13" color="#1E293BCC" textColor="#CBD5E1" />

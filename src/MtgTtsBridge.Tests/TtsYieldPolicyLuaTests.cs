@@ -114,6 +114,153 @@ public sealed class TtsYieldPolicyLuaTests
         Assert.Equal(1, lua.Globals.Get("BridgeState").Table.Get("yieldPolicyTurnNumber").Number);
     }
 
+    [Fact]
+    public void AutoPassEmpty_PassesOnlyAForgePassOnlyHumanPriority()
+    {
+        var lua = NewProbe(false, "forge-player-1");
+        lua.DoString(@"
+            BridgeState.ui.autoAdvanceMode = 'AUTO-PASS EMPTY'
+            BridgeState.ui.autoPassEmpty = true
+            BridgeState.yieldPolicyTurnNumber = nil
+            decision = {
+                decisionId='empty-priority', sessionId='session', kind='main_priority',
+                seatId='forge-player-1', activeSeatId='forge-player-1', prioritySeatId='forge-player-1',
+                turnNumber=1, phaseName='Upkeep', eventCursor=10,
+                actions={{actionId='pass-empty', type='pass_priority', isPresentationAuthorized=true}}
+            }
+            BridgeRenderDecision(decision, true)
+        ");
+
+        Assert.Equal("pass-empty", lua.Globals.Get("submittedAction").String);
+        Assert.Equal("auto_pass_empty", lua.Globals.Get("submittedSource").String);
+    }
+
+    [Fact]
+    public void AutoPassEmpty_LeavesMain1LegalActionVisible()
+    {
+        var lua = NewProbe(false, "forge-player-1");
+        lua.DoString(@"
+            BridgeState.ui.autoAdvanceMode = 'AUTO-PASS EMPTY'
+            BridgeState.ui.autoPassEmpty = true
+            decision = {
+                decisionId='main-land', sessionId='session', kind='main_priority',
+                seatId='forge-player-1', activeSeatId='forge-player-1', prioritySeatId='forge-player-1',
+                turnNumber=1, phaseName='Main phase, precombat', eventCursor=10,
+                actions={
+                    {actionId='pass-main', type='pass_priority', isPresentationAuthorized=true},
+                    {actionId='land-main', type='play_land', isPresentationAuthorized=true}
+                }
+            }
+            BridgeRenderDecision(decision, true)
+        ");
+
+        Assert.Null(lua.Globals.Get("submittedAction").ToObject());
+        Assert.True(lua.Globals.Get("BridgeState").Table.Get("ui").Table.Get("autoPassEmpty").Boolean);
+    }
+
+    [Fact]
+    public void FastForward_SubmitsOptionalMainPriorityUsingExactPassAction()
+    {
+        var lua = NewProbe(false, "forge-player-1");
+        lua.DoString(@"
+            BridgeState.ui.autoAdvanceMode = 'FAST-FORWARD'
+            BridgeState.ui.fastForwardActive = true
+            BridgeState.ui.fastForwardSessionId = 'session'
+            BridgeState.ui.fastForwardTurnNumber = 1
+            decision = {
+                decisionId='fast-main', sessionId='session', kind='main_priority',
+                seatId='forge-player-1', activeSeatId='forge-player-1', prioritySeatId='forge-player-1',
+                turnNumber=1, phaseName='Main phase, precombat', eventCursor=10,
+                actions={
+                    {actionId='pass-fast', type='pass_priority', isPresentationAuthorized=true},
+                    {actionId='spell-fast', type='cast_spell', isPresentationAuthorized=true}
+                }
+            }
+            BridgeRenderDecision(decision, true)
+        ");
+
+        Assert.Equal("pass-fast", lua.Globals.Get("submittedAction").String);
+        Assert.Equal("fast_forward", lua.Globals.Get("submittedSource").String);
+    }
+
+    [Fact]
+    public void FastForward_PhaseStopPreventsFirstPrioritySubmission()
+    {
+        var lua = NewProbe(false, "forge-player-1");
+        lua.DoString(@"
+            BridgeState.ui.autoAdvanceMode = 'FAST-FORWARD'
+            BridgeState.ui.fastForwardActive = true
+            BridgeState.ui.fastForwardSessionId = 'session'
+            BridgeState.ui.fastForwardTurnNumber = 1
+            BridgeState.ui.fastForwardStops = {own_turn={main_precombat=true}, other_turn={}}
+            decision = {
+                decisionId='stop-main', sessionId='session', kind='main_priority',
+                seatId='forge-player-1', activeSeatId='forge-player-1', prioritySeatId='forge-player-1',
+                turnNumber=1, phaseName='Main phase, precombat', eventCursor=10,
+                actions={{actionId='pass-stop', type='pass_priority', isPresentationAuthorized=true}}
+            }
+            BridgeRenderDecision(decision, true)
+        ");
+
+        Assert.Null(lua.Globals.Get("submittedAction").ToObject());
+        Assert.False(lua.Globals.Get("BridgeState").Table.Get("ui").Table.Get("fastForwardActive").Boolean);
+    }
+
+    [Fact]
+    public void FastForward_StopsAtTargetSelectionWithoutSubmitting()
+    {
+        var lua = NewProbe(false, "forge-player-1");
+        lua.DoString(@"
+            BridgeState.ui.autoAdvanceMode = 'FAST-FORWARD'
+            BridgeState.ui.fastForwardActive = true
+            BridgeState.ui.fastForwardSessionId = 'session'
+            BridgeState.ui.fastForwardTurnNumber = 1
+            decision = {
+                decisionId='target-required', sessionId='session', kind='target_selection',
+                seatId='forge-player-1', activeSeatId='forge-player-1', prioritySeatId='forge-player-1',
+                turnNumber=1, phaseName='Main phase, precombat', eventCursor=10,
+                actions={{actionId='target-choice', type='choose_target', isPresentationAuthorized=true}}
+            }
+            BridgeRenderDecision(decision, true)
+        ");
+
+        Assert.Null(lua.Globals.Get("submittedAction").ToObject());
+        Assert.False(lua.Globals.Get("BridgeState").Table.Get("ui").Table.Get("fastForwardActive").Boolean);
+    }
+
+    [Theory]
+    [InlineData("Upkeep", "upkeep")]
+    [InlineData("Draw step", "draw")]
+    [InlineData("Main phase, precombat", "main_precombat")]
+    [InlineData("Beginning of Combat Step", "beginning_combat")]
+    [InlineData("Declare Attackers Step", "declare_attackers")]
+    [InlineData("Declare Blockers Step", "declare_blockers")]
+    [InlineData("Combat Damage Step", "combat_damage")]
+    [InlineData("End of Combat Step", "end_combat")]
+    [InlineData("Main phase, postcombat", "main_postcombat")]
+    [InlineData("End step", "end_step")]
+    public void YieldPhaseClassifierUsesCanonicalStopKeys(string phase, string expected)
+    {
+        var lua = NewProbe(false, "forge-player-1");
+        lua.DoString($"classified = BridgeYieldPhaseKey('{phase}')");
+        Assert.Equal(expected, lua.Globals.Get("classified").String);
+    }
+
+    [Fact]
+    public void AutoPassToggleIsPersistentUntilExplicitlyUnchecked()
+    {
+        var lua = NewProbe(false, "forge-player-1");
+        lua.DoString(@"
+            BridgeSetAutoPassEmpty(true, 'test')
+            enabled = BridgeState.ui.autoPassEmpty
+            BridgeSetAutoPassEmpty(false, 'test')
+            disabled = BridgeState.ui.autoPassEmpty
+        ");
+
+        Assert.True(lua.Globals.Get("enabled").Boolean);
+        Assert.False(lua.Globals.Get("disabled").Boolean);
+    }
+
     private static Script NewProbe(bool ownTurn, string activeSeat)
     {
         var lua = new Script();

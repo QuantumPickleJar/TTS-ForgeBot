@@ -849,11 +849,10 @@ function BridgeRenderDecision(decision, force)
         BridgeHideMainPriorityControls()
     end
 
-    -- A YIELD TURN request may be made while Blue/AI is still consuming its
-    -- priority windows and no human decision exists. The policy records which
-    -- authoritative turn was active when it was armed. Own-turn yield is an
-    -- explicit waiver of optional actions; opponent-turn yield remains
-    -- conservative and stops at any meaningful human response.
+    -- One controller owns all automatic priority decisions. The persistent
+    -- checkbox only consumes pass-only priority; transient fast-forward may
+    -- consume optional priority too, but never structured human choices.
+    local controllerMode = BridgeYieldControllerMode ~= nil and BridgeYieldControllerMode() or "normal"
     local policyTurn = tonumber(BridgeState.yieldPolicyTurnNumber or 0) or 0
     local policyActiveSeat = BridgeState.yieldPolicyActiveSeatId
     local policyOwnTurn = BridgeState.yieldPolicyOwnTurn == true
@@ -867,8 +866,18 @@ function BridgeRenderDecision(decision, force)
     -- emitted its first numeric turn counter. In that bootstrap window, the
     -- active-seat fence remains authoritative; turn_changed retires the
     -- policy once the real boundary is observed.
-    if BridgeState.ui ~= nil and BridgeState.ui.autoAdvanceMode == "YIELD"
-        and policyTurnMatches and policySeatMatches and policySessionMatches then
+    local legacyYield = BridgeState.ui ~= nil and BridgeState.ui.fastForwardActive ~= true
+        and BridgeState.ui.autoAdvanceMode == "YIELD" and BridgeState.yieldPolicyTurnNumber ~= nil
+    local fastForward = BridgeState.ui ~= nil and BridgeState.ui.fastForwardActive == true
+    if fastForward and BridgeState.ui.fastForwardActive == true
+        and (BridgeState.ui.fastForwardSessionId ~= BridgeState.eventSessionId
+            or (tonumber(BridgeState.ui.fastForwardTurnNumber or 0) or 0) ~= (tonumber(BridgeState.tableTurnCount or 0) or 0)) then
+        BridgeCancelFastForward("turn-or-session-boundary")
+        fastForward = false
+    end
+    local controllerActive = controllerMode ~= "normal"
+        or (BridgeState.ui ~= nil and BridgeState.ui.autoAdvanceMode == "YIELD")
+    if controllerActive and policyTurnMatches and policySeatMatches and policySessionMatches then
         local humanDecision = decision.seatId == "forge-player-1"
         local automaticAction = nil
         if humanDecision and decision.kind == "main_priority" then
@@ -884,12 +893,20 @@ function BridgeRenderDecision(decision, force)
             end
         end
 
-        if policyOwnTurn and automaticAction ~= nil then
+        local phaseKey = BridgeYieldPhaseKey(decision.phaseName or BridgeState.currentPhase)
+        local stopScope = BridgeYieldScopeForDecision(decision)
+        local stopped = BridgeState.ui and BridgeState.ui.fastForwardStops
+            and BridgeState.ui.fastForwardStops[stopScope]
+            and phaseKey ~= nil and BridgeState.ui.fastForwardStops[stopScope][phaseKey] == true
+        if fastForward and stopped then
+            BridgeYieldRecord(decision, "AUTO_ACTION_BLOCKED", "phase-stop", "FAST_FORWARD")
+            BridgeCancelFastForward("phase-stop")
+        elseif legacyYield and policyOwnTurn and automaticAction ~= nil then
             if BridgeConsiderYieldAutomaticAction(decision, automaticAction, "OWN_TURN_YIELD") then
                 BridgeRecordDecisionPresentationRendered(key)
                 return
             end
-        elseif not policyOwnTurn
+        elseif legacyYield and not policyOwnTurn
             and decision.kind == "main_priority"
             and BridgeDecisionOffersActionType(decision, "pass_priority")
             and not BridgeDecisionHasNonPassAction(decision) then
@@ -902,14 +919,35 @@ function BridgeRenderDecision(decision, force)
                     break
                 end
             end
-        elseif humanDecision and (policyOwnTurn or decision.kind ~= "main_priority"
+        elseif fastForward and automaticAction ~= nil then
+            if BridgeConsiderYieldAutomaticAction(decision, automaticAction, "FAST_FORWARD") then
+                BridgeRecordDecisionPresentationRendered(key)
+                return
+            end
+        elseif not fastForward and BridgeState.ui ~= nil and BridgeState.ui.autoPassEmpty
+            and decision.kind == "main_priority"
+            and BridgeDecisionOffersActionType(decision, "pass_priority")
+            and not BridgeDecisionHasNonPassAction(decision) then
+            for _, action in ipairs(decision.actions or {}) do
+                if action.type == "pass_priority" then
+                    if BridgeConsiderYieldAutomaticAction(decision, action, "AUTO_PASS_EMPTY") then
+                        BridgeRecordDecisionPresentationRendered(key)
+                        return
+                    end
+                    break
+                end
+            end
+        elseif legacyYield and humanDecision then
+            BridgeDisarmYieldPolicy("mandatory-human-decision")
+            policyTurnMatches = false
+        elseif fastForward or (humanDecision and (decision.kind ~= "main_priority"
             or BridgeDecisionHasNonPassAction(decision)
-            or not BridgeDecisionOffersActionType(decision, "pass_priority")) then
+            or not BridgeDecisionOffersActionType(decision, "pass_priority"))) then
             BridgeRecordDecisionLifecycle(decision, "yield", "AUTO_ACTION_CONSIDERED",
                 "stopped_meaningful_choice", nil, nil,
-                policyOwnTurn and "OWN_TURN_YIELD" or "OPPONENT_YIELD",
+                fastForward and "FAST_FORWARD" or "AUTO_PASS_EMPTY",
                 "stopped_meaningful_choice")
-            BridgeDisarmYieldPolicy("mandatory-human-decision")
+            if fastForward then BridgeCancelFastForward("required-human-choice") end
             policyTurnMatches = false
         end
     end
