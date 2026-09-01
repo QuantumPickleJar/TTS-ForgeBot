@@ -1923,6 +1923,8 @@ function BridgeHudSubmitReport(category, summary)
     local requestUi = ui
     local requestEpoch = BRIDGE_RUNTIME_EPOCH_LOCAL
     local requestSession = BridgeState.eventSessionId
+    requestUi.reportCaptureToken = (tonumber(requestUi.reportCaptureToken or 0) or 0) + 1
+    local captureToken = requestUi.reportCaptureToken
     local completed = false
 
     -- Diagnostic capture is deliberately out-of-band, but it can overlap a
@@ -1930,7 +1932,8 @@ function BridgeHudSubmitReport(category, summary)
     -- sure the normal authoritative pumps are alive again.  This is
     -- idempotent (the pollers already guard against duplicate schedules) and
     -- never fabricates a decision or advances Forge.
-    local function resumeGameplayPumps()
+    local function restorePollingAfterDiagnosticCapture(reason)
+        if requestUi.reportCaptureToken ~= captureToken then return end
         if not BridgeRuntimeIsCurrent(requestEpoch)
             or BridgeState.ui ~= requestUi
             or BridgeState.eventSessionId ~= requestSession
@@ -1939,9 +1942,13 @@ function BridgeHudSubmitReport(category, summary)
         end
         if BridgeState.eventPolling ~= true then
             BridgeStartEventPolling(requestSession, false)
+        elseif not BridgeState.eventRequestInFlight and not BridgeState.eventPollScheduled then
+            BridgePollEvents(BridgeState.eventPollGeneration)
         end
         if BridgeState.lastDecision == nil and not BridgeState.submitting
-            and BridgeState.gameEnded == nil then
+            and BridgeState.gameEnded == nil
+            and not BridgeState.decisionPollInFlight
+            and not BridgeState.decisionPollScheduled then
             BridgeStartDecisionPolling()
         end
     end
@@ -1950,8 +1957,9 @@ function BridgeHudSubmitReport(category, summary)
     ui.reportStatus = "Capturing..."
     BridgeUiMarkDirty("report-capture-start")
 
-    local function finish(ok, body, err)
+    local function finish(ok, body, err, recoveryReason)
         if completed then return end
+        if requestUi.reportCaptureToken ~= captureToken then return end
         completed = true
         if not BridgeRuntimeIsCurrent(requestEpoch)
             or BridgeState.ui ~= requestUi
@@ -1970,14 +1978,16 @@ function BridgeHudSubmitReport(category, summary)
             BridgeLog("[Bridge] diagnostic report failed: " .. detail)
         end
         BridgeUiMarkDirty("report-capture-result")
-        resumeGameplayPumps()
+        restorePollingAfterDiagnosticCapture(recoveryReason or "callback")
     end
 
     -- Arm the watchdog before collecting any diagnostic payload.  Payload
     -- collection runs inside TTS and may encounter a transient/invalid object;
     -- an exception there must not strand reportCaptureInFlight forever.
     BridgeWaitTime(function()
-        finish(false, nil, "diagnostic capture timed out after " .. tostring(BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS) .. " seconds")
+        if requestUi.reportCaptureToken == captureToken and requestUi.reportCaptureInFlight then
+            finish(false, nil, "diagnostic capture timed out after " .. tostring(BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS) .. " seconds", "watchdog")
+        end
     end, BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS)
 
     local performanceOk, performance = pcall(BridgePerformanceDiagnosticPayload)

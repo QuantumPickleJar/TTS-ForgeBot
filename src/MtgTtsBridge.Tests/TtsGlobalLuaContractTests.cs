@@ -2752,11 +2752,17 @@ public sealed class TtsGlobalLuaContractTests
         var end = Script.IndexOf("function BridgeHudReportCapture", start, StringComparison.Ordinal);
         var report = Script[start..end];
 
-        Assert.Contains("local function resumeGameplayPumps()", report);
+        Assert.Contains("local captureToken = requestUi.reportCaptureToken", report);
+        Assert.Contains("local function restorePollingAfterDiagnosticCapture", report);
+        Assert.Contains("requestUi.reportCaptureToken ~= captureToken", report);
         Assert.Contains("BridgeStartEventPolling(requestSession, false)", report);
+        Assert.Contains("not BridgeState.eventRequestInFlight and not BridgeState.eventPollScheduled", report);
+        Assert.Contains("BridgePollEvents(BridgeState.eventPollGeneration)", report);
         Assert.Contains("BridgeStartDecisionPolling()", report);
         Assert.Contains("local completed = false", report);
         Assert.Contains("if completed then return end", report);
+        Assert.Contains("not BridgeState.decisionPollInFlight", report);
+        Assert.Contains("not BridgeState.decisionPollScheduled", report);
         Assert.Contains("BridgePerformanceDiagnosticPayload", report);
         Assert.Contains("diagnostic capture timed out after", report);
         Assert.Contains("BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS", report);
@@ -3077,15 +3083,15 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void DiagnosticCapture_ResumesAuthoritativeGameplayPumps()
+    public void DiagnosticCapture_RecoveryDoesNotReplaceOrSubmitDecision()
     {
         var start = Script.IndexOf("function BridgeHudSubmitReport", StringComparison.Ordinal);
         var end = Script.IndexOf("function BridgeHudReportCapture", start, StringComparison.Ordinal);
         Assert.True(start >= 0 && end > start);
         var body = Script[start..end];
-        Assert.Contains("local function resumeGameplayPumps()", body);
-        Assert.Contains("BridgeStartEventPolling(requestSession, false)", body);
-        Assert.Contains("BridgeStartDecisionPolling()", body);
-        Assert.Contains("resumeGameplayPumps()", body);
+        Assert.Contains("restorePollingAfterDiagnosticCapture(recoveryReason or \"callback\")", body);
+        Assert.Contains("\"watchdog\")", body);
+        Assert.DoesNotContain("lastDecision = nil", body);
+        Assert.DoesNotContain("BridgeSubmit", body);
     }
 }

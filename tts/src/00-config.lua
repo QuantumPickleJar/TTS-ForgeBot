@@ -592,7 +592,7 @@ BridgeState = {
         gameLog = {},
         diagnosticsVisible = false, reportPanelVisible = false, reportCategoryIndex = 1,
         creatureTypeDecisionId = nil, creatureTypeDraftActionId = nil, creatureTypeOptions = {},
-        reportStatus = "", reportCaptureInFlight = false, resyncInFlight = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
+        reportStatus = "", reportCaptureInFlight = false, reportCaptureToken = 0, resyncInFlight = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
         uiAttributeCache = {}, uiAttributeAttemptCount = 0, uiAttributeWriteCount = 0,
         uiAttributeSkippedCount = 0,
         actionPanelRenderCount = 0, candidatePanelRenderCount = 0, ephemeralPhysicalControlSpawnCount = 0},
