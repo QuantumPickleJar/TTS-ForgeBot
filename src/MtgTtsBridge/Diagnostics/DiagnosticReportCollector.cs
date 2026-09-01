@@ -133,6 +133,9 @@ public sealed class DiagnosticReportCollector
             WriteOptionalJson(staging, "state/forge-snapshot.json", snapshot, included, missing, "Authoritative embodiment snapshot was unavailable.");
             WriteOptionalJson(staging, "state/current-decision.json", state?.CurrentDecision, included, missing, "No current authoritative decision was available.");
             WriteOptionalJson(staging, "state/tts-state.json", request, included, missing, "TTS context was not supplied.");
+            WriteOptionalJsonLines(staging, "diagnostics/capture-lifecycle.jsonl",
+                request.DiagnosticCaptureLifecycle ?? [], included, missing,
+                "No TTS diagnostic capture lifecycle was supplied.");
 
             if (events is not null)
                 WriteRequiredJsonLines(staging, "protocol/recent-events.jsonl", events.Events, included);
@@ -221,6 +224,7 @@ public sealed class DiagnosticReportCollector
         var dropped = 0L;
         var entryBudget = Math.Max(2 * 1024L, _options.PerformanceReportMaxBytes / 16);
         var trace = FitJsonLines(request.RecentTtsTrace ?? [], entryBudget, ref dropped);
+        var captureLifecycle = FitJsonLines(request.DiagnosticCaptureLifecycle ?? [], entryBudget, ref dropped);
         var samples = FitJsonLines(processSamples, entryBudget, ref dropped);
         var recentEvents = FitJsonLines(events?.Events ?? [], entryBudget, ref dropped);
         var choices = FitJsonLines(telemetry.Choices, entryBudget, ref dropped);
@@ -261,6 +265,7 @@ public sealed class DiagnosticReportCollector
                 DiagnosticBundleWriter.WriteTextEntry(archive, "report.txt", reportText);
                 DiagnosticBundleWriter.WriteJsonEntry(archive, "perf/summary.json", new { summary, processSamples, truncated, recordsDropped = dropped });
                 WriteJsonLinesBytes(archive, "perf/tts-trace.jsonl", trace);
+                WriteJsonLinesBytes(archive, "diagnostics/capture-lifecycle.jsonl", captureLifecycle);
                 WriteJsonLinesBytes(archive, "perf/process-samples.jsonl", samples);
                 DiagnosticBundleWriter.WriteJsonEntry(archive, "state/bridge-health.json", health);
                 DiagnosticBundleWriter.WriteJsonEntry(archive, "state/current-decision.json", currentDecision);
@@ -285,7 +290,7 @@ public sealed class DiagnosticReportCollector
 
     private static readonly string[] PerformanceFiles =
     [
-        "report.json", "report.txt", "perf/summary.json", "perf/tts-trace.jsonl", "perf/process-samples.jsonl",
+        "report.json", "report.txt", "perf/summary.json", "perf/tts-trace.jsonl", "diagnostics/capture-lifecycle.jsonl", "perf/process-samples.jsonl",
         "state/bridge-health.json", "state/current-decision.json", "protocol/recent-events.jsonl",
         "protocol/recent-choices.jsonl", "protocol/recent-requests.jsonl", "logs/recent-bridge.log",
         "logs/recent-forge-stdout.log", "logs/recent-forge-stderr.log"

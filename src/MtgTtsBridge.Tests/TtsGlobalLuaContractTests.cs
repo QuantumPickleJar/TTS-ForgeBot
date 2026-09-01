@@ -2424,6 +2424,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("id=\"BridgeHudReportCategoryDropdown\" options=\"Gameplay sync|Combat|Card movement|Presentation/UI|Decision/prompt|Mana/payment|Performance / Freeze|Crash/error|Other\"", xml);
         Assert.Contains("minWidth=\"650\" preferredWidth=\"650\"", xml);
         Assert.Contains("BridgeHudRollingCapture", xml);
+        Assert.Contains("BridgeHudRecoverPumps", xml);
         Assert.Contains("BridgeHudResyncFromForge", xml);
         var gamePanelStart = xml.IndexOf("id=\"BridgeHudGamePanel\"", StringComparison.Ordinal);
         var choiceTrayStart = xml.IndexOf("id=\"BridgeHudChoiceTray\"", StringComparison.Ordinal);
@@ -2828,19 +2829,30 @@ public sealed class TtsGlobalLuaContractTests
         var report = Script[start..end];
 
         Assert.Contains("local captureToken = requestUi.reportCaptureToken", report);
-        Assert.Contains("local function restorePollingAfterDiagnosticCapture", report);
+        Assert.Contains("BridgeRecordDiagnosticCaptureLifecycle(\"DIAG_CAPTURE_BEGIN\"", report);
         Assert.Contains("requestUi.reportCaptureToken ~= captureToken", report);
-        Assert.Contains("BridgeStartEventPolling(requestSession, false)", report);
-        Assert.Contains("not BridgeState.eventRequestInFlight and not BridgeState.eventPollScheduled", report);
-        Assert.Contains("BridgePollEvents(BridgeState.eventPollGeneration)", report);
-        Assert.Contains("BridgeStartDecisionPolling()", report);
+        Assert.Contains("BridgeWaitFrames(function()", report);
+        Assert.Contains("BridgeRecoverGameplayPumps(recoveryReason or \"callback\"", report);
         Assert.Contains("local completed = false", report);
-        Assert.Contains("if completed then return end", report);
-        Assert.Contains("not BridgeState.decisionPollInFlight", report);
-        Assert.Contains("not BridgeState.decisionPollScheduled", report);
         Assert.Contains("BridgePerformanceDiagnosticPayload", report);
         Assert.Contains("diagnostic capture timed out after", report);
         Assert.Contains("BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS", report);
+        Assert.DoesNotContain("BridgeSubmitChoice", report);
+
+        var recoveryStart = Script.IndexOf("function BridgeRecoverGameplayPumps", StringComparison.Ordinal);
+        var recoveryEnd = Script.IndexOf("function BridgeHudRecoverPumps", recoveryStart, StringComparison.Ordinal);
+        var recovery = Script[recoveryStart..recoveryEnd];
+        Assert.Contains("not BridgeState.eventRequestInFlight and not BridgeState.eventPollScheduled", recovery);
+        Assert.Contains("BridgePollEvents(BridgeState.eventPollGeneration)", recovery);
+        Assert.Contains("BridgeState.lastDecision == nil", recovery);
+        Assert.Contains("BridgeGetDecision(function(ok, body, err)", recovery);
+        Assert.Contains("BridgeAcceptDecision(body, \"diagnostic_capture_recovery\"", recovery);
+        Assert.Contains("decisionRefreshInFlight", recovery);
+        Assert.Contains("choiceTransactions[priorDecisionId]", recovery);
+        Assert.DoesNotContain("BridgeState.lastDecision = nil", recovery);
+        Assert.Contains("BridgeStartDecisionPolling(true)", recovery);
+        Assert.Contains("allowCurrentDecision", Script);
+        Assert.Contains("function BridgeHudRecoverPumps", Script);
     }
 
     [Fact]
@@ -3183,8 +3195,10 @@ public sealed class TtsGlobalLuaContractTests
         var end = Script.IndexOf("function BridgeHudReportCapture", start, StringComparison.Ordinal);
         Assert.True(start >= 0 && end > start);
         var body = Script[start..end];
-        Assert.Contains("restorePollingAfterDiagnosticCapture(recoveryReason or \"callback\")", body);
-        Assert.Contains("\"watchdog\")", body);
+        Assert.Contains("BridgeRecordDiagnosticCaptureLifecycle(\"DIAG_CAPTURE_BEGIN\"", body);
+        Assert.Contains("BridgeRecoverGameplayPumps(recoveryReason or \"callback\"", body);
+        Assert.Contains("\"DIAG_CAPTURE_TIMEOUT\"", body);
+        Assert.Contains("BridgeWaitFrames(function()", body);
         Assert.DoesNotContain("lastDecision = nil", body);
         Assert.DoesNotContain("BridgeSubmit", body);
     }

@@ -29,6 +29,9 @@ BRIDGE_PERFORMANCE_SLOW_OPERATION_SECONDS = 0.25
 -- Diagnostic capture is deliberately best-effort. A lost WebRequest callback
 -- must not leave report controls latched forever after a freeze capture.
 BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS = 30.0
+BRIDGE_DIAGNOSTIC_CAPTURE_LIFECYCLE_CAPACITY = 96
+BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_SECONDS = 5.0
+BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_INTERVAL_SECONDS = 0.5
 -- Library extraction is serialized separately. Keep the event cursor moving
 -- promptly after a draw so a burst (for example, a draw per creature) cannot
 -- hold later authoritative phase/priority events behind animation delays.
@@ -126,6 +129,65 @@ function BridgeRecordDecisionLifecycle(decision, origin, disposition, reason, ac
             tostring(record.hasPassPriority), tostring(record.nonPassActionCount), tostring(origin),
             tostring(disposition), tostring(reason)))
     end
+    return record
+end
+
+-- Capture is an observer, but its callback is also the best place to prove
+-- that the presentation pumps survived it. Keep this ring intentionally
+-- small and free of card identities so the next report can explain a
+-- post-capture failure without retaining a large snapshot payload.
+function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
+    local decision = BridgeState.lastDecision
+    local ui = BridgeState.ui or {}
+    local record = {
+        timestamp = os.clock(),
+        stage = tostring(stage or "unknown"),
+        token = token,
+        reason = reason,
+        sessionId = BridgeState.eventSessionId,
+        decisionId = decision and decision.decisionId or nil,
+        decisionKind = decision and decision.kind or nil,
+        decisionEventCursor = decision and decision.eventCursor or nil,
+        lastReceivedEventSequence = BridgeState.lastReceivedEventSequence,
+        lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
+        eventQueueLength = #(BridgeState.eventQueue or {}),
+        eventPolling = BridgeState.eventPolling == true,
+        eventRequestInFlight = BridgeState.eventRequestInFlight == true,
+        eventPollScheduled = BridgeState.eventPollScheduled == true,
+        eventPollGeneration = BridgeState.eventPollGeneration,
+        eventSessionGeneration = BridgeState.eventSessionGeneration,
+        decisionPollInFlight = BridgeState.decisionPollInFlight == true,
+        decisionPollScheduled = BridgeState.decisionPollScheduled == true,
+        decisionPollGeneration = BridgeState.decisionPollGeneration,
+        decisionRefreshInFlight = BridgeState.decisionRefreshInFlight == true,
+        submitting = BridgeState.submitting == true,
+        choiceProtocolPaused = BridgeState.choiceProtocolPaused == true,
+        animationRunning = BridgeState.animationRunning == true,
+        yieldPolicyTurnNumber = BridgeState.yieldPolicyTurnNumber,
+        yieldPolicyActiveSeatId = BridgeState.yieldPolicyActiveSeatId,
+        yieldPolicySessionId = BridgeState.yieldPolicySessionId,
+        yieldPolicyOwnTurn = BridgeState.yieldPolicyOwnTurn == true,
+        presentationGeneration = BridgeState.decisionPresentationGeneration,
+        physicalPresentationGeneration = BridgeState.currentPhysicalPresentationGeneration,
+        reportCaptureInFlight = ui.reportCaptureInFlight == true
+    }
+    local lifecycle = BridgeState.diagnosticCaptureLifecycle
+    if lifecycle == nil then
+        lifecycle = {}
+        BridgeState.diagnosticCaptureLifecycle = lifecycle
+    end
+    table.insert(lifecycle, record)
+    while #lifecycle > BRIDGE_DIAGNOSTIC_CAPTURE_LIFECYCLE_CAPACITY do
+        table.remove(lifecycle, 1)
+    end
+    BridgeLog(string.format(
+        "[Bridge] %s token=%s reason=%s session=%s decision=%s event=%s/%s queue=%s eventPoll=%s request=%s scheduled=%s decisionPoll=%s/%s refresh=%s submitting=%s yield=%s",
+        tostring(record.stage), tostring(record.token), tostring(record.reason), tostring(record.sessionId),
+        tostring(record.decisionId), tostring(record.lastAppliedEventSequence), tostring(record.lastReceivedEventSequence),
+        tostring(record.eventQueueLength), tostring(record.eventPolling), tostring(record.eventRequestInFlight),
+        tostring(record.eventPollScheduled), tostring(record.decisionPollInFlight),
+        tostring(record.decisionPollScheduled), tostring(record.decisionRefreshInFlight),
+        tostring(record.submitting), tostring(record.yieldPolicyTurnNumber)))
     return record
 end
 
@@ -325,7 +387,11 @@ function BridgePerformanceDiagnosticPayload()
     summary.startupUiDurationMs = startup.uiDurationMs
     summary.startupObjectDiscoveryDurationMs = startup.objectDiscoveryDurationMs
     summary.startupHealthDispatchDurationMs = startup.healthDispatchDurationMs
-    return {performanceSummary = summary, recentTtsTrace = BridgePerformanceTraceSnapshot()}
+    return {
+        performanceSummary = summary,
+        recentTtsTrace = BridgePerformanceTraceSnapshot(),
+        diagnosticCaptureLifecycle = BridgeState.diagnosticCaptureLifecycle or {}
+    }
 end
 
 function BridgePerformanceRecordTtsActionRepresentation()
@@ -639,6 +705,9 @@ BridgeState = {
     yieldPolicySessionId = nil,
     yieldPolicyOwnTurn = false,
     decisionLifecycle = {},
+    diagnosticCaptureLifecycle = {},
+    diagnosticCaptureFollowupToken = nil,
+    diagnosticCaptureFollowupUntil = 0,
     lastChoiceAttempt = nil,
     counterStateByInstanceId = {},
     keywordStateByInstanceId = {},

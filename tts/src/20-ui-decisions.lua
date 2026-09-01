@@ -659,10 +659,10 @@ function BridgeRecordLatencyProbeDecisionReady(decision)
     BridgeState.latencyProbe = nil
 end
 
-function BridgeScheduleDecisionPoll(delay, generation, attempt)
+function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDecision)
     if BridgeState.gameEnded ~= nil then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
-    if BridgeState.lastDecision ~= nil or BridgeState.submitting then return end
+    if (BridgeState.lastDecision ~= nil and allowCurrentDecision ~= true) or BridgeState.submitting then return end
     if BridgeState.decisionPollInFlight or BridgeState.decisionPollScheduled then return end
 
     BridgeState.decisionPollScheduled = true
@@ -677,14 +677,14 @@ function BridgeScheduleDecisionPoll(delay, generation, attempt)
     BridgeWaitTime(function()
         if generation ~= BridgeState.decisionPollGeneration then return end
         BridgeState.decisionPollScheduled = false
-        BridgePollForNextDecision(generation, attempt)
+        BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
     end, nextDelay)
 end
 
-function BridgePollForNextDecision(generation, attempt)
+function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
     if BridgeState.gameEnded ~= nil then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
-    if BridgeState.lastDecision ~= nil or BridgeState.submitting then return end
+    if (BridgeState.lastDecision ~= nil and allowCurrentDecision ~= true) or BridgeState.submitting then return end
     if BridgeState.decisionPollInFlight then return end
 
     local expectedSessionId = BridgeState.eventSessionId
@@ -718,19 +718,20 @@ function BridgePollForNextDecision(generation, attempt)
                 BridgeMarkTransitionExpected(0)
                 retryDelay = 0.5
             end
-            BridgeScheduleDecisionPoll(retryDelay, generation, attempt + 1)
+            BridgeScheduleDecisionPoll(retryDelay, generation, attempt + 1, allowCurrentDecision)
             return
         end
 
         BridgeShowError("decision poll failed: " .. tostring(err))
-        BridgeScheduleDecisionPoll(1.0, generation, attempt + 1)
+        BridgeScheduleDecisionPoll(1.0, generation, attempt + 1, allowCurrentDecision)
     end)
 end
 
-function BridgeStartDecisionPolling()
+function BridgeStartDecisionPolling(allowCurrentDecision)
     if BridgeState.gameEnded ~= nil then return end
     BridgeStopDecisionPolling()
-    BridgeScheduleDecisionPoll(BridgeTransitionExpected() and 0.1 or 0.25, BridgeState.decisionPollGeneration, 1)
+    BridgeScheduleDecisionPoll(BridgeTransitionExpected() and 0.1 or 0.25,
+        BridgeState.decisionPollGeneration, 1, allowCurrentDecision == true)
 end
 
 -- State-changing events can invalidate the currently rendered decision even

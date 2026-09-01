@@ -162,6 +162,29 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public async Task DiagnosticCapture_DoesNotBlockDecisionEventOrChoiceRequests()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+        var sessionId = await StartSessionForDiagnosticsAsync(client);
+
+        var reportTask = client.PostAsJsonAsync("/api/v1/diagnostics/report",
+            new DiagnosticReportRequestDto(SessionId: sessionId, Category: "Gameplay sync"));
+        var eventsTask = client.GetAsync("/api/v1/events?after=0");
+        var decisionTask = client.GetAsync("/api/v1/decision");
+        var choiceTask = client.PostAsJsonAsync("/api/v1/choice",
+            ChoiceForDiagnostics(sessionId, "decision-1-main", "pass_priority"));
+
+        var responses = await Task.WhenAll(reportTask, eventsTask, decisionTask, choiceTask)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(HttpStatusCode.OK, responses[0].StatusCode);
+        Assert.Equal(HttpStatusCode.OK, responses[1].StatusCode);
+        Assert.InRange((int)responses[2].StatusCode, 200, 499);
+        Assert.InRange((int)responses[3].StatusCode, 200, 499);
+    }
+
+    [Fact]
     public async Task DiagnosticEndpoint_ReturnsUsefulFailureWhenOutputCannotBeCreated()
     {
         var blockingFile = Path.Combine(Path.GetTempPath(), $"MtgTtsBridge-report-block-{Guid.NewGuid():N}");
@@ -201,7 +224,10 @@ public sealed class DiagnosticsTests
                 PerformanceSummary: new DiagnosticPerformanceSummaryDto(DecisionRenderAttempts: 3, WallClockKind: "Time.time-game"),
                 RecentTtsTrace: [new TtsPerformanceTraceRecordDto(
                     1.25, "decision_render_end", DurationMs: 321.5, CpuDurationMs: 321.5,
-                    WallDurationMs: 500.25, WallClockKind: "Time.time-game")]),
+                    WallDurationMs: 500.25, WallClockKind: "Time.time-game")],
+                DiagnosticCaptureLifecycle: [new DiagnosticCaptureLifecycleRecordDto(
+                    1.25, "DIAG_CAPTURE_POSTCHECK", Token: 7, SessionId: state.SessionId,
+                    DecisionId: "decision-1", EventPolling: true, EventPollScheduled: true)]),
                 CancellationToken.None);
 
             Assert.True(result.Success, result.Message);
@@ -212,6 +238,7 @@ public sealed class DiagnosticsTests
             foreach (var required in new[]
             {
                 "report.json", "report.txt", "perf/summary.json", "perf/tts-trace.jsonl", "perf/process-samples.jsonl",
+                "diagnostics/capture-lifecycle.jsonl",
                 "state/bridge-health.json", "state/current-decision.json", "protocol/recent-events.jsonl",
                 "protocol/recent-choices.jsonl", "protocol/recent-requests.jsonl", "logs/recent-bridge.log",
                 "logs/recent-forge-stdout.log", "logs/recent-forge-stderr.log"
@@ -227,6 +254,10 @@ public sealed class DiagnosticsTests
             var traceText = await traceReader.ReadToEndAsync();
             Assert.Contains("cpuDurationMs", traceText);
             Assert.Contains("wallDurationMs", traceText);
+            var captureLifecycle = zip.GetEntry("diagnostics/capture-lifecycle.jsonl")!;
+            using var captureLifecycleReader = new StreamReader(captureLifecycle.Open());
+            var captureLifecycleText = await captureLifecycleReader.ReadToEndAsync();
+            Assert.Contains("DIAG_CAPTURE_POSTCHECK", captureLifecycleText);
             var manifest = zip.GetEntry("report.json")!;
             using var manifestDocument = await JsonDocument.ParseAsync(manifest.Open());
             Assert.True(manifestDocument.RootElement.GetProperty("includedFiles").GetArrayLength() >= 13);
@@ -281,6 +312,25 @@ public sealed class DiagnosticsTests
         Directory.CreateDirectory(path);
         return path;
     }
+
+    private static async Task<string> StartSessionForDiagnosticsAsync(HttpClient client)
+    {
+        var response = await client.PostAsync("/api/v1/session/start", null);
+        response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadFromJsonAsync<MtgTtsBridge.Contracts.State.SessionStartResponseDto>();
+        return body!.SessionId;
+    }
+
+    private static MtgTtsBridge.Contracts.Actions.ChoiceRequestDto ChoiceForDiagnostics(
+        string sessionId, string decisionId, string actionId) =>
+        new(decisionId, actionId)
+        {
+            SessionId = sessionId,
+            RequestId = $"diagnostic-concurrency-{Guid.NewGuid():N}",
+            ClientRuntimeId = "diagnostic-test-runtime",
+            ClientRevision = "diagnostic-test",
+            Source = "diagnostic-concurrency-test"
+        };
 
     private static void TryDelete(string path)
     {

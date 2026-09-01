@@ -1198,6 +1198,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.eventQueue = {}
     BridgeState.animationRunning = false
     BridgeState.decisionLifecycle = {}
+    BridgeState.diagnosticCaptureLifecycle = {}
+    BridgeState.diagnosticCaptureFollowupToken = nil
+    BridgeState.diagnosticCaptureFollowupUntil = 0
     BridgeState.lastChoiceAttempt = nil
     BridgeState.yieldPolicyOwnTurn = false
     BridgeCreatureTypeClearDraft("session-replaced")

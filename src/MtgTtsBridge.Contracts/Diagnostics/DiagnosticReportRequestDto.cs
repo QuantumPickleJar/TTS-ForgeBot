@@ -16,7 +16,41 @@ public sealed record DiagnosticReportRequestDto(
     IReadOnlyList<string>? MappedCardInstanceIds = null,
     string? Status = null,
     DiagnosticPerformanceSummaryDto? PerformanceSummary = null,
-    IReadOnlyList<TtsPerformanceTraceRecordDto>? RecentTtsTrace = null);
+    IReadOnlyList<TtsPerformanceTraceRecordDto>? RecentTtsTrace = null,
+    IReadOnlyList<DiagnosticCaptureLifecycleRecordDto>? DiagnosticCaptureLifecycle = null);
+
+/// <summary>Bounded TTS-side liveness evidence around a diagnostic capture.</summary>
+public sealed record DiagnosticCaptureLifecycleRecordDto(
+    double Timestamp,
+    string Stage,
+    int? Token = null,
+    string? Reason = null,
+    string? SessionId = null,
+    string? DecisionId = null,
+    string? DecisionKind = null,
+    long? DecisionEventCursor = null,
+    long? LastReceivedEventSequence = null,
+    long? LastAppliedEventSequence = null,
+    int EventQueueLength = 0,
+    bool EventPolling = false,
+    bool EventRequestInFlight = false,
+    bool EventPollScheduled = false,
+    int EventPollGeneration = 0,
+    int EventSessionGeneration = 0,
+    bool DecisionPollInFlight = false,
+    bool DecisionPollScheduled = false,
+    int DecisionPollGeneration = 0,
+    bool DecisionRefreshInFlight = false,
+    bool Submitting = false,
+    bool ChoiceProtocolPaused = false,
+    bool AnimationRunning = false,
+    int? YieldPolicyTurnNumber = null,
+    string? YieldPolicyActiveSeatId = null,
+    string? YieldPolicySessionId = null,
+    bool YieldPolicyOwnTurn = false,
+    int PresentationGeneration = 0,
+    int PhysicalPresentationGeneration = 0,
+    bool ReportCaptureInFlight = false);
 
 /// <summary>Compact, client-side performance counters supplied only at capture time.</summary>
 public sealed record DiagnosticPerformanceSummaryDto(

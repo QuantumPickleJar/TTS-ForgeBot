@@ -30,6 +30,9 @@ BRIDGE_PERFORMANCE_SLOW_OPERATION_SECONDS = 0.25
 -- Diagnostic capture is deliberately best-effort. A lost WebRequest callback
 -- must not leave report controls latched forever after a freeze capture.
 BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS = 30.0
+BRIDGE_DIAGNOSTIC_CAPTURE_LIFECYCLE_CAPACITY = 96
+BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_SECONDS = 5.0
+BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_INTERVAL_SECONDS = 0.5
 -- Library extraction is serialized separately. Keep the event cursor moving
 -- promptly after a draw so a burst (for example, a draw per creature) cannot
 -- hold later authoritative phase/priority events behind animation delays.
@@ -127,6 +130,65 @@ function BridgeRecordDecisionLifecycle(decision, origin, disposition, reason, ac
             tostring(record.hasPassPriority), tostring(record.nonPassActionCount), tostring(origin),
             tostring(disposition), tostring(reason)))
     end
+    return record
+end
+
+-- Capture is an observer, but its callback is also the best place to prove
+-- that the presentation pumps survived it. Keep this ring intentionally
+-- small and free of card identities so the next report can explain a
+-- post-capture failure without retaining a large snapshot payload.
+function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
+    local decision = BridgeState.lastDecision
+    local ui = BridgeState.ui or {}
+    local record = {
+        timestamp = os.clock(),
+        stage = tostring(stage or "unknown"),
+        token = token,
+        reason = reason,
+        sessionId = BridgeState.eventSessionId,
+        decisionId = decision and decision.decisionId or nil,
+        decisionKind = decision and decision.kind or nil,
+        decisionEventCursor = decision and decision.eventCursor or nil,
+        lastReceivedEventSequence = BridgeState.lastReceivedEventSequence,
+        lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
+        eventQueueLength = #(BridgeState.eventQueue or {}),
+        eventPolling = BridgeState.eventPolling == true,
+        eventRequestInFlight = BridgeState.eventRequestInFlight == true,
+        eventPollScheduled = BridgeState.eventPollScheduled == true,
+        eventPollGeneration = BridgeState.eventPollGeneration,
+        eventSessionGeneration = BridgeState.eventSessionGeneration,
+        decisionPollInFlight = BridgeState.decisionPollInFlight == true,
+        decisionPollScheduled = BridgeState.decisionPollScheduled == true,
+        decisionPollGeneration = BridgeState.decisionPollGeneration,
+        decisionRefreshInFlight = BridgeState.decisionRefreshInFlight == true,
+        submitting = BridgeState.submitting == true,
+        choiceProtocolPaused = BridgeState.choiceProtocolPaused == true,
+        animationRunning = BridgeState.animationRunning == true,
+        yieldPolicyTurnNumber = BridgeState.yieldPolicyTurnNumber,
+        yieldPolicyActiveSeatId = BridgeState.yieldPolicyActiveSeatId,
+        yieldPolicySessionId = BridgeState.yieldPolicySessionId,
+        yieldPolicyOwnTurn = BridgeState.yieldPolicyOwnTurn == true,
+        presentationGeneration = BridgeState.decisionPresentationGeneration,
+        physicalPresentationGeneration = BridgeState.currentPhysicalPresentationGeneration,
+        reportCaptureInFlight = ui.reportCaptureInFlight == true
+    }
+    local lifecycle = BridgeState.diagnosticCaptureLifecycle
+    if lifecycle == nil then
+        lifecycle = {}
+        BridgeState.diagnosticCaptureLifecycle = lifecycle
+    end
+    table.insert(lifecycle, record)
+    while #lifecycle > BRIDGE_DIAGNOSTIC_CAPTURE_LIFECYCLE_CAPACITY do
+        table.remove(lifecycle, 1)
+    end
+    BridgeLog(string.format(
+        "[Bridge] %s token=%s reason=%s session=%s decision=%s event=%s/%s queue=%s eventPoll=%s request=%s scheduled=%s decisionPoll=%s/%s refresh=%s submitting=%s yield=%s",
+        tostring(record.stage), tostring(record.token), tostring(record.reason), tostring(record.sessionId),
+        tostring(record.decisionId), tostring(record.lastAppliedEventSequence), tostring(record.lastReceivedEventSequence),
+        tostring(record.eventQueueLength), tostring(record.eventPolling), tostring(record.eventRequestInFlight),
+        tostring(record.eventPollScheduled), tostring(record.decisionPollInFlight),
+        tostring(record.decisionPollScheduled), tostring(record.decisionRefreshInFlight),
+        tostring(record.submitting), tostring(record.yieldPolicyTurnNumber)))
     return record
 end
 
@@ -326,7 +388,11 @@ function BridgePerformanceDiagnosticPayload()
     summary.startupUiDurationMs = startup.uiDurationMs
     summary.startupObjectDiscoveryDurationMs = startup.objectDiscoveryDurationMs
     summary.startupHealthDispatchDurationMs = startup.healthDispatchDurationMs
-    return {performanceSummary = summary, recentTtsTrace = BridgePerformanceTraceSnapshot()}
+    return {
+        performanceSummary = summary,
+        recentTtsTrace = BridgePerformanceTraceSnapshot(),
+        diagnosticCaptureLifecycle = BridgeState.diagnosticCaptureLifecycle or {}
+    }
 end
 
 function BridgePerformanceRecordTtsActionRepresentation()
@@ -640,6 +706,9 @@ BridgeState = {
     yieldPolicySessionId = nil,
     yieldPolicyOwnTurn = false,
     decisionLifecycle = {},
+    diagnosticCaptureLifecycle = {},
+    diagnosticCaptureFollowupToken = nil,
+    diagnosticCaptureFollowupUntil = 0,
     lastChoiceAttempt = nil,
     counterStateByInstanceId = {},
     keywordStateByInstanceId = {},
@@ -3038,10 +3107,10 @@ function BridgeRecordLatencyProbeDecisionReady(decision)
     BridgeState.latencyProbe = nil
 end
 
-function BridgeScheduleDecisionPoll(delay, generation, attempt)
+function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDecision)
     if BridgeState.gameEnded ~= nil then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
-    if BridgeState.lastDecision ~= nil or BridgeState.submitting then return end
+    if (BridgeState.lastDecision ~= nil and allowCurrentDecision ~= true) or BridgeState.submitting then return end
     if BridgeState.decisionPollInFlight or BridgeState.decisionPollScheduled then return end
 
     BridgeState.decisionPollScheduled = true
@@ -3056,14 +3125,14 @@ function BridgeScheduleDecisionPoll(delay, generation, attempt)
     BridgeWaitTime(function()
         if generation ~= BridgeState.decisionPollGeneration then return end
         BridgeState.decisionPollScheduled = false
-        BridgePollForNextDecision(generation, attempt)
+        BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
     end, nextDelay)
 end
 
-function BridgePollForNextDecision(generation, attempt)
+function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
     if BridgeState.gameEnded ~= nil then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
-    if BridgeState.lastDecision ~= nil or BridgeState.submitting then return end
+    if (BridgeState.lastDecision ~= nil and allowCurrentDecision ~= true) or BridgeState.submitting then return end
     if BridgeState.decisionPollInFlight then return end
 
     local expectedSessionId = BridgeState.eventSessionId
@@ -3097,19 +3166,20 @@ function BridgePollForNextDecision(generation, attempt)
                 BridgeMarkTransitionExpected(0)
                 retryDelay = 0.5
             end
-            BridgeScheduleDecisionPoll(retryDelay, generation, attempt + 1)
+            BridgeScheduleDecisionPoll(retryDelay, generation, attempt + 1, allowCurrentDecision)
             return
         end
 
         BridgeShowError("decision poll failed: " .. tostring(err))
-        BridgeScheduleDecisionPoll(1.0, generation, attempt + 1)
+        BridgeScheduleDecisionPoll(1.0, generation, attempt + 1, allowCurrentDecision)
     end)
 end
 
-function BridgeStartDecisionPolling()
+function BridgeStartDecisionPolling(allowCurrentDecision)
     if BridgeState.gameEnded ~= nil then return end
     BridgeStopDecisionPolling()
-    BridgeScheduleDecisionPoll(BridgeTransitionExpected() and 0.1 or 0.25, BridgeState.decisionPollGeneration, 1)
+    BridgeScheduleDecisionPoll(BridgeTransitionExpected() and 0.1 or 0.25,
+        BridgeState.decisionPollGeneration, 1, allowCurrentDecision == true)
 end
 
 -- State-changing events can invalidate the currently rendered decision even
@@ -9029,6 +9099,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.eventQueue = {}
     BridgeState.animationRunning = false
     BridgeState.decisionLifecycle = {}
+    BridgeState.diagnosticCaptureLifecycle = {}
+    BridgeState.diagnosticCaptureFollowupToken = nil
+    BridgeState.diagnosticCaptureFollowupUntil = 0
     BridgeState.lastChoiceAttempt = nil
     BridgeState.yieldPolicyOwnTurn = false
     BridgeCreatureTypeClearDraft("session-replaced")
@@ -13121,6 +13194,138 @@ function BridgeHudReportSummaryText()
     return value ~= "" and value or nil
 end
 
+function BridgeScheduleDiagnosticCaptureFollowup(token, sessionId, epoch)
+    if token == nil or BridgeState.diagnosticCaptureFollowupToken == token then return end
+    BridgeState.diagnosticCaptureFollowupToken = token
+    BridgeState.diagnosticCaptureFollowupUntil = os.clock() + BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_SECONDS
+    local function sample()
+        if not BridgeRuntimeIsCurrent(epoch)
+            or BridgeState.eventSessionId ~= sessionId
+            or BridgeState.diagnosticCaptureFollowupToken ~= token then
+            return
+        end
+        if os.clock() > BridgeState.diagnosticCaptureFollowupUntil then return end
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_POSTCHECK", token, "post-capture")
+        BridgeWaitTime(sample, BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_INTERVAL_SECONDS)
+    end
+    BridgeWaitTime(sample, BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_INTERVAL_SECONDS)
+end
+
+function BridgeRecoverGameplayPumps(reason, expectedSessionId, expectedEpoch, captureToken)
+    local sessionId = expectedSessionId or BridgeState.eventSessionId
+    local epoch = expectedEpoch or BRIDGE_RUNTIME_EPOCH_LOCAL
+    local isCaptureRecovery = captureToken ~= nil
+    local recoveryEnded = false
+    local function endRecovery(detail)
+        if recoveryEnded then return end
+        recoveryEnded = true
+        if isCaptureRecovery then
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_RECOVERY_END", captureToken, detail or reason)
+            BridgeScheduleDiagnosticCaptureFollowup(captureToken, sessionId, epoch)
+        else
+            BridgeLog("[Bridge] gameplay pump recovery complete reason=" .. tostring(detail or reason))
+        end
+    end
+    if isCaptureRecovery then
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_RECOVERY_BEGIN", captureToken, reason)
+    end
+    if not BridgeRuntimeIsCurrent(epoch)
+        or BridgeState.eventSessionId ~= sessionId
+        or sessionId == nil
+        or BridgeState.desyncLatched then
+        endRecovery("recovery-fence-not-current")
+        return false
+    end
+
+    -- The event poll generation belongs to HTTP callback freshness. These
+    -- checks deliberately inspect the request/schedule state too; `true`
+    -- alone is not evidence that an event pump is alive.
+    if BridgeState.eventPolling ~= true then
+        BridgeStartEventPolling(sessionId, false)
+    elseif not BridgeState.eventRequestInFlight and not BridgeState.eventPollScheduled then
+        BridgePollEvents(BridgeState.eventPollGeneration)
+    end
+
+    if BridgeState.lastDecision == nil then
+        if BridgeState.gameEnded == nil and not BridgeState.submitting
+            and not BridgeState.decisionPollInFlight
+            and not BridgeState.decisionPollScheduled
+            and not BridgeState.choiceProtocolPaused then
+            BridgeStartDecisionPolling()
+        end
+        endRecovery("no-current-decision")
+        return true
+    end
+
+    -- A non-nil decision can still have lost its render/control path. Ask
+    -- Forge for the current decision once, then use the existing acceptance
+    -- path. Same-id responses are rendered again without creating a choice.
+    if BridgeState.decisionRefreshInFlight then
+        endRecovery("decision-refresh-already-in-flight")
+        return true
+    end
+    local expectedPresentationGeneration = BridgeState.decisionPresentationGeneration
+    local priorDecision = BridgeState.lastDecision
+    local priorDecisionId = priorDecision.decisionId
+    BridgeState.decisionRefreshInFlight = true
+    BridgeGetDecision(function(ok, body, err)
+        if (expectedSessionId ~= nil and expectedSessionId ~= BridgeState.eventSessionId)
+            or not BridgeRuntimeIsCurrent(epoch)
+            or expectedPresentationGeneration ~= BridgeState.decisionPresentationGeneration then
+            BridgeState.decisionRefreshInFlight = false
+            if isCaptureRecovery then
+                BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_DECISION_REFRESH_CALLBACK", captureToken, "stale")
+            end
+            return
+        end
+        BridgeState.decisionRefreshInFlight = false
+        if ok and body ~= nil then
+            local sameDecision = body.decisionId == priorDecisionId
+            local transactionExists = BridgeState.choiceTransactions[priorDecisionId] ~= nil
+            if sameDecision and transactionExists then
+                -- A submitted/active transaction is presentation-live only
+                -- through its existing response path. Do not re-accept it and
+                -- risk clearing the transaction during diagnostic recovery.
+                BridgeLog("[Bridge] diagnostic decision refresh preserved active choice transaction decision=" .. tostring(priorDecisionId))
+            else
+                BridgeAcceptDecision(body, "diagnostic_capture_recovery", sessionId, expectedPresentationGeneration)
+            end
+            if isCaptureRecovery then
+                BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_DECISION_REFRESH_CALLBACK", captureToken, sameDecision and "same-decision" or "new-decision")
+            end
+            endRecovery(sameDecision and "same-decision-represented" or "new-decision-accepted")
+            return
+        end
+        local responseCode = nil
+        if body ~= nil and body.errorCode ~= nil then responseCode = tostring(body.errorCode) end
+        if responseCode == "no_pending_decision" then
+            -- Keep the existing presentation intact while Forge is between
+            -- decisions. The ordinary poller is allowed to observe through
+            -- that presentation and will replace it only with an
+            -- authoritative response.
+            BridgeStartDecisionPolling(true)
+        end
+        BridgeLog("[Bridge] diagnostic decision refresh failed: " .. tostring(err or responseCode or "unknown"))
+        if isCaptureRecovery then
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_DECISION_REFRESH_CALLBACK", captureToken, responseCode or "failed")
+        end
+        endRecovery("decision-refresh-failed")
+    end)
+    return true
+end
+
+function BridgeHudRecoverPumps(player, value, id)
+    if BRIDGE_DEV_UI_ENABLED ~= true or BridgeState.ui == nil then return end
+    if BridgeState.eventSessionId == nil then
+        BridgeState.ui.reportStatus = "No active Forge session to recover."
+        BridgeUiMarkDirty("manual-pump-recovery-unavailable")
+        return
+    end
+    BridgeState.ui.reportStatus = "Recovering gameplay observation..."
+    BridgeUiMarkDirty("manual-pump-recovery-start")
+    BridgeRecoverGameplayPumps("manual-control", BridgeState.eventSessionId, BRIDGE_RUNTIME_EPOCH_LOCAL, nil)
+end
+
 function BridgeHudSubmitReport(category, summary)
     local ui = BridgeState.ui
     if ui == nil or ui.reportCaptureInFlight then return end
@@ -13131,43 +13336,21 @@ function BridgeHudSubmitReport(category, summary)
     local captureToken = requestUi.reportCaptureToken
     local completed = false
 
-    -- Diagnostic capture is deliberately out-of-band, but it can overlap a
-    -- transient HTTP/event-poll failure.  Once the capture finishes, make
-    -- sure the normal authoritative pumps are alive again.  This is
-    -- idempotent (the pollers already guard against duplicate schedules) and
-    -- never fabricates a decision or advances Forge.
-    local function restorePollingAfterDiagnosticCapture(reason)
-        if requestUi.reportCaptureToken ~= captureToken then return end
-        if not BridgeRuntimeIsCurrent(requestEpoch)
-            or BridgeState.ui ~= requestUi
-            or BridgeState.eventSessionId ~= requestSession
-            or requestSession == nil then
-            return
-        end
-        if BridgeState.eventPolling ~= true then
-            BridgeStartEventPolling(requestSession, false)
-        elseif not BridgeState.eventRequestInFlight and not BridgeState.eventPollScheduled then
-            BridgePollEvents(BridgeState.eventPollGeneration)
-        end
-        if BridgeState.lastDecision == nil and not BridgeState.submitting
-            and BridgeState.gameEnded == nil
-            and not BridgeState.decisionPollInFlight
-            and not BridgeState.decisionPollScheduled then
-            BridgeStartDecisionPolling()
-        end
-    end
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_BEGIN", captureToken, "capture-start")
 
     ui.reportCaptureInFlight = true
     ui.reportStatus = "Capturing..."
     BridgeUiMarkDirty("report-capture-start")
 
-    local function finish(ok, body, err, recoveryReason)
+    local function finish(ok, body, err, recoveryReason, lifecycleStage)
+        BridgeRecordDiagnosticCaptureLifecycle(lifecycleStage or "DIAG_CAPTURE_CALLBACK", captureToken, recoveryReason or "callback")
         if completed then return end
         if requestUi.reportCaptureToken ~= captureToken then return end
         completed = true
         if not BridgeRuntimeIsCurrent(requestEpoch)
             or BridgeState.ui ~= requestUi
             or BridgeState.eventSessionId ~= requestSession then
+            BridgeLog("[Bridge] diagnostic capture completion ignored by runtime/session fence")
             return
         end
         requestUi.reportCaptureInFlight = false
@@ -13182,7 +13365,18 @@ function BridgeHudSubmitReport(category, summary)
             BridgeLog("[Bridge] diagnostic report failed: " .. detail)
         end
         BridgeUiMarkDirty("report-capture-result")
-        restorePollingAfterDiagnosticCapture(recoveryReason or "callback")
+        -- Recovery runs on a safe frame, after the capture callback has
+        -- returned. It is single-flight and re-observes the current decision.
+        BridgeWaitFrames(function()
+            if requestUi.reportCaptureToken ~= captureToken
+                or not BridgeRuntimeIsCurrent(requestEpoch)
+                or BridgeState.ui ~= requestUi
+                or BridgeState.eventSessionId ~= requestSession then
+                BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_RECOVERY_SKIPPED", captureToken, "runtime-or-token-fence")
+                return
+            end
+            BridgeRecoverGameplayPumps(recoveryReason or "callback", requestSession, requestEpoch, captureToken)
+        end, 1)
     end
 
     -- Arm the watchdog before collecting any diagnostic payload.  Payload
@@ -13190,13 +13384,13 @@ function BridgeHudSubmitReport(category, summary)
     -- an exception there must not strand reportCaptureInFlight forever.
     BridgeWaitTime(function()
         if requestUi.reportCaptureToken == captureToken and requestUi.reportCaptureInFlight then
-            finish(false, nil, "diagnostic capture timed out after " .. tostring(BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS) .. " seconds", "watchdog")
+            finish(false, nil, "diagnostic capture timed out after " .. tostring(BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS) .. " seconds", "watchdog", "DIAG_CAPTURE_TIMEOUT")
         end
     end, BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS)
 
     local performanceOk, performance = pcall(BridgePerformanceDiagnosticPayload)
     if not performanceOk or performance == nil then
-        finish(false, nil, "diagnostic payload failed: " .. tostring(performance))
+        finish(false, nil, "diagnostic payload failed: " .. tostring(performance), "payload-failure")
         return
     end
     local request = {
@@ -13218,7 +13412,7 @@ function BridgeHudSubmitReport(category, summary)
     }
     local requestOk, requestError = pcall(function()
         BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
-            finish(ok, body, err)
+            finish(ok, body, err, "callback", "DIAG_CAPTURE_CALLBACK")
             return
         --[[ legacy inline completion retained only as a source-compatible
              comment while all completion is routed through finish above.
@@ -13237,7 +13431,7 @@ function BridgeHudSubmitReport(category, summary)
         end)
     end)
     if not requestOk then
-        finish(false, nil, "diagnostic request failed: " .. tostring(requestError))
+        finish(false, nil, "diagnostic request failed: " .. tostring(requestError), "request-error")
     end
 end
 
