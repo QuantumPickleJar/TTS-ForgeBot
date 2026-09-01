@@ -164,6 +164,30 @@ public sealed class TtsDiagnosticCaptureLuaTests
         Assert.Equal(2, lua.Globals.Get("BridgeState").Table.Get("ui").Table.Get("reportCaptureToken").Number);
     }
 
+    [Fact]
+    public void RepeatedIdenticalReadinessResyncSnapshot_EmitsBoundedNoProgressDiagnostic()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'capture-session'
+            BridgeState.lastReceivedEventSequence = 60
+            BridgeState.lastAppliedEventSequence = 0
+            BridgeState.pendingDecision = {decisionId = 'forge-tui-1', eventCursor = 60}
+            BridgeState.resyncNoProgress = {count = 0, lastLoggedCount = 0}
+            resyncLogs = {}
+            function BridgeLog(message) table.insert(resyncLogs, message) end
+            local stale = {forgeSequence = 2, eventCursor = 60}
+            BridgeRecordResyncSnapshotProgress('hand-readiness-timeout', stale)
+            BridgeRecordResyncSnapshotProgress('hand-readiness-timeout', stale)
+            BridgeRecordResyncSnapshotProgress('hand-readiness-timeout', stale)
+            BridgeRecordResyncSnapshotProgress('hand-readiness-timeout', stale)
+        ");
+
+        Assert.Equal(4, lua.Globals.Get("BridgeState").Table.Get("resyncNoProgress").Table.Get("count").Number);
+        Assert.Equal(1, lua.Globals.Get("resyncLogs").Table.Values
+            .Count(value => value.String.Contains("RESYNC_NO_PROGRESS", StringComparison.Ordinal)));
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script();

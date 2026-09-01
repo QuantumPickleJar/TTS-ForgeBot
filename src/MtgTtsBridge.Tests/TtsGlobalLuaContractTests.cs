@@ -2476,7 +2476,7 @@ public sealed class TtsGlobalLuaContractTests
         var resync = Script[start..end];
 
         Assert.Contains("BridgeBootstrapCurrentSnapshot(sessionId", resync);
-        Assert.Contains("end, true)", resync);
+        Assert.Contains("end, true, origin)", resync);
         Assert.Contains("BridgeStartEventPolling(sessionId, false)", resync);
         Assert.Contains("BridgeStartDecisionPolling()", resync);
         Assert.Contains("lastAppliedEventSequence = cursor", Script);
@@ -2835,6 +2835,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeRecoverGameplayPumps(recoveryReason or \"callback\"", report);
         Assert.Contains("local completed = false", report);
         Assert.Contains("BridgePerformanceDiagnosticPayload", report);
+        Assert.Contains("diagnosticCaptureLifecycle = performance.diagnosticCaptureLifecycle", report);
         Assert.Contains("diagnostic capture timed out after", report);
         Assert.Contains("BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS", report);
         Assert.DoesNotContain("BridgeSubmitChoice", report);

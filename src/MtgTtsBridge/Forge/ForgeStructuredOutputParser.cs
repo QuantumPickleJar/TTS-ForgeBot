@@ -15,8 +15,13 @@ public sealed class ForgeStructuredOutputParser
     };
 
     private readonly StringBuilder _buffer = new();
+    private bool _frameInProgress;
 
-    public void Reset() => _buffer.Clear();
+    public void Reset()
+    {
+        _buffer.Clear();
+        _frameInProgress = false;
+    }
 
     public ForgeStructuredOutputResult Append(string chunk)
     {
@@ -27,30 +32,65 @@ public sealed class ForgeStructuredOutputParser
         while (true)
         {
             var text = _buffer.ToString();
-            var newline = text.IndexOf('\n');
-            if (newline < 0) break;
-
-            var line = text[..newline].TrimEnd('\r');
-            _buffer.Remove(0, newline + 1);
-            if (line.StartsWith(Sentinel, StringComparison.Ordinal))
+            if (_frameInProgress)
             {
-                snapshots.Add(ParseFrame(line[Sentinel.Length..]));
+                var frameNewline = text.IndexOf('\n');
+                if (frameNewline < 0) break;
+
+                var json = text[..frameNewline].TrimEnd('\r');
+                _buffer.Remove(0, frameNewline + 1);
+                _frameInProgress = false;
+                snapshots.Add(ParseFrame(json));
+                continue;
+            }
+
+            var sentinel = text.IndexOf(Sentinel, StringComparison.Ordinal);
+            var newline = text.IndexOf('\n');
+
+            // A structured record can share a physical line with a TUI
+            // prompt.  Consume the prompt as ordinary text, then retain the
+            // sentinel and its JSON until the record's newline arrives.
+            if (sentinel >= 0 && (newline < 0 || sentinel < newline))
+            {
+                if (sentinel > 0) tui.Append(text[..sentinel]);
+                _buffer.Remove(0, sentinel + Sentinel.Length);
+                _frameInProgress = true;
+            }
+            else if (newline >= 0)
+            {
+                var line = text[..newline].TrimEnd('\r');
+                tui.Append(line).Append('\n');
+                _buffer.Remove(0, newline + 1);
             }
             else
             {
-                tui.Append(line).Append('\n');
+                // Keep the longest suffix that could become the beginning of
+                // a sentinel when the next stdout chunk arrives.  This must
+                // retain a prompt or other TUI text before that suffix.
+                var retained = LongestSentinelPrefixSuffix(text);
+                var flushLength = text.Length - retained;
+                if (flushLength > 0) tui.Append(text[..flushLength]);
+                if (retained == 0) _buffer.Clear();
+                else
+                {
+                    _buffer.Clear();
+                    _buffer.Append(text[^retained..]);
+                }
+                break;
             }
         }
 
-        var tail = _buffer.ToString();
-        if (tail.Length > 0 && !tail.StartsWith(Sentinel, StringComparison.Ordinal)
-            && !Sentinel.StartsWith(tail, StringComparison.Ordinal))
-        {
-            tui.Append(tail);
-            _buffer.Clear();
-        }
-
         return new ForgeStructuredOutputResult(tui.ToString(), snapshots);
+    }
+
+    private static int LongestSentinelPrefixSuffix(string text)
+    {
+        var maximum = Math.Min(text.Length, Sentinel.Length - 1);
+        for (var length = maximum; length > 0; length--)
+        {
+            if (text.EndsWith(Sentinel[..length], StringComparison.Ordinal)) return length;
+        }
+        return 0;
     }
 
     private static ForgeStructuredSnapshot ParseFrame(string json)

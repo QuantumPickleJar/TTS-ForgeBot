@@ -6,6 +6,126 @@ namespace MtgTtsBridge.Tests;
 public sealed class ForgeStructuredOutputParserTests
 {
     [Fact]
+    public void EmbeddedStructuredFrame_PreservesTuiPrefixAndRemovesFrame()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var output = parser.Append("Enter choice (0-1): " + Frame(1, Player()) + "\n");
+
+        Assert.Equal("Enter choice (0-1): ", output.TuiText);
+        Assert.Equal(1, Assert.Single(output.Snapshots).Sequence);
+        Assert.DoesNotContain(ForgeStructuredOutputParser.Sentinel, output.TuiText);
+        Assert.DoesNotContain("\"players\"", output.TuiText);
+    }
+
+    [Fact]
+    public void EmbeddedSentinel_SplitAcrossChunks_PreservesPrefixAndParsesOnce()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var embedded = "Enter choice (0-1): " + ForgeStructuredOutputParser.Sentinel;
+
+        var first = parser.Append(embedded[..^5]);
+        var second = parser.Append(embedded[^5..] + Frame(1, Player())[
+            ForgeStructuredOutputParser.Sentinel.Length..] + "\n");
+
+        Assert.Equal("Enter choice (0-1): ", first.TuiText);
+        Assert.Empty(first.Snapshots);
+        Assert.Empty(second.TuiText);
+        Assert.Equal(1, Assert.Single(second.Snapshots).Sequence);
+    }
+
+    [Fact]
+    public void StructuredJson_SplitAcrossManyChunks_ParsesOnceWithoutJsonLeakage()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var frame = Frame(1, Player());
+        var outputs = new List<ForgeStructuredOutputResult>();
+        for (var offset = 0; offset < frame.Length; offset += 17)
+        {
+            var length = Math.Min(17, frame.Length - offset);
+            outputs.Add(parser.Append(frame.Substring(offset, length)));
+        }
+        outputs.Add(parser.Append("\n"));
+
+        Assert.Empty(outputs.SelectMany(output => output.TuiText));
+        var snapshot = Assert.Single(outputs.SelectMany(output => output.Snapshots));
+        Assert.Equal(1, snapshot.Sequence);
+    }
+
+    [Fact]
+    public void OrdinaryTuiTextOnly_IsPreserved()
+    {
+        var parser = new ForgeStructuredOutputParser();
+
+        var output = parser.Append("Enter choice (0-1): ");
+
+        Assert.Equal("Enter choice (0-1): ", output.TuiText);
+        Assert.Empty(output.Snapshots);
+    }
+
+    [Fact]
+    public void MultipleStructuredFrames_AreParsedInOrder()
+    {
+        var parser = new ForgeStructuredOutputParser();
+
+        var output = parser.Append(Frame(1, Player()) + "\n" + Frame(2, Player()) + "\n");
+
+        Assert.Equal([1, 2], output.Snapshots.Select(snapshot => snapshot.Sequence));
+        Assert.Empty(output.TuiText);
+    }
+
+    [Fact]
+    public void TuiTextBeforeAndAfterStructuredFrames_IsPreservedInOrder()
+    {
+        var parser = new ForgeStructuredOutputParser();
+
+        var output = parser.Append("before\n" + Frame(1, Player()) + "\nafter\n");
+
+        Assert.Equal("before\nafter\n", output.TuiText);
+        Assert.Single(output.Snapshots);
+    }
+
+    [Fact]
+    public void CapturedStartupSequence_ParsesEmbeddedOpeningHandSnapshotAsCurrent()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        var humanLibrary = Enumerable.Range(1, 61).Select(id => Card(id, "Island", "library", id - 1)).ToArray();
+        var opponentLibrary = Enumerable.Range(100, 60).Select(id => Card(id, "Forest", "library", id - 100,
+            ownerSeatId: "forge-player-2", controllerSeatId: "forge-player-2")).ToArray();
+        var humanHand = Enumerable.Range(1, 7).Select(id => Card(id, "Island", "hand", id - 1)).ToArray();
+        var opponentHand = Enumerable.Range(100, 7).Select(id => Card(id, "Forest", "hand", id - 100,
+            ownerSeatId: "forge-player-2", controllerSeatId: "forge-player-2")).ToArray();
+        var humanLibraryAfterDeal = Enumerable.Range(8, 54).Select(id => Card(id, "Island", "library", id - 8)).ToArray();
+        var opponentLibraryAfterDeal = Enumerable.Range(107, 53).Select(id => Card(id, "Forest", "library", id - 107,
+            ownerSeatId: "forge-player-2", controllerSeatId: "forge-player-2")).ToArray();
+
+        var snapshot1 = Frame(1, Players(
+            Player(library: humanLibrary),
+            Player(library: [], seatId: "forge-player-2", forgePlayerId: 2)));
+        var snapshot2 = Frame(2, Players(
+            Player(library: humanLibrary),
+            Player(library: opponentLibrary, seatId: "forge-player-2", forgePlayerId: 2)));
+        var snapshot3 = Frame(3, Players(
+            Player(library: humanLibraryAfterDeal, hand: humanHand),
+            Player(library: opponentLibraryAfterDeal, hand: opponentHand,
+                seatId: "forge-player-2", forgePlayerId: 2)));
+
+        Assert.Empty(reconciler.Apply("session-a", Parse(parser, snapshot1)));
+        _ = reconciler.Apply("session-a", Parse(parser, snapshot2));
+
+        var output = parser.Append("Enter choice (0-1): " + snapshot3 + "\n");
+        Assert.Equal("Enter choice (0-1): ", output.TuiText);
+        var currentEvents = reconciler.Apply("session-a", Assert.Single(output.Snapshots));
+
+        Assert.NotEmpty(currentEvents);
+        Assert.Equal(3, reconciler.Current!.ForgeSequence);
+        Assert.Equal(7, reconciler.Current.Seats.Single(seat => seat.SeatId == "forge-player-1")
+            .Zones.Single(zone => zone.Name == "hand").Cards.Count);
+        Assert.Equal(7, reconciler.Current.Seats.Single(seat => seat.SeatId == "forge-player-2")
+            .Zones.Single(zone => zone.Name == "hand").Cards.Count);
+    }
+
+    [Fact]
     public void FramedSnapshot_IsRemovedFromTuiTextAndPreservesLibraryOrderAndDuplicateIds()
     {
         var parser = new ForgeStructuredOutputParser();

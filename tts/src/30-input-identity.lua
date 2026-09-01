@@ -1535,7 +1535,7 @@ function BridgeRollbackPendingIntent()
     end
 end
 
-function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotCursor)
+function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotCursor, resyncOrigin)
     if BridgeState.bootstrapping then
         callback(false, "an embodiment bootstrap is already in progress")
         return
@@ -1576,6 +1576,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                 callback(false, "snapshot session mismatch")
                 return
             end
+            BridgeRecordResyncSnapshotProgress(resyncOrigin, snapshot)
             BridgeRecordExpectedHandIdentities(snapshot)
             local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids()
             if duplicateGuidCount > 0 then
@@ -1787,7 +1788,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeUiMarkDirty("resync-complete")
         BridgeLog("[Bridge] authoritative resync complete at event cursor="
             .. tostring(BridgeState.lastAppliedEventSequence))
-    end, true)
+    end, true, origin)
 end
 
 -- Forge's snapshot is the only authoritative library order after its shuffle.

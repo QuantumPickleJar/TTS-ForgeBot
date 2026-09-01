@@ -191,6 +191,52 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
     return record
 end
 
+-- Keep repeated stale automatic-resync responses visible without changing
+-- recovery behavior. A same-cursor response is not progress merely because
+-- the request succeeded; this bounded streak makes a readiness loop
+-- diagnosable in the next report.
+function BridgeRecordResyncSnapshotProgress(origin, snapshot)
+    if snapshot == nil or string.find(tostring(origin or ""), "readiness", 1, true) == nil then return end
+    local sessionId = BridgeState.eventSessionId
+    local forgeSequence = snapshot.forgeSequence
+    local eventCursor = snapshot.eventCursor
+    local progress = BridgeState.resyncNoProgress
+    if progress == nil then
+        progress = {sessionId = nil, forgeSequence = nil, eventCursor = nil, count = 0, lastLoggedCount = 0}
+        BridgeState.resyncNoProgress = progress
+    end
+    local same = progress.sessionId == sessionId
+        and tostring(progress.forgeSequence) == tostring(forgeSequence)
+        and tostring(progress.eventCursor) == tostring(eventCursor)
+    local previousForgeSequence = progress.forgeSequence
+    local previousEventCursor = progress.eventCursor
+    if same then progress.count = (progress.count or 0) + 1
+    else
+        progress.count = 1
+        progress.lastLoggedCount = 0
+    end
+    progress.sessionId = sessionId
+    progress.forgeSequence = forgeSequence
+    progress.eventCursor = eventCursor
+    BridgeLog(string.format(
+        "[Bridge] RESYNC_PROGRESS origin=%s session=%s forgeSequence=%s eventCursor=%s previousForgeSequence=%s previousEventCursor=%s count=%s lastReceived=%s lastApplied=%s pendingDecision=%s pendingDecisionCursor=%s",
+        tostring(origin), tostring(sessionId), tostring(forgeSequence), tostring(eventCursor),
+        tostring(previousForgeSequence), tostring(previousEventCursor), tostring(progress.count),
+        tostring(BridgeState.lastReceivedEventSequence), tostring(BridgeState.lastAppliedEventSequence),
+        tostring(BridgeState.pendingDecision and BridgeState.pendingDecision.decisionId or nil),
+        tostring(BridgeState.pendingDecision and BridgeState.pendingDecision.eventCursor or nil)))
+    if same and progress.count >= 3 and progress.lastLoggedCount < 3 then
+        progress.lastLoggedCount = progress.count
+        BridgeLog(string.format(
+            "[Bridge] RESYNC_NO_PROGRESS origin=%s session=%s forgeSequence=%s eventCursor=%s previousForgeSequence=%s previousEventCursor=%s count=%s lastReceived=%s lastApplied=%s pendingDecision=%s pendingDecisionCursor=%s",
+            tostring(origin), tostring(sessionId), tostring(forgeSequence), tostring(eventCursor),
+            tostring(previousForgeSequence), tostring(previousEventCursor), tostring(progress.count),
+            tostring(BridgeState.lastReceivedEventSequence), tostring(BridgeState.lastAppliedEventSequence),
+            tostring(BridgeState.pendingDecision and BridgeState.pendingDecision.decisionId or nil),
+            tostring(BridgeState.pendingDecision and BridgeState.pendingDecision.eventCursor or nil)))
+    end
+end
+
 function BridgePresentationMetric(name)
     BridgeState.presentationMetrics[name] = (BridgeState.presentationMetrics[name] or 0) + 1
 end
@@ -708,6 +754,13 @@ BridgeState = {
     diagnosticCaptureLifecycle = {},
     diagnosticCaptureFollowupToken = nil,
     diagnosticCaptureFollowupUntil = 0,
+    resyncNoProgress = {
+        sessionId = nil,
+        forgeSequence = nil,
+        eventCursor = nil,
+        count = 0,
+        lastLoggedCount = 0
+    },
     lastChoiceAttempt = nil,
     counterStateByInstanceId = {},
     keywordStateByInstanceId = {},

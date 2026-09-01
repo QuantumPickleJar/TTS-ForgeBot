@@ -2131,7 +2131,8 @@ function BridgeHudSubmitReport(category, summary)
         mappedCardInstanceIds = BridgeHudReportMappedCardInstanceIds(),
         status = BridgeState.statusHeadline,
         performanceSummary = performance.performanceSummary,
-        recentTtsTrace = performance.recentTtsTrace
+        recentTtsTrace = performance.recentTtsTrace,
+        diagnosticCaptureLifecycle = performance.diagnosticCaptureLifecycle
     }
     local requestOk, requestError = pcall(function()
         BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
