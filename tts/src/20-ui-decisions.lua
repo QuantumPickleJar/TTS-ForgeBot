@@ -595,6 +595,7 @@ function BridgeGetHealth(callback)
 end
 
 function BridgeStartSession(callback)
+    BridgeSetupTrace("SESSION_START_REQUEST_SENT", "POST /api/v1/session/start")
     BridgeHttp.requestJson("POST", "/api/v1/session/start", nil, callback)
 end
 
@@ -607,22 +608,33 @@ end
 function BridgeConfigureDecks(callback)
     local seats = {}
     for _, seatId in ipairs({"forge-player-1", "forge-player-2"}) do
+        BridgeSetupTrace("DECK_PILE_SCAN_BEGIN", "seat=" .. tostring(seatId))
         local deck, _, deckError = BridgeResolveSeatLibraryDeck(seatId)
-        if deck == nil then callback(false, nil, "cannot load TTS library for " .. tostring(seatId) .. ": " .. tostring(deckError)); return end
+        if deck == nil then
+            BridgeSetupTrace("DECK_PILE_SCAN_RESULT", "seat=" .. tostring(seatId) .. " pileGuid=nil objectType=nil cardCount=0 detectedFormat=unknown error=" .. tostring(deckError))
+            callback(false, nil, "cannot load TTS library for " .. tostring(seatId) .. ": " .. tostring(deckError)); return
+        end
         local counts = {}
-        for _, contained in ipairs(deck.getObjects() or {}) do
+        local containedCards = deck.getObjects() or {}
+        for _, contained in ipairs(containedCards) do
             local name = BridgeImportedCardName(contained.nickname or contained.name or "")
             if BridgeNormalizeCardName(name) ~= "" then counts[name] = (counts[name] or 0) + 1 end
         end
         local cards = {}
         for name, count in pairs(counts) do table.insert(cards, {cardName = name, count = count}) end
+        BridgeSetupTrace("DECK_PILE_SCAN_RESULT", string.format(
+            "seat=%s pileGuid=%s objectType=%s cardCount=%s detectedFormat=%s uniqueNames=%s",
+            tostring(seatId), tostring(BridgeSafeObjectGuid(deck)), tostring(deck.tag), tostring(#containedCards),
+            tostring(BridgeState.selectedFormat or "unknown"), tostring(#cards)))
         if #cards == 0 then callback(false, nil, "TTS library is empty for " .. tostring(seatId)); return end
         BridgeLog(string.format("[Bridge] TTS deck inventory seat=%s uniqueNames=%d totalCards=%d revision=%s",
             tostring(seatId), #cards, #(deck.getObjects() or {}), tostring(BRIDGE_SCRIPT_REVISION)))
         table.insert(seats, {seatId = seatId, cards = cards})
     end
+    BridgeSetupStage("VALIDATING_DECKS", "posting TTS deck inventory")
     BridgeLog("[Bridge] posting TTS deck inventory to /api/v1/decks")
     BridgeHttp.requestJson("POST", "/api/v1/decks", {seats = seats}, function(ok, body, err, request)
+        BridgeSetupTrace("DECK_VALIDATION_RESULT", "ok=" .. tostring(ok) .. " error=" .. tostring(err or "none"))
         if ok then BridgeLog("[Bridge] TTS deck inventory accepted by bridge")
         else BridgeLog("[Bridge] TTS deck inventory rejected: " .. tostring(err) .. " body=" .. tostring(body and JSON.encode(body) or "(empty)")) end
         callback(ok, body, err, request)
@@ -3070,11 +3082,17 @@ function BridgeDoPressStartMatch(playerColor, altClick)
         return
     end
     BridgeSetSetupBusy(true, "Forge match is loading; START and RESUME are temporarily disabled.")
+    BridgeSetupStage("CONTACTING_BRIDGE", "checking bridge health")
     BridgeTraceStart("START-03 health-request")
     BridgeGetHealth(function(ok, body, err)
         BridgeRunTraced("START-04 health-response", function()
             BridgeTraceStart("START-04 health-response", ok and "ok" or tostring(err))
-            if not ok then BridgeSetSetupBusy(false); BridgeShowError("cannot start: companion unavailable: " .. tostring(err)); return end
+            if not ok then
+                BridgeSetSetupBusy(false)
+                BridgeSetupFailure("bridge-health", err)
+                BridgeShowError("cannot start: companion unavailable: " .. tostring(err))
+                return
+            end
             if body.adapterState == "starting" then
                 BridgeSetSetupBusy(true, "Forge is still initializing; wait for startup to finish before starting a new match.")
                 BridgeSetStatus("FORGE INITIALIZING", "Loading Forge card database")
@@ -3083,14 +3101,17 @@ function BridgeDoPressStartMatch(playerColor, altClick)
             local active = body.sessionId ~= nil and body.sessionId ~= "session-not-started"
                 and body.adapterState ~= "not_started" and body.adapterState ~= "failed"
             if active then BridgeSetSetupBusy(false); BridgeShowError("a Forge match already exists; use RESUME or explicitly choose NEW MATCH"); return end
+            BridgeSetupStage("READING_DECKS", "scanning both configured piles")
             BridgeTraceStart("START-05 deck-check-begin")
             local humanDeck, humanCandidates = BridgeResolveSeatLibraryDeck("forge-player-1")
             local aiDeck, aiCandidates = BridgeResolveSeatLibraryDeck("forge-player-2")
             if humanDeck == nil or aiDeck == nil or #humanCandidates > 1 or #aiCandidates > 1 then
                 BridgeSetSetupBusy(false)
+                BridgeSetupFailure("deck-reading", "both physical library decks must be uniquely identifiable before START")
                 BridgeShowError("both physical library decks must be uniquely identifiable before START")
                 return
             end
+            BridgeSetupTrace("SETUP_STATE_VALIDATED", "deck piles uniquely identified")
             BridgeTraceStart("START-06 deck-check-complete")
             BridgeStartSessionIfNone(function() BridgeSetSetupBusy(false) end)
         end)
@@ -3117,9 +3138,11 @@ end
 function BridgePressNewMatch(object, playerColor, altClick)
     local color = playerColor
     local alt = altClick == true
+    BridgeSetupTrace("TTS_NEW_MATCH_CLICKED", "player=" .. tostring(color or "unknown") .. " confirmed=" .. tostring(alt))
+    BridgeSetStatus("NEW MATCH", alt and "Preparing match..." or "Click again to confirm")
     BridgeLog("setup-click:new-match")
     BridgeWaitFrames(function()
-        BridgeDoPressNewMatch(color, alt)
+        BridgeRunSetupProtected("new-match-click", function() BridgeDoPressNewMatch(color, alt) end)
     end, 1)
 end
 
@@ -3129,6 +3152,7 @@ function BridgeDoPressNewMatch(playerColor, altClick)
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
         return
     end
+    BridgeSetupStage("SETUP_STATE_VALIDATED", "new-match confirmation path ready")
     BridgeState.resetConfirmationArmed = true
     BridgeClearResetConfirmationControl()
     BridgeSpawnResetConfirmationControl()
@@ -3198,7 +3222,7 @@ function BridgePressConfirmNewMatch(object, playerColor, altClick)
     local alt = altClick == true
     BridgeLog("setup-click:confirm")
     BridgeWaitFrames(function()
-        BridgeDoPressConfirmNewMatch(color, alt)
+        BridgeRunSetupProtected("new-match-confirm", function() BridgeDoPressConfirmNewMatch(color, alt) end)
     end, 1)
 end
 
@@ -3215,6 +3239,7 @@ function BridgeDoPressConfirmNewMatch(playerColor, altClick)
     end
     BridgeState.resetConfirmationArmed = false
     BridgeClearResetConfirmationControl()
+    BridgeSetupStage("SETUP_STATE_VALIDATED", "confirmed new-match request")
     BridgeSetSetupBusy(true, "Replacing the Forge match; setup controls are temporarily disabled.")
     BridgeResetSession()
 end
@@ -3332,13 +3357,17 @@ function BridgeStartSessionIfNone(done)
     BridgeClearHighlights()
     BridgeState.lastDecision = nil
 
+    BridgeSetupStage("READING_DECKS", "building Bridge deck inventory")
     BridgeTraceStart("START-07 TTS-library-deck-load")
     BridgeConfigureDecks(function(deckOk, _, deckError)
         if not deckOk then
             if done then done() end
+            BridgeSetupFailure("deck-reading", BridgeHttpFailureDetail(_, deckError))
             BridgeShowError("TTS library load failed: " .. BridgeHttpFailureDetail(_, deckError))
             return
         end
+        BridgeSetupTrace("SESSION_START_REQUEST_BEGIN", "POST /api/v1/session/start")
+        BridgeSetupStage("STARTING_FORGE", "requesting Forge session")
         BridgeTraceStart("START-07 session-start-request")
         BridgeStartSession(function(ok, body, err)
         BridgeRunTraced("START-08 session-start-response", function()
@@ -3346,6 +3375,7 @@ function BridgeStartSessionIfNone(done)
             if not ok then
                 if done then done() end
                 BridgeSetLifecycleState(BRIDGE_LIFECYCLE_START_FAILED, "session-start-failed")
+                BridgeSetupFailure("session-start", BridgeHttpFailureDetail(body, err))
                 BridgeShowError("session start failed: " .. BridgeHttpFailureDetail(body, err))
                 return
             end

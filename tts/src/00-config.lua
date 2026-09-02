@@ -1158,6 +1158,9 @@ BridgeState = {
     monarchHelperIndexHydrated = false,
     bootstrapping = false,
     setupBusy = false,
+    setupStage = "IDLE",
+    setupLastError = nil,
+    setupTrace = {},
     doctorInitializedUi = false,
     doctorRetryAttempt = 0,
     transitionExpectedUntil = 0,
@@ -1210,6 +1213,46 @@ BridgeState = {
 }
 
 BridgeHttp = {}
+
+local BRIDGE_SETUP_TRACE_CAPACITY = 64
+function BridgeSetupTrace(marker, detail)
+    local record = {timestamp = os.clock(), marker = marker, detail = detail,
+        stage = BridgeState.setupStage, lifecycle = BridgeState.lifecycleState}
+    BridgeState.setupTrace = BridgeState.setupTrace or {}
+    table.insert(BridgeState.setupTrace, record)
+    while #BridgeState.setupTrace > BRIDGE_SETUP_TRACE_CAPACITY do table.remove(BridgeState.setupTrace, 1) end
+    BridgeLog("[Bridge] " .. tostring(marker) .. (detail and (" " .. tostring(detail)) or ""))
+    return record
+end
+
+function BridgeSetupStage(stage, detail)
+    BridgeState.setupStage = stage
+    BridgeSetupTrace(stage, detail)
+    local labels = {
+        READING_DECKS = "Reading decks…",
+        CONTACTING_BRIDGE = "Contacting Bridge…",
+        VALIDATING_DECKS = "Validating decks…",
+        STARTING_FORGE = "Starting Forge…",
+        SETUP_STATE_VALIDATED = "Validating setup…"
+    }
+    if BridgeSetStatus ~= nil and labels[stage] ~= nil then BridgeSetStatus(labels[stage], detail or "") end
+    BridgeUiMarkDirty("setup-stage-" .. tostring(stage))
+end
+
+function BridgeSetupFailure(stage, errorMessage)
+    local detail = tostring(errorMessage or "unknown error")
+    BridgeState.setupLastError = detail
+    BridgeSetupStage("FAILED", "stage=" .. tostring(stage) .. " error=" .. detail)
+    BridgeSetStatus("FAILED: " .. tostring(stage), detail)
+    BridgeShowError("NEW MATCH failed at " .. tostring(stage) .. ": " .. detail)
+end
+
+function BridgeRunSetupProtected(stage, action)
+    local ok, err = xpcall(action, debug and debug.traceback or function(value) return tostring(value) end)
+    if ok then return true end
+    BridgeSetupFailure(stage, err)
+    return false
+end
 
 BRIDGE_LIFECYCLE_DISCONNECTED = "DISCONNECTED"
 BRIDGE_LIFECYCLE_READY_NO_SESSION = "BRIDGE_READY_NO_SESSION"

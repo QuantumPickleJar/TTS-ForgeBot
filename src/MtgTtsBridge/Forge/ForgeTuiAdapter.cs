@@ -60,6 +60,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private string? _latestObservedPrioritySeatId;
     private string? _latestObservedActiveSeatId;
     private long? _latestObservedForgeSequence;
+    private bool _firstForgeOutputLogged;
 
     private const int EventHistoryLimit = 512;
     private const int DecisionHistoryLimit = 128;
@@ -236,6 +237,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _latestObservedPrioritySeatId = null;
             _latestObservedActiveSeatId = null;
             _latestObservedForgeSequence = null;
+            _firstForgeOutputLogged = false;
             _resolvedChoices.Clear();
             _seenDecisions.Clear();
             _seenDecisionOrder.Clear();
@@ -253,9 +255,19 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
 
         process.Exited += (_, _) => _ = HandleProcessExitAsync(process, processGeneration, process.ExitCode);
-        if (!process.Start())
+        _logger.LogInformation("FORGE_PROCESS_LAUNCH_BEGIN sessionId={SessionId} executable={Executable}", _sessionId, _options.Executable);
+        try
         {
-            throw new InvalidOperationException("Forge TUI process could not be started.");
+            if (!process.Start())
+            {
+                _logger.LogError("FORGE_START_FAILURE reason=process-start-returned-false");
+                throw new InvalidOperationException("Forge TUI process could not be started.");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogError(exception, "FORGE_START_FAILURE reason=process-start-exception");
+            throw;
         }
 
         lock (_sync) _startupTracker.MarkProcessLaunched();
@@ -472,6 +484,14 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     }
                     _logger.LogDebug("Forge TUI stderr: {ForgeOutput}", chunk);
                     continue;
+                }
+                lock (_sync)
+                {
+                    if (!_firstForgeOutputLogged)
+                    {
+                        _firstForgeOutputLogged = true;
+                        _logger.LogInformation("FIRST_FORGE_OUTPUT sessionId={SessionId} processGeneration={ProcessGeneration}", _sessionId, processGeneration);
+                    }
                 }
                 foreach (var line in chunk.Split('\n'))
                 {

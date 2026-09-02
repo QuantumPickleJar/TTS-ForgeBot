@@ -638,6 +638,20 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void NewMatchSetup_EmitsDeckAndRequestTraceMarkersAndProtectsCallbacks()
+    {
+        foreach (var marker in new[]
+        {
+            "TTS_NEW_MATCH_CLICKED", "SETUP_STATE_VALIDATED", "DECK_PILE_SCAN_BEGIN",
+            "DECK_PILE_SCAN_RESULT", "SESSION_START_REQUEST_BEGIN", "SESSION_START_REQUEST_SENT",
+            "DECK_VALIDATION_RESULT"
+        }) Assert.Contains(marker, Script);
+        Assert.Contains("BridgeRunSetupProtected(\"new-match-click\"", Script);
+        Assert.Contains("BridgeSetupFailure(\"session-start\"", Script);
+        Assert.Contains("BridgeSetStatus(\"FAILED: \"", Script);
+    }
+
+    [Fact]
     public void AuthoritativeDraw_TakesVerifiedNamedCardFromPhysicalDeckWithoutChatLeak()
     {
         Assert.Contains("if event.kind == \"draw\"", Script);

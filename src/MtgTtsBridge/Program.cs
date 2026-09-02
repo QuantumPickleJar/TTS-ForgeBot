@@ -70,8 +70,9 @@ app.MapGet("/health", async (IForgeAdapter adapter, BridgeProcessIdentity identi
 		ProcessStartUtc: identity.ProcessStartUtc));
 });
 
-app.MapPost("/api/v1/session/start", async (IForgeAdapter adapter, CancellationToken cancellationToken) =>
+app.MapPost("/api/v1/session/start", async (IForgeAdapter adapter, ILogger<Program> logger, CancellationToken cancellationToken) =>
 {
+	logger.LogInformation("Bridge SESSION_START_RECEIVED adapterState={AdapterState}", (await adapter.GetStateAsync(cancellationToken)).State);
 	try
 	{
 		var state = await adapter.StartSessionAsync(cancellationToken);
@@ -84,21 +85,25 @@ app.MapPost("/api/v1/session/start", async (IForgeAdapter adapter, CancellationT
 	}
 });
 
-app.MapPost("/api/v1/decks", async (DeckLoadRequestDto request, IForgeAdapter adapter, CancellationToken cancellationToken) =>
+app.MapPost("/api/v1/decks", async (DeckLoadRequestDto request, IForgeAdapter adapter, ILogger<Program> logger, CancellationToken cancellationToken) =>
 {
 	if (request.Seats.Count != 2 || request.Seats.Any(seat => string.IsNullOrWhiteSpace(seat.SeatId) || seat.Cards.Count == 0)
 		|| request.Seats.Select(seat => seat.SeatId).Distinct(StringComparer.Ordinal).Count() != 2
 		|| request.Seats.SelectMany(seat => seat.Cards).Any(card => string.IsNullOrWhiteSpace(card.CardName) || card.Count <= 0))
 	{
+		logger.LogWarning("DECK_VALIDATION_RESULT ok=false reason=invalid-shape seats={SeatCount}", request.Seats.Count);
 		return Results.BadRequest(new ErrorResponseDto("invalid_deck_inventory", "Provide two non-empty seat deck inventories with positive card counts.", null));
 	}
 	try
 	{
 		await adapter.ConfigureDecksAsync(request, cancellationToken);
+		logger.LogInformation("DECK_VALIDATION_RESULT ok=true humanCards={HumanCards} aiCards={AiCards}",
+			request.Seats[0].Cards.Sum(card => card.Count), request.Seats[1].Cards.Sum(card => card.Count));
 		return Results.NoContent();
 	}
 	catch (InvalidOperationException exception)
 	{
+		logger.LogWarning(exception, "DECK_VALIDATION_RESULT ok=false reason=adapter-rejected");
 		return Results.BadRequest(new ErrorResponseDto("invalid_deck_inventory", exception.Message, null));
 	}
 });
