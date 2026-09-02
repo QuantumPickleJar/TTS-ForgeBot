@@ -50,6 +50,24 @@ function Get-ForgePatchPaths([string]$patchPath) {
         ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique)
 }
 
+function Get-ForgePatchResultBlobs([string]$patchPath) {
+    $result = @{}
+    $pendingBlob = $null
+    foreach ($line in (Get-Content -LiteralPath $patchPath)) {
+        $indexMatch = [regex]::Match($line, '^index [0-9a-f]{40}\.\.([0-9a-f]{40})(?: |$)')
+        if ($indexMatch.Success) {
+            $pendingBlob = $indexMatch.Groups[1].Value
+            continue
+        }
+        $pathMatch = [regex]::Match($line, '^\+\+\+ b/(.+)$')
+        if ($pathMatch.Success -and $null -ne $pendingBlob) {
+            $result[$pathMatch.Groups[1].Value] = $pendingBlob
+            $pendingBlob = $null
+        }
+    }
+    return $result
+}
+
 function Get-ForgeExpectedSources([string]$forgePath, [string]$upstreamCommit, [string]$patchPath) {
     $worktree = Join-Path ([System.IO.Path]::GetTempPath()) ('forge-patch-check-' + [guid]::NewGuid())
     New-Item -ItemType Directory -Force -Path $worktree | Out-Null
@@ -132,6 +150,7 @@ try {
     # old bridge-generated edits; it is not itself accepted as correspondence
     # evidence.
     $expectedSources = Get-ForgeExpectedSources $forgeDirectory $commit $bridgePatch
+    $patchResultBlobs = Get-ForgePatchResultBlobs $bridgePatch
     $previousStamp = $null
     $previousStampPath = Get-ChildItem 'forge-headless\target\forge-headless-bridge-build.json' -ErrorAction SilentlyContinue |
         Select-Object -First 1 -ExpandProperty FullName
@@ -152,7 +171,18 @@ try {
                 $property = $previousStamp.patchedSourceSha256.PSObject.Properties[$relative]
                 if ($property) { $property.Value } else { $null }
             } else { $null }
-            if ($currentHash -ne $previousHash) {
+            # Git's blob identity is the patch's declared post-image and is
+            # newline-normalization independent. This matters for a bridge
+            # source already patched in .deps/forge: its raw SHA-256 can vary
+            # with checkout line endings even though its content is exactly
+            # the current patch result. A matching post-image is safe to
+            # preserve; a different blob remains a protected local edit.
+            $currentBlob = if (Test-Path -LiteralPath $target -PathType Leaf) {
+                (& git hash-object -- $relative).Trim()
+            } else { $null }
+            $isCurrentPatchResult = $patchResultBlobs.ContainsKey($relative) `
+                -and $currentBlob -eq $patchResultBlobs[$relative]
+            if ($currentHash -ne $previousHash -and -not $isCurrentPatchResult) {
                 throw "Forge patch-touched file has unrelated local edits; refusing to overwrite: $relative"
             }
         }
