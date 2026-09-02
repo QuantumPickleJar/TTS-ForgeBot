@@ -1295,10 +1295,15 @@ function BridgeHttp.handleResponse(request, callback)
     end
 
     local isOk = request.response_code >= 200 and request.response_code < 300
-    if isOk then
-        callback(true, body, nil, request)
-    else
-        callback(false, body, "HTTP " .. tostring(request.response_code), request)
+    local ok, callbackError = xpcall(function()
+        if isOk then
+            callback(true, body, nil, request)
+        else
+            callback(false, body, "HTTP " .. tostring(request.response_code), request)
+        end
+    end, debug ~= nil and debug.traceback ~= nil and debug.traceback or function(err) return tostring(err) end)
+    if not ok then
+        BridgeLog("[Bridge] HTTP callback failed: " .. tostring(callbackError))
     end
 end
 

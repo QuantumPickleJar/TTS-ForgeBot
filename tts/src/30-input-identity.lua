@@ -1646,8 +1646,18 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
     end
     local function finishBootstrap(ok, errorMessage)
         if not currentBootstrap() then return end
-        BridgeState.bootstrapping = false
-        callback(ok, errorMessage)
+        BridgeState.bootstrapCompletionInFlight = true
+        BridgeState.bootstrapStage = ok and "BOOTSTRAP_COMPLETE" or "BOOTSTRAP_ABORTED"
+        local success, callbackError = xpcall(function()
+            BridgeState.bootstrapping = false
+            callback(ok, errorMessage)
+        end, debug ~= nil and debug.traceback ~= nil and debug.traceback or function(err) return tostring(err) end)
+        BridgeState.bootstrapCompletionInFlight = false
+        if not success then
+            BridgeState.bootstrapping = false
+            BridgeState.bootstrapStage = "BOOTSTRAP_ABORTED"
+            BridgeLog("[Bridge] bootstrap completion callback failed: " .. tostring(callbackError))
+        end
     end
     -- Establish the event session before populating instance mappings. Event
     -- polling must not clear the authoritative snapshot we just reconciled.
@@ -1676,6 +1686,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
         BridgeUiMarkDirty("resync-state-preserved")
     end
     BridgeState.bootstrapping = true
+    BridgeState.bootstrapStage = "BOOTSTRAP_DECISION_PENDING"
     BridgeTraceStart("START-10 snapshot-request")
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
         if not currentBootstrap() then return end

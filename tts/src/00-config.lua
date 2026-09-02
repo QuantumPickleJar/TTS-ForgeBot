@@ -37,6 +37,8 @@ BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_INTERVAL_SECONDS = 0.5
 -- promptly after a draw so a burst (for example, a draw per creature) cannot
 -- hold later authoritative phase/priority events behind animation delays.
 BRIDGE_DRAW_EVENT_PRESENTATION_DELAY = 0.25
+BRIDGE_STALE_DECISION_CONVERGENCE_ATTEMPTS = 8
+BRIDGE_STALE_DECISION_CONVERGENCE_SECONDS = 12.0
 -- A queue head that cannot start for this long is a scheduler fault worth
 -- recording.  It is intentionally diagnostic-only; authoritative events are
 -- never dropped or cursor-advanced by the watchdog.
@@ -941,6 +943,11 @@ BridgeState = {
     unboundPickupIntent = nil,
     pendingIntentControlGuids = {},
     pendingDecision = nil,
+    decisionAwaitingCausallyCurrent = false,
+    staleDecisionRetryKey = nil,
+    staleDecisionRetryCount = 0,
+    staleDecisionRetryStartedAt = nil,
+    staleDecisionRetryDeadlineAt = nil,
     pendingDecisionDeferredAt = nil,
     pendingDecisionDeferredCursor = 0,
     pendingDecisionDeferredApplied = 0,
@@ -954,6 +961,8 @@ BridgeState = {
     handReadinessRecoveryDecisionId = nil,
     handReadinessRecoverySessionId = nil,
     handReadinessRecoveryAttempts = 0,
+    bootstrapStage = "BOOTSTRAP_IDLE",
+    bootstrapCompletionInFlight = false,
     eventSessionId = nil,
     eventSessionGeneration = 0,
     lastReceivedEventSequence = 0,

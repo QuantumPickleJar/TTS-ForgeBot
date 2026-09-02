@@ -2698,11 +2698,28 @@ end
 
 -- Flight-recorder wrappers keep the hot paths unchanged. They append a few
 -- scalar values to the bounded in-memory ring and never perform I/O.
+local function BridgeDecisionAcceptRejected(reason)
+    return false, tostring(reason or "rejected")
+end
+
 local BridgeAcceptDecisionFlightRecorderBase = BridgeAcceptDecision
 function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationGeneration)
     local token = BridgePerformanceBegin("decision_accept_begin")
-    BridgeAcceptDecisionFlightRecorderBase(decision, origin, expectedSessionId, presentationGeneration)
-    BridgePerformanceEnd(token, "decision_accept_end")
+    local ok, accepted, resultOrReason, detail = xpcall(function()
+        return BridgeAcceptDecisionFlightRecorderBase(decision, origin, expectedSessionId, presentationGeneration)
+    end, debug ~= nil and debug.traceback ~= nil and debug.traceback or function(err) return tostring(err) end)
+    if not ok then
+        BridgePerformanceEnd(token, "decision_accept_abort", "decisionAccept")
+        BridgeLog("[Bridge] DECISION_ACCEPT_ABORT origin=" .. tostring(origin) .. " error=" .. tostring(accepted))
+        BridgeShowError("decision acceptance failed; inspect Lua log")
+        return false, "abort", accepted
+    end
+    if accepted == false then
+        BridgePerformanceEnd(token, "decision_accept_rejected", "decisionAccept")
+        return BridgeDecisionAcceptRejected(resultOrReason or detail)
+    end
+    BridgePerformanceEnd(token, "decision_accept_end", "decisionAccept")
+    return accepted, resultOrReason, detail
 end
 
 local BridgeRenderDecisionFlightRecorderBase = BridgeRenderDecision

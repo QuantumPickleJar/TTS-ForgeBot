@@ -38,6 +38,8 @@ BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_INTERVAL_SECONDS = 0.5
 -- promptly after a draw so a burst (for example, a draw per creature) cannot
 -- hold later authoritative phase/priority events behind animation delays.
 BRIDGE_DRAW_EVENT_PRESENTATION_DELAY = 0.25
+BRIDGE_STALE_DECISION_CONVERGENCE_ATTEMPTS = 8
+BRIDGE_STALE_DECISION_CONVERGENCE_SECONDS = 12.0
 -- A queue head that cannot start for this long is a scheduler fault worth
 -- recording.  It is intentionally diagnostic-only; authoritative events are
 -- never dropped or cursor-advanced by the watchdog.
@@ -942,6 +944,11 @@ BridgeState = {
     unboundPickupIntent = nil,
     pendingIntentControlGuids = {},
     pendingDecision = nil,
+    decisionAwaitingCausallyCurrent = false,
+    staleDecisionRetryKey = nil,
+    staleDecisionRetryCount = 0,
+    staleDecisionRetryStartedAt = nil,
+    staleDecisionRetryDeadlineAt = nil,
     pendingDecisionDeferredAt = nil,
     pendingDecisionDeferredCursor = 0,
     pendingDecisionDeferredApplied = 0,
@@ -955,6 +962,8 @@ BridgeState = {
     handReadinessRecoveryDecisionId = nil,
     handReadinessRecoverySessionId = nil,
     handReadinessRecoveryAttempts = 0,
+    bootstrapStage = "BOOTSTRAP_IDLE",
+    bootstrapCompletionInFlight = false,
     eventSessionId = nil,
     eventSessionGeneration = 0,
     lastReceivedEventSequence = 0,
@@ -3084,10 +3093,15 @@ function BridgeHttp.handleResponse(request, callback)
     end
 
     local isOk = request.response_code >= 200 and request.response_code < 300
-    if isOk then
-        callback(true, body, nil, request)
-    else
-        callback(false, body, "HTTP " .. tostring(request.response_code), request)
+    local ok, callbackError = xpcall(function()
+        if isOk then
+            callback(true, body, nil, request)
+        else
+            callback(false, body, "HTTP " .. tostring(request.response_code), request)
+        end
+    end, debug ~= nil and debug.traceback ~= nil and debug.traceback or function(err) return tostring(err) end)
+    if not ok then
+        BridgeLog("[Bridge] HTTP callback failed: " .. tostring(callbackError))
     end
 end
 
@@ -4133,6 +4147,38 @@ function BridgeCheckDecisionPollingLiveness(reason)
         return true
     end
     return false
+end
+
+function BridgeRecordStaleDecisionConvergence(decision, eventCursor, applied)
+    local decisionId = tostring(decision and decision.decisionId or "(missing)")
+    local retryKey = table.concat({
+        decisionId,
+        tostring(decision and decision.kind or "(unknown)"),
+        tostring(eventCursor or 0),
+        tostring(applied or 0),
+        tostring(BridgeState.eventSessionId or "(no-session)"),
+        tostring(BridgeState.decisionPresentationGeneration or 0)
+    }, "|")
+    if BridgeState.staleDecisionRetryKey ~= retryKey then
+        BridgeState.staleDecisionRetryKey = retryKey
+        BridgeState.staleDecisionRetryCount = 0
+        BridgeState.staleDecisionRetryStartedAt = os.clock()
+        BridgeState.staleDecisionRetryDeadlineAt = BridgeState.staleDecisionRetryStartedAt + BRIDGE_STALE_DECISION_CONVERGENCE_SECONDS
+    end
+    BridgeState.staleDecisionRetryCount = (BridgeState.staleDecisionRetryCount or 0) + 1
+    BridgeState.decisionAwaitingCausallyCurrent = true
+    BridgeState.lastDecisionPollOutcome = "awaiting_causally_current_decision"
+    if BridgeState.staleDecisionRetryCount > BRIDGE_STALE_DECISION_CONVERGENCE_ATTEMPTS
+        or (BridgeState.staleDecisionRetryDeadlineAt ~= nil and os.clock() > BridgeState.staleDecisionRetryDeadlineAt) then
+        local detail = string.format(
+            "stale decision did not converge decision=%s kind=%s cursor=%s applied=%s retries=%s",
+            decisionId, tostring(decision and decision.kind or "(unknown)"), tostring(eventCursor), tostring(applied),
+            tostring(BridgeState.staleDecisionRetryCount))
+        BridgeLog("[Bridge] " .. detail)
+        BridgeStopOnDesync(detail)
+        return false
+    end
+    return true
 end
 
 function BridgeMarkTransitionExpected(seconds)
@@ -7043,9 +7089,16 @@ function BridgeSmokeTest()
 end
 
 function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationGeneration)
+    local function reject(reason)
+        return false, tostring(reason or "rejected")
+    end
+    local function defer(reason)
+        return true, tostring(reason or "deferred")
+    end
+
     if decision == nil then
         BridgeLog("[Bridge] DECISION_REJECT origin=" .. tostring(origin) .. " reason=missing_payload")
-        return
+        return reject("missing_payload")
     end
 
     BridgeRecordDecisionLifecycle(decision, origin, "OBSERVED", "decision-payload")
@@ -7054,7 +7107,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         or presentationGeneration ~= BridgeState.decisionPresentationGeneration) then
         BridgeRecordDecisionLifecycle(decision, origin, "REJECTED_STALE", "replaced-generation")
         BridgeLog("[Bridge] DECISION_REJECT origin=" .. tostring(origin) .. " reason=replaced_generation decision=" .. tostring(decision.decisionId))
-        return
+        return reject("replaced_generation")
     end
 
     if decision.sessionId == nil or decision.sessionId ~= BridgeState.eventSessionId then
@@ -7062,7 +7115,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         BridgeLog("[Bridge] DECISION_REJECT origin=" .. tostring(origin) .. " reason=wrong_session decision="
             .. tostring(decision.decisionId) .. " decisionSession=" .. tostring(decision.sessionId)
             .. " activeSession=" .. tostring(BridgeState.eventSessionId))
-        return
+        return reject("wrong_session")
     end
 
     if BridgeState.retiredChoiceDecisionIds[decision.decisionId] == true
@@ -7082,7 +7135,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
             BridgeClearHighlights()
             BridgeHideMainPriorityControls()
         end
-        return
+        return reject("decision_retired_or_submitting")
     end
 
     if BridgeState.lastDecision == nil or BridgeState.lastDecision.decisionId ~= decision.decisionId then
@@ -7134,9 +7187,13 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
             BridgeState.lastDecision = nil
             BridgeClearHighlights()
             BridgeHideMainPriorityControls()
-            BridgeStartDecisionPolling()
+            if BridgeRecordStaleDecisionConvergence(decision, eventCursor, applied) then
+                local retryDelay = BridgeState.staleDecisionRetryCount == 1 and 0.1
+                    or math.min(0.1 * (BridgeState.staleDecisionRetryCount or 1), BRIDGE_STALE_DECISION_CONVERGENCE_SECONDS / 6)
+                BridgeScheduleDecisionPoll(retryDelay, BridgeState.decisionPollGeneration, 1, false)
+            end
         end
-        return
+        return reject("stale_event_cursor")
     end
 
     -- The producer must never turn Forge's private library inspection into a
@@ -7145,7 +7202,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     if BridgeDecisionHasUnauthorizedPresentationAction(decision) then
         BridgeLog("[Bridge] stopped: Forge supplied an unapproved hidden-zone action")
         BridgeStopOnDesync("Forge supplied an unapproved hidden-zone action; presentation paused safely")
-        return
+        return reject("unauthorized_hidden_zone_action")
     end
 
     local deferDecision, deferCursor, deferApplied, deferReason = BridgeShouldDeferDecision(decision)
@@ -7174,7 +7231,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         if deferReason == "opening_hand_readiness" then
             BridgeScheduleOpeningHandReadinessRetry()
         end
-        return
+        return defer(deferReason)
     end
 
     BridgeState.pendingDecision = nil
@@ -7254,6 +7311,12 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         local priorityHeadline = decision.seatId == "forge-player-1" and "YOUR PRIORITY" or "OPPONENT PRIORITY"
         BridgeSetStatus(priorityHeadline, BridgeTurnLabel() .. " - " .. tostring(actor) .. " - " .. tostring(BridgeState.currentPhase or "Forge decision"))
     end
+    BridgeState.decisionAwaitingCausallyCurrent = false
+    BridgeState.staleDecisionRetryKey = nil
+    BridgeState.staleDecisionRetryCount = 0
+    BridgeState.staleDecisionRetryStartedAt = nil
+    BridgeState.staleDecisionRetryDeadlineAt = nil
+
     BridgeRenderDecision(decision)
     BridgeRecordDecisionLifecycle(decision, origin, "RENDERED", "decision-accepted")
 
@@ -7270,6 +7333,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     end
 
     BridgeLog("[Bridge] use BridgeChoose('<actionId>') to submit an action.")
+    return true, "accepted"
 end
 
 function BridgeNormalizeCardName(name)
@@ -9206,8 +9270,18 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
     end
     local function finishBootstrap(ok, errorMessage)
         if not currentBootstrap() then return end
-        BridgeState.bootstrapping = false
-        callback(ok, errorMessage)
+        BridgeState.bootstrapCompletionInFlight = true
+        BridgeState.bootstrapStage = ok and "BOOTSTRAP_COMPLETE" or "BOOTSTRAP_ABORTED"
+        local success, callbackError = xpcall(function()
+            BridgeState.bootstrapping = false
+            callback(ok, errorMessage)
+        end, debug ~= nil and debug.traceback ~= nil and debug.traceback or function(err) return tostring(err) end)
+        BridgeState.bootstrapCompletionInFlight = false
+        if not success then
+            BridgeState.bootstrapping = false
+            BridgeState.bootstrapStage = "BOOTSTRAP_ABORTED"
+            BridgeLog("[Bridge] bootstrap completion callback failed: " .. tostring(callbackError))
+        end
     end
     -- Establish the event session before populating instance mappings. Event
     -- polling must not clear the authoritative snapshot we just reconciled.
@@ -9236,6 +9310,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
         BridgeUiMarkDirty("resync-state-preserved")
     end
     BridgeState.bootstrapping = true
+    BridgeState.bootstrapStage = "BOOTSTRAP_DECISION_PENDING"
     BridgeTraceStart("START-10 snapshot-request")
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
         if not currentBootstrap() then return end
@@ -16334,11 +16409,28 @@ end
 
 -- Flight-recorder wrappers keep the hot paths unchanged. They append a few
 -- scalar values to the bounded in-memory ring and never perform I/O.
+local function BridgeDecisionAcceptRejected(reason)
+    return false, tostring(reason or "rejected")
+end
+
 local BridgeAcceptDecisionFlightRecorderBase = BridgeAcceptDecision
 function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationGeneration)
     local token = BridgePerformanceBegin("decision_accept_begin")
-    BridgeAcceptDecisionFlightRecorderBase(decision, origin, expectedSessionId, presentationGeneration)
-    BridgePerformanceEnd(token, "decision_accept_end")
+    local ok, accepted, resultOrReason, detail = xpcall(function()
+        return BridgeAcceptDecisionFlightRecorderBase(decision, origin, expectedSessionId, presentationGeneration)
+    end, debug ~= nil and debug.traceback ~= nil and debug.traceback or function(err) return tostring(err) end)
+    if not ok then
+        BridgePerformanceEnd(token, "decision_accept_abort", "decisionAccept")
+        BridgeLog("[Bridge] DECISION_ACCEPT_ABORT origin=" .. tostring(origin) .. " error=" .. tostring(accepted))
+        BridgeShowError("decision acceptance failed; inspect Lua log")
+        return false, "abort", accepted
+    end
+    if accepted == false then
+        BridgePerformanceEnd(token, "decision_accept_rejected", "decisionAccept")
+        return BridgeDecisionAcceptRejected(resultOrReason or detail)
+    end
+    BridgePerformanceEnd(token, "decision_accept_end", "decisionAccept")
+    return accepted, resultOrReason, detail
 end
 
 local BridgeRenderDecisionFlightRecorderBase = BridgeRenderDecision
