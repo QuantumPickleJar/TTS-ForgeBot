@@ -125,8 +125,10 @@ app.MapGet("/api/v1/decision", async (IForgeAdapter adapter, DiagnosticTelemetry
 	if (state.CurrentDecision is null)
 	{
 		return Results.NotFound(new ErrorResponseDto(
-			ErrorCode: "no_pending_decision",
-			Message: "No active decision is available.",
+			ErrorCode: state.State == "not_started" || string.IsNullOrWhiteSpace(state.SessionId)
+				? "session_not_started" : "no_pending_decision",
+			Message: state.State == "not_started" || string.IsNullOrWhiteSpace(state.SessionId)
+				? "The Bridge has no active Forge session." : "No active decision is available.",
 			DecisionId: null));
 	}
 
@@ -175,6 +177,17 @@ app.MapGet("/api/v1/events", async (long? after, IForgeAdapter adapter, Diagnost
 app.MapGet("/api/v1/embodiment/snapshot", async (IForgeAdapter adapter, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
 {
 	telemetry.RecordProtocol("tts_to_bridge", "/api/v1/embodiment/snapshot");
+	var state = await adapter.GetStateAsync(cancellationToken);
+	if (state.State == "not_started" || string.IsNullOrWhiteSpace(state.SessionId)
+		|| state.SessionId == "session-not-started")
+	{
+		telemetry.RecordProtocol("bridge_to_tts", "/api/v1/embodiment/snapshot", 404,
+			sessionId: "session-not-started", payload: "no active session");
+		return Results.NotFound(new ErrorResponseDto(
+			ErrorCode: "session_not_started",
+			Message: "The Bridge has no active Forge session.",
+			DecisionId: null));
+	}
 	var snapshot = await adapter.GetSnapshotAsync(cancellationToken);
 	telemetry.RecordProtocol("bridge_to_tts", "/api/v1/embodiment/snapshot", snapshot is null ? 404 : 200, sessionId: snapshot?.SessionId, payload: snapshot is null ? "unavailable" : new { snapshot.EventCursor, snapshot.ForgeSequence });
 	return snapshot is null

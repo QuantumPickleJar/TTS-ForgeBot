@@ -239,7 +239,8 @@ public sealed class BridgeApiTests
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         var error = await response.Content.ReadFromJsonAsync<ErrorResponseDto>();
-        Assert.Equal("snapshot_unavailable", error?.ErrorCode);
+        Assert.Equal("session_not_started", error?.ErrorCode);
+        Assert.Contains("no active Forge session", error?.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<string> StartSessionAsync(HttpClient client)

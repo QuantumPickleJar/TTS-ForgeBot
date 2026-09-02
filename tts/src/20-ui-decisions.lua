@@ -586,7 +586,12 @@ function drawSwap(me, clickerColor)
 end
 
 function BridgeGetHealth(callback)
-    BridgeHttp.requestJson("GET", "/health", nil, callback)
+    BridgeHttp.requestJson("GET", "/health", nil, function(ok, body, err, request)
+        if ok and body ~= nil and BridgeObserveBridgeHealth ~= nil then
+            BridgeObserveBridgeHealth(body)
+        end
+        if callback ~= nil then callback(ok, body, err, request) end
+    end)
 end
 
 function BridgeStartSession(callback)
@@ -894,6 +899,10 @@ function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
     BridgeState.lastDecisionPollStartedAt = BridgeDecisionPollNow()
     BridgeHttp.requestJson("GET", "/api/v1/decision", nil, function(ok, body, err, request)
         if generation ~= BridgeState.decisionPollGeneration then return end
+        if not ok and body ~= nil and body.errorCode == "session_not_started" then
+            BridgeCleanupLocalSession("decision-no-session", BRIDGE_LIFECYCLE_READY_NO_SESSION)
+            return
+        end
         if expectedSessionId ~= BridgeState.eventSessionId
             or presentationGeneration ~= BridgeState.decisionPresentationGeneration then return end
 
@@ -3238,7 +3247,12 @@ function BridgeAttachToActiveSession(done)
             return
         end
 
-        BridgeFetchDecisionAfterAttach()
+        if body.adapterState == "not_started" or body.sessionId == nil
+            or body.sessionId == "session-not-started" then
+            BridgeCleanupLocalSession("attach-no-session", BRIDGE_LIFECYCLE_READY_NO_SESSION)
+        else
+            BridgeFetchDecisionAfterAttach()
+        end
         if done then done() end
     end)
 end
@@ -3331,11 +3345,14 @@ function BridgeStartSessionIfNone(done)
             BridgeTraceStart("START-08 session-start-response", ok and tostring(body and body.sessionId or "ok") or tostring(err))
             if not ok then
                 if done then done() end
-            BridgeShowError("session start failed: " .. BridgeHttpFailureDetail(body, err))
+                BridgeSetLifecycleState(BRIDGE_LIFECYCLE_START_FAILED, "session-start-failed")
+                BridgeShowError("session start failed: " .. BridgeHttpFailureDetail(body, err))
                 return
             end
 
             BridgeLog("[Bridge] started or attached session: " .. tostring(body and body.sessionId))
+            BridgeState.sessionCleanupApplied = false
+            BridgeSetLifecycleState(BRIDGE_LIFECYCLE_ACTIVE, "session-started")
             -- The start route may attach to a match that already exists. Do not replay
             -- its historical physical events; an explicit reset is the new-match path.
             BridgeBootstrapWhenAvailable(body.sessionId, 1, function(bootstrapOk, bootstrapError)
@@ -3383,6 +3400,8 @@ function BridgeResetSession()
         end
 
         BridgeLog("[Bridge] active match explicitly replaced: " .. tostring(body and body.sessionId))
+            BridgeState.sessionCleanupApplied = false
+            BridgeSetLifecycleState(BRIDGE_LIFECYCLE_ACTIVE, "session-reset")
         BridgeBootstrapWhenAvailable(body.sessionId, 1, function(bootstrapOk, bootstrapError)
             if not bootstrapOk then BridgeSetSetupBusy(false); BridgeStopOnDesync(bootstrapError); return end
             -- The snapshot is authoritative through this point, so opening

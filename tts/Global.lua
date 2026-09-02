@@ -880,6 +880,13 @@ local _ip = ipairs
 local _pairs = pairs
 
 BridgeState = {
+    -- The Bridge process and the Forge session are independent lifetimes.
+    -- A process restart invalidates every callback from the old match; a
+    -- no-session response is setup state, never an active-session resync.
+    lifecycleState = "DISCONNECTED",
+    bridgeProcessInstanceId = nil,
+    connectionEpoch = 0,
+    sessionCleanupApplied = false,
     lastDecision = nil,
     actionByGuid = {},
     highlightedGuids = {},
@@ -1204,6 +1211,168 @@ BridgeState = {
 }
 
 BridgeHttp = {}
+
+BRIDGE_LIFECYCLE_DISCONNECTED = "DISCONNECTED"
+BRIDGE_LIFECYCLE_READY_NO_SESSION = "BRIDGE_READY_NO_SESSION"
+BRIDGE_LIFECYCLE_STARTING = "STARTING_SESSION"
+BRIDGE_LIFECYCLE_ACTIVE = "SESSION_ACTIVE"
+BRIDGE_LIFECYCLE_ENDING = "ENDING_SESSION"
+BRIDGE_LIFECYCLE_RECOVERING = "RECOVERING_ACTIVE_SESSION"
+BRIDGE_LIFECYCLE_START_FAILED = "START_FAILED"
+
+function BridgeSetLifecycleState(state, reason)
+    local previous = BridgeState.lifecycleState
+    BridgeState.lifecycleState = state
+    if previous ~= state then
+        BridgeLog(string.format("[Bridge] LIFECYCLE %s -> %s reason=%s connectionEpoch=%s session=%s",
+            tostring(previous), tostring(state), tostring(reason), tostring(BridgeState.connectionEpoch),
+            tostring(BridgeState.eventSessionId)))
+    end
+    if BridgeUiMarkDirty ~= nil then BridgeUiMarkDirty("lifecycle-" .. tostring(state)) end
+end
+
+-- One idempotent local transaction for crossing into setup.  It never calls
+-- Forge and deliberately does not attempt snapshot recovery.  The cleanup
+-- marker prevents repeated health/404 responses from churning generations.
+function BridgeCleanupLocalSession(reason, lifecycleState)
+    if BridgeState.sessionCleanupApplied == true
+        and BridgeState.eventSessionId == nil
+        and BridgeState.lastDecision == nil then
+        BridgeSetLifecycleState(lifecycleState or BRIDGE_LIFECYCLE_READY_NO_SESSION, reason)
+        if BridgeEnsureSetupControls ~= nil then BridgeEnsureSetupControls() end
+        return false
+    end
+
+    BridgeState.sessionCleanupApplied = true
+    if BridgeStopEventPolling ~= nil then BridgeStopEventPolling("session-boundary:" .. tostring(reason)) end
+    if BridgeStopDecisionPolling ~= nil then BridgeStopDecisionPolling() end
+    BridgeState.eventSessionGeneration = (BridgeState.eventSessionGeneration or 0) + 1
+    BridgeState.decisionPresentationGeneration = (BridgeState.decisionPresentationGeneration or 0) + 1
+    BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
+    BridgeState.resyncToken = (BridgeState.resyncToken or 0) + 1
+    if BridgeAdvancePhysicalPresentationGeneration ~= nil then BridgeAdvancePhysicalPresentationGeneration("session-boundary") end
+    if BridgeAdvancePhysicalTransactionGeneration ~= nil then BridgeAdvancePhysicalTransactionGeneration("session-boundary") end
+
+    if BridgeClearHighlights ~= nil then pcall(BridgeClearHighlights) end
+    if BridgeResetSelectionState ~= nil then pcall(BridgeResetSelectionState) end
+    if BridgeReturnAttackPresentation ~= nil then pcall(BridgeReturnAttackPresentation, nil) end
+    if BridgeClearPreparedPresentationObjects ~= nil then pcall(BridgeClearPreparedPresentationObjects) end
+    if BridgeHideMainPriorityControls ~= nil then pcall(BridgeHideMainPriorityControls) end
+    if BridgeDestroyTransientControls ~= nil then pcall(BridgeDestroyTransientControls) end
+
+    BridgeState.eventSessionId = nil
+    BridgeState.lastDecision = nil
+    BridgeState.pendingDecision = nil
+    BridgeState.pendingIntent = nil
+    BridgeState.unboundPickupIntent = nil
+    BridgeState.choiceTransactions = {}
+    BridgeState.retiredChoiceDecisionIds = {}
+    BridgeState.retiredChoiceDecisionOrder = {}
+    BridgeState.lastChoiceAttempt = nil
+    BridgeState.eventQueue = {}
+    BridgeState.lastReceivedEventSequence = 0
+    BridgeState.lastAppliedEventSequence = 0
+    BridgeState.lastConsumedEventSequence = 0
+    BridgeState.lastStateProjectedEventSequence = 0
+    BridgeState.lastPhysicalPresentationEventSequence = 0
+    BridgeState.currentTurnSeatId = nil
+    BridgeState.prioritySeatId = nil
+    BridgeState.tableTurnCount = 0
+    BridgeState.turnCountsBySeatId = {}
+    BridgeState.currentPhase = nil
+    BridgeState.phaseSourceEventSequence = 0
+    BridgeState.turnSourceEventSequence = 0
+    BridgeState.activePlayerSourceEventSequence = 0
+    BridgeState.prioritySourceEventSequence = 0
+    BridgeState.desyncLatched = false
+    BridgeState.desyncLastMessage = nil
+    BridgeState.desyncFailureCount = 0
+    BridgeState.bootstrapping = false
+    BridgeState.resyncInFlight = false
+    BridgeState.resyncScheduled = false
+    BridgeState.resyncDeferredRetryScheduled = false
+    BridgeState.snapshotReconcileInFlight = false
+    BridgeState.snapshotReconcilePending = false
+    BridgeState.resyncCheckpoint = nil
+    BridgeState.resyncStage = "Idle"
+    BridgeState.resyncStartedAt = nil
+    BridgeState.resyncOrigin = nil
+    BridgeState.resyncLastFailureReason = nil
+    BridgeState.resyncNoProgressAttempts = 0
+    BridgeState.resyncCircuitOpen = false
+    BridgeState.schedulerOwner = "NORMAL"
+    BridgeState.fastForwardSuspendedByResync = false
+    BridgeState.animationRunning = false
+    BridgeState.eventDrainTransaction = nil
+    BridgeState.yieldPolicyTurnNumber = nil
+    BridgeState.yieldPolicyActiveSeatId = nil
+    BridgeState.yieldPolicySessionId = nil
+    BridgeState.yieldPolicyOwnTurn = false
+    BridgeState.pendingCastBySeatId = {}
+    BridgeState.libraryExtractionQueueBySeatId = {}
+    BridgeState.libraryExtractionActiveBySeatId = {}
+    BridgeState.mulliganBottomQueueBySeatId = {}
+    BridgeState.mulliganBottomInsertionActiveBySeatId = {}
+    BridgeState.mulliganReturningInstanceIds = {}
+    BridgeState.mulliganBottomInstanceIds = {}
+    BridgeState.physicalByInstanceId = {}
+    BridgeState.physicalInstanceIdByGuid = {}
+    BridgeState.physicalSeatByGuid = {}
+    BridgeState.physicalZoneByGuid = {}
+    BridgeState.cardNameByInstanceId = {}
+    BridgeState.authoritativeObjectByInstanceId = {}
+    BridgeState.revealedPresentationsByKey = {}
+    BridgeState.revealedPresentationOrder = {}
+    BridgeState.dismissedRevealKeys = {}
+    BridgeState.activeRevealPresentationKey = nil
+    BridgeState.stackSummary = {}
+    BridgeState.combatSelectedByGuid = {}
+    BridgeState.attackOriginByGuid = {}
+    BridgeState.pendingCastBySeatId = {}
+    BridgeState.gameEnded = nil
+    BridgeState.eventPolling = false
+    BridgeState.eventRequestInFlight = false
+    BridgeState.eventPollScheduled = false
+    BridgeState.decisionPollInFlight = false
+    BridgeState.decisionPollScheduled = false
+    BridgeState.decisionRefreshInFlight = false
+    BridgeState.submitting = false
+    BridgeState.setupBusy = false
+    BridgeState.resetConfirmationArmed = false
+    BridgeState.resetConfirmationGuid = nil
+    BridgeSetLifecycleState(lifecycleState or BRIDGE_LIFECYCLE_READY_NO_SESSION, reason)
+    if BridgeSetStatus ~= nil then BridgeSetStatus("COMPANION READY", "READY TO START A NEW MATCH") end
+    if BridgeEnsureSetupControls ~= nil then BridgeEnsureSetupControls() end
+    return true
+end
+
+function BridgeObserveBridgeHealth(body)
+    if body == nil then return end
+    local processId = body.bridgeProcessInstanceId
+    if processId ~= nil and processId ~= "" then
+        if BridgeState.bridgeProcessInstanceId ~= nil
+            and BridgeState.bridgeProcessInstanceId ~= processId then
+            BridgeState.connectionEpoch = (BridgeState.connectionEpoch or 0) + 1
+            BridgeLog(string.format("[Bridge] BRIDGE_PROCESS_EPOCH_CHANGED old=%s new=%s epoch=%s",
+                tostring(BridgeState.bridgeProcessInstanceId), tostring(processId), tostring(BridgeState.connectionEpoch)))
+            BridgeCleanupLocalSession("bridge-process-changed", BRIDGE_LIFECYCLE_READY_NO_SESSION)
+        end
+        BridgeState.bridgeProcessInstanceId = processId
+    end
+    local noSession = body.adapterState == "not_started"
+        or body.sessionId == nil or body.sessionId == "session-not-started"
+    if noSession then
+        BridgeCleanupLocalSession("bridge-reports-no-session", BRIDGE_LIFECYCLE_READY_NO_SESSION)
+    elseif body.adapterState == "starting" then
+        BridgeState.sessionCleanupApplied = false
+        BridgeSetLifecycleState(BRIDGE_LIFECYCLE_STARTING, "bridge-starting")
+    elseif body.sessionId ~= nil then
+        BridgeState.sessionCleanupApplied = false
+        if BridgeState.lifecycleState ~= BRIDGE_LIFECYCLE_RECOVERING then
+            BridgeSetLifecycleState(BRIDGE_LIFECYCLE_ACTIVE, "bridge-session-present")
+        end
+    end
+end
 
 function BridgeObjectIsUsable(object)
     if object == nil then return false end
@@ -1853,10 +2022,16 @@ end
 function BridgeHttp.requestJson(method, path, payload, callback)
     local url = BRIDGE_BASE_URL .. path
     local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    local connectionEpoch = BridgeState.connectionEpoch or 0
 
     local function handleIfCurrent(request)
         if not BridgeRuntimeIsCurrent(epoch) then
             BridgeLog("[Bridge] ignored HTTP callback from retired Global.lua runtime")
+            return
+        end
+        if connectionEpoch ~= (BridgeState.connectionEpoch or 0) then
+            BridgeLog(string.format("[Bridge] ignored HTTP callback from retired Bridge connection epoch path=%s expected=%s current=%s",
+                tostring(path), tostring(connectionEpoch), tostring(BridgeState.connectionEpoch)))
             return
         end
         BridgeHttp.handleResponse(request, callback)
@@ -3553,7 +3728,12 @@ function drawSwap(me, clickerColor)
 end
 
 function BridgeGetHealth(callback)
-    BridgeHttp.requestJson("GET", "/health", nil, callback)
+    BridgeHttp.requestJson("GET", "/health", nil, function(ok, body, err, request)
+        if ok and body ~= nil and BridgeObserveBridgeHealth ~= nil then
+            BridgeObserveBridgeHealth(body)
+        end
+        if callback ~= nil then callback(ok, body, err, request) end
+    end)
 end
 
 function BridgeStartSession(callback)
@@ -3861,6 +4041,10 @@ function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
     BridgeState.lastDecisionPollStartedAt = BridgeDecisionPollNow()
     BridgeHttp.requestJson("GET", "/api/v1/decision", nil, function(ok, body, err, request)
         if generation ~= BridgeState.decisionPollGeneration then return end
+        if not ok and body ~= nil and body.errorCode == "session_not_started" then
+            BridgeCleanupLocalSession("decision-no-session", BRIDGE_LIFECYCLE_READY_NO_SESSION)
+            return
+        end
         if expectedSessionId ~= BridgeState.eventSessionId
             or presentationGeneration ~= BridgeState.decisionPresentationGeneration then return end
 
@@ -6205,7 +6389,12 @@ function BridgeAttachToActiveSession(done)
             return
         end
 
-        BridgeFetchDecisionAfterAttach()
+        if body.adapterState == "not_started" or body.sessionId == nil
+            or body.sessionId == "session-not-started" then
+            BridgeCleanupLocalSession("attach-no-session", BRIDGE_LIFECYCLE_READY_NO_SESSION)
+        else
+            BridgeFetchDecisionAfterAttach()
+        end
         if done then done() end
     end)
 end
@@ -6298,11 +6487,14 @@ function BridgeStartSessionIfNone(done)
             BridgeTraceStart("START-08 session-start-response", ok and tostring(body and body.sessionId or "ok") or tostring(err))
             if not ok then
                 if done then done() end
-            BridgeShowError("session start failed: " .. BridgeHttpFailureDetail(body, err))
+                BridgeSetLifecycleState(BRIDGE_LIFECYCLE_START_FAILED, "session-start-failed")
+                BridgeShowError("session start failed: " .. BridgeHttpFailureDetail(body, err))
                 return
             end
 
             BridgeLog("[Bridge] started or attached session: " .. tostring(body and body.sessionId))
+            BridgeState.sessionCleanupApplied = false
+            BridgeSetLifecycleState(BRIDGE_LIFECYCLE_ACTIVE, "session-started")
             -- The start route may attach to a match that already exists. Do not replay
             -- its historical physical events; an explicit reset is the new-match path.
             BridgeBootstrapWhenAvailable(body.sessionId, 1, function(bootstrapOk, bootstrapError)
@@ -6350,6 +6542,8 @@ function BridgeResetSession()
         end
 
         BridgeLog("[Bridge] active match explicitly replaced: " .. tostring(body and body.sessionId))
+            BridgeState.sessionCleanupApplied = false
+            BridgeSetLifecycleState(BRIDGE_LIFECYCLE_ACTIVE, "session-reset")
         BridgeBootstrapWhenAvailable(body.sessionId, 1, function(bootstrapOk, bootstrapError)
             if not bootstrapOk then BridgeSetSetupBusy(false); BridgeStopOnDesync(bootstrapError); return end
             -- The snapshot is authoritative through this point, so opening
@@ -8560,6 +8754,10 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
             if not currentBootstrap() then return end
             BridgeTraceStart("START-11 snapshot-response", ok and tostring(snapshot and snapshot.sessionId or "ok") or tostring(err))
             if not ok or snapshot == nil then
+                if snapshot ~= nil and snapshot.errorCode == "session_not_started" then
+                    finishBootstrap(false, "session_not_started: bridge has no active Forge session")
+                    return
+                end
                 finishBootstrap(false, "authoritative snapshot unavailable: " .. tostring(err))
                 return
             end
@@ -8663,6 +8861,13 @@ end
 
 function BridgeBootstrapWhenAvailable(sessionId, attempt, callback)
     BridgeBootstrapCurrentSnapshot(sessionId, function(ok, err)
+        local detail = tostring(err or "")
+        if string.find(detail, "session_not_started", 1, true) ~= nil
+            or string.find(detail, "no active Forge session", 1, true) ~= nil then
+            BridgeCleanupLocalSession("snapshot-no-session", BRIDGE_LIFECYCLE_READY_NO_SESSION)
+            callback(false, "bridge reports no active session")
+            return
+        end
         if ok or string.find(tostring(err), "HTTP 404", 1, true) == nil then
             callback(ok, err)
             return

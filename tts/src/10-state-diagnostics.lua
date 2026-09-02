@@ -371,10 +371,16 @@ end
 function BridgeHttp.requestJson(method, path, payload, callback)
     local url = BRIDGE_BASE_URL .. path
     local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    local connectionEpoch = BridgeState.connectionEpoch or 0
 
     local function handleIfCurrent(request)
         if not BridgeRuntimeIsCurrent(epoch) then
             BridgeLog("[Bridge] ignored HTTP callback from retired Global.lua runtime")
+            return
+        end
+        if connectionEpoch ~= (BridgeState.connectionEpoch or 0) then
+            BridgeLog(string.format("[Bridge] ignored HTTP callback from retired Bridge connection epoch path=%s expected=%s current=%s",
+                tostring(path), tostring(connectionEpoch), tostring(BridgeState.connectionEpoch)))
             return
         end
         BridgeHttp.handleResponse(request, callback)

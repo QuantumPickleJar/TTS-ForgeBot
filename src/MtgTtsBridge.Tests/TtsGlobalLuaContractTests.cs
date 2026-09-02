@@ -610,6 +610,34 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void SessionBoundary_NoSessionAndProcessEpochUseIdempotentSetupCleanup()
+    {
+        Assert.Contains("BRIDGE_LIFECYCLE_READY_NO_SESSION", Script);
+        Assert.Contains("function BridgeCleanupLocalSession(reason, lifecycleState)", Script);
+        Assert.Contains("sessionCleanupApplied", Script);
+        Assert.Contains("BridgeState.eventSessionId = nil", Script);
+        Assert.Contains("BridgeState.eventQueue = {}", Script);
+        Assert.Contains("BridgeState.lastReceivedEventSequence = 0", Script);
+        Assert.Contains("BridgeState.lastAppliedEventSequence = 0", Script);
+        Assert.Contains("BridgeState.physicalByInstanceId = {}", Script);
+        Assert.Contains("BridgeEnsureSetupControls()", Script);
+        Assert.Contains("function BridgeObserveBridgeHealth(body)", Script);
+        Assert.Contains("BRIDGE_PROCESS_EPOCH_CHANGED", Script);
+        Assert.Contains("body.adapterState == \"not_started\"", Script);
+    }
+
+    [Fact]
+    public void SessionBoundary_RejectsNoSessionRecoveryAndFencesHttpCallbacks()
+    {
+        Assert.Contains("connectionEpoch = BridgeState.connectionEpoch or 0", Script);
+        Assert.Contains("retired Bridge connection epoch", Script);
+        Assert.Contains("errorCode == \"session_not_started\"", Script);
+        Assert.Contains("BridgeCleanupLocalSession(\"snapshot-no-session\"", Script);
+        Assert.Contains("BridgeCleanupLocalSession(\"decision-no-session\"", Script);
+        Assert.Contains("BridgeSetLifecycleState(BRIDGE_LIFECYCLE_START_FAILED", Script);
+    }
+
+    [Fact]
     public void AuthoritativeDraw_TakesVerifiedNamedCardFromPhysicalDeckWithoutChatLeak()
     {
         Assert.Contains("if event.kind == \"draw\"", Script);

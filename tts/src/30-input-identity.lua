@@ -1671,6 +1671,10 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
             if not currentBootstrap() then return end
             BridgeTraceStart("START-11 snapshot-response", ok and tostring(snapshot and snapshot.sessionId or "ok") or tostring(err))
             if not ok or snapshot == nil then
+                if snapshot ~= nil and snapshot.errorCode == "session_not_started" then
+                    finishBootstrap(false, "session_not_started: bridge has no active Forge session")
+                    return
+                end
                 finishBootstrap(false, "authoritative snapshot unavailable: " .. tostring(err))
                 return
             end
@@ -1774,6 +1778,13 @@ end
 
 function BridgeBootstrapWhenAvailable(sessionId, attempt, callback)
     BridgeBootstrapCurrentSnapshot(sessionId, function(ok, err)
+        local detail = tostring(err or "")
+        if string.find(detail, "session_not_started", 1, true) ~= nil
+            or string.find(detail, "no active Forge session", 1, true) ~= nil then
+            BridgeCleanupLocalSession("snapshot-no-session", BRIDGE_LIFECYCLE_READY_NO_SESSION)
+            callback(false, "bridge reports no active session")
+            return
+        end
         if ok or string.find(tostring(err), "HTTP 404", 1, true) == nil then
             callback(ok, err)
             return
