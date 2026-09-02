@@ -33,6 +33,37 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
+    public async Task RenderArguments_IncludeConfiguredDeckFormatMetadataWhenRequested()
+    {
+        await using var adapter = new ForgeTuiAdapter(
+            Options.Create(new ForgeTuiOptions
+            {
+                Executable = "unused",
+                Arguments = "tui --format {deckFormat} --format-provenance {deckFormatProvenance} --override {deckMinimumOverride} {humanDeck} {aiDeck}",
+                WorkingDirectory = Environment.CurrentDirectory,
+            }),
+            NullLogger<ForgeTuiAdapter>.Instance);
+        await adapter.ConfigureDecksAsync(new DeckLoadRequestDto([
+            new("forge-player-1", [new("Island", 40)]),
+            new("forge-player-2", [new("Swamp", 40)])
+        ])
+        {
+            Format = "limited",
+            FormatProvenance = "tts-default-limited",
+            AllowDeckMinimumOverride = false,
+        }, CancellationToken.None);
+
+        var render = typeof(ForgeTuiAdapter).GetMethod("RenderArguments", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(render);
+
+        var rendered = Assert.IsType<string>(render.Invoke(adapter, null));
+        Assert.Contains("--format limited", rendered);
+        Assert.Contains("--format-provenance tts-default-limited", rendered);
+        Assert.Contains("--override false", rendered);
+        Assert.DoesNotContain("{deckFormat}", rendered);
+    }
+
+    [Fact]
     public async Task HumanControllerDiagnostics_AreBoundedAndCountInheritedKinds()
     {
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");

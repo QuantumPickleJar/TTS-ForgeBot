@@ -7120,7 +7120,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         BridgeRecordDecisionLifecycle(decision, origin, "REJECTED_STALE", "stale-event-cursor")
         BridgeLog(string.format(
             "[Bridge] ignoring stale decision %s kind=%s (cursor=%s, applied=%s)",
-            tostring(decision.decisionId), tostring(eventCursor), tostring(applied)))
+            tostring(decision.decisionId), tostring(decision.kind), tostring(eventCursor), tostring(applied)))
         -- A stale poll response is not a terminal state.  The GET that
         -- delivered it has already completed, so simply returning would
         -- leave the bridge with no current decision and Forge would continue

@@ -599,6 +599,41 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void StaleDecisionAcceptanceDoesNotCrashAndRearmsDecisionPolling()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.decisionPresentationGeneration = 1
+            BridgeState.lastAppliedEventSequence = 48
+            BridgeState.lastReceivedEventSequence = 48
+            BridgeState.lastAppliedForgeSequence = 9
+            BridgeState.choiceTransactions = {}
+            BridgeState.retiredChoiceDecisionIds = {}
+            BridgeState.lastDecision = nil
+            BridgeState.pendingDecision = nil
+            rearmed = 0
+            function BridgeClearHighlights() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeStartDecisionPolling() rearmed = rearmed + 1 end
+            BridgeAcceptDecision({
+                decisionId='forge-tui-5',
+                sessionId='session',
+                kind='main_priority',
+                seatId='forge-player-1',
+                eventCursor=44,
+                forgeSequence=8,
+                actions={{actionId='pass-5', type='pass_priority'}}
+            }, 'http', 'session', 1)
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(1, lua.Globals.Get("rearmed").Number);
+        Assert.True(state.Get("lastDecision").IsNil());
+        Assert.True(state.Get("pendingDecision").IsNil());
+    }
+
+    [Fact]
     public void LifecycleGuardBlocksStartMatchOutsideReadyOrFailedStates()
     {
         var lua = NewQueueProbe();

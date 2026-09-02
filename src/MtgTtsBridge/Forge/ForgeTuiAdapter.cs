@@ -53,6 +53,9 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private readonly string? _opponentSeatId;
     private string? _humanDeckPath;
     private string? _aiDeckPath;
+    private string _deckFormat = "unknown";
+    private string? _deckFormatProvenance;
+    private bool _allowDeckMinimumOverride;
     private long _latestEventSequence;
     private string _lastObservedTuiText = string.Empty;
     private int? _latestObservedTurnNumber;
@@ -95,13 +98,22 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         var aiPath = Path.Combine(directory, "tts-ai.dck");
         await WriteDeckAsync(humanPath, human.Cards, cancellationToken).ConfigureAwait(false);
         await WriteDeckAsync(aiPath, ai.Cards, cancellationToken).ConfigureAwait(false);
+        var normalizedFormat = NormalizeDeckFormat(request.Format);
         lock (_sync)
         {
             _humanDeckPath = humanPath;
             _aiDeckPath = aiPath;
+            _deckFormat = normalizedFormat;
+            _deckFormatProvenance = request.FormatProvenance;
+            _allowDeckMinimumOverride = request.AllowDeckMinimumOverride;
         }
-        _logger.LogInformation("Accepted TTS library deck inventories: humanCards={HumanCards} aiCards={AiCards}",
-            human.Cards.Sum(card => card.Count), ai.Cards.Sum(card => card.Count));
+        _logger.LogInformation(
+            "Accepted TTS library deck inventories: humanCards={HumanCards} aiCards={AiCards} deckFormat={DeckFormat} formatProvenance={FormatProvenance} deckMinimumOverride={DeckMinimumOverride}",
+            human.Cards.Sum(card => card.Count),
+            ai.Cards.Sum(card => card.Count),
+            normalizedFormat,
+            request.FormatProvenance ?? "(missing)",
+            request.AllowDeckMinimumOverride);
     }
 
     public Task<AdapterStateDto> GetStateAsync(CancellationToken cancellationToken)
@@ -272,7 +284,13 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
         lock (_sync) _startupTracker.MarkProcessLaunched();
 
-        _logger.LogInformation("Started Forge TUI process {ProcessId}: {Executable} (TTS library decks, Legacy assumption)", process.Id, _options.Executable);
+        _logger.LogInformation(
+            "Started Forge TUI process {ProcessId}: {Executable} (TTS library decks, format={DeckFormat}, provenance={FormatProvenance}, deckMinimumOverride={DeckMinimumOverride})",
+            process.Id,
+            _options.Executable,
+            _deckFormat,
+            _deckFormatProvenance ?? "(missing)",
+            _allowDeckMinimumOverride);
         lock (_sync) _stdoutReaderTask = ReadOutputAsync(process, processGeneration, process.StandardOutput, isError: false, cancellation.Token);
         _ = ReadOutputAsync(process, processGeneration, process.StandardError, isError: true, cancellation.Token);
 
@@ -1082,6 +1100,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             arguments = arguments.Replace("{seed}", seed.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
             _logger.LogInformation("Starting Forge session with generated random seed {Seed}", seed);
         }
+        arguments = arguments
+            .Replace("{deckFormat}", _deckFormat, StringComparison.Ordinal)
+            .Replace("{deckFormatProvenance}", _deckFormatProvenance ?? string.Empty, StringComparison.Ordinal)
+            .Replace("{deckMinimumOverride}", _allowDeckMinimumOverride ? "true" : "false", StringComparison.Ordinal);
         if (!arguments.Contains("{humanDeck}", StringComparison.Ordinal)) return arguments;
         lock (_sync)
         {
@@ -1089,6 +1111,19 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 .Replace("{humanDeck}", _humanDeckPath!, StringComparison.Ordinal)
                 .Replace("{aiDeck}", _aiDeckPath!, StringComparison.Ordinal);
         }
+    }
+
+    private static string NormalizeDeckFormat(string? format)
+    {
+        var value = (format ?? string.Empty).Trim().ToLowerInvariant();
+        return value switch
+        {
+            "standard" => "constructed",
+            "legacy" => "constructed",
+            "constructed" => "constructed",
+            "limited" => "limited",
+            _ => value
+        };
     }
 
     private static async Task WriteDeckAsync(string path, IReadOnlyList<DeckCardLoadDto> cards, CancellationToken cancellationToken)
