@@ -323,6 +323,82 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void SameSessionResyncStagesMappingsAndRollsThemBackWithoutLosingTheCommittedRegistry()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.physicalByInstanceId = { ['old-card'] = 'old-guid' }
+            BridgeState.physicalInstanceIdByGuid = { ['old-guid'] = 'old-card' }
+            BridgeState.physicalSeatByGuid = { ['old-guid'] = 'forge-player-1' }
+            BridgeState.physicalZoneByGuid = { ['old-guid'] = 'battlefield' }
+            BridgeState.eventQueue = {{sequence=89, kind='card_moved'}}
+            BridgeState.lastReceivedEventSequence = 88
+            BridgeState.lastAppliedEventSequence = 88
+            BridgeBeginResyncMappingTransaction()
+            BridgeState.physicalByInstanceId = { ['new-card'] = 'new-guid' }
+            BridgeState.physicalInstanceIdByGuid = { ['new-guid'] = 'new-card' }
+            BridgeRestoreResyncMappingTransaction('staged-reconcile-failed')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal("old-guid", state.Get("physicalByInstanceId").Table.Get("old-card").String);
+        Assert.Equal("old-card", state.Get("physicalInstanceIdByGuid").Table.Get("old-guid").String);
+        Assert.Equal(88, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(1, state.Get("eventQueue").Table.Length);
+    }
+
+    [Fact]
+    public void ValidSnapshotCheckpointReattachesTheCurrentDecisionExactlyOnce()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.eventQueue = {{sequence=89, kind='card_moved'}}
+            BridgeState.lastReceivedEventSequence = 88
+            BridgeState.lastAppliedEventSequence = 88
+            BridgeState.ui = {resyncInFlight=false}
+            function BridgeWaitFrames(callback, frames) end
+            function BridgeWaitTime(callback, delay) end
+            function BridgeStopEventPolling(reason) end
+            function BridgeStopDecisionPolling() end
+            function BridgeResumeChoiceProtocol(reason) end
+            function BridgeClearHighlights() end
+            function BridgeResetSelectionState() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeSetStatus(headline, detail) end
+            function BridgeUiMarkDirty(reason) end
+            function BridgeStartEventPolling(sessionId, skipExisting) end
+            function BridgeGetDecision(callback)
+                callback(true, {
+                    decisionId='forge-tui-13', sessionId='session', eventCursor=95,
+                    kind='main_priority', seatId='forge-player-1',
+                    actions={{actionId='pass-13', type='pass_priority'}}
+                }, nil)
+            end
+            reattached = 0
+            function BridgeAcceptDecision(decision, origin, sessionId, presentationGeneration)
+                reattached = reattached + 1
+                BridgeState.lastDecision = decision
+            end
+            function BridgeBootstrapCurrentSnapshot(sessionId, callback, resume, origin)
+                BridgeState.lastReceivedEventSequence = 95
+                BridgeState.lastAppliedEventSequence = 95
+                BridgeState.eventQueue = {}
+                callback(true, nil)
+            end
+            BridgeResyncFromAuthoritativeSnapshot('manual')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(95, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(0, state.Get("eventQueue").Table.Length);
+        Assert.Equal("forge-tui-13", state.Get("lastDecision").Table.Get("decisionId").String);
+        Assert.Equal(1, lua.Globals.Get("reattached").Number);
+        Assert.False(state.Get("resyncInFlight").Boolean);
+    }
+
+    [Fact]
     public void RecoveryOwnsSchedulersAndSuspendsFastForward()
     {
         var lua = NewQueueProbe();

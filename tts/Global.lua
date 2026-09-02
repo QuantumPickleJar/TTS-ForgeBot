@@ -1180,6 +1180,9 @@ BridgeState = {
     lastSnapshotSupersededRange = nil,
     resyncSnapshotFingerprint = nil,
     resyncSnapshotRepeatCount = 0,
+    resyncMappingTransaction = nil,
+    resyncReconcileStarted = false,
+    resyncLastBlockingPredicate = nil,
     resyncOrigin = nil,
     schedulerOwner = "NORMAL",
     fastForwardSuspendedByResync = false,
@@ -1337,6 +1340,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.snapshotReconcileInFlight = false
     BridgeState.snapshotReconcilePending = false
     BridgeState.resyncCheckpoint = nil
+    BridgeState.resyncMappingTransaction = nil
+    BridgeState.resyncReconcileStarted = false
+    BridgeState.resyncLastBlockingPredicate = nil
     BridgeState.resyncStage = "Idle"
     BridgeState.resyncStartedAt = nil
     BridgeState.resyncOrigin = nil
@@ -8859,8 +8865,10 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                 return
             end
             if resumeFromSnapshotCursor == true then
+                -- Validation is deliberately side-effect free.  The queued
+                -- prefix is superseded only by BridgeCommitSnapshotCheckpoint
+                -- after physical reconciliation has completed successfully.
                 BridgeRecordResyncLifecycle("VALIDATING_SNAPSHOT", resyncOrigin, bootstrapGeneration, snapshot)
-                BridgeSupersedeEventsThroughSnapshot(snapshotCursor, "validated-snapshot")
             end
             BridgeRecordResyncSnapshotProgress(resyncOrigin, snapshot)
             BridgeRecordExpectedHandIdentities(snapshot)
@@ -8874,6 +8882,8 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
             end
             BridgeTraceStart("START-12 physical-bootstrap-begin")
             BridgeSetResyncStage("ReconcilingSnapshot", "snapshot-validated", snapshot)
+            BridgeState.resyncReconcileStarted = true
+            BridgeState.resyncLastProgressAt = BridgeResyncClockNow()
             BridgeRecordResyncLifecycle("RECONCILE_STARTED", resyncOrigin, bootstrapGeneration, snapshot)
             BridgeStageSeatCardsForBootstrap(snapshot, function(stagedOk, stagedError, stagedGuids)
                 if not currentBootstrap() then return end
@@ -9020,6 +9030,51 @@ function BridgeIsExplicitResyncOrigin(origin)
         or value == "user" or value == "user-resync"
 end
 
+local function BridgeCopyResyncValue(value, seen)
+    if type(value) ~= "table" then return value end
+    seen = seen or {}
+    if seen[value] ~= nil then return seen[value] end
+    local copy = {}
+    seen[value] = copy
+    for key, item in pairs(value) do
+        copy[BridgeCopyResyncValue(key, seen)] = BridgeCopyResyncValue(item, seen)
+    end
+    return copy
+end
+
+local function BridgeCopyResyncTable(value)
+    return BridgeCopyResyncValue(value or {}, {})
+end
+
+function BridgeBeginResyncMappingTransaction()
+    if BridgeState.resyncMappingTransaction ~= nil then return end
+    local names = {
+        "physicalByInstanceId", "physicalInstanceIdByGuid", "physicalSeatByGuid",
+        "physicalZoneByGuid", "cardNameByInstanceId", "canonicalCardNameByGuid",
+        "authoritativeObjectByInstanceId", "battlefieldKindByInstanceId",
+        "pendingPrivateHandIdentityByInstanceId", "untappedRotationByGuid",
+        "physicalTappedByGuid", "counterStateByInstanceId", "keywordStateByInstanceId",
+        "cardDesignationsByInstanceId"
+    }
+    local snapshot = {}
+    for _, name in ipairs(names) do snapshot[name] = BridgeCopyResyncTable(BridgeState[name]) end
+    BridgeState.resyncMappingTransaction = snapshot
+end
+
+function BridgeRestoreResyncMappingTransaction(reason)
+    local snapshot = BridgeState.resyncMappingTransaction
+    if snapshot == nil then return end
+    for name, value in pairs(snapshot) do BridgeState[name] = value end
+    BridgeState.resyncMappingTransaction = nil
+    BridgeState.resyncLastBlockingPredicate = tostring(reason or "mapping-rollback")
+    BridgeLog("[Bridge] RESYNC_MAPPING_ROLLBACK reason=" .. tostring(reason or "unspecified"))
+end
+
+function BridgeCommitResyncMappingTransaction()
+    BridgeState.resyncMappingTransaction = nil
+    BridgeState.resyncReconcileStarted = true
+end
+
 function BridgeResyncClockNow()
     if BridgePerformanceWallNow ~= nil then
         local wall = BridgePerformanceWallNow()
@@ -9132,15 +9187,16 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeState.bootstrapping = false
     BridgeState.resyncStartedAt = nil
     BridgeState.resyncLastFailureReason = tostring(reason or "watchdog")
-    BridgeState.resyncDeferredReason = "stalled"
+    BridgeState.resyncDeferredReason = tostring(reason or "watchdog")
     BridgeSetSchedulerOwner("NORMAL", "resync-stalled")
     BridgeState.animationRunning = false
     BridgeState.eventDrainTransaction = nil
-    BridgeRestoreResyncCheckpoint("stalled:" .. tostring(reason or "watchdog"))
+    BridgeRestoreResyncMappingTransaction("resync-watchdog:" .. tostring(reason or "watchdog"))
+    BridgeRestoreResyncCheckpoint("resync-watchdog:" .. tostring(reason or "watchdog"))
     BridgeRecordResyncLifecycle("FAILED", BridgeState.resyncOrigin, token, nil, reason,
         nil, BridgeState.lastReceivedEventSequence, BridgeState.lastAppliedEventSequence)
     if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
-    BridgeSetStatus("RESYNC AVAILABLE", "Authoritative recovery stalled; try RESYNC FORGE again.")
+    BridgeSetStatus("RESYNC AVAILABLE", "Authoritative recovery stopped: " .. tostring(reason or "watchdog") .. ". Try RESYNC FORGE again.")
     BridgeUiMarkDirty("resync-stalled")
     return true
 end
@@ -9256,6 +9312,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         lastApplied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
         eventQueue = BridgeState.eventQueue
     }
+    BridgeBeginResyncMappingTransaction()
     BridgeState.resyncToken = (BridgeState.resyncToken or 0) + 1
     local resyncToken = BridgeState.resyncToken
     BridgeState.resyncAttempt = (BridgeState.resyncAttempt or 0) + 1
@@ -9264,6 +9321,8 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     BridgeState.resyncOrigin = origin
     BridgeState.resyncStartedAt = BridgeResyncClockNow()
     BridgeState.resyncInFlight = true
+    BridgeState.resyncReconcileStarted = false
+    BridgeState.resyncLastBlockingPredicate = nil
     BridgeSetSchedulerOwner("RESYNC", origin)
     if BridgeState.ui ~= nil and BridgeState.ui.fastForwardActive == true then
         BridgeState.fastForwardSuspendedByResync = true
@@ -9312,6 +9371,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
                     BridgeState.resyncCircuitOpen = true
                 end
             end
+            BridgeRestoreResyncMappingTransaction("bootstrap-failed:" .. tostring(err))
             BridgeRestoreResyncCheckpoint("bootstrap-failed")
             BridgeState.desyncLatched = true
             BridgeSetSchedulerOwner("NORMAL", "resync-failed")
@@ -9321,20 +9381,40 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             return
         end
         BridgeState.resyncCheckpoint = nil
+        BridgeCommitResyncMappingTransaction()
         BridgeState.resyncNoProgressAttempts = 0
         BridgeState.resyncLastProgressAt = BridgeResyncClockNow()
         BridgeSetSchedulerOwner("NORMAL", "resync-commit")
         BridgeStartEventPolling(sessionId, false)
-        BridgeStartDecisionPolling()
         BridgeState.desyncLatched = false
         BridgeState.desyncFailureCount = 0
         BridgeState.desyncLastMessage = nil
-        BridgeSetStatus("MATCH ACTIVE", "Physical table resynced from Forge.")
+        BridgeSetStatus("RESYNCING FROM FORGE", "Checkpoint committed; reattaching the current Forge decision...")
         BridgeUiMarkDirty("resync-complete")
         BridgeLog("[Bridge] RESYNC_COMPLETE eventCursor="
             .. tostring(BridgeState.lastAppliedEventSequence))
-        BridgeRecordResyncLifecycle("COMPLETED", origin, resyncToken, nil, nil, nil, nil, nil)
-        BridgeSetResyncStage("Completed", "pipelines-restarted", nil)
+        -- Reattach exactly one authoritative decision after the checkpoint.
+        -- Polling while resync is active was the captured infinite loop: the
+        -- decision was valid, but it could not be accepted against cursor 0.
+        local decisionSession = BridgeState.eventSessionId
+        local decisionGeneration = BridgeState.decisionPresentationGeneration
+        BridgeGetDecision(function(decisionOk, decision, decisionErr)
+            if BridgeState.resyncToken ~= resyncToken
+                or BridgeState.eventSessionId ~= decisionSession
+                or BridgeState.decisionPresentationGeneration ~= decisionGeneration then
+                return
+            end
+            if decisionOk and decision ~= nil then
+                BridgeAcceptDecision(decision, "resync-decision-reattach", decisionSession, decisionGeneration)
+            else
+                BridgeLog("[Bridge] RESYNC_DECISION_REATTACH_FAILED reason=" .. tostring(decisionErr))
+                BridgeStartDecisionPolling()
+            end
+            BridgeSetStatus("MATCH ACTIVE", "Physical table resynced from Forge.")
+            BridgeUiMarkDirty("resync-complete")
+            BridgeRecordResyncLifecycle("COMPLETED", origin, resyncToken, decision, nil, nil, nil, nil)
+            BridgeSetResyncStage("Completed", "pipelines-restarted", decision)
+        end)
     end, true, origin)
     return true
 end
