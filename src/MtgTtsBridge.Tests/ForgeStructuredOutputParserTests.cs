@@ -34,6 +34,23 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void StructuredTriggeredAbility_IsPreservedAsIndependentStackObject()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var frame = Frame(18, Player()).Replace(
+            ",\"stack\":[]",
+            ",\"stack\":[],\"stackObjects\":[{\"stackObjectId\":\"forge-stack:44\",\"stackKind\":\"triggered-ability\",\"sourceCardInstanceId\":\"forge-object:8\",\"sourceName\":\"Stitcher’s Supplier\",\"controllerSeatId\":\"forge-player-1\",\"abilityName\":\"ETB\",\"abilityText\":\"Mill three cards.\",\"creationSequence\":18,\"stackIndex\":1,\"provenance\":\"trigger\",\"targets\":[]}] ");
+        var reconciler = new ForgeStructuredStateReconciler();
+        _ = reconciler.Apply("session-stack", Parse(parser, frame));
+
+        var stackObject = Assert.Single(reconciler.Current!.StackObjects!);
+        Assert.Equal("forge-stack:44", stackObject.StackObjectId);
+        Assert.Equal("triggered-ability", stackObject.StackKind);
+        Assert.Equal("forge:session-stack:8", stackObject.SourceCardInstanceId);
+        Assert.Equal("Mill three cards.", stackObject.AbilityText);
+    }
+
+    [Fact]
     public void StructuredJson_SplitAcrossManyChunks_ParsesOnceWithoutJsonLeakage()
     {
         var parser = new ForgeStructuredOutputParser();

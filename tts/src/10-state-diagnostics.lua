@@ -1055,6 +1055,15 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         local current = BridgeState.libraryExtractionQueueBySeatId[seatId]
         if current ~= nil then table.remove(current, 1) end
     BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
+        local batch = BridgeState.libraryBatchBySeatId[seatId]
+        local nextEvent = BridgeState.eventQueue and BridgeState.eventQueue[1] or nil
+        if batch ~= nil and (nextEvent == nil or tostring(nextEvent.forgeSequence or "") ~= tostring(batch.forgeSequence or "")) then
+            batch.completedAt = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+            batch.active = false
+            BridgeState.libraryBatchBySeatId[seatId] = nil
+            BridgeLog(string.format("[Bridge] LIBRARY_BATCH_COMMITTED seat=%s forgeSequence=%s count=%s",
+                tostring(seatId), tostring(batch.forgeSequence), tostring(#(batch.cardInstanceIds or {}))))
+        end
         BridgeProcessLibraryExtractionQueue(seatId)
         BridgeTryPresentPendingDecision("library-extraction-complete")
         if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
@@ -1309,6 +1318,23 @@ function onUpdate()
     -- TTS callback while the time scheduler is delayed.  Keep the resync
     -- watchdog reactive from the frame loop as well.
     if BridgeCheckResyncWatchdog ~= nil then BridgeCheckResyncWatchdog("onUpdate") end
+end
+
+function BridgeBeginLibraryBatch(event)
+    if event == nil or event.seatId == nil or event.sourceZone ~= "library"
+        or event.destinationZone == nil or event.destinationZone == "library" then return end
+    local sequence = event.forgeSequence
+    if sequence == nil then return end
+    local batch = BridgeState.libraryBatchBySeatId[event.seatId]
+    if batch == nil or tostring(batch.forgeSequence) ~= tostring(sequence) then
+        batch = {forgeSequence = sequence, active = true, cardInstanceIds = {}, startedAt = os.clock()}
+        BridgeState.libraryBatchBySeatId[event.seatId] = batch
+        BridgeLog(string.format("[Bridge] LIBRARY_BATCH_BEGIN seat=%s forgeSequence=%s", tostring(event.seatId), tostring(sequence)))
+    end
+    for _, instanceId in ipairs(batch.cardInstanceIds) do
+        if instanceId == event.cardInstanceId then return end
+    end
+    table.insert(batch.cardInstanceIds, event.cardInstanceId)
 end
 
 -- The stable static tree lives in Global.xml. Dynamic decision content is

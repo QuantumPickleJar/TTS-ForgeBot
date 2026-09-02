@@ -149,6 +149,7 @@ public sealed record ForgeStructuredSnapshot(
     string Reason,
     IReadOnlyList<ForgeStructuredPlayer> Players,
     IReadOnlyList<ForgeStructuredCard> Stack,
+    IReadOnlyList<ForgeStructuredStackObject>? StackObjects = null,
     string? MonarchSeatId = null,
     ForgeStructuredCombat? Combat = null,
     ForgeStructuredGameEnded? GameEnded = null,
@@ -156,6 +157,19 @@ public sealed record ForgeStructuredSnapshot(
     string? ActiveSeatId = null,
     string? PrioritySeatId = null,
     string? Phase = null);
+
+public sealed record ForgeStructuredStackObject(
+    string StackObjectId,
+    string StackKind,
+    string? SourceCardInstanceId,
+    string? SourceName,
+    string? ControllerSeatId,
+    string? AbilityName,
+    string? AbilityText,
+    long CreationSequence,
+    int StackIndex,
+    string? Provenance,
+    IReadOnlyList<string> Targets);
 
 public sealed record ForgeStructuredCombat(IReadOnlyList<ForgeStructuredCombatAttack> Attacks);
 public sealed record ForgeStructuredCombatAttack(int AttackerForgeObjectId, string? DefenderSeatId, int? DefenderForgeObjectId, IReadOnlyList<int> BlockerForgeObjectIds);

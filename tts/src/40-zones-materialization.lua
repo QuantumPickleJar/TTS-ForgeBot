@@ -341,6 +341,21 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
         -- milled card can never be replaced by another copy from the library.
         local preservedGuid = BridgeState.physicalByInstanceId[card.cardInstanceId]
         local preservedAsset = preservedGuid and assetByGuid[tostring(preservedGuid)] or nil
+        -- A failed asynchronous move can retire the forward index before the
+        -- reverse index is rebuilt. Recover the exact live asset by identity;
+        -- never fall through to duplicate-name matching in that case.
+        if preservedAsset == nil then
+            for guid, mappedInstanceId in pairs(BridgeState.physicalInstanceIdByGuid or {}) do
+                if mappedInstanceId == card.cardInstanceId then
+                    local reverseAsset = assetByGuid[tostring(guid)]
+                    if reverseAsset ~= nil then
+                        preservedGuid = guid
+                        preservedAsset = reverseAsset
+                        break
+                    end
+                end
+            end
+        end
         if preservedAsset ~= nil and preservedAsset.assigned ~= true then
             assigned = preservedAsset
             preservedAsset.assigned = true
@@ -1311,6 +1326,7 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
     BridgeState.libraryExtractionQueueBySeatId = {}
     BridgeState.libraryExtractionActiveBySeatId = {}
+    BridgeState.libraryBatchBySeatId = {}
     BridgeState.battlefieldCounts = {}
     BridgeState.graveyardCounts = {}
     BridgeState.counterStateByInstanceId = {}
@@ -3023,6 +3039,7 @@ end
 
 function BridgeApplyStructuredCardMove(event)
     if event.cardInstanceId == nil then return false, "structured zone change has no cardInstanceId" end
+    BridgeBeginLibraryBatch(event)
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then return false, "structured zone change has no configured seat" end
 

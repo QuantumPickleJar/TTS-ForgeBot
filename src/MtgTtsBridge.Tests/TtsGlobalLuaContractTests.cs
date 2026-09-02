@@ -610,6 +610,29 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void StructuredStackObjectsRemainVirtualAndDoNotMoveTheirSourceCard()
+    {
+        Assert.Contains("snapshot and snapshot.stackObjects or {}", Script);
+        Assert.Contains("stackObject.stackKind", Script);
+        Assert.Contains("BridgeHudStackDetails", Script);
+        Assert.DoesNotContain("stackObject.clone", Script);
+        Assert.DoesNotContain("stackObject.setPosition", Script);
+    }
+
+    [Fact]
+    public void SameForgeLibraryMutationOwnsItsWholeExtractionBatch()
+    {
+        Assert.Contains("function BridgeBeginLibraryBatch(event)", Script);
+        Assert.Contains("LIBRARY_BATCH_BEGIN", Script);
+        Assert.Contains("LIBRARY_BATCH_COMMITTED", Script);
+        Assert.Contains("libraryBatchBySeatId[seatId]", Script);
+        Assert.Contains("BridgeState.libraryBatchBySeatId[seatId].active == true", Script);
+        Assert.Contains("BridgeBeginLibraryBatch(event)", Script);
+        Assert.Contains("physicalInstanceIdByGuid or {})", Script);
+        Assert.Contains("reverseAsset", Script);
+    }
+
+    [Fact]
     public void SessionBoundary_NoSessionAndProcessEpochUseIdempotentSetupCleanup()
     {
         Assert.Contains("BRIDGE_LIFECYCLE_READY_NO_SESSION", Script);

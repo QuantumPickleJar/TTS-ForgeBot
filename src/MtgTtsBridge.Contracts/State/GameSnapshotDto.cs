@@ -12,6 +12,7 @@ public sealed record GameSnapshotDto(
     string Reason,
     IReadOnlyList<GameSeatSnapshotDto> Seats,
     IReadOnlyList<GameCardSnapshotDto> Stack,
+    IReadOnlyList<GameStackObjectSnapshotDto>? StackObjects = null,
     // Bridge event-stream cursor captured with this snapshot. ForgeSequence is
     // producer-local; EventCursor is the only safe ordering comparison for TTS.
     long EventCursor = 0,
@@ -28,6 +29,20 @@ public sealed record GameSnapshotDto(
     string? PrioritySeatId = null,
     string? Phase = null,
     IReadOnlyList<RevealPresentationDto>? ActiveRevealPresentations = null);
+
+/// <summary>Forge's logical stack entry. It is independent of a physical card object.</summary>
+public sealed record GameStackObjectSnapshotDto(
+    string StackObjectId,
+    string StackKind,
+    string? SourceCardInstanceId,
+    string? SourceName,
+    string? ControllerSeatId,
+    string? AbilityName,
+    string? AbilityText,
+    long CreationSequence,
+    int StackIndex,
+    string? Provenance,
+    IReadOnlyList<string> Targets);
 
 public sealed record GameCombatSnapshotDto(IReadOnlyList<GameCombatAttackSnapshotDto> Attacks);
 public sealed record GameCombatAttackSnapshotDto(string AttackerCardInstanceId, string? DefenderSeatId, int? DefenderForgeObjectId, IReadOnlyList<string> BlockerCardInstanceIds);

@@ -2522,6 +2522,21 @@ function BridgeUiFlush()
 
     local stack = BridgeState.stackSummary or {}
     BridgeUiSet("BridgeHudStack", "text", #stack > 0 and ("STACK " .. tostring(#stack)) or "")
+    BridgeUiSet("BridgeHudStackDetails", "text", #stack > 0 and table.concat(stack, " | ") or "")
+    local stackObjects = BridgeState.stackObjects or {}
+    local fallback = {}
+    for i = 1, 6 do
+        local stackObject = stackObjects[i]
+        local image = stackObject ~= nil and BridgeRevealCardArt ~= nil
+            and BridgeRevealCardArt({cardName = stackObject.sourceName}) or nil
+        BridgeUiSet("BridgeHudStackImage" .. tostring(i), "active", image ~= nil and "true" or "false")
+        BridgeUiSet("BridgeHudStackImage" .. tostring(i), "image", image or "")
+        if stackObject ~= nil and image == nil then
+            table.insert(fallback, tostring(stackObject.sourceName or "Stack object") .. ": "
+                .. tostring(stackObject.abilityText or stackObject.abilityName or "Triggered ability"))
+        end
+    end
+    BridgeUiSet("BridgeHudStackFallback", "text", table.concat(fallback, " | "))
     BridgeHudRefreshPhaseRibbon()
 
     if BRIDGE_DEV_ANNOTATIONS_ENABLED == true then

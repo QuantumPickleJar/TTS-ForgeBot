@@ -40,6 +40,18 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void TrackedBridgeStateFeed_ExportsLogicalStackEntriesApartFromPhysicalCards()
+    {
+        Assert.Contains("SpellAbilityStackInstance", Patch);
+        Assert.Contains("stackObjects", Patch);
+        Assert.Contains("triggered-ability", Patch);
+        Assert.Contains("stackObjectId", Patch);
+        Assert.Contains("abilityText", Patch);
+        Assert.Contains("creationSequence", Patch);
+        Assert.Contains("getTargets()", Patch);
+    }
+
+    [Fact]
     public void TrackedBridgeStateFeed_UsesADirtyGenerationInsteadOfLossyOneShotCoalescing()
     {
         Assert.Contains("AtomicLong mutationGeneration", Patch);

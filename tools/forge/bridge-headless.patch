@@ -481,7 +481,7 @@ index 922d78e12047b32f9d498f5cd93d6c60de33c691..386e7bebbd346e971dcb48f178373b9c
              }
 diff --git a/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..cb4c5481c7aae85ed730dc73d535bab042319426
+index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710badf83c9
 --- /dev/null
 +++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
 @@ -0,0 +1,534 @@
@@ -495,6 +495,9 @@ index 0000000000000000000000000000000000000000..cb4c5481c7aae85ed730dc73d535bab0
 +import forge.game.Game;
 +import forge.game.GameEntity;
 +import forge.game.card.Card;
++import forge.game.GameObject;
++import forge.game.spellability.SpellAbility;
++import forge.game.spellability.SpellAbilityStackInstance;
 +import forge.card.CardStateName;
 +import forge.game.combat.Combat;
 +import forge.game.card.CounterType;
@@ -685,6 +688,14 @@ index 0000000000000000000000000000000000000000..cb4c5481c7aae85ed730dc73d535bab0
 +            firstCard = false;
 +            appendCard(json, card, "stack", position++, emittedCardIds);
 +        }
++        json.append("],\"stackObjects\":[");
++        boolean firstStackObject = true;
++        int stackIndex = game.getStack().size();
++        for (SpellAbilityStackInstance item : game.getStack()) {
++            if (!firstStackObject) json.append(',');
++            firstStackObject = false;
++            appendStackObject(json, item, stackIndex--, generation);
++        }
 +        json.append("],\"combat\":");
 +        appendCombat(json);
 +        if (game.isGameOver()) {
@@ -698,6 +709,38 @@ index 0000000000000000000000000000000000000000..cb4c5481c7aae85ed730dc73d535bab0
 +        }
 +        trace("snapshot sequence=" + sequence + " generation=" + generation + " reason=" + reason
 +                + " battlefield=" + battlefieldSummary());
++    }
++
++    private void appendStackObject(final StringBuilder json, final SpellAbilityStackInstance item,
++            final int stackIndex, final long creationSequence) {
++        final SpellAbility ability = item.getSpellAbility();
++        final Card source = item.getSourceCard();
++        final String kind = item.isTrigger() ? "triggered-ability"
++                : item.isSpell() ? (ability.isCopied() ? "copied-spell" : "spell")
++                : ability.isCopied() ? "copied-ability" : "activated-ability";
++        json.append('{');
++        property(json, "stackObjectId", "forge-stack:" + item.getId()).append(',');
++        property(json, "stackKind", kind).append(',');
++        property(json, "sourceCardInstanceId", source == null ? null : "forge-object:" + source.getId()).append(',');
++        property(json, "sourceName", source == null ? null : source.getName()).append(',');
++        property(json, "controllerSeatId", seatOf(item.getActivatingPlayer())).append(',');
++        property(json, "abilityName", ability == null ? null : ability.getDescription()).append(',');
++        property(json, "abilityText", item.getStackDescription()).append(',');
++        property(json, "creationSequence", creationSequence).append(',');
++        property(json, "stackIndex", stackIndex).append(',');
++        property(json, "provenance", ability != null && ability.isCopied() ? "copy" : kind).append(',');
++        json.append("\"targets\":[");
++        boolean firstTarget = true;
++        if (ability != null && ability.getTargets() != null) {
++            for (GameObject target : ability.getTargets()) {
++                if (!firstTarget) json.append(',');
++                firstTarget = false;
++                string(json, target instanceof Card
++                        ? "forge-object:" + ((Card) target).getId()
++                        : target instanceof Player ? seatOf((Player) target) : String.valueOf(target));
++            }
++        }
++        json.append("]}");
 +    }
 +
 +    private void appendPlayer(final StringBuilder json, final Player player, final Set<Integer> emittedCardIds) {

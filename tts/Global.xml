@@ -231,8 +231,18 @@
       <Text id="BridgeHudDevDiagnostic" text="" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="10" color="#8291A4" alignment="MiddleLeft" />
     </VerticalLayout>
 
+    <HorizontalLayout id="BridgeHudStackSurface" minHeight="88" preferredHeight="88" flexibleHeight="0" spacing="5" childForceExpandWidth="false" childForceExpandHeight="true">
+      <Image id="BridgeHudStackImage1" active="false" image="" preserveAspect="true" minWidth="58" preferredWidth="58" flexibleWidth="0" />
+      <Image id="BridgeHudStackImage2" active="false" image="" preserveAspect="true" minWidth="58" preferredWidth="58" flexibleWidth="0" />
+      <Image id="BridgeHudStackImage3" active="false" image="" preserveAspect="true" minWidth="58" preferredWidth="58" flexibleWidth="0" />
+      <Image id="BridgeHudStackImage4" active="false" image="" preserveAspect="true" minWidth="58" preferredWidth="58" flexibleWidth="0" />
+      <Image id="BridgeHudStackImage5" active="false" image="" preserveAspect="true" minWidth="58" preferredWidth="58" flexibleWidth="0" />
+      <Image id="BridgeHudStackImage6" active="false" image="" preserveAspect="true" minWidth="58" preferredWidth="58" flexibleWidth="0" />
+      <Text id="BridgeHudStackFallback" text="" minWidth="330" preferredWidth="330" flexibleWidth="1" fontSize="10" color="#CBD5E1" alignment="MiddleLeft" />
+    </HorizontalLayout>
     <HorizontalLayout minHeight="22" preferredHeight="22" flexibleHeight="0" spacing="8" childForceExpandWidth="false" childForceExpandHeight="true">
       <Text id="BridgeHudStack" text="" minWidth="100" preferredWidth="100" flexibleWidth="0" fontSize="11" color="#9FB1C6" alignment="MiddleLeft" />
+      <Text id="BridgeHudStackDetails" text="" minWidth="470" preferredWidth="470" flexibleWidth="1" fontSize="10" color="#CBD5E1" alignment="MiddleLeft" />
       <Text id="BridgeHudFooter" text="HUD XML V3 LOADED" minWidth="580" preferredWidth="580" flexibleWidth="0" fontSize="11" color="#98A6B8" alignment="MiddleRight" />
     </HorizontalLayout>
 

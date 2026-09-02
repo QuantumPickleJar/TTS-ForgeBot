@@ -1082,11 +1082,16 @@ BridgeState = {
     mulliganBottomInsertionActiveBySeatId = {},
     libraryExtractionQueueBySeatId = {},
     libraryExtractionActiveBySeatId = {},
+    -- Consecutive library transitions emitted by one Forge mutation are one
+    -- physical transaction.  The queue still serializes Deck operations, but
+    -- this owner prevents verification/recovery from observing its middle.
+    libraryBatchBySeatId = {},
     battlefieldCounts = {},
     graveyardCounts = {},
     currentTurnSeatId = nil,
     prioritySeatId = nil,
     stackSummary = {},
+    stackObjects = {},
     -- HUD YIELD can be armed while the AI is acting and no human decision is
     -- currently visible.  Keep that policy scoped to the authoritative turn
     -- and active seat so it cannot leak into a later turn.
@@ -1359,6 +1364,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.pendingCastBySeatId = {}
     BridgeState.libraryExtractionQueueBySeatId = {}
     BridgeState.libraryExtractionActiveBySeatId = {}
+    BridgeState.libraryBatchBySeatId = {}
     BridgeState.mulliganBottomQueueBySeatId = {}
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
     BridgeState.mulliganReturningInstanceIds = {}
@@ -1374,6 +1380,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.dismissedRevealKeys = {}
     BridgeState.activeRevealPresentationKey = nil
     BridgeState.stackSummary = {}
+    BridgeState.stackObjects = {}
     BridgeState.combatSelectedByGuid = {}
     BridgeState.attackOriginByGuid = {}
     BridgeState.pendingCastBySeatId = {}

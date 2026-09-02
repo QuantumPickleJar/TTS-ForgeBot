@@ -2132,6 +2132,10 @@ end
 -- deferred until every seat's ordered library queue is idle.
 function BridgePhysicalLibraryQueuesIdle()
     for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+        if BridgeState.libraryBatchBySeatId[seatId] ~= nil
+            and BridgeState.libraryBatchBySeatId[seatId].active == true then
+            return false
+        end
         if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
             or #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}) > 0
             or BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
@@ -2233,8 +2237,17 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     BridgePerformanceEnd(monarchToken, "snapshot_reconcile.monarch.end", "snapshotReconcileMonarch")
     local stackToken = BridgePerformanceBegin("snapshot_reconcile.stack")
     BridgeState.stackSummary = {}
+    BridgeState.stackObjects = snapshot and snapshot.stackObjects or {}
+    for _, stackObject in ipairs(snapshot and snapshot.stackObjects or {}) do
+        local source = tostring(stackObject.sourceName or "Forge source")
+        local kind = tostring(stackObject.stackKind or "stack object")
+        local text = tostring(stackObject.abilityText or stackObject.abilityName or "")
+        table.insert(BridgeState.stackSummary, source .. " — " .. kind .. (text ~= "" and (": " .. text) or ""))
+    end
     for _, card in ipairs(snapshot and snapshot.stack or {}) do
-        table.insert(BridgeState.stackSummary, tostring(card.currentCardName or card.cardName or "Forge stack object"))
+        if #(snapshot and snapshot.stackObjects or {}) == 0 then
+            table.insert(BridgeState.stackSummary, tostring(card.currentCardName or card.cardName or "Forge stack object"))
+        end
         BridgeState.authoritativeObjectByInstanceId[card.cardInstanceId] = {
             objectId = card.authoritativeObjectId or card.cardInstanceId,
             originObjectId = card.originObjectId,

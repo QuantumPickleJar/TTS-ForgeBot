@@ -206,6 +206,20 @@ public sealed class ForgeStructuredStateReconciler
             source.Reason,
             seats,
             source.Stack.Select(ConvertCard).ToArray(),
+            StackObjects: (source.StackObjects ?? [])
+                .Select(stackObject => new GameStackObjectSnapshotDto(
+                    stackObject.StackObjectId,
+                    stackObject.StackKind,
+                    string.IsNullOrWhiteSpace(stackObject.SourceCardInstanceId) ? null : NormalizeObjectId(stackObject.SourceCardInstanceId, 0),
+                    stackObject.SourceName,
+                    stackObject.ControllerSeatId,
+                    stackObject.AbilityName,
+                    stackObject.AbilityText,
+                    stackObject.CreationSequence,
+                    stackObject.StackIndex,
+                    stackObject.Provenance,
+                    (stackObject.Targets ?? []).ToArray()))
+                .ToArray(),
             MonarchSeatId: source.MonarchSeatId,
             Combat: combat,
             Result: source.GameEnded is null ? null : new GameResultDto(

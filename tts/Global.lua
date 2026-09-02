@@ -1083,11 +1083,16 @@ BridgeState = {
     mulliganBottomInsertionActiveBySeatId = {},
     libraryExtractionQueueBySeatId = {},
     libraryExtractionActiveBySeatId = {},
+    -- Consecutive library transitions emitted by one Forge mutation are one
+    -- physical transaction.  The queue still serializes Deck operations, but
+    -- this owner prevents verification/recovery from observing its middle.
+    libraryBatchBySeatId = {},
     battlefieldCounts = {},
     graveyardCounts = {},
     currentTurnSeatId = nil,
     prioritySeatId = nil,
     stackSummary = {},
+    stackObjects = {},
     -- HUD YIELD can be armed while the AI is acting and no human decision is
     -- currently visible.  Keep that policy scoped to the authoritative turn
     -- and active seat so it cannot leak into a later turn.
@@ -1360,6 +1365,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.pendingCastBySeatId = {}
     BridgeState.libraryExtractionQueueBySeatId = {}
     BridgeState.libraryExtractionActiveBySeatId = {}
+    BridgeState.libraryBatchBySeatId = {}
     BridgeState.mulliganBottomQueueBySeatId = {}
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
     BridgeState.mulliganReturningInstanceIds = {}
@@ -1375,6 +1381,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.dismissedRevealKeys = {}
     BridgeState.activeRevealPresentationKey = nil
     BridgeState.stackSummary = {}
+    BridgeState.stackObjects = {}
     BridgeState.combatSelectedByGuid = {}
     BridgeState.attackOriginByGuid = {}
     BridgeState.pendingCastBySeatId = {}
@@ -2755,6 +2762,15 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         local current = BridgeState.libraryExtractionQueueBySeatId[seatId]
         if current ~= nil then table.remove(current, 1) end
     BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
+        local batch = BridgeState.libraryBatchBySeatId[seatId]
+        local nextEvent = BridgeState.eventQueue and BridgeState.eventQueue[1] or nil
+        if batch ~= nil and (nextEvent == nil or tostring(nextEvent.forgeSequence or "") ~= tostring(batch.forgeSequence or "")) then
+            batch.completedAt = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+            batch.active = false
+            BridgeState.libraryBatchBySeatId[seatId] = nil
+            BridgeLog(string.format("[Bridge] LIBRARY_BATCH_COMMITTED seat=%s forgeSequence=%s count=%s",
+                tostring(seatId), tostring(batch.forgeSequence), tostring(#(batch.cardInstanceIds or {}))))
+        end
         BridgeProcessLibraryExtractionQueue(seatId)
         BridgeTryPresentPendingDecision("library-extraction-complete")
         if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
@@ -3009,6 +3025,23 @@ function onUpdate()
     -- TTS callback while the time scheduler is delayed.  Keep the resync
     -- watchdog reactive from the frame loop as well.
     if BridgeCheckResyncWatchdog ~= nil then BridgeCheckResyncWatchdog("onUpdate") end
+end
+
+function BridgeBeginLibraryBatch(event)
+    if event == nil or event.seatId == nil or event.sourceZone ~= "library"
+        or event.destinationZone == nil or event.destinationZone == "library" then return end
+    local sequence = event.forgeSequence
+    if sequence == nil then return end
+    local batch = BridgeState.libraryBatchBySeatId[event.seatId]
+    if batch == nil or tostring(batch.forgeSequence) ~= tostring(sequence) then
+        batch = {forgeSequence = sequence, active = true, cardInstanceIds = {}, startedAt = os.clock()}
+        BridgeState.libraryBatchBySeatId[event.seatId] = batch
+        BridgeLog(string.format("[Bridge] LIBRARY_BATCH_BEGIN seat=%s forgeSequence=%s", tostring(event.seatId), tostring(sequence)))
+    end
+    for _, instanceId in ipairs(batch.cardInstanceIds) do
+        if instanceId == event.cardInstanceId then return end
+    end
+    table.insert(batch.cardInstanceIds, event.cardInstanceId)
 end
 
 -- The stable static tree lives in Global.xml. Dynamic decision content is
@@ -5323,6 +5356,10 @@ end
 -- deferred until every seat's ordered library queue is idle.
 function BridgePhysicalLibraryQueuesIdle()
     for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+        if BridgeState.libraryBatchBySeatId[seatId] ~= nil
+            and BridgeState.libraryBatchBySeatId[seatId].active == true then
+            return false
+        end
         if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
             or #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}) > 0
             or BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
@@ -5424,8 +5461,17 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     BridgePerformanceEnd(monarchToken, "snapshot_reconcile.monarch.end", "snapshotReconcileMonarch")
     local stackToken = BridgePerformanceBegin("snapshot_reconcile.stack")
     BridgeState.stackSummary = {}
+    BridgeState.stackObjects = snapshot and snapshot.stackObjects or {}
+    for _, stackObject in ipairs(snapshot and snapshot.stackObjects or {}) do
+        local source = tostring(stackObject.sourceName or "Forge source")
+        local kind = tostring(stackObject.stackKind or "stack object")
+        local text = tostring(stackObject.abilityText or stackObject.abilityName or "")
+        table.insert(BridgeState.stackSummary, source .. " — " .. kind .. (text ~= "" and (": " .. text) or ""))
+    end
     for _, card in ipairs(snapshot and snapshot.stack or {}) do
-        table.insert(BridgeState.stackSummary, tostring(card.currentCardName or card.cardName or "Forge stack object"))
+        if #(snapshot and snapshot.stackObjects or {}) == 0 then
+            table.insert(BridgeState.stackSummary, tostring(card.currentCardName or card.cardName or "Forge stack object"))
+        end
         BridgeState.authoritativeObjectByInstanceId[card.cardInstanceId] = {
             objectId = card.authoritativeObjectId or card.cardInstanceId,
             originObjectId = card.originObjectId,
@@ -9905,6 +9951,21 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
         -- milled card can never be replaced by another copy from the library.
         local preservedGuid = BridgeState.physicalByInstanceId[card.cardInstanceId]
         local preservedAsset = preservedGuid and assetByGuid[tostring(preservedGuid)] or nil
+        -- A failed asynchronous move can retire the forward index before the
+        -- reverse index is rebuilt. Recover the exact live asset by identity;
+        -- never fall through to duplicate-name matching in that case.
+        if preservedAsset == nil then
+            for guid, mappedInstanceId in pairs(BridgeState.physicalInstanceIdByGuid or {}) do
+                if mappedInstanceId == card.cardInstanceId then
+                    local reverseAsset = assetByGuid[tostring(guid)]
+                    if reverseAsset ~= nil then
+                        preservedGuid = guid
+                        preservedAsset = reverseAsset
+                        break
+                    end
+                end
+            end
+        end
         if preservedAsset ~= nil and preservedAsset.assigned ~= true then
             assigned = preservedAsset
             preservedAsset.assigned = true
@@ -10875,6 +10936,7 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
     BridgeState.libraryExtractionQueueBySeatId = {}
     BridgeState.libraryExtractionActiveBySeatId = {}
+    BridgeState.libraryBatchBySeatId = {}
     BridgeState.battlefieldCounts = {}
     BridgeState.graveyardCounts = {}
     BridgeState.counterStateByInstanceId = {}
@@ -12587,6 +12649,7 @@ end
 
 function BridgeApplyStructuredCardMove(event)
     if event.cardInstanceId == nil then return false, "structured zone change has no cardInstanceId" end
+    BridgeBeginLibraryBatch(event)
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then return false, "structured zone change has no configured seat" end
 
@@ -15697,6 +15760,21 @@ function BridgeUiFlush()
 
     local stack = BridgeState.stackSummary or {}
     BridgeUiSet("BridgeHudStack", "text", #stack > 0 and ("STACK " .. tostring(#stack)) or "")
+    BridgeUiSet("BridgeHudStackDetails", "text", #stack > 0 and table.concat(stack, " | ") or "")
+    local stackObjects = BridgeState.stackObjects or {}
+    local fallback = {}
+    for i = 1, 6 do
+        local stackObject = stackObjects[i]
+        local image = stackObject ~= nil and BridgeRevealCardArt ~= nil
+            and BridgeRevealCardArt({cardName = stackObject.sourceName}) or nil
+        BridgeUiSet("BridgeHudStackImage" .. tostring(i), "active", image ~= nil and "true" or "false")
+        BridgeUiSet("BridgeHudStackImage" .. tostring(i), "image", image or "")
+        if stackObject ~= nil and image == nil then
+            table.insert(fallback, tostring(stackObject.sourceName or "Stack object") .. ": "
+                .. tostring(stackObject.abilityText or stackObject.abilityName or "Triggered ability"))
+        end
+    end
+    BridgeUiSet("BridgeHudStackFallback", "text", table.concat(fallback, " | "))
     BridgeHudRefreshPhaseRibbon()
 
     if BRIDGE_DEV_ANNOTATIONS_ENABLED == true then
