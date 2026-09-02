@@ -786,13 +786,6 @@ function BridgeHudFastForward(player, value, id)
     else BridgeStartFastForward("manual") end
 end
 
-function BridgeHudYieldStopScope(player, value, id)
-    local ui = BridgeState.ui
-    if ui == nil then return end
-    ui.fastForwardStopScope = ui.fastForwardStopScope == "own_turn" and "other_turn" or "own_turn"
-    BridgeUiMarkDirty("phase-stop-scope")
-end
-
 function BridgeHudYieldPhaseStop(player, value, id)
     local names = {
         Upkeep = "upkeep", Draw = "draw", MainPre = "main_precombat",

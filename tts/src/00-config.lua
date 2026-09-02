@@ -195,6 +195,7 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncDeferredSince = BridgeState.resyncDeferredSince,
         resyncDeferredRetryScheduled = BridgeState.resyncDeferredRetryScheduled == true,
         resyncWatchdogToken = BridgeState.resyncWatchdogToken,
+        resyncLifecycle = BridgeState.resyncLifecycle or {},
         resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration,
         reportCaptureInFlight = ui.reportCaptureInFlight == true
     }
@@ -262,6 +263,33 @@ function BridgeRecordResyncSnapshotProgress(origin, snapshot)
             tostring(BridgeState.pendingDecision and BridgeState.pendingDecision.decisionId or nil),
             tostring(BridgeState.pendingDecision and BridgeState.pendingDecision.eventCursor or nil)))
     end
+end
+
+function BridgeRecordResyncLifecycle(stage, origin, generation, snapshot, reason, expectedInstanceId, beforeReceived, beforeApplied)
+    local lifecycle = BridgeState.resyncLifecycle
+    if lifecycle == nil then lifecycle = {}; BridgeState.resyncLifecycle = lifecycle end
+    local now = os.clock()
+    if BridgeResyncClockNow ~= nil then
+        local ok, value = pcall(BridgeResyncClockNow)
+        if ok and value ~= nil then now = value end
+    end
+    local record = {
+        timestamp = now, stage = stage, sessionId = BridgeState.eventSessionId,
+        generation = generation, origin = origin,
+        snapshotCursor = snapshot ~= nil and snapshot.eventCursor or nil,
+        receivedBefore = beforeReceived, appliedBefore = beforeApplied,
+        receivedAfter = BridgeState.lastReceivedEventSequence,
+        appliedAfter = BridgeState.lastAppliedEventSequence,
+        expectedCardInstanceId = expectedInstanceId, blockingPredicate = reason,
+        elapsed = BridgeState.resyncStartedAt ~= nil and now - BridgeState.resyncStartedAt or nil
+    }
+    table.insert(lifecycle, record)
+    while #lifecycle > 64 do table.remove(lifecycle, 1) end
+    BridgeLog(string.format("[Bridge] RESYNC_%s generation=%s origin=%s cursor=%s received=%s/%s applied=%s/%s reason=%s",
+        tostring(stage), tostring(generation), tostring(origin), tostring(record.snapshotCursor),
+        tostring(beforeReceived), tostring(record.receivedAfter), tostring(beforeApplied),
+        tostring(record.appliedAfter), tostring(reason)))
+    return record
 end
 
 function BridgePresentationMetric(name)
@@ -617,6 +645,22 @@ function BridgePerformanceDiagnosticPayload()
         performanceSummary = summary,
         recentTtsTrace = BridgePerformanceTraceSnapshot(),
         diagnosticCaptureLifecycle = BridgeState.diagnosticCaptureLifecycle or {},
+        authoritativeForge = {
+            turn = decision and decision.turnNumber or nil,
+            phase = decision and decision.phaseName or nil,
+            decisionId = decision and decision.decisionId or nil,
+            decisionKind = decision and decision.kind or nil,
+            eventCursor = decision and decision.eventCursor or nil
+        },
+        ttsPresentation = {
+            turn = BridgeState.tableTurnCount,
+            phase = BridgeState.currentPhase,
+            renderedDecisionId = BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+            receivedCursor = BridgeState.lastReceivedEventSequence,
+            appliedCursor = BridgeState.lastAppliedEventSequence,
+            status = BridgeState.statusText
+        },
+        resyncLifecycle = BridgeState.resyncLifecycle or {},
         eventDrainDiagnostics = BridgeEventDrainQueueState()
     }
 end
@@ -954,6 +998,8 @@ BridgeState = {
         count = 0,
         lastLoggedCount = 0
     },
+    resyncLifecycle = {},
+    resyncCheckpoint = nil,
     resyncDeferredRetryScheduled = false,
     resyncDeferredSince = nil,
     resyncWatchdogToken = nil,

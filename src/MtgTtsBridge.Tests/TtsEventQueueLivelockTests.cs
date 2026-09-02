@@ -152,6 +152,43 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void SameSessionResyncFailureRestoresTheCommittedCheckpoint()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.eventQueue = {{sequence=78, kind='card_moved'}}
+            BridgeState.lastAppliedEventSequence = 77
+            BridgeState.lastReceivedEventSequence = 96
+            BridgeState.ui = {resyncInFlight=false}
+            function BridgeWaitFrames(callback, frames) end
+            function BridgeWaitTime(callback, delay) end
+            function BridgeStopEventPolling(reason) end
+            function BridgeStopDecisionPolling() end
+            function BridgeResumeChoiceProtocol(reason) end
+            function BridgeClearHighlights() end
+            function BridgeResetSelectionState() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeSetStatus(headline, detail) end
+            function BridgeUiMarkDirty(reason) end
+            function BridgeStartEventPolling(sessionId, skipExisting) end
+            function BridgeStartDecisionPolling() end
+            function BridgeBootstrapCurrentSnapshot(sessionId, callback, resume, origin)
+                BridgeState.lastReceivedEventSequence = 0
+                BridgeState.lastAppliedEventSequence = 0
+                BridgeState.eventQueue = {}
+                callback(false, 'snapshot stage failed')
+            end
+            BridgeResyncFromAuthoritativeSnapshot('hud')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(96, state.Get("lastReceivedEventSequence").Number);
+        Assert.Equal(77, state.Get("lastAppliedEventSequence").Number);
+        Assert.True(state.Get("desyncLatched").Boolean);
+    }
+
+    [Fact]
     public void RetiredLibraryCallbackCannotMutateThePostResyncQueues()
     {
         var lua = NewQueueProbe();

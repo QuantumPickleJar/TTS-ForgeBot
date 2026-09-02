@@ -1167,6 +1167,8 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     end
 
     local replacingMatch = BridgeState.eventSessionId ~= nil and BridgeState.eventSessionId ~= sessionId
+    local checkpoint = BridgeState.resyncCheckpoint
+    local preserveCheckpoint = checkpoint ~= nil and checkpoint.sessionId == sessionId and not replacingMatch
     local preservedLiveMappings = nil
     if preserveLiveMappings == true and BridgeState.eventSessionId == sessionId then
         preservedLiveMappings = {}
@@ -1201,9 +1203,17 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.desyncLatched = false
     BridgeState.desyncFailureCount = 0
     BridgeState.desyncLastMessage = nil
-    BridgeState.lastReceivedEventSequence = 0
-    BridgeState.lastAppliedEventSequence = 0
-    BridgeState.eventQueue = {}
+    if preserveCheckpoint then
+        -- A same-session recovery is staged. Keep the last committed cursor
+        -- visible until the new snapshot has passed every physical audit.
+        BridgeState.lastReceivedEventSequence = checkpoint.lastReceived
+        BridgeState.lastAppliedEventSequence = checkpoint.lastApplied
+        BridgeState.eventQueue = checkpoint.eventQueue
+    else
+        BridgeState.lastReceivedEventSequence = 0
+        BridgeState.lastAppliedEventSequence = 0
+        BridgeState.eventQueue = {}
+    end
     BridgeState.animationRunning = false
     BridgeState.eventDrainTransaction = nil
     BridgeState.eventDrainWatchdog = {

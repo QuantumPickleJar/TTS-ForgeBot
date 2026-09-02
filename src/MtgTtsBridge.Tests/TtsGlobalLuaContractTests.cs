@@ -2445,7 +2445,10 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeHudReportCapture", xml);
         Assert.Contains("BridgeHudReportCancel", xml);
         Assert.Contains("BridgeHudReportCategoryDropdown", xml);
-        Assert.Contains("id=\"BridgeHudDevRoot\" active=\"false\" visibility=\"Host|Admin\" minHeight=\"230\" preferredHeight=\"230\"", xml);
+        Assert.Contains("id=\"BridgeHudDevRoot\" active=\"false\" visibility=\"Host|Admin\" minHeight=\"255\" preferredHeight=\"255\"", xml);
+        Assert.Contains("text=\"YOUR TURN\"", xml);
+        Assert.Contains("text=\"OTHER TURNS\"", xml);
+        Assert.DoesNotContain("BridgeHudYieldStopScope", xml);
         Assert.Contains("id=\"BridgeHudReportCategoryDropdown\" options=\"Gameplay sync|Combat|Card movement|Presentation/UI|Decision/prompt|Mana/payment|Performance / Freeze|Crash/error|Other\"", xml);
         Assert.Contains("minWidth=\"650\" preferredWidth=\"650\"", xml);
         Assert.Contains("BridgeHudRollingCapture", xml);

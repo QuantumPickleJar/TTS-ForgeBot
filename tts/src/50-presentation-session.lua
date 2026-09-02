@@ -2341,7 +2341,6 @@ function BridgeUiFlush()
     local yieldUi = ui.fastForwardActive and "FAST-FORWARD" or (ui.autoPassEmpty and "AUTO-PASS: ON" or "AUTO-PASS: OFF")
     BridgeUiSet("BridgeHudMode", "text", yieldUi)
     BridgeUiSet("BridgeHudFastForward", "text", ui.fastForwardActive and "CANCEL FAST-FORWARD" or "FAST-FORWARD")
-    BridgeUiSet("BridgeHudYieldStopScope", "text", ui.fastForwardStopScope == "other_turn" and "STOPS: OTHER TURNS" or "STOPS: YOUR TURN")
     local stops = ui.fastForwardStops or {own_turn = {}, other_turn = {}}
     local stopButtons = {
         BridgeHudStopOwn_Upkeep = {"own_turn", "upkeep"}, BridgeHudStopOwn_Draw = {"own_turn", "draw"},
