@@ -296,6 +296,82 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Equal(1, state.Get("eventQueue").Table.Length);
     }
 
+    [Fact]
+    public void SnapshotCheckpointCommitsCursorAndSupersedesFetchlandTailAtomically()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventQueue = {}
+            for sequence = 216, 230 do
+                table.insert(BridgeState.eventQueue, {sequence=sequence, kind='phase_changed'})
+            end
+            BridgeState.lastReceivedEventSequence = 230
+            BridgeState.lastAppliedEventSequence = 215
+            BridgeState.resyncOrigin = 'library order mismatch'
+            BridgeState.resyncBootstrapGeneration = 4
+            local snapshot = {sessionId='session', eventCursor=230, forgeSequence=31}
+            local ok, err = BridgeCommitSnapshotCheckpoint(snapshot, 'fetchland-recovery')
+            checkpointOk, checkpointError = ok, err
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(lua.Globals.Get("checkpointOk").Boolean);
+        Assert.Equal(230, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(230, state.Get("lastConsumedEventSequence").Number);
+        Assert.Equal(230, state.Get("lastStateProjectedEventSequence").Number);
+        Assert.Equal(0, state.Get("eventQueue").Table.Length);
+    }
+
+    [Fact]
+    public void RecoveryOwnsSchedulersAndSuspendsFastForward()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.ui = {fastForwardActive=true, autoAdvanceMode='FAST-FORWARD'}
+            BridgeState.schedulerOwner = 'NORMAL'
+            BridgeState.eventSessionId = 'session'
+            BridgeState.resyncToken = 0
+            BridgeState.resyncInFlight = false
+            BridgeState.resyncCircuitOpen = false
+            BridgeState.libraryExtractionActiveBySeatId = {}
+            BridgeState.libraryExtractionQueueBySeatId = {}
+            function BridgeGetEmbodimentSnapshot(callback) end
+            function BridgeStopEventPolling(reason) end
+            function BridgeStopDecisionPolling() end
+            function BridgeResumeChoiceProtocol(reason) end
+            function BridgeClearHighlights() end
+            function BridgeResetSelectionState() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeSetStatus(headline, detail) end
+            function BridgeUiMarkDirty(reason) end
+            function BridgeWaitTime(callback, delay) end
+            function BridgeWaitFrames(callback, frames) end
+            BridgeResyncFromAuthoritativeSnapshot('library order mismatch')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal("RESYNC", state.Get("schedulerOwner").String);
+        Assert.False(state.Get("ui").Table.Get("fastForwardActive").Boolean);
+        Assert.True(state.Get("fastForwardSuspendedByResync").Boolean);
+    }
+
+    [Fact]
+    public void RepeatedIdenticalRecoverySnapshotsOpenCircuitInsteadOfChurning()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.resyncInFlight = false
+            BridgeState.resyncNoProgress = nil
+            BridgeRecordResyncSnapshotProgress('library order mismatch', {eventCursor=230, forgeSequence=31})
+            BridgeRecordResyncSnapshotProgress('library order mismatch', {eventCursor=230, forgeSequence=31})
+            BridgeRecordResyncSnapshotProgress('library order mismatch', {eventCursor=230, forgeSequence=31})
+        ");
+
+        Assert.True(lua.Globals.Get("BridgeState").Table.Get("resyncCircuitOpen").Boolean);
+        Assert.Equal(1, lua.Globals.Get("BridgeState").Table.Get("resyncNoProgressAttempts").Number);
+    }
+
     private static Script NewQueueProbe()
     {
         var lua = new Script();

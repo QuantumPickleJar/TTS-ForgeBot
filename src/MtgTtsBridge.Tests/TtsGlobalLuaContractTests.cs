@@ -1752,7 +1752,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("local owner = BridgeState.currentTurnSeatId == \"forge-player-1\" and \"YOUR TURN\"", Script);
         Assert.Contains("or (BridgeState.currentTurnSeatId and \"OPPONENT TURN\"", Script);
         Assert.Contains("or \"NO PRIORITY\"", Script);
-        Assert.Contains("if event.prioritySeatId ~= nil then BridgeState.prioritySeatId = event.prioritySeatId end", Script);
+        Assert.Contains("BridgeState.prioritySeatId = event.prioritySeatId", Script);
         Assert.Contains("if event.kind == \"priority_changed\" then", Script);
         Assert.Contains("BridgeUiMarkDirty(\"priority\")", Script);
         Assert.Contains("BridgeState.currentPhase = nil", Script);
@@ -2507,8 +2507,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("end, true, origin)", resync);
         Assert.Contains("BridgeStartEventPolling(sessionId, false)", resync);
         Assert.Contains("BridgeStartDecisionPolling()", resync);
-        Assert.Contains("lastAppliedEventSequence = cursor", Script);
-        Assert.Contains("lastReceivedEventSequence = cursor", Script);
+        Assert.Contains("function BridgeCommitSnapshotCheckpoint(snapshot, reason)", Script);
+        Assert.Contains("BridgeState.lastAppliedEventSequence = cursor", Script);
+        Assert.Contains("BridgeState.lastReceivedEventSequence = math.max", Script);
         Assert.Contains("authoritative snapshot is missing a valid event cursor", Script);
         Assert.Contains("BridgeState.submitting = false", resync);
         Assert.Contains("BridgeResumeChoiceProtocol(\"authoritative_resync\")", resync);

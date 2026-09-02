@@ -825,6 +825,12 @@ end
 function BridgeStartFastForward(reason)
     local ui = BridgeState.ui
     if ui == nil or BridgeState.gameEnded ~= nil then return end
+    if BridgeState.schedulerOwner == "RESYNC" or BridgeState.resyncInFlight == true
+        or BridgeState.bootstrapping == true then
+        BridgeState.fastForwardSuspendedByResync = true
+        BridgeLog("[Bridge] FAST_FORWARD_SUSPENDED reason=resync-active")
+        return
+    end
     ui.fastForwardActive = true
     ui.fastForwardSessionId = BridgeState.eventSessionId
     ui.fastForwardTurnNumber = tonumber(BridgeState.tableTurnCount or 0) or 0
@@ -877,6 +883,7 @@ end
 
 function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
     if BridgeState.gameEnded ~= nil then return end
+    if BridgeState.schedulerOwner == "RESYNC" then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
     if (BridgeState.lastDecision ~= nil and allowCurrentDecision ~= true) or BridgeState.submitting then return end
     if BridgeState.decisionPollInFlight then return end
@@ -929,6 +936,7 @@ end
 
 function BridgeStartDecisionPolling(allowCurrentDecision)
     if BridgeState.gameEnded ~= nil then return end
+    if BridgeState.schedulerOwner == "RESYNC" then return end
     BridgeStopDecisionPolling()
     BridgeScheduleDecisionPoll(BridgeTransitionExpected() and 0.1 or 0.25,
         BridgeState.decisionPollGeneration, 1, allowCurrentDecision == true)
@@ -3563,6 +3571,9 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
 
     BridgeState.lastDecision = decision
     BridgeRecordDecisionLifecycle(decision, origin, "ACCEPTED", "authoritative-current")
+    if BridgeCheckProjectionCoherence ~= nil then
+        BridgeCheckProjectionCoherence(decision, "decision-accepted")
+    end
     BridgeLog(string.format(
         "[Bridge] DECISION_ACCEPT origin=%s runtime=%s revision=%s epoch=%s session=%s decision=%s eventCursor=%s forgeSequence=%s presentationGeneration=%s",
         tostring(origin), tostring(BRIDGE_CLIENT_RUNTIME_ID), tostring(BRIDGE_SCRIPT_REVISION),

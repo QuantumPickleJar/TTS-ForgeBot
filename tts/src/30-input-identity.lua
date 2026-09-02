@@ -1638,11 +1638,16 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
     end
     -- Establish the event session before populating instance mappings. Event
     -- polling must not clear the authoritative snapshot we just reconciled.
-    BridgeTraceStart("START-09 event-session-prepare")
-    -- A same-session resync must preserve live public CardInstanceId/GUID
-    -- bindings while rebuilding presentation. New-match bootstrap passes no
-    -- preserve flag and therefore clears every prior mapping.
-    BridgePrepareEventSession(sessionId, true, resumeFromSnapshotCursor == true)
+    -- A same-session recovery already has a committed event session and a
+    -- checkpoint. Re-preparing it here needlessly increments every
+    -- presentation generation and clears/restores the mapping registry on
+    -- each retry, which was the source of the longitudinal recovery churn.
+    local sameSessionRecovery = resumeFromSnapshotCursor == true
+        and BridgeState.eventSessionId == sessionId
+    BridgeTraceStart("START-09 event-session-prepare", sameSessionRecovery and "preserved" or "required")
+    if not sameSessionRecovery then
+        BridgePrepareEventSession(sessionId, true, resumeFromSnapshotCursor == true)
+    end
     -- A resync rebuilds physical embodiment, not the Forge match.  The card
     -- snapshot intentionally does not carry the live phase/priority mirror,
     -- so retain those last authoritative scalar values while the rebuild is
@@ -1749,16 +1754,10 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                                         -- The snapshot is coherent through this bridge event cursor.
                                         -- Resume polling after it so no pre-snapshot transition is
                                         -- replayed over the just-rebuilt physical embodiment.
-                                        BridgeSetResyncStage("CommittingCheckpoint", "physical-reconcile-complete", snapshot)
-                                        BridgeState.lastReceivedEventSequence = cursor
-                                        BridgeState.lastAppliedEventSequence = cursor
-                                        BridgeState.lastConsumedEventSequence = cursor
-                                        BridgeState.lastStateProjectedEventSequence = cursor
-                                        BridgeState.lastPhysicalPresentationEventSequence = cursor
-                                        BridgeSupersedeEventsThroughSnapshot(cursor, "checkpoint-commit")
-                                        BridgeState.skipExistingEventsOnAttach = false
+                                        local committed, commitError = BridgeCommitSnapshotCheckpoint(
+                                            snapshot, "physical-reconcile-complete")
+                                        if not committed then finishBootstrap(false, commitError); return end
                                     end
-                                    BridgeRecordResyncLifecycle("CHECKPOINT_COMMITTED", resyncOrigin, bootstrapGeneration, snapshot)
                                     BridgeLog(string.format(
                                         "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
                                         #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
@@ -1899,14 +1898,47 @@ function BridgeSupersedeEventsThroughSnapshot(snapshotCursor, reason)
     local cursor = tonumber(snapshotCursor or 0) or 0
     local prior = BridgeState.eventQueue or {}
     local retained = {}
+    local supersededCount = 0
+    local firstSuperseded = nil
+    local lastSuperseded = nil
     for _, event in ipairs(prior) do
-        if tonumber(event.sequence or 0) > cursor then table.insert(retained, event) end
+        if tonumber(event.sequence or 0) > cursor then
+            table.insert(retained, event)
+        else
+            supersededCount = supersededCount + 1
+            firstSuperseded = firstSuperseded or event.sequence
+            lastSuperseded = event.sequence
+        end
     end
     BridgeState.eventQueue = retained
     BridgeState.lastReceivedEventSequence = math.max(
         tonumber(BridgeState.lastReceivedEventSequence or 0) or 0, cursor)
-    BridgeLog(string.format("[Bridge] SNAPSHOT_CHECKPOINT_QUEUE_SUPERSEDED cursor=%s prior=%s retained=%s reason=%s",
-        tostring(cursor), tostring(#prior), tostring(#retained), tostring(reason)))
+    BridgeState.lastSnapshotSupersededRange = supersededCount > 0 and {
+        first = firstSuperseded, last = lastSuperseded, count = supersededCount,
+        cursor = cursor, reason = reason
+    } or nil
+    BridgeLog(string.format("[Bridge] SNAPSHOT_CHECKPOINT_QUEUE_SUPERSEDED cursor=%s prior=%s retained=%s superseded=%s..%s(%s) reason=%s",
+        tostring(cursor), tostring(#prior), tostring(#retained), tostring(firstSuperseded),
+        tostring(lastSuperseded), tostring(supersededCount), tostring(reason)))
+end
+
+function BridgeCommitSnapshotCheckpoint(snapshot, reason)
+    if snapshot == nil then return false, "snapshot is required for checkpoint commit" end
+    local cursor = tonumber(snapshot.eventCursor)
+    if cursor == nil or cursor < 0 then return false, "snapshot checkpoint has no valid cursor" end
+    BridgeSetResyncStage("CommittingCheckpoint", reason or "snapshot-reconciled", snapshot)
+    BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence or 0
+    BridgeState.lastReceivedEventSequence = math.max(
+        tonumber(BridgeState.lastReceivedEventSequence or 0) or 0, cursor)
+    BridgeState.lastConsumedEventSequence = cursor
+    BridgeState.lastStateProjectedEventSequence = cursor
+    BridgeState.lastPhysicalPresentationEventSequence = cursor
+    BridgeState.lastAppliedEventSequence = cursor
+    BridgeSupersedeEventsThroughSnapshot(cursor, reason or "checkpoint-commit")
+    BridgeState.skipExistingEventsOnAttach = false
+    BridgeRecordResyncLifecycle("CHECKPOINT_COMMITTED", BridgeState.resyncOrigin,
+        BridgeState.resyncBootstrapGeneration, snapshot, reason)
+    return true, nil
 end
 
 function BridgeReleaseStalledResync(sessionId, token, reason)
@@ -1932,7 +1964,9 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeState.resyncScheduled = false
     BridgeState.bootstrapping = false
     BridgeState.resyncStartedAt = nil
+    BridgeState.resyncLastFailureReason = tostring(reason or "watchdog")
     BridgeState.resyncDeferredReason = "stalled"
+    BridgeSetSchedulerOwner("NORMAL", "resync-stalled")
     BridgeState.animationRunning = false
     BridgeState.eventDrainTransaction = nil
     BridgeRestoreResyncCheckpoint("stalled:" .. tostring(reason or "watchdog"))
@@ -1970,6 +2004,11 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeLog("[Bridge] RESYNC_DEFERRED reason=already-in-flight origin=" .. tostring(origin))
         return false
     end
+    if BridgeState.resyncCircuitOpen == true and not BridgeIsExplicitResyncOrigin(origin) then
+        BridgeLog("[Bridge] RESYNC_BLOCKED reason=circuit-open rootCause=" .. tostring(BridgeState.resyncRootCause))
+        BridgeSetStatus("RESYNC PAUSED", "Recovery made no progress; use manual RESYNC FORGE to retry.")
+        return false
+    end
     local sessionId = BridgeState.eventSessionId
     if sessionId == nil then
         BridgeShowError("cannot resync before Forge has started a session")
@@ -1982,6 +2021,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     -- completion retires the queue and this bounded retry then starts from a
     -- stable physical order.
     local explicit = BridgeIsExplicitResyncOrigin(origin)
+    if explicit then BridgeState.resyncCircuitOpen = false end
     if not BridgePhysicalLibraryQueuesIdle() then
         local now = BridgeResyncClockNow()
         if explicit and (BridgeState.manualResyncGraceUntil or 0) <= 0 then
@@ -2029,6 +2069,9 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     end
     BridgeState.manualResyncGraceUntil = 0
     BridgeState.resyncDeferredReason = nil
+    if BridgeState.resyncRootCause == nil then BridgeState.resyncRootCause = origin end
+    BridgeState.resyncLastFailureReason = nil
+    BridgeState.resyncLastProgressAt = BridgeResyncClockNow()
     -- The previous failure stopped both pollers.  Opening an explicit
     -- resync starts a new presentation generation; failures from that old
     -- generation must not remain latched against the recovery attempt.
@@ -2054,6 +2097,12 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     BridgeState.resyncOrigin = origin
     BridgeState.resyncStartedAt = BridgeResyncClockNow()
     BridgeState.resyncInFlight = true
+    BridgeSetSchedulerOwner("RESYNC", origin)
+    if BridgeState.ui ~= nil and BridgeState.ui.fastForwardActive == true then
+        BridgeState.fastForwardSuspendedByResync = true
+        BridgeState.ui.fastForwardActive = false
+        BridgeState.ui.autoAdvanceMode = "RESYNC"
+    end
     if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = true end
     local checkpointReceived = BridgeState.resyncCheckpoint.lastReceived
     local checkpointApplied = BridgeState.resyncCheckpoint.lastApplied
@@ -2089,14 +2138,25 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeState.resyncSnapshotRepeatCount = 0
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
         if not ok then
+            BridgeState.resyncLastFailureReason = tostring(err)
+            if string.find(tostring(err), "no progress", 1, true) ~= nil then
+                BridgeState.resyncNoProgressAttempts = (BridgeState.resyncNoProgressAttempts or 0) + 1
+                if BridgeState.resyncNoProgressAttempts >= 2 then
+                    BridgeState.resyncCircuitOpen = true
+                end
+            end
             BridgeRestoreResyncCheckpoint("bootstrap-failed")
             BridgeState.desyncLatched = true
+            BridgeSetSchedulerOwner("NORMAL", "resync-failed")
             BridgeStopOnDesync("authoritative resync failed: " .. tostring(err))
             BridgeUiMarkDirty("resync-failed")
             BridgeLog("[Bridge] RESYNC_FAILED reason=" .. tostring(err))
             return
         end
         BridgeState.resyncCheckpoint = nil
+        BridgeState.resyncNoProgressAttempts = 0
+        BridgeState.resyncLastProgressAt = BridgeResyncClockNow()
+        BridgeSetSchedulerOwner("NORMAL", "resync-commit")
         BridgeStartEventPolling(sessionId, false)
         BridgeStartDecisionPolling()
         BridgeState.desyncLatched = false
@@ -2118,6 +2178,35 @@ end
 -- but wrong physical card. Reinsert each expected card from bottom to top at
 -- TTS's explicit top index (0). Do not rely on putObject's default insertion
 -- behavior: that default is not an ordering contract across Deck/Card merges.
+function BridgeSnapshotLibraryOrderAlreadyMatches(seatSnapshot)
+    local libraryCards = {}
+    for _, zone in ipairs(seatSnapshot.zones or {}) do
+        if zone.name == "library" then
+            for _, card in ipairs(zone.cards or {}) do table.insert(libraryCards, card) end
+            break
+        end
+    end
+    if #libraryCards == 0 then return true end
+    for _, card in ipairs(libraryCards) do
+        if card.zonePosition == nil then return false end
+    end
+    table.sort(libraryCards, function(left, right)
+        return (tonumber(left.zonePosition or 0) or 0) < (tonumber(right.zonePosition or 0) or 0)
+    end)
+    local deck = BridgeResolveSeatLibraryDeck(seatSnapshot.seatId)
+    if deck == nil or deck.tag ~= "Deck" then return false end
+    local entries = BridgeLibraryEntries(deck)
+    if entries == nil or #entries ~= #libraryCards then return false end
+    for index, card in ipairs(libraryCards) do
+        local entry = entries[index]
+        local entryName = entry and (entry.nickname or entry.name or entry.Name) or ""
+        if BridgeNormalizeCardName(entryName) ~= BridgeNormalizeCardName(card.cardName) then
+            return false
+        end
+    end
+    return true
+end
+
 function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
     local libraryCards = {}
     for _, zone in ipairs(seatSnapshot.zones or {}) do
@@ -2141,6 +2230,14 @@ function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
             callback(false, "library order alignment found a single-card library that disagrees with Forge")
             return
         end
+        callback(true, nil)
+        return
+    end
+    -- Mulligan recovery often arrives after the final replacement hand and
+    -- library are already physically correct. Avoid re-extracting every
+    -- hidden library card in that case; a mismatch still takes the full
+    -- authoritative repair path below.
+    if BridgeSnapshotLibraryOrderAlreadyMatches(seatSnapshot) then
         callback(true, nil)
         return
     end

@@ -1139,6 +1139,11 @@ function BridgeStartEventPolling(sessionId, skipExisting)
         return
     end
 
+    if BridgeState.schedulerOwner == "RESYNC" then
+        BridgeLog("[Bridge] event polling start deferred: resync owns scheduler")
+        return
+    end
+
     if BridgeState.eventSessionId == sessionId and BridgeState.eventPolling then
         return
     end
@@ -1204,9 +1209,16 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         BridgeState.resyncStage = "Idle"
         BridgeState.resyncStageChangedAt = nil
         BridgeState.resyncAttempt = 0
+        BridgeState.resyncRootCause = nil
+        BridgeState.resyncLastFailureReason = nil
+        BridgeState.resyncLastProgressAt = nil
+        BridgeState.resyncNoProgressAttempts = 0
+        BridgeState.resyncCircuitOpen = false
         BridgeState.resyncSnapshotFingerprint = nil
         BridgeState.resyncSnapshotRepeatCount = 0
     end
+    BridgeState.schedulerOwner = "NORMAL"
+    BridgeState.fastForwardSuspendedByResync = false
     BridgeState.desyncLatched = false
     BridgeState.desyncFailureCount = 0
     BridgeState.desyncLastMessage = nil
@@ -1685,6 +1697,9 @@ function BridgeProcessEventQueue()
         "[Bridge] EVENT_TX_COMMIT eventSequence=%s oldLastApplied=%s newLastApplied=%s queueLength=%s",
         tostring(event.sequence), tostring(oldLastApplied), tostring(BridgeState.lastAppliedEventSequence),
         tostring(#BridgeState.eventQueue)))
+    if BridgeCheckProjectionCoherence ~= nil then
+        BridgeCheckProjectionCoherence(BridgeState.lastDecision, "event-drain")
+    end
     local transaction = BridgeState.eventDrainTransaction
     if transaction ~= nil then transaction.continuationScheduled = true end
 
@@ -1863,13 +1878,13 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "turn_changed" then
-        if BridgeAuthoritativeEventSupersededByDecision(event) then
+        local supersededByDecision = BridgeAuthoritativeEventSupersededByDecision(event)
+        if supersededByDecision then
             BridgeLog(string.format(
-                "[Bridge] ignoring superseded turn event=%s behind decision=%s",
+                "[Bridge] applying superseded turn projection while retaining decision event=%s decision=%s",
                 tostring(event.sequence), tostring(BridgeState.lastDecision and BridgeState.lastDecision.decisionId)))
-            return true, 0
         end
-        local retainCurrentDecision = BridgeCurrentDecisionOutrunsEvent(event)
+        local retainCurrentDecision = supersededByDecision or BridgeCurrentDecisionOutrunsEvent(event)
         if retainCurrentDecision then
             BridgeLog(string.format(
                 "[Bridge] applying queued turn event while retaining newer decision %s event=%s decisionCursor=%s",
@@ -1885,6 +1900,7 @@ function BridgeApplyAuthoritativeEvent(event)
             return true, 0
         end
         BridgeState.lastTurnEventSignature = turnSignature
+        BridgeState.turnSourceEventSequence = event.sequence
         BridgeReturnAttackPresentation(nil)
         local probe = BridgeState.latencyProbe
         if probe ~= nil and probe.acceptedAt ~= nil and probe.turnChangedAppliedAt == nil then
@@ -1895,10 +1911,14 @@ function BridgeApplyAuthoritativeEvent(event)
         else
             BridgeState.currentTurnSeatId = event.seatId
         end
+        BridgeState.activePlayerSourceEventSequence = event.sequence
         -- Priority is an independent Forge state transition. Keep the last
         -- known value here when this turn event has no priority payload; the
         -- following priority event will update it authoritatively.
-        if event.prioritySeatId ~= nil then BridgeState.prioritySeatId = event.prioritySeatId end
+        if event.prioritySeatId ~= nil then
+            BridgeState.prioritySeatId = event.prioritySeatId
+            BridgeState.prioritySourceEventSequence = event.sequence
+        end
         BridgeRecordAuthoritativeTurn(BridgeState.currentTurnSeatId, tonumber(event.turnNumber or 0))
         local turnSeat = BRIDGE_SEATS[BridgeState.currentTurnSeatId]
         BridgeSetStatus("CURRENT TURN: " .. tostring(turnSeat and turnSeat.ttsColor or BridgeState.currentTurnSeatId), BridgeTurnLabel() .. " - AI THINKING")
@@ -1932,14 +1952,14 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "phase_changed" then
-        if BridgeAuthoritativeEventSupersededByDecision(event) then
+        local supersededByDecision = BridgeAuthoritativeEventSupersededByDecision(event)
+        if supersededByDecision then
             BridgeLog(string.format(
-                "[Bridge] ignoring superseded phase event=%s phase=%s behind decision=%s",
+                "[Bridge] applying superseded phase projection while retaining decision event=%s phase=%s decision=%s",
                 tostring(event.sequence), tostring(event.phase),
                 tostring(BridgeState.lastDecision and BridgeState.lastDecision.decisionId)))
-            return true, 0
         end
-        local retainCurrentDecision = BridgeCurrentDecisionOutrunsEvent(event)
+        local retainCurrentDecision = supersededByDecision or BridgeCurrentDecisionOutrunsEvent(event)
         if retainCurrentDecision then
             BridgeLog(string.format(
                 "[Bridge] applying queued phase event while retaining newer decision %s event=%s decisionCursor=%s",
@@ -1958,16 +1978,21 @@ function BridgeApplyAuthoritativeEvent(event)
         end
         BridgeState.lastPhaseEventSignature = phaseSignature
         BridgeState.currentPhase = event.phase or "Unknown phase"
+        BridgeState.phaseSourceEventSequence = event.sequence
         if event.turnNumber ~= nil and tonumber(event.turnNumber) ~= nil and tonumber(event.turnNumber) > 0 then
             BridgeState.tableTurnCount = tonumber(event.turnNumber)
             BridgeRefreshTurnCounterLabels()
         end
         if event.activeSeatId ~= nil then
             BridgeState.currentTurnSeatId = event.activeSeatId
+            BridgeState.activePlayerSourceEventSequence = event.sequence
         end
         -- Phase and priority are independent authoritative values. Do not
         -- overwrite priority from a phase event that carries no priority.
-        if event.prioritySeatId ~= nil then BridgeState.prioritySeatId = event.prioritySeatId end
+        if event.prioritySeatId ~= nil then
+            BridgeState.prioritySeatId = event.prioritySeatId
+            BridgeState.prioritySourceEventSequence = event.sequence
+        end
         if not retainCurrentDecision then
             BridgeClearHighlights()
         end

@@ -145,6 +145,39 @@ function BridgeRecordDecisionLifecycle(decision, origin, disposition, reason, ac
     return record
 end
 
+function BridgeCheckProjectionCoherence(decision, reason)
+    if decision == nil then return true end
+    local mismatches = {}
+    local function same(left, right)
+        return left == nil or right == nil or tostring(left) == tostring(right)
+    end
+    if not same(decision.turnNumber, BridgeState.tableTurnCount) then table.insert(mismatches, "turn") end
+    if not same(decision.activeSeatId, BridgeState.currentTurnSeatId) then table.insert(mismatches, "active-seat") end
+    if not same(decision.prioritySeatId, BridgeState.prioritySeatId) then table.insert(mismatches, "priority-seat") end
+    if decision.phaseName ~= nil and BridgeState.currentPhase ~= nil
+        and BridgePriorityPhaseFamily ~= nil
+        and BridgePriorityPhaseFamily(decision.phaseName) ~= BridgePriorityPhaseFamily(BridgeState.currentPhase) then
+        table.insert(mismatches, "phase")
+    end
+    local decisionCursor = tonumber(decision.eventCursor or 0) or 0
+    local projected = math.max(
+        tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+        tonumber(BridgeState.lastStateProjectedEventSequence or 0) or 0)
+    if decisionCursor > projected then table.insert(mismatches, "cursor-coverage") end
+    if #mismatches == 0 then return true end
+    BridgeState.projectionCoherenceMismatchCount = (BridgeState.projectionCoherenceMismatchCount or 0) + 1
+    BridgeState.lastProjectionCoherenceMismatch = {
+        reason = reason, decisionId = decision.decisionId, mismatches = mismatches,
+        decisionTurn = decision.turnNumber, projectedTurn = BridgeState.tableTurnCount,
+        decisionPhase = decision.phaseName, projectedPhase = BridgeState.currentPhase,
+        decisionCursor = decisionCursor, projectedCursor = projected
+    }
+    BridgeLog(string.format("[Bridge] PROJECTION_COHERENCE_MISMATCH decision=%s reason=%s fields=%s decisionCursor=%s projectedCursor=%s",
+        tostring(decision.decisionId), tostring(reason), table.concat(mismatches, ","),
+        tostring(decisionCursor), tostring(projected)))
+    return false
+end
+
 -- Capture is an observer, but its callback is also the best place to prove
 -- that the presentation pumps survived it. Keep this ring intentionally
 -- small and free of card identities so the next report can explain a
@@ -198,6 +231,12 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         lastConsumedEventSequence = BridgeState.lastConsumedEventSequence,
         lastStateProjectedEventSequence = BridgeState.lastStateProjectedEventSequence,
         lastPhysicalPresentationEventSequence = BridgeState.lastPhysicalPresentationEventSequence,
+        phaseSourceEventSequence = BridgeState.phaseSourceEventSequence,
+        turnSourceEventSequence = BridgeState.turnSourceEventSequence,
+        activePlayerSourceEventSequence = BridgeState.activePlayerSourceEventSequence,
+        prioritySourceEventSequence = BridgeState.prioritySourceEventSequence,
+        projectionCoherenceMismatchCount = BridgeState.projectionCoherenceMismatchCount,
+        lastProjectionCoherenceMismatch = BridgeState.lastProjectionCoherenceMismatch,
         physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
         eventDrainBlockReason = BridgeEventDrainBlockReason(),
         resyncInFlight = BridgeState.resyncInFlight == true,
@@ -237,7 +276,7 @@ end
 -- the request succeeded; this bounded streak makes a readiness loop
 -- diagnosable in the next report.
 function BridgeRecordResyncSnapshotProgress(origin, snapshot)
-    if snapshot == nil or string.find(tostring(origin or ""), "readiness", 1, true) == nil then return end
+    if snapshot == nil then return end
     local sessionId = BridgeState.eventSessionId
     local forgeSequence = snapshot.forgeSequence
     local eventCursor = snapshot.eventCursor
@@ -266,8 +305,14 @@ function BridgeRecordResyncSnapshotProgress(origin, snapshot)
         tostring(BridgeState.lastReceivedEventSequence), tostring(BridgeState.lastAppliedEventSequence),
         tostring(BridgeState.pendingDecision and BridgeState.pendingDecision.decisionId or nil),
         tostring(BridgeState.pendingDecision and BridgeState.pendingDecision.eventCursor or nil)))
+    if not same or progress.count == 1 then
+        BridgeState.resyncLastProgressAt = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+    end
     if same and progress.count >= 3 and progress.lastLoggedCount < 3 then
         progress.lastLoggedCount = progress.count
+        BridgeState.resyncNoProgressAttempts = (BridgeState.resyncNoProgressAttempts or 0) + 1
+        BridgeState.resyncLastFailureReason = "identical snapshot without recovery progress"
+        BridgeState.resyncCircuitOpen = true
         BridgeLog(string.format(
             "[Bridge] RESYNC_NO_PROGRESS origin=%s session=%s forgeSequence=%s eventCursor=%s previousForgeSequence=%s previousEventCursor=%s count=%s lastReceived=%s lastApplied=%s pendingDecision=%s pendingDecisionCursor=%s",
             tostring(origin), tostring(sessionId), tostring(forgeSequence), tostring(eventCursor),
@@ -275,6 +320,10 @@ function BridgeRecordResyncSnapshotProgress(origin, snapshot)
             tostring(BridgeState.lastReceivedEventSequence), tostring(BridgeState.lastAppliedEventSequence),
             tostring(BridgeState.pendingDecision and BridgeState.pendingDecision.decisionId or nil),
             tostring(BridgeState.pendingDecision and BridgeState.pendingDecision.eventCursor or nil)))
+        if BridgeState.resyncInFlight == true and BridgeReleaseStalledResync ~= nil then
+            BridgeReleaseStalledResync(BridgeState.eventSessionId, BridgeState.resyncToken,
+                "identical-snapshot-circuit-breaker")
+        end
     end
 end
 
@@ -313,6 +362,14 @@ function BridgeSetResyncStage(stage, reason, snapshot)
         tostring(prior), tostring(stage), tostring(BridgeState.eventSessionId),
         tostring(BridgeState.eventSessionGeneration), tostring(BridgeState.resyncToken),
         tostring(snapshot and snapshot.eventCursor or nil), tostring(reason)))
+end
+
+function BridgeSetSchedulerOwner(owner, reason)
+    local prior = BridgeState.schedulerOwner or "NORMAL"
+    if prior == owner then return end
+    BridgeState.schedulerOwner = owner
+    BridgeLog(string.format("[Bridge] SCHEDULER_OWNER %s -> %s reason=%s",
+        tostring(prior), tostring(owner), tostring(reason or "unspecified")))
 end
 
 function BridgePresentationMetric(name)
@@ -395,7 +452,12 @@ function BridgeEventDrainQueueState()
         desyncLatched = BridgeState.desyncLatched == true,
         resyncInFlight = BridgeState.resyncInFlight == true,
         bootstrapping = BridgeState.bootstrapping == true,
-        resyncOrigin = BridgeState.resyncOrigin,
+    resyncOrigin = BridgeState.resyncOrigin,
+        resyncRootCause = BridgeState.resyncRootCause,
+        resyncLastFailureReason = BridgeState.resyncLastFailureReason,
+        resyncCircuitOpen = BridgeState.resyncCircuitOpen == true,
+        schedulerOwner = BridgeState.schedulerOwner,
+        lastSnapshotSupersededRange = BridgeState.lastSnapshotSupersededRange,
         resyncStartedAt = BridgeState.resyncStartedAt,
         resyncDeferredReason = BridgeState.resyncDeferredReason,
         resyncDeferredSince = BridgeState.resyncDeferredSince,
@@ -887,6 +949,10 @@ BridgeState = {
     lastConsumedEventSequence = 0,
     lastStateProjectedEventSequence = 0,
     lastPhysicalPresentationEventSequence = 0,
+    phaseSourceEventSequence = 0,
+    turnSourceEventSequence = 0,
+    activePlayerSourceEventSequence = 0,
+    prioritySourceEventSequence = 0,
     eventPolling = false,
     eventPollGeneration = 0,
     eventRequestInFlight = false,
@@ -1095,9 +1161,17 @@ BridgeState = {
     resyncStage = "Idle",
     resyncStageChangedAt = nil,
     resyncAttempt = 0,
+    resyncRootCause = nil,
+    resyncLastFailureReason = nil,
+    resyncLastProgressAt = nil,
+    resyncNoProgressAttempts = 0,
+    resyncCircuitOpen = false,
+    lastSnapshotSupersededRange = nil,
     resyncSnapshotFingerprint = nil,
     resyncSnapshotRepeatCount = 0,
     resyncOrigin = nil,
+    schedulerOwner = "NORMAL",
+    fastForwardSuspendedByResync = false,
     resyncDeferredReason = nil,
     manualResyncGraceUntil = 0,
     -- A physical-sync failure is terminal for the current presentation
