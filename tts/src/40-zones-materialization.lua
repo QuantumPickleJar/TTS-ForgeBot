@@ -1666,6 +1666,10 @@ function BridgeProcessEventQueue()
     local oldLastApplied = BridgeState.lastAppliedEventSequence
     table.remove(BridgeState.eventQueue, 1)
     BridgeState.lastAppliedEventSequence = event.sequence
+    if event.revealPresentation ~= nil and BridgeApplyRevealPresentation ~= nil then
+        local revealOk, revealError = pcall(BridgeApplyRevealPresentation, event.revealPresentation, event.sequence)
+        if not revealOk then BridgeLog("[Bridge] reveal presentation failed: " .. tostring(revealError)) end
+    end
     BridgeResetEventCommitWatchdog()
     BridgeLog(string.format(
         "[Bridge] EVENT_TX_COMMIT eventSequence=%s oldLastApplied=%s newLastApplied=%s queueLength=%s",

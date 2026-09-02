@@ -83,6 +83,47 @@
       </VerticalScrollView>
     </VerticalLayout>
 
+    <!-- Single read-only Arena-style reveal projection. Lua fills these fixed
+         slots from structured Forge reveal payloads after event commit. -->
+    <VerticalLayout id="BridgeHudRevealSurface" active="false" minHeight="170" preferredHeight="170" flexibleHeight="0" spacing="4" padding="7 7 7 7" childForceExpandHeight="false" childForceExpandWidth="true" color="#111827F2">
+      <HorizontalLayout minHeight="22" preferredHeight="22" flexibleHeight="0" spacing="5" childForceExpandWidth="false" childForceExpandHeight="true">
+        <Text id="BridgeHudRevealHeading" text="REVEALED CARDS" minWidth="245" preferredWidth="245" flexibleWidth="0" fontSize="12" color="#F8FAFC" alignment="MiddleLeft" />
+        <Text id="BridgeHudRevealReason" text="" minWidth="250" preferredWidth="250" flexibleWidth="0" fontSize="10" color="#CBD5E1" alignment="MiddleLeft" />
+        <Button id="BridgeHudRevealPrev" active="false" onClick="BridgeHudRevealScroll" text="‹" minWidth="32" preferredWidth="32" flexibleWidth="0" fontSize="16" color="#334155EE" textColor="#FFFFFF" />
+        <Button id="BridgeHudRevealNext" active="false" onClick="BridgeHudRevealScroll" text="›" minWidth="32" preferredWidth="32" flexibleWidth="0" fontSize="16" color="#334155EE" textColor="#FFFFFF" />
+        <Button id="BridgeHudRevealClose" active="false" onClick="BridgeHudRevealClose" text="CLOSE" minWidth="70" preferredWidth="70" flexibleWidth="0" fontSize="10" color="#334155EE" textColor="#FFFFFF" />
+      </HorizontalLayout>
+      <HorizontalScrollView id="BridgeHudRevealScrollView" minHeight="120" preferredHeight="120" flexibleHeight="0" horizontalScrollbarVisibility="AutoHideAndExpandViewport">
+        <HorizontalLayout id="BridgeHudRevealCards" spacing="5" childForceExpandWidth="false" childForceExpandHeight="true">
+          <VerticalLayout id="BridgeHudRevealCard1" active="false" minWidth="105" preferredWidth="105" flexibleWidth="0" spacing="2" childForceExpandWidth="true" childForceExpandHeight="false">
+            <Image id="BridgeHudRevealImage1" active="false" image="" preserveAspect="true" minHeight="92" preferredHeight="92" flexibleHeight="0" />
+            <Text id="BridgeHudRevealFallback1" active="false" text="" minHeight="92" preferredHeight="92" flexibleHeight="0" fontSize="10" color="#334155" alignment="MiddleCenter" />
+          </VerticalLayout>
+          <VerticalLayout id="BridgeHudRevealCard2" active="false" minWidth="105" preferredWidth="105" flexibleWidth="0" spacing="2" childForceExpandWidth="true" childForceExpandHeight="false">
+            <Image id="BridgeHudRevealImage2" active="false" image="" preserveAspect="true" minHeight="92" preferredHeight="92" flexibleHeight="0" />
+            <Text id="BridgeHudRevealFallback2" active="false" text="" minHeight="92" preferredHeight="92" flexibleHeight="0" fontSize="10" color="#334155" alignment="MiddleCenter" />
+          </VerticalLayout>
+          <VerticalLayout id="BridgeHudRevealCard3" active="false" minWidth="105" preferredWidth="105" flexibleWidth="0" spacing="2" childForceExpandWidth="true" childForceExpandHeight="false">
+            <Image id="BridgeHudRevealImage3" active="false" image="" preserveAspect="true" minHeight="92" preferredHeight="92" flexibleHeight="0" />
+            <Text id="BridgeHudRevealFallback3" active="false" text="" minHeight="92" preferredHeight="92" flexibleHeight="0" fontSize="10" color="#334155" alignment="MiddleCenter" />
+          </VerticalLayout>
+          <VerticalLayout id="BridgeHudRevealCard4" active="false" minWidth="105" preferredWidth="105" flexibleWidth="0" spacing="2" childForceExpandWidth="true" childForceExpandHeight="false">
+            <Image id="BridgeHudRevealImage4" active="false" image="" preserveAspect="true" minHeight="92" preferredHeight="92" flexibleHeight="0" />
+            <Text id="BridgeHudRevealFallback4" active="false" text="" minHeight="92" preferredHeight="92" flexibleHeight="0" fontSize="10" color="#334155" alignment="MiddleCenter" />
+          </VerticalLayout>
+          <VerticalLayout id="BridgeHudRevealCard5" active="false" minWidth="105" preferredWidth="105" flexibleWidth="0" spacing="2" childForceExpandWidth="true" childForceExpandHeight="false">
+            <Image id="BridgeHudRevealImage5" active="false" image="" preserveAspect="true" minHeight="92" preferredHeight="92" flexibleHeight="0" />
+            <Text id="BridgeHudRevealFallback5" active="false" text="" minHeight="92" preferredHeight="92" flexibleHeight="0" fontSize="10" color="#334155" alignment="MiddleCenter" />
+          </VerticalLayout>
+          <VerticalLayout id="BridgeHudRevealCard6" active="false" minWidth="105" preferredWidth="105" flexibleWidth="0" spacing="2" childForceExpandWidth="true" childForceExpandHeight="false">
+            <Image id="BridgeHudRevealImage6" active="false" image="" preserveAspect="true" minHeight="92" preferredHeight="92" flexibleHeight="0" />
+            <Text id="BridgeHudRevealFallback6" active="false" text="" minHeight="92" preferredHeight="92" flexibleHeight="0" fontSize="10" color="#334155" alignment="MiddleCenter" />
+          </VerticalLayout>
+        </HorizontalLayout>
+      </HorizontalScrollView>
+      <Text id="BridgeHudRevealCount" text="" minHeight="14" preferredHeight="14" flexibleHeight="0" fontSize="10" color="#94A3B8" alignment="MiddleRight" />
+    </VerticalLayout>
+
     <!-- Large graveyard-origin choice sets stay in a decision-scoped child panel. -->
     <VerticalLayout id="BridgeHudGraveyardPanel" active="false" minHeight="160" preferredHeight="190" flexibleHeight="0" spacing="4" padding="7 7 7 7" childForceExpandHeight="false" childForceExpandWidth="true" color="#111827F2">
       <HorizontalLayout minHeight="24" preferredHeight="24" flexibleHeight="0" spacing="6" childForceExpandWidth="false" childForceExpandHeight="true">

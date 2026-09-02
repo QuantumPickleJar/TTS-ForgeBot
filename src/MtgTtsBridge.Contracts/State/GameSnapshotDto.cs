@@ -1,3 +1,5 @@
+using MtgTtsBridge.Contracts.Events;
+
 namespace MtgTtsBridge.Contracts.State;
 
 /// <summary>
@@ -24,7 +26,8 @@ public sealed record GameSnapshotDto(
     int? TurnNumber = null,
     string? ActiveSeatId = null,
     string? PrioritySeatId = null,
-    string? Phase = null);
+    string? Phase = null,
+    IReadOnlyList<RevealPresentationDto>? ActiveRevealPresentations = null);
 
 public sealed record GameCombatSnapshotDto(IReadOnlyList<GameCombatAttackSnapshotDto> Attacks);
 public sealed record GameCombatAttackSnapshotDto(string AttackerCardInstanceId, string? DefenderSeatId, int? DefenderForgeObjectId, IReadOnlyList<string> BlockerCardInstanceIds);

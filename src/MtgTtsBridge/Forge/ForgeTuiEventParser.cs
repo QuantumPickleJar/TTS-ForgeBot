@@ -326,7 +326,8 @@ public sealed record ForgeTuiRawEvent(
     string? ObjectKind = null,
     bool IsCopy = false,
     bool IsVirtual = false,
-    string? MaterializationPolicy = null)
+    string? MaterializationPolicy = null,
+    MtgTtsBridge.Contracts.Events.RevealPresentationDto? RevealPresentation = null)
 {
     public MtgTtsBridge.Contracts.State.CurrentCharacteristicsDto? Characteristics { get; init; }
 };

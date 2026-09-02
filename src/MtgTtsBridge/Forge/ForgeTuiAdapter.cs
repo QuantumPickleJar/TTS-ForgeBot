@@ -763,7 +763,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             IsCopy: rawEvent.IsCopy,
             IsVirtual: rawEvent.IsVirtual,
             MaterializationPolicy: rawEvent.MaterializationPolicy,
-            IsToken: rawEvent.IsToken)
+            IsToken: rawEvent.IsToken,
+            RevealPresentation: rawEvent.RevealPresentation)
         {
             Characteristics = rawEvent.Characteristics
         };

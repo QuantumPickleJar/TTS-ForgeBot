@@ -799,6 +799,7 @@ function BridgeDecisionPhysicalMappingsReady(decision)
 end
 
 function BridgeRenderDecision(decision, force)
+    if BridgeResolveRevealForDecision ~= nil then BridgeResolveRevealForDecision(decision) end
     BridgePresentationMetric("decisionRenderAttempts")
     BridgeRecordDecisionLifecycle(decision, "render", "RENDER_BEGIN", force == true and "forced" or "normal")
     local key = BridgeDecisionPresentationKey(decision)

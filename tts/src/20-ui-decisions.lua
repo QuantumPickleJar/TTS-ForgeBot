@@ -316,6 +316,7 @@ function BridgeUiFlush()
     if not terminal and #(BridgeState.stackSummary or {}) > 0 then footer = "STACK: " .. table.concat(BridgeState.stackSummary, " > ") end
     if not terminal and ui.gameLogVisible and #(ui.gameLog or {}) > 0 then footer = ui.gameLog[#ui.gameLog] end
     BridgeUiSet("BridgeHudFooter", "text", footer)
+    if BridgeRenderRevealSurface ~= nil then BridgeRenderRevealSurface() end
 end
 
 function BridgeUiMount()
@@ -2264,6 +2265,7 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     end
     BridgeUiMarkDirty("authoritative-snapshot-turn-state")
     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
+    if BridgeRestoreAuthoritativeReveals ~= nil then BridgeRestoreAuthoritativeReveals(snapshot) end
     BridgeState.snapshotReconcileLastAppliedCursor = tonumber(snapshot.eventCursor or 0) or 0
     BridgeState.snapshotReconcileLastAppliedGeneration = BridgeState.snapshotReconcileRequestGeneration or 0
     BridgeState.snapshotReconcileLastAppliedCategory = BridgeSnapshotRequestCategory(reason)
