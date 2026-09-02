@@ -1816,6 +1816,38 @@ function BridgeEnforceDesyncRecovery(reason)
     end
 end
 
+function BridgeCheckRecoveryConvergence(reason)
+    local received = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    local queueLength = #(BridgeState.eventQueue or {})
+    if received <= applied then return false end
+    if BridgeState.eventPolling == true or BridgeState.eventRequestInFlight == true
+        or BridgeState.eventPollScheduled == true then
+        return false
+    end
+    if BridgeState.resyncInFlight == true or BridgeState.resyncScheduled == true
+        or BridgeState.snapshotReconcileInFlight == true or BridgeState.snapshotReconcilePending == true then
+        return false
+    end
+    if queueLength > 0 then return false end
+
+    local missing = nil
+    if BridgeState.lastDecision ~= nil and BridgeDecisionPhysicalMappingsReady ~= nil then
+        local ready, detail = BridgeDecisionPhysicalMappingsReady(BridgeState.lastDecision)
+        if not ready then missing = detail end
+    end
+    local descriptor = string.format(
+        "cursor-ahead-without-recovery reason=%s received=%s applied=%s resyncDeferredReason=%s circuitOpen=%s missing=%s",
+        tostring(reason), tostring(received), tostring(applied), tostring(BridgeState.resyncDeferredReason),
+        tostring(BridgeState.resyncCircuitOpen == true), tostring(missing))
+
+    BridgeState.desyncLatched = true
+    BridgeState.resyncLastFailureReason = descriptor
+    BridgeSetStatus("RECOVERY BLOCKED", descriptor)
+    BridgeLog("[Bridge] TERMINAL_RECOVERY_ERROR " .. descriptor)
+    return true
+end
+
 function BridgeEnsureDesyncRecovery(reason)
     if BridgeState.desyncLatched ~= true or BridgeState.resyncInFlight == true then return end
     if BridgeState.resyncScheduled == true then return end

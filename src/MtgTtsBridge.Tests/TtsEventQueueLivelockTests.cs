@@ -550,6 +550,71 @@ public sealed class TtsEventQueueLivelockTests
         Assert.True(state.Get("desyncLatched").Boolean);
     }
 
+    [Fact]
+    public void ForgeMutationGroupComparisonUsesSharedPositiveForgeSequenceOnly()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            sameA, seqA = BridgeEventsShareForgeMutationGroup(
+                {sequence=8, forgeSequence=44},
+                {sequence=9, forgeSequence=44})
+            sameB, seqB = BridgeEventsShareForgeMutationGroup(
+                {sequence=8, forgeSequence=44},
+                {sequence=9, forgeSequence=45})
+            sameC, seqC = BridgeEventsShareForgeMutationGroup(
+                {sequence=8, forgeSequence=0},
+                {sequence=9, forgeSequence=0})
+        ");
+
+        Assert.True(lua.Globals.Get("sameA").Boolean);
+        Assert.Equal(44, lua.Globals.Get("seqA").Number);
+        Assert.False(lua.Globals.Get("sameB").Boolean);
+        Assert.True(lua.Globals.Get("seqB").Number > 0);
+        Assert.False(lua.Globals.Get("sameC").Boolean);
+        Assert.Equal(0, lua.Globals.Get("seqC").Number);
+    }
+
+    [Fact]
+    public void DecisionIsDeferredWhenQueuedEventsShareItsForgeMutationSequence()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.lastAppliedEventSequence = 20
+            BridgeState.eventQueue = {{sequence=21, kind='card_moved', forgeSequence=77, seatId='forge-player-1'}}
+            defer, cursor, applied, reason, detail = BridgeShouldDeferDecision({
+                decisionId='forge-tui-21',
+                kind='main_priority',
+                seatId='forge-player-1',
+                eventCursor=20,
+                forgeSequence=77,
+                actions={{actionId='pass-21', type='pass_priority'}}
+            })
+        ");
+
+        Assert.True(lua.Globals.Get("defer").Boolean);
+        Assert.Equal("causal_dependency_pending", lua.Globals.Get("reason").String);
+        Assert.Contains("forgeSequence=77", lua.Globals.Get("detail").String);
+        Assert.Equal(20, lua.Globals.Get("cursor").Number);
+        Assert.Equal(20, lua.Globals.Get("applied").Number);
+    }
+
+    [Fact]
+    public void LifecycleGuardBlocksStartMatchOutsideReadyOrFailedStates()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.lifecycleState = 'SESSION_ACTIVE'
+            blockedMessage = nil
+            function BridgeShowError(message)
+                blockedMessage = message
+            end
+            allowed = BridgeGuardLifecycleCommand('START_MATCH')
+        ");
+
+        Assert.False(lua.Globals.Get("allowed").Boolean);
+        Assert.Contains("START MATCH unavailable", lua.Globals.Get("blockedMessage").String);
+    }
+
     private static Script NewQueueProbe()
     {
         var lua = new Script();

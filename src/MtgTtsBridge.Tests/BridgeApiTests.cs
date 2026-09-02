@@ -36,11 +36,58 @@ public sealed class BridgeApiTests
 
         var response = await client.PostAsJsonAsync("/api/v1/decks", new DeckLoadRequestDto(
         [
-            new DeckSeatLoadDto("forge-player-1", [new DeckCardLoadDto("Brainstorm", 4), new DeckCardLoadDto("Underground Sea", 4)]),
-            new DeckSeatLoadDto("forge-player-2", [new DeckCardLoadDto("Lightning Bolt", 4), new DeckCardLoadDto("Mountain", 20)]),
-        ]));
+            new DeckSeatLoadDto("forge-player-1", [new DeckCardLoadDto("Island", 20), new DeckCardLoadDto("Opt", 20)]),
+            new DeckSeatLoadDto("forge-player-2", [new DeckCardLoadDto("Mountain", 20), new DeckCardLoadDto("Shock", 20)]),
+        ])
+        {
+            Format = "limited",
+            FormatProvenance = "bridge-api-test"
+        });
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeckInventory_RejectsMissingFormatProvenance()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/v1/decks", new DeckLoadRequestDto(
+        [
+            new DeckSeatLoadDto("forge-player-1", [new DeckCardLoadDto("Island", 20), new DeckCardLoadDto("Opt", 20)]),
+            new DeckSeatLoadDto("forge-player-2", [new DeckCardLoadDto("Mountain", 20), new DeckCardLoadDto("Shock", 20)]),
+        ])
+        {
+            Format = "limited"
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponseDto>();
+        Assert.NotNull(error);
+        Assert.Equal("missing_format_provenance", error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task DeckInventory_RejectsDeckBelowLimitedMinimum()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/v1/decks", new DeckLoadRequestDto(
+        [
+            new DeckSeatLoadDto("forge-player-1", [new DeckCardLoadDto("Island", 28)]),
+            new DeckSeatLoadDto("forge-player-2", [new DeckCardLoadDto("Mountain", 40)]),
+        ])
+        {
+            Format = "limited",
+            FormatProvenance = "bridge-api-test"
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponseDto>();
+        Assert.NotNull(error);
+        Assert.Equal("invalid_deck_count", error.ErrorCode);
     }
 
     [Fact]

@@ -1675,8 +1675,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.True(showStart >= 0 && findStart > showStart);
         var show = Script[showStart..findStart];
 
-        Assert.Contains("seat.resourceRotation", show);
-        Assert.Contains("counter.setRotation(seat.resourceRotation)", show);
+        Assert.Contains("counter.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0})", show);
         Assert.Contains("BridgeShowResourceCounter(counter, position, seat)", Script);
         Assert.Contains("resourceRotation = {x = 0, y = 90, z = 0}", Script);
         Assert.Contains("resourceRotation = {x = 0, y = 270, z = 0}", Script);
@@ -2592,6 +2591,50 @@ public sealed class TtsGlobalLuaContractTests
         var resyncEnd = Script.IndexOf("function BridgeAlignLibraryOrderForSnapshot", resyncStart, StringComparison.Ordinal);
         Assert.Contains("BridgeState.desyncLatched = false", Script[resyncStart..resyncEnd]);
         Assert.Contains("BridgeState.desyncFailureCount = 0", Script[resyncStart..resyncEnd]);
+    }
+
+    [Fact]
+    public void StartMatchPreflight_RejectsDirtyManagedCardsAndDeckMinimumViolations()
+    {
+        Assert.Contains("function BridgeStartMatchPreflight(humanDeck, aiDeck)", Script);
+        Assert.Contains("BridgeCollectManagedCardPreflightIssues", Script);
+        Assert.Contains("managed cards from a previous session are still live outside deck piles", Script);
+        Assert.Contains("duplicate cardInstanceId identities detected", Script);
+        Assert.Contains("deck count below minimum for", Script);
+        Assert.Contains("selectedFormatProvenance", Script);
+        Assert.Contains("allowDeckMinimumOverride", Script);
+    }
+
+    [Fact]
+    public void ResumeCommand_IsolatedToPausedLocalSessionAndNeverAttaches()
+    {
+        var start = Script.IndexOf("function BridgeDoPressResume", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeClassifyResumeState", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        Assert.Contains("BridgeResumeActiveSession(\"resume\")", body);
+        Assert.DoesNotContain("BridgeAttachToActiveSession(", body);
+        Assert.Contains("RESUME requires an already-paused local session", body);
+    }
+
+    [Fact]
+    public void DecisionDeferral_UsesGlobalPhysicalQueueBarrierAndForgeSequenceOrdering()
+    {
+        Assert.Contains("physical_transition_pending_global", Script);
+        Assert.Contains("decisionForgeSequence", Script);
+        Assert.Contains("lastAppliedForgeSequence", Script);
+        Assert.Contains("due to forgeSequence ordering", Script);
+    }
+
+    [Fact]
+    public void LifecycleCommandIsolationAndMutationGroupAtomicityMarkersArePresent()
+    {
+        Assert.Contains("BRIDGE_LIFECYCLE_COMMAND_RULES", Script);
+        Assert.Contains("function BridgeGuardLifecycleCommand(command)", Script);
+        Assert.Contains("COMMAND_BLOCKED command=", Script);
+        Assert.Contains("causal_dependency_pending", Script);
+        Assert.Contains("function BridgeEventsShareForgeMutationGroup", Script);
+        Assert.Contains("EVENT_TX_GROUP_PENDING", Script);
     }
 
     [Fact]

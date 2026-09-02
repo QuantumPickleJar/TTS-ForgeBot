@@ -790,11 +790,11 @@ end
 function BridgeShowResourceCounter(counter, position, seat)
     if counter == nil or position == nil then return end
     pcall(function() counter.setInvisibleTo({}) end)
-    -- Native Counter templates are laid out sideways relative to the player
-    -- cards. Give each player the same clockwise-facing reading orientation
-    -- without changing the authoritative mana value or resource placement.
-    if seat ~= nil and seat.resourceRotation ~= nil then
-        pcall(function() counter.setRotation(seat.resourceRotation) end)
+    -- Mana counters must face the same direction as the life counter they are
+    -- positioned relative to. Match the life counter orientation: 180° when
+    -- player is on far side (tableSideZ < 0), 0° when on near side.
+    if seat ~= nil then
+        pcall(function() counter.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0}) end)
     end
     pcall(function() counter.setPosition(position) end)
 end
@@ -1580,6 +1580,20 @@ function BridgeRecordEventCommitAbort(event, reason, sessionId, sessionGeneratio
     end
 end
 
+local function BridgeNormalizeForgeSequence(value)
+    local sequence = tonumber(value)
+    if sequence == nil or sequence <= 0 then return nil end
+    return sequence
+end
+
+function BridgeEventsShareForgeMutationGroup(leftEvent, rightEvent)
+    if leftEvent == nil or rightEvent == nil then return false, nil end
+    local leftSequence = BridgeNormalizeForgeSequence(leftEvent.forgeSequence)
+    local rightSequence = BridgeNormalizeForgeSequence(rightEvent.forgeSequence)
+    if leftSequence == nil or rightSequence == nil then return false, nil end
+    return leftSequence == rightSequence, leftSequence
+end
+
 function BridgeProcessEventQueue()
     local queue = BridgeState.eventQueue or {}
     if #queue == 0 then
@@ -1704,11 +1718,26 @@ function BridgeProcessEventQueue()
     BridgeState.lastConsumedEventSequence = event.sequence
     BridgeState.lastStateProjectedEventSequence = event.sequence
     BridgeState.lastPhysicalPresentationEventSequence = event.sequence
+    if event.forgeSequence ~= nil then
+        local forgeSequence = tonumber(event.forgeSequence)
+        if forgeSequence ~= nil then
+            BridgeState.lastAppliedForgeSequence = math.max(
+                tonumber(BridgeState.lastAppliedForgeSequence or 0) or 0,
+                forgeSequence)
+        end
+    end
     if event.revealPresentation ~= nil and BridgeApplyRevealPresentation ~= nil then
         local revealOk, revealError = pcall(BridgeApplyRevealPresentation, event.revealPresentation, event.sequence)
         if not revealOk then BridgeLog("[Bridge] reveal presentation failed: " .. tostring(revealError)) end
     end
     BridgeResetEventCommitWatchdog()
+    local nextQueuedEvent = BridgeState.eventQueue[1]
+    local delayPostCommitWork, mutationSequence = BridgeEventsShareForgeMutationGroup(event, nextQueuedEvent)
+    if delayPostCommitWork then
+        BridgeLog(string.format(
+            "[Bridge] EVENT_TX_GROUP_PENDING forgeSequence=%s committed=%s next=%s",
+            tostring(mutationSequence), tostring(event.sequence), tostring(nextQueuedEvent.sequence)))
+    end
     BridgeLog(string.format(
         "[Bridge] EVENT_TX_COMMIT eventSequence=%s oldLastApplied=%s newLastApplied=%s queueLength=%s",
         tostring(event.sequence), tostring(oldLastApplied), tostring(BridgeState.lastAppliedEventSequence),
@@ -1722,6 +1751,12 @@ function BridgeProcessEventQueue()
     -- Install the serialized continuation immediately after the cursor commit.
     -- Optional post-commit presentation work is allowed to fail without
     -- stranding animationRunning and blocking the next authoritative event.
+    local continuationDelay = (function()
+        if delayPostCommitWork then return 0 end
+        local nextDelay = delay or 0.1
+        if BridgeState.ui ~= nil and BridgeState.ui.fastPlaytest then nextDelay = math.min(nextDelay, 0.05) end
+        return nextDelay
+    end)()
     BridgeWaitTime(function()
         local ok, continuationError = pcall(function()
             if processingSessionId ~= BridgeState.eventSessionId
@@ -1739,28 +1774,26 @@ function BridgeProcessEventQueue()
             BridgeLog("[Bridge] EVENT_DRAIN_CONTINUATION_FAILED error=" .. tostring(continuationError))
             BridgeStopOnDesync("event drain continuation failed: " .. tostring(continuationError))
         end
-    end, (function()
-        local nextDelay = delay or 0.1
-        if BridgeState.ui ~= nil and BridgeState.ui.fastPlaytest then nextDelay = math.min(nextDelay, 0.05) end
-        return nextDelay
-    end)())
+    end, continuationDelay)
 
-    local postCommitOk, postCommitError = pcall(function()
-        BridgeTryPresentPendingDecision("event-applied")
-        if event.kind == "draw" or event.kind == "turn_changed" or event.kind == "phase_changed" then
-            -- The old menu may still be rendered when Forge changes state. Ask
-            -- Forge for the replacement directly; the refresh is bounded and
-            -- single-flight, and acceptance preserves hand-action readiness.
-            BridgeRefreshDecisionAfterStateTransition(event.kind)
+    if not delayPostCommitWork then
+        local postCommitOk, postCommitError = pcall(function()
+            BridgeTryPresentPendingDecision("event-applied")
+            if event.kind == "draw" or event.kind == "turn_changed" or event.kind == "phase_changed" then
+                -- The old menu may still be rendered when Forge changes state. Ask
+                -- Forge for the replacement directly; the refresh is bounded and
+                -- single-flight, and acceptance preserves hand-action readiness.
+                BridgeRefreshDecisionAfterStateTransition(event.kind)
+            end
+            if BridgeShouldReconcileAfterEvent(event) then
+                BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence) .. " recovery", "RECOVERY")
+            end
+        end)
+        if not postCommitOk then
+            BridgeLog("[Bridge] EVENT_TX_POST_COMMIT_FAILED eventSequence=" .. tostring(event.sequence)
+                .. " error=" .. tostring(postCommitError))
+            BridgeStopOnDesync("event post-commit failed: " .. tostring(postCommitError))
         end
-        if BridgeShouldReconcileAfterEvent(event) then
-            BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence) .. " recovery", "RECOVERY")
-        end
-    end)
-    if not postCommitOk then
-        BridgeLog("[Bridge] EVENT_TX_POST_COMMIT_FAILED eventSequence=" .. tostring(event.sequence)
-            .. " error=" .. tostring(postCommitError))
-        BridgeStopOnDesync("event post-commit failed: " .. tostring(postCommitError))
     end
 end
 

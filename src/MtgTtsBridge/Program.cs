@@ -87,6 +87,29 @@ app.MapPost("/api/v1/session/start", async (IForgeAdapter adapter, ILogger<Progr
 
 app.MapPost("/api/v1/decks", async (DeckLoadRequestDto request, IForgeAdapter adapter, ILogger<Program> logger, CancellationToken cancellationToken) =>
 {
+	static string NormalizeFormat(string? format)
+	{
+		var value = (format ?? string.Empty).Trim().ToLowerInvariant();
+		return value switch
+		{
+			"standard" => "constructed",
+			"legacy" => "constructed",
+			"constructed" => "constructed",
+			"limited" => "limited",
+			_ => value
+		};
+	}
+
+	static int? MinimumDeckSize(string normalizedFormat)
+	{
+		return normalizedFormat switch
+		{
+			"limited" => 40,
+			"constructed" => 60,
+			_ => null
+		};
+	}
+
 	if (request.Seats.Count != 2 || request.Seats.Any(seat => string.IsNullOrWhiteSpace(seat.SeatId) || seat.Cards.Count == 0)
 		|| request.Seats.Select(seat => seat.SeatId).Distinct(StringComparer.Ordinal).Count() != 2
 		|| request.Seats.SelectMany(seat => seat.Cards).Any(card => string.IsNullOrWhiteSpace(card.CardName) || card.Count <= 0))
@@ -94,11 +117,58 @@ app.MapPost("/api/v1/decks", async (DeckLoadRequestDto request, IForgeAdapter ad
 		logger.LogWarning("DECK_VALIDATION_RESULT ok=false reason=invalid-shape seats={SeatCount}", request.Seats.Count);
 		return Results.BadRequest(new ErrorResponseDto("invalid_deck_inventory", "Provide two non-empty seat deck inventories with positive card counts.", null));
 	}
+
+	var rawFormat = (request.Format ?? string.Empty).Trim();
+	var normalizedFormat = NormalizeFormat(rawFormat);
+	if (string.IsNullOrWhiteSpace(rawFormat))
+	{
+		logger.LogWarning("DECK_VALIDATION_RESULT ok=false reason=missing-format humanCards={HumanCards} aiCards={AiCards}",
+			request.Seats[0].Cards.Sum(card => card.Count), request.Seats[1].Cards.Sum(card => card.Count));
+		return Results.BadRequest(new ErrorResponseDto("missing_format", "Deck format is required (limited or constructed).", null));
+	}
+	if (string.IsNullOrWhiteSpace(request.FormatProvenance))
+	{
+		logger.LogWarning("DECK_VALIDATION_RESULT ok=false reason=missing-format-provenance format={Format}", rawFormat);
+		return Results.BadRequest(new ErrorResponseDto("missing_format_provenance", "Deck format provenance is required; silent fallback is not allowed.", null));
+	}
+	var minimum = MinimumDeckSize(normalizedFormat);
+	if (minimum is null)
+	{
+		logger.LogWarning("DECK_VALIDATION_RESULT ok=false reason=unsupported-format format={Format} provenance={FormatProvenance}",
+			rawFormat, request.FormatProvenance);
+		return Results.BadRequest(new ErrorResponseDto("unsupported_format", "Unsupported deck format. Use limited, constructed, or legacy.", null));
+	}
+
+	var humanSeat = request.Seats.SingleOrDefault(seat => string.Equals(seat.SeatId, "forge-player-1", StringComparison.Ordinal));
+	var aiSeat = request.Seats.SingleOrDefault(seat => string.Equals(seat.SeatId, "forge-player-2", StringComparison.Ordinal));
+	if (humanSeat is null || aiSeat is null)
+	{
+		logger.LogWarning("DECK_VALIDATION_RESULT ok=false reason=missing-expected-seat seatIds={SeatIds}",
+			string.Join(',', request.Seats.Select(seat => seat.SeatId)));
+		return Results.BadRequest(new ErrorResponseDto("invalid_deck_inventory", "Deck inventory must include forge-player-1 and forge-player-2 seats.", null));
+	}
+	var humanCards = humanSeat.Cards.Sum(card => card.Count);
+	var aiCards = aiSeat.Cards.Sum(card => card.Count);
+	if (!request.AllowDeckMinimumOverride && (humanCards < minimum.Value || aiCards < minimum.Value))
+	{
+		logger.LogWarning("DECK_VALIDATION_RESULT ok=false reason=deck-minimum format={Format} min={Minimum} humanCards={HumanCards} aiCards={AiCards} override={Override} provenance={FormatProvenance}",
+			normalizedFormat, minimum.Value, humanCards, aiCards, request.AllowDeckMinimumOverride, request.FormatProvenance);
+		return Results.BadRequest(new ErrorResponseDto(
+			"invalid_deck_count",
+			$"Deck count below minimum for {normalizedFormat}: required at least {minimum.Value} cards per deck.",
+			null));
+	}
+
+	if (request.AllowDeckMinimumOverride)
+	{
+		logger.LogWarning("DECK_VALIDATION_OVERRIDE enabled=true format={Format} min={Minimum} humanCards={HumanCards} aiCards={AiCards} provenance={FormatProvenance}",
+			normalizedFormat, minimum.Value, humanCards, aiCards, request.FormatProvenance);
+	}
 	try
 	{
 		await adapter.ConfigureDecksAsync(request, cancellationToken);
-		logger.LogInformation("DECK_VALIDATION_RESULT ok=true humanCards={HumanCards} aiCards={AiCards}",
-			request.Seats[0].Cards.Sum(card => card.Count), request.Seats[1].Cards.Sum(card => card.Count));
+		logger.LogInformation("DECK_VALIDATION_RESULT ok=true format={Format} min={Minimum} override={Override} provenance={FormatProvenance} humanCards={HumanCards} aiCards={AiCards}",
+			normalizedFormat, minimum.Value, request.AllowDeckMinimumOverride, request.FormatProvenance, humanCards, aiCards);
 		return Results.NoContent();
 	}
 	catch (InvalidOperationException exception)

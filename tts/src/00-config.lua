@@ -50,6 +50,8 @@ BRIDGE_RESYNC_STALL_SECONDS = 30.0
 BRIDGE_RESYNC_AUTOMATIC_QUEUE_GRACE_SECONDS = 10.0
 BRIDGE_RESYNC_STALL_FRAMES = 1800
 BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
+BRIDGE_DEFAULT_MATCH_FORMAT = "limited"
+BRIDGE_ALLOW_DECK_MINIMUM_OVERRIDE = false
 -- Configuration, not rules: FREEFORM permits a player to arrange their own
 -- lands after they enter. STRICT re-applies the persistent land row only on
 -- authoritative layout events or an explicit organize request.
@@ -886,6 +888,9 @@ BridgeState = {
     bridgeProcessInstanceId = nil,
     connectionEpoch = 0,
     sessionCleanupApplied = false,
+    selectedFormat = BRIDGE_DEFAULT_MATCH_FORMAT,
+    selectedFormatProvenance = "tts-default-limited",
+    allowDeckMinimumOverride = BRIDGE_ALLOW_DECK_MINIMUM_OVERRIDE,
     lastDecision = nil,
     actionByGuid = {},
     highlightedGuids = {},
@@ -956,6 +961,7 @@ BridgeState = {
     lastConsumedEventSequence = 0,
     lastStateProjectedEventSequence = 0,
     lastPhysicalPresentationEventSequence = 0,
+    lastAppliedForgeSequence = 0,
     phaseSourceEventSequence = 0,
     turnSourceEventSequence = 0,
     activePlayerSourceEventSequence = 0,
@@ -1270,6 +1276,55 @@ BRIDGE_LIFECYCLE_ENDING = "ENDING_SESSION"
 BRIDGE_LIFECYCLE_RECOVERING = "RECOVERING_ACTIVE_SESSION"
 BRIDGE_LIFECYCLE_START_FAILED = "START_FAILED"
 
+local BRIDGE_LIFECYCLE_COMMAND_RULES = {
+    START_MATCH = {
+        [BRIDGE_LIFECYCLE_READY_NO_SESSION] = true,
+        [BRIDGE_LIFECYCLE_START_FAILED] = true
+    },
+    RESUME_MATCH = {
+        [BRIDGE_LIFECYCLE_ACTIVE] = true,
+        [BRIDGE_LIFECYCLE_RECOVERING] = true,
+        [BRIDGE_LIFECYCLE_READY_NO_SESSION] = true,
+        [BRIDGE_LIFECYCLE_START_FAILED] = true
+    },
+    NEW_MATCH = {
+        [BRIDGE_LIFECYCLE_DISCONNECTED] = true,
+        [BRIDGE_LIFECYCLE_READY_NO_SESSION] = true,
+        [BRIDGE_LIFECYCLE_ACTIVE] = true,
+        [BRIDGE_LIFECYCLE_RECOVERING] = true,
+        [BRIDGE_LIFECYCLE_START_FAILED] = true
+    },
+    CONFIRM_NEW_MATCH = {
+        [BRIDGE_LIFECYCLE_DISCONNECTED] = true,
+        [BRIDGE_LIFECYCLE_READY_NO_SESSION] = true,
+        [BRIDGE_LIFECYCLE_ACTIVE] = true,
+        [BRIDGE_LIFECYCLE_RECOVERING] = true,
+        [BRIDGE_LIFECYCLE_START_FAILED] = true
+    }
+}
+
+function BridgeLifecycleCommandAllowed(command)
+    local state = BridgeState.lifecycleState or BRIDGE_LIFECYCLE_DISCONNECTED
+    local allowedStates = BRIDGE_LIFECYCLE_COMMAND_RULES[tostring(command or "")]
+    if allowedStates == nil then
+        return true, state
+    end
+    return allowedStates[state] == true, state
+end
+
+function BridgeGuardLifecycleCommand(command)
+    local allowed, state = BridgeLifecycleCommandAllowed(command)
+    if allowed then return true end
+    local label = string.gsub(tostring(command or "COMMAND"), "_", " ")
+    local message = string.format("%s unavailable while lifecycle state is %s", label, tostring(state))
+    BridgeLog("[Bridge] COMMAND_BLOCKED command=" .. tostring(command)
+        .. " lifecycle=" .. tostring(state)
+        .. " session=" .. tostring(BridgeState.eventSessionId))
+    if BridgeSetStatus ~= nil then BridgeSetStatus("COMMAND BLOCKED", message) end
+    if BridgeShowError ~= nil then BridgeShowError(message) end
+    return false
+end
+
 function BridgeSetLifecycleState(state, reason)
     local previous = BridgeState.lifecycleState
     BridgeState.lifecycleState = state
@@ -1325,6 +1380,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.lastConsumedEventSequence = 0
     BridgeState.lastStateProjectedEventSequence = 0
     BridgeState.lastPhysicalPresentationEventSequence = 0
+    BridgeState.lastAppliedForgeSequence = 0
     BridgeState.currentTurnSeatId = nil
     BridgeState.prioritySeatId = nil
     BridgeState.tableTurnCount = 0
@@ -1497,6 +1553,7 @@ function BridgeSafeObjectCall(object, action)
 end
 
 local BRIDGE_PHYSICAL_ID_KEY = "bridgeCardInstanceId"
+local BRIDGE_PHYSICAL_SESSION_KEY = "bridgeSessionId"
 
 function BridgeReadPhysicalIdentity(object)
     if not BridgeObjectIsUsable(object) or type(object.getVar) ~= "function" then return nil end
@@ -1508,6 +1565,18 @@ end
 function BridgeWritePhysicalIdentity(object, cardInstanceId)
     if not BridgeObjectIsUsable(object) or cardInstanceId == nil or type(object.setVar) ~= "function" then return end
     pcall(function() object.setVar(BRIDGE_PHYSICAL_ID_KEY, tostring(cardInstanceId)) end)
+end
+
+function BridgeReadPhysicalSessionIdentity(object)
+    if not BridgeObjectIsUsable(object) or type(object.getVar) ~= "function" then return nil end
+    local ok, value = pcall(function() return object.getVar(BRIDGE_PHYSICAL_SESSION_KEY) end)
+    if not ok or value == nil or tostring(value) == "" then return nil end
+    return tostring(value)
+end
+
+function BridgeWritePhysicalSessionIdentity(object, sessionId)
+    if not BridgeObjectIsUsable(object) or sessionId == nil or type(object.setVar) ~= "function" then return end
+    pcall(function() object.setVar(BRIDGE_PHYSICAL_SESSION_KEY, tostring(sessionId)) end)
 end
 
 function BridgeAdvancePhysicalPresentationGeneration(reason)
@@ -1536,11 +1605,23 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
         BridgeLog("[Bridge] refusing incomplete Forge mapping")
         return false
     end
+    local activeSessionId = BridgeState.eventSessionId
+    if activeSessionId == nil or activeSessionId == "session-not-started" then
+        BridgeLog("[Bridge] refusing Forge mapping without an active session")
+        return false
+    end
     if BridgeIsPresentationOnlyObject(guid) then
         BridgeLog("[Bridge] refusing Forge mapping for presentation object " .. tostring(guid))
         return false
     end
     local object = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
+    local advertisedSession = BridgeReadPhysicalSessionIdentity(object)
+    if advertisedSession ~= nil and advertisedSession ~= tostring(activeSessionId) then
+        BridgeLog("[Bridge] refusing mapping owned by another session guid=" .. tostring(guid)
+            .. " objectSession=" .. tostring(advertisedSession)
+            .. " activeSession=" .. tostring(activeSessionId))
+        return false
+    end
     local advertised = BridgeReadPhysicalIdentity(object)
     if advertised ~= nil and advertised ~= tostring(cardInstanceId) then
         BridgeLog("[Bridge] refusing mapping whose physical object advertises another card instance guid="
@@ -1581,6 +1662,7 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
     BridgeState.physicalSeatByGuid[guid] = seatId
     BridgeState.physicalZoneByGuid[guid] = zoneName
     BridgeWritePhysicalIdentity(object, cardInstanceId)
+    BridgeWritePhysicalSessionIdentity(object, activeSessionId)
     if changed then BridgeAdvancePhysicalPresentationGeneration("card-mapping") end
     if BridgeCaptureCanonicalCardScale ~= nil then BridgeCaptureCanonicalCardScale(object) end
     return true

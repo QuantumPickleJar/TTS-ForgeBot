@@ -51,6 +51,8 @@ BRIDGE_RESYNC_STALL_SECONDS = 30.0
 BRIDGE_RESYNC_AUTOMATIC_QUEUE_GRACE_SECONDS = 10.0
 BRIDGE_RESYNC_STALL_FRAMES = 1800
 BRIDGE_GRAVEYARD_ACTION_GROUP_THRESHOLD = 6
+BRIDGE_DEFAULT_MATCH_FORMAT = "limited"
+BRIDGE_ALLOW_DECK_MINIMUM_OVERRIDE = false
 -- Configuration, not rules: FREEFORM permits a player to arrange their own
 -- lands after they enter. STRICT re-applies the persistent land row only on
 -- authoritative layout events or an explicit organize request.
@@ -887,6 +889,9 @@ BridgeState = {
     bridgeProcessInstanceId = nil,
     connectionEpoch = 0,
     sessionCleanupApplied = false,
+    selectedFormat = BRIDGE_DEFAULT_MATCH_FORMAT,
+    selectedFormatProvenance = "tts-default-limited",
+    allowDeckMinimumOverride = BRIDGE_ALLOW_DECK_MINIMUM_OVERRIDE,
     lastDecision = nil,
     actionByGuid = {},
     highlightedGuids = {},
@@ -957,6 +962,7 @@ BridgeState = {
     lastConsumedEventSequence = 0,
     lastStateProjectedEventSequence = 0,
     lastPhysicalPresentationEventSequence = 0,
+    lastAppliedForgeSequence = 0,
     phaseSourceEventSequence = 0,
     turnSourceEventSequence = 0,
     activePlayerSourceEventSequence = 0,
@@ -1271,6 +1277,55 @@ BRIDGE_LIFECYCLE_ENDING = "ENDING_SESSION"
 BRIDGE_LIFECYCLE_RECOVERING = "RECOVERING_ACTIVE_SESSION"
 BRIDGE_LIFECYCLE_START_FAILED = "START_FAILED"
 
+local BRIDGE_LIFECYCLE_COMMAND_RULES = {
+    START_MATCH = {
+        [BRIDGE_LIFECYCLE_READY_NO_SESSION] = true,
+        [BRIDGE_LIFECYCLE_START_FAILED] = true
+    },
+    RESUME_MATCH = {
+        [BRIDGE_LIFECYCLE_ACTIVE] = true,
+        [BRIDGE_LIFECYCLE_RECOVERING] = true,
+        [BRIDGE_LIFECYCLE_READY_NO_SESSION] = true,
+        [BRIDGE_LIFECYCLE_START_FAILED] = true
+    },
+    NEW_MATCH = {
+        [BRIDGE_LIFECYCLE_DISCONNECTED] = true,
+        [BRIDGE_LIFECYCLE_READY_NO_SESSION] = true,
+        [BRIDGE_LIFECYCLE_ACTIVE] = true,
+        [BRIDGE_LIFECYCLE_RECOVERING] = true,
+        [BRIDGE_LIFECYCLE_START_FAILED] = true
+    },
+    CONFIRM_NEW_MATCH = {
+        [BRIDGE_LIFECYCLE_DISCONNECTED] = true,
+        [BRIDGE_LIFECYCLE_READY_NO_SESSION] = true,
+        [BRIDGE_LIFECYCLE_ACTIVE] = true,
+        [BRIDGE_LIFECYCLE_RECOVERING] = true,
+        [BRIDGE_LIFECYCLE_START_FAILED] = true
+    }
+}
+
+function BridgeLifecycleCommandAllowed(command)
+    local state = BridgeState.lifecycleState or BRIDGE_LIFECYCLE_DISCONNECTED
+    local allowedStates = BRIDGE_LIFECYCLE_COMMAND_RULES[tostring(command or "")]
+    if allowedStates == nil then
+        return true, state
+    end
+    return allowedStates[state] == true, state
+end
+
+function BridgeGuardLifecycleCommand(command)
+    local allowed, state = BridgeLifecycleCommandAllowed(command)
+    if allowed then return true end
+    local label = string.gsub(tostring(command or "COMMAND"), "_", " ")
+    local message = string.format("%s unavailable while lifecycle state is %s", label, tostring(state))
+    BridgeLog("[Bridge] COMMAND_BLOCKED command=" .. tostring(command)
+        .. " lifecycle=" .. tostring(state)
+        .. " session=" .. tostring(BridgeState.eventSessionId))
+    if BridgeSetStatus ~= nil then BridgeSetStatus("COMMAND BLOCKED", message) end
+    if BridgeShowError ~= nil then BridgeShowError(message) end
+    return false
+end
+
 function BridgeSetLifecycleState(state, reason)
     local previous = BridgeState.lifecycleState
     BridgeState.lifecycleState = state
@@ -1326,6 +1381,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.lastConsumedEventSequence = 0
     BridgeState.lastStateProjectedEventSequence = 0
     BridgeState.lastPhysicalPresentationEventSequence = 0
+    BridgeState.lastAppliedForgeSequence = 0
     BridgeState.currentTurnSeatId = nil
     BridgeState.prioritySeatId = nil
     BridgeState.tableTurnCount = 0
@@ -1498,6 +1554,7 @@ function BridgeSafeObjectCall(object, action)
 end
 
 local BRIDGE_PHYSICAL_ID_KEY = "bridgeCardInstanceId"
+local BRIDGE_PHYSICAL_SESSION_KEY = "bridgeSessionId"
 
 function BridgeReadPhysicalIdentity(object)
     if not BridgeObjectIsUsable(object) or type(object.getVar) ~= "function" then return nil end
@@ -1509,6 +1566,18 @@ end
 function BridgeWritePhysicalIdentity(object, cardInstanceId)
     if not BridgeObjectIsUsable(object) or cardInstanceId == nil or type(object.setVar) ~= "function" then return end
     pcall(function() object.setVar(BRIDGE_PHYSICAL_ID_KEY, tostring(cardInstanceId)) end)
+end
+
+function BridgeReadPhysicalSessionIdentity(object)
+    if not BridgeObjectIsUsable(object) or type(object.getVar) ~= "function" then return nil end
+    local ok, value = pcall(function() return object.getVar(BRIDGE_PHYSICAL_SESSION_KEY) end)
+    if not ok or value == nil or tostring(value) == "" then return nil end
+    return tostring(value)
+end
+
+function BridgeWritePhysicalSessionIdentity(object, sessionId)
+    if not BridgeObjectIsUsable(object) or sessionId == nil or type(object.setVar) ~= "function" then return end
+    pcall(function() object.setVar(BRIDGE_PHYSICAL_SESSION_KEY, tostring(sessionId)) end)
 end
 
 function BridgeAdvancePhysicalPresentationGeneration(reason)
@@ -1537,11 +1606,23 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
         BridgeLog("[Bridge] refusing incomplete Forge mapping")
         return false
     end
+    local activeSessionId = BridgeState.eventSessionId
+    if activeSessionId == nil or activeSessionId == "session-not-started" then
+        BridgeLog("[Bridge] refusing Forge mapping without an active session")
+        return false
+    end
     if BridgeIsPresentationOnlyObject(guid) then
         BridgeLog("[Bridge] refusing Forge mapping for presentation object " .. tostring(guid))
         return false
     end
     local object = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
+    local advertisedSession = BridgeReadPhysicalSessionIdentity(object)
+    if advertisedSession ~= nil and advertisedSession ~= tostring(activeSessionId) then
+        BridgeLog("[Bridge] refusing mapping owned by another session guid=" .. tostring(guid)
+            .. " objectSession=" .. tostring(advertisedSession)
+            .. " activeSession=" .. tostring(activeSessionId))
+        return false
+    end
     local advertised = BridgeReadPhysicalIdentity(object)
     if advertised ~= nil and advertised ~= tostring(cardInstanceId) then
         BridgeLog("[Bridge] refusing mapping whose physical object advertises another card instance guid="
@@ -1582,6 +1663,7 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
     BridgeState.physicalSeatByGuid[guid] = seatId
     BridgeState.physicalZoneByGuid[guid] = zoneName
     BridgeWritePhysicalIdentity(object, cardInstanceId)
+    BridgeWritePhysicalSessionIdentity(object, activeSessionId)
     if changed then BridgeAdvancePhysicalPresentationGeneration("card-mapping") end
     if BridgeCaptureCanonicalCardScale ~= nil then BridgeCaptureCanonicalCardScale(object) end
     return true
@@ -3020,6 +3102,7 @@ end
 
 function onUpdate()
     if BridgeEnforceDesyncRecovery ~= nil then BridgeEnforceDesyncRecovery("onUpdate") end
+    if BridgeCheckRecoveryConvergence ~= nil then BridgeCheckRecoveryConvergence("onUpdate") end
     if BridgeCheckDecisionPollingLiveness ~= nil then BridgeCheckDecisionPollingLiveness("onUpdate") end
     -- Wait.time is normally sufficient, but a bootstrap can be waiting on a
     -- TTS callback while the time scheduler is delayed.  Keep the resync
@@ -3827,8 +3910,127 @@ function BridgeResetSessionRequest(callback)
     BridgeHttp.requestJson("POST", "/api/v1/session/reset", nil, callback)
 end
 
--- TTS's imported library piles are the deck chooser.  We send only printed
--- identities and counts; Forge decides whether the Legacy-assumed deck is legal.
+function BridgeNormalizedDeckFormat()
+    local value = string.lower(tostring(BridgeState.selectedFormat or BRIDGE_DEFAULT_MATCH_FORMAT or "limited"))
+    if value == "standard" or value == "legacy" then return "constructed" end
+    if value == "constructed" or value == "limited" then return value end
+    return value
+end
+
+function BridgeDeckMinimumForFormat(format)
+    local normalized = string.lower(tostring(format or ""))
+    if normalized == "limited" then return 40 end
+    if normalized == "constructed" then return 60 end
+    return nil
+end
+
+function BridgeDeckCardCount(deck)
+    if deck == nil or not BridgeObjectIsUsable(deck) then return 0 end
+    if deck.tag == "Deck" then return #(deck.getObjects() or {}) end
+    if deck.tag == "Card" then return 1 end
+    return 0
+end
+
+function BridgeBuildDeckGuidManifest(deck)
+    local manifest = {}
+    if deck == nil or not BridgeObjectIsUsable(deck) then return manifest end
+    if deck.tag == "Deck" then
+        for _, entry in ipairs(deck.getObjects() or {}) do
+            if entry ~= nil and tostring(entry.guid or "") ~= "" then
+                manifest[tostring(entry.guid)] = true
+            end
+        end
+    elseif deck.tag == "Card" then
+        local guid = BridgeSafeObjectGuid(deck)
+        if guid ~= nil then manifest[tostring(guid)] = true end
+    end
+    return manifest
+end
+
+function BridgeCollectManagedCardPreflightIssues(humanDeck, aiDeck)
+    local allowed = BridgeBuildDeckGuidManifest(humanDeck)
+    local aiAllowed = BridgeBuildDeckGuidManifest(aiDeck)
+    for guid, _ in pairs(aiAllowed) do allowed[guid] = true end
+
+    local stale = {}
+    local byInstanceId = {}
+    for _, object in ipairs(getAllObjects() or {}) do
+        if BridgeObjectIsUsable(object) and object.tag == "Card" then
+            local guid = BridgeSafeObjectGuid(object)
+            local instanceId = BridgeReadPhysicalIdentity(object)
+            local sessionId = BridgeReadPhysicalSessionIdentity(object)
+            if guid ~= nil and (instanceId ~= nil or sessionId ~= nil) then
+                if allowed[tostring(guid)] ~= true then
+                    table.insert(stale, string.format("%s(instance=%s,session=%s)", tostring(guid), tostring(instanceId), tostring(sessionId)))
+                end
+                if instanceId ~= nil then
+                    byInstanceId[instanceId] = byInstanceId[instanceId] or {}
+                    table.insert(byInstanceId[instanceId], guid)
+                end
+            end
+        end
+    end
+
+    local duplicates = {}
+    for instanceId, guids in pairs(byInstanceId) do
+        if #guids > 1 then
+            table.sort(guids)
+            table.insert(duplicates, string.format("%s=>%s", tostring(instanceId), table.concat(guids, ",")))
+        end
+    end
+    table.sort(stale)
+    table.sort(duplicates)
+    return stale, duplicates
+end
+
+function BridgeStartMatchPreflight(humanDeck, aiDeck)
+    if BridgeState.eventSessionId ~= nil and BridgeState.eventSessionId ~= "session-not-started" then
+        return false, "an active TTS session already exists; use NEW MATCH for cleanup"
+    end
+    if BridgeState.eventPolling == true or BridgeState.decisionPollInFlight == true
+        or BridgeState.resyncInFlight == true or BridgeState.bootstrapping == true then
+        return false, "bridge is not in clean setup state; use NEW MATCH to clean existing match state"
+    end
+
+    local stale, duplicates = BridgeCollectManagedCardPreflightIssues(humanDeck, aiDeck)
+    if #stale > 0 then
+        return false, "managed cards from a previous session are still live outside deck piles: " .. table.concat(stale, "; ")
+    end
+    if #duplicates > 0 then
+        return false, "duplicate cardInstanceId identities detected: " .. table.concat(duplicates, "; ")
+    end
+
+    local format = BridgeNormalizedDeckFormat()
+    local provenance = tostring(BridgeState.selectedFormatProvenance or "")
+    if provenance == "" then
+        return false, "format provenance missing; configure explicit format provenance before START MATCH"
+    end
+    local minimum = BridgeDeckMinimumForFormat(format)
+    if minimum == nil then
+        return false, "unsupported selected format '" .. tostring(format) .. "'"
+    end
+    local humanCards = BridgeDeckCardCount(humanDeck)
+    local aiCards = BridgeDeckCardCount(aiDeck)
+    local override = BridgeState.allowDeckMinimumOverride == true
+    if not override and (humanCards < minimum or aiCards < minimum) then
+        return false, string.format(
+            "deck count below minimum for %s (min=%d): humanCards=%d aiCards=%d",
+            tostring(format), minimum, humanCards, aiCards)
+    end
+    if override then
+        BridgeLog(string.format(
+            "[Bridge] DECK_VALIDATION_OVERRIDE enabled=true format=%s min=%d provenance=%s humanCards=%d aiCards=%d",
+            tostring(format), minimum, tostring(provenance), humanCards, aiCards))
+    end
+    BridgeSetupTrace("START_PREFLIGHT_OK", string.format(
+        "format=%s provenance=%s min=%s override=%s humanCards=%s aiCards=%s",
+        tostring(format), tostring(provenance), tostring(minimum), tostring(override), tostring(humanCards), tostring(aiCards)))
+    return true, nil
+end
+
+-- TTS's imported library piles are the deck chooser.  We send printed
+-- identities and explicit format provenance so Bridge-side validation never
+-- falls back to an implicit format assumption.
 function BridgeConfigureDecks(callback)
     local seats = {}
     for _, seatId in ipairs({"forge-player-1", "forge-player-2"}) do
@@ -3855,9 +4057,17 @@ function BridgeConfigureDecks(callback)
             tostring(seatId), #cards, #(deck.getObjects() or {}), tostring(BRIDGE_SCRIPT_REVISION)))
         table.insert(seats, {seatId = seatId, cards = cards})
     end
+    local selectedFormat = BridgeNormalizedDeckFormat()
+    local formatProvenance = tostring(BridgeState.selectedFormatProvenance or "")
+    local allowMinimumOverride = BridgeState.allowDeckMinimumOverride == true
     BridgeSetupStage("VALIDATING_DECKS", "posting TTS deck inventory")
     BridgeLog("[Bridge] posting TTS deck inventory to /api/v1/decks")
-    BridgeHttp.requestJson("POST", "/api/v1/decks", {seats = seats}, function(ok, body, err, request)
+    BridgeHttp.requestJson("POST", "/api/v1/decks", {
+        seats = seats,
+        format = selectedFormat,
+        formatProvenance = formatProvenance,
+        allowDeckMinimumOverride = allowMinimumOverride
+    }, function(ok, body, err, request)
         BridgeSetupTrace("DECK_VALIDATION_RESULT", "ok=" .. tostring(ok) .. " error=" .. tostring(err or "none"))
         if ok then BridgeLog("[Bridge] TTS deck inventory accepted by bridge")
         else BridgeLog("[Bridge] TTS deck inventory rejected: " .. tostring(err) .. " body=" .. tostring(body and JSON.encode(body) or "(empty)")) end
@@ -4875,6 +5085,15 @@ end
 function BridgeShouldIgnoreStaleDecision(decision)
     local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
     local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    local decisionForgeSequence = tonumber(decision and decision.forgeSequence or 0) or 0
+    local appliedForgeSequence = tonumber(BridgeState.lastAppliedForgeSequence or 0) or 0
+    if decisionForgeSequence > 0 and appliedForgeSequence > 0
+        and decisionForgeSequence < appliedForgeSequence then
+        BridgeLog(string.format(
+            "[Bridge] ignoring stale decision %s due to forgeSequence ordering decision=%s applied=%s",
+            tostring(decision and decision.decisionId), tostring(decisionForgeSequence), tostring(appliedForgeSequence)))
+        return true, eventCursor, applied
+    end
     if eventCursor < 1 or eventCursor >= applied then
         if decision ~= nil and (decision.kind == "attacker_selection"
             or decision.kind == "blocker_selection" or decision.kind == "blocker_assignment") then
@@ -4996,6 +5215,42 @@ end
 function BridgeShouldDeferDecision(decision)
     local openingMulligan = decision ~= nil and decision.kind == "mulligan"
         and tostring(decision.mulliganStage or "") == "keep_or_mulligan"
+    local function globalPhysicalQueueBusy()
+        for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+            if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
+                or #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}) > 0
+                or BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
+                or #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {}) > 0 then
+                return true, seatId
+            end
+        end
+        return false, nil
+    end
+    local busy, busySeatId = globalPhysicalQueueBusy()
+    if busy then
+        return true, tonumber(decision and decision.eventCursor or 0) or 0,
+            tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+            "physical_transition_pending_global",
+            "seat=" .. tostring(busySeatId)
+    end
+    -- A decision can arrive before the tail of its own Forge mutation group is
+    -- physically committed. Keep that decision non-actionable until every
+    -- queued event in the same forgeSequence is embodied.
+    if decision ~= nil then
+        local decisionForgeSequence = tonumber(decision.forgeSequence or 0) or 0
+        if decisionForgeSequence > 0 then
+            for _, queued in ipairs(BridgeState.eventQueue or {}) do
+                local queuedForgeSequence = tonumber(queued and queued.forgeSequence or 0) or 0
+                if queuedForgeSequence == decisionForgeSequence then
+                    return true, tonumber(decision.eventCursor or 0) or 0,
+                        tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+                        "causal_dependency_pending",
+                        "forgeSequence=" .. tostring(decisionForgeSequence)
+                            .. " queuedEvent=" .. tostring(queued.sequence)
+                end
+            end
+        end
+    end
     -- Forge can produce the next priority menu before the bridge event poll
     -- has received the matching draw. Do not reveal or make actionable a
     -- hand-source action until its exact instance has an exact physical card
@@ -6318,6 +6573,7 @@ function BridgeDoPressStartMatch(playerColor, altClick)
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
         return
     end
+    if not BridgeGuardLifecycleCommand("START_MATCH") then return end
     BridgeSetSetupBusy(true, "Forge match is loading; START and RESUME are temporarily disabled.")
     BridgeSetupStage("CONTACTING_BRIDGE", "checking bridge health")
     BridgeTraceStart("START-03 health-request")
@@ -6348,6 +6604,13 @@ function BridgeDoPressStartMatch(playerColor, altClick)
                 BridgeShowError("both physical library decks must be uniquely identifiable before START")
                 return
             end
+            local preflightOk, preflightError = BridgeStartMatchPreflight(humanDeck, aiDeck)
+            if not preflightOk then
+                BridgeSetSetupBusy(false)
+                BridgeSetupFailure("start-preflight", preflightError)
+                BridgeShowError("START MATCH refused: " .. tostring(preflightError) .. ". Use NEW MATCH to clean existing session objects.")
+                return
+            end
             BridgeSetupTrace("SETUP_STATE_VALIDATED", "deck piles uniquely identified")
             BridgeTraceStart("START-06 deck-check-complete")
             BridgeStartSessionIfNone(function() BridgeSetSetupBusy(false) end)
@@ -6368,6 +6631,7 @@ function BridgeDoPressResume(playerColor, altClick)
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
         return
     end
+    if not BridgeGuardLifecycleCommand("RESUME_MATCH") then return end
     -- RESUME is a continuation operation, not an attach/bootstrap operation.
     -- An active session already owns its event cursor and physical mappings;
     -- routing it through BridgeAttachToActiveSession used the fresh-attach
@@ -6381,8 +6645,7 @@ function BridgeDoPressResume(playerColor, altClick)
         BridgeResumeActiveSession("resume")
         return
     end
-    BridgeSetSetupBusy(true, "Checking the active Forge match; RESUME is temporarily disabled.")
-    BridgeAttachToActiveSession(function() BridgeSetSetupBusy(false) end)
+    BridgeShowError("RESUME requires an already-paused local session. Use START MATCH from clean setup or NEW MATCH for explicit teardown.")
 end
 
 function BridgeClassifyResumeState()
@@ -6476,6 +6739,7 @@ function BridgeDoPressNewMatch(playerColor, altClick)
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
         return
     end
+    if not BridgeGuardLifecycleCommand("NEW_MATCH") then return end
     BridgeSetupStage("SETUP_STATE_VALIDATED", "new-match confirmation path ready")
     BridgeState.resetConfirmationArmed = true
     BridgeClearResetConfirmationControl()
@@ -6556,6 +6820,7 @@ function BridgeDoPressConfirmNewMatch(playerColor, altClick)
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
         return
     end
+    if not BridgeGuardLifecycleCommand("CONFIRM_NEW_MATCH") then return end
     if not BridgeState.resetConfirmationArmed then
         BridgeShowError("NEW MATCH confirmation expired; click NEW MATCH again")
         BridgeClearResetConfirmationControl()
@@ -10500,11 +10765,11 @@ end
 function BridgeShowResourceCounter(counter, position, seat)
     if counter == nil or position == nil then return end
     pcall(function() counter.setInvisibleTo({}) end)
-    -- Native Counter templates are laid out sideways relative to the player
-    -- cards. Give each player the same clockwise-facing reading orientation
-    -- without changing the authoritative mana value or resource placement.
-    if seat ~= nil and seat.resourceRotation ~= nil then
-        pcall(function() counter.setRotation(seat.resourceRotation) end)
+    -- Mana counters must face the same direction as the life counter they are
+    -- positioned relative to. Match the life counter orientation: 180° when
+    -- player is on far side (tableSideZ < 0), 0° when on near side.
+    if seat ~= nil then
+        pcall(function() counter.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0}) end)
     end
     pcall(function() counter.setPosition(position) end)
 end
@@ -11290,6 +11555,20 @@ function BridgeRecordEventCommitAbort(event, reason, sessionId, sessionGeneratio
     end
 end
 
+local function BridgeNormalizeForgeSequence(value)
+    local sequence = tonumber(value)
+    if sequence == nil or sequence <= 0 then return nil end
+    return sequence
+end
+
+function BridgeEventsShareForgeMutationGroup(leftEvent, rightEvent)
+    if leftEvent == nil or rightEvent == nil then return false, nil end
+    local leftSequence = BridgeNormalizeForgeSequence(leftEvent.forgeSequence)
+    local rightSequence = BridgeNormalizeForgeSequence(rightEvent.forgeSequence)
+    if leftSequence == nil or rightSequence == nil then return false, nil end
+    return leftSequence == rightSequence, leftSequence
+end
+
 function BridgeProcessEventQueue()
     local queue = BridgeState.eventQueue or {}
     if #queue == 0 then
@@ -11414,11 +11693,26 @@ function BridgeProcessEventQueue()
     BridgeState.lastConsumedEventSequence = event.sequence
     BridgeState.lastStateProjectedEventSequence = event.sequence
     BridgeState.lastPhysicalPresentationEventSequence = event.sequence
+    if event.forgeSequence ~= nil then
+        local forgeSequence = tonumber(event.forgeSequence)
+        if forgeSequence ~= nil then
+            BridgeState.lastAppliedForgeSequence = math.max(
+                tonumber(BridgeState.lastAppliedForgeSequence or 0) or 0,
+                forgeSequence)
+        end
+    end
     if event.revealPresentation ~= nil and BridgeApplyRevealPresentation ~= nil then
         local revealOk, revealError = pcall(BridgeApplyRevealPresentation, event.revealPresentation, event.sequence)
         if not revealOk then BridgeLog("[Bridge] reveal presentation failed: " .. tostring(revealError)) end
     end
     BridgeResetEventCommitWatchdog()
+    local nextQueuedEvent = BridgeState.eventQueue[1]
+    local delayPostCommitWork, mutationSequence = BridgeEventsShareForgeMutationGroup(event, nextQueuedEvent)
+    if delayPostCommitWork then
+        BridgeLog(string.format(
+            "[Bridge] EVENT_TX_GROUP_PENDING forgeSequence=%s committed=%s next=%s",
+            tostring(mutationSequence), tostring(event.sequence), tostring(nextQueuedEvent.sequence)))
+    end
     BridgeLog(string.format(
         "[Bridge] EVENT_TX_COMMIT eventSequence=%s oldLastApplied=%s newLastApplied=%s queueLength=%s",
         tostring(event.sequence), tostring(oldLastApplied), tostring(BridgeState.lastAppliedEventSequence),
@@ -11432,6 +11726,12 @@ function BridgeProcessEventQueue()
     -- Install the serialized continuation immediately after the cursor commit.
     -- Optional post-commit presentation work is allowed to fail without
     -- stranding animationRunning and blocking the next authoritative event.
+    local continuationDelay = (function()
+        if delayPostCommitWork then return 0 end
+        local nextDelay = delay or 0.1
+        if BridgeState.ui ~= nil and BridgeState.ui.fastPlaytest then nextDelay = math.min(nextDelay, 0.05) end
+        return nextDelay
+    end)()
     BridgeWaitTime(function()
         local ok, continuationError = pcall(function()
             if processingSessionId ~= BridgeState.eventSessionId
@@ -11449,28 +11749,26 @@ function BridgeProcessEventQueue()
             BridgeLog("[Bridge] EVENT_DRAIN_CONTINUATION_FAILED error=" .. tostring(continuationError))
             BridgeStopOnDesync("event drain continuation failed: " .. tostring(continuationError))
         end
-    end, (function()
-        local nextDelay = delay or 0.1
-        if BridgeState.ui ~= nil and BridgeState.ui.fastPlaytest then nextDelay = math.min(nextDelay, 0.05) end
-        return nextDelay
-    end)())
+    end, continuationDelay)
 
-    local postCommitOk, postCommitError = pcall(function()
-        BridgeTryPresentPendingDecision("event-applied")
-        if event.kind == "draw" or event.kind == "turn_changed" or event.kind == "phase_changed" then
-            -- The old menu may still be rendered when Forge changes state. Ask
-            -- Forge for the replacement directly; the refresh is bounded and
-            -- single-flight, and acceptance preserves hand-action readiness.
-            BridgeRefreshDecisionAfterStateTransition(event.kind)
+    if not delayPostCommitWork then
+        local postCommitOk, postCommitError = pcall(function()
+            BridgeTryPresentPendingDecision("event-applied")
+            if event.kind == "draw" or event.kind == "turn_changed" or event.kind == "phase_changed" then
+                -- The old menu may still be rendered when Forge changes state. Ask
+                -- Forge for the replacement directly; the refresh is bounded and
+                -- single-flight, and acceptance preserves hand-action readiness.
+                BridgeRefreshDecisionAfterStateTransition(event.kind)
+            end
+            if BridgeShouldReconcileAfterEvent(event) then
+                BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence) .. " recovery", "RECOVERY")
+            end
+        end)
+        if not postCommitOk then
+            BridgeLog("[Bridge] EVENT_TX_POST_COMMIT_FAILED eventSequence=" .. tostring(event.sequence)
+                .. " error=" .. tostring(postCommitError))
+            BridgeStopOnDesync("event post-commit failed: " .. tostring(postCommitError))
         end
-        if BridgeShouldReconcileAfterEvent(event) then
-            BridgeScheduleSnapshotReconcile("event " .. tostring(event.sequence) .. " recovery", "RECOVERY")
-        end
-    end)
-    if not postCommitOk then
-        BridgeLog("[Bridge] EVENT_TX_POST_COMMIT_FAILED eventSequence=" .. tostring(event.sequence)
-            .. " error=" .. tostring(postCommitError))
-        BridgeStopOnDesync("event post-commit failed: " .. tostring(postCommitError))
     end
 end
 
@@ -15152,6 +15450,38 @@ function BridgeEnforceDesyncRecovery(reason)
         and not BridgeState.recoveryCheckpointCommitInProgress then
         BridgeEnsureDesyncRecovery(reason or "liveness-watchdog")
     end
+end
+
+function BridgeCheckRecoveryConvergence(reason)
+    local received = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    local queueLength = #(BridgeState.eventQueue or {})
+    if received <= applied then return false end
+    if BridgeState.eventPolling == true or BridgeState.eventRequestInFlight == true
+        or BridgeState.eventPollScheduled == true then
+        return false
+    end
+    if BridgeState.resyncInFlight == true or BridgeState.resyncScheduled == true
+        or BridgeState.snapshotReconcileInFlight == true or BridgeState.snapshotReconcilePending == true then
+        return false
+    end
+    if queueLength > 0 then return false end
+
+    local missing = nil
+    if BridgeState.lastDecision ~= nil and BridgeDecisionPhysicalMappingsReady ~= nil then
+        local ready, detail = BridgeDecisionPhysicalMappingsReady(BridgeState.lastDecision)
+        if not ready then missing = detail end
+    end
+    local descriptor = string.format(
+        "cursor-ahead-without-recovery reason=%s received=%s applied=%s resyncDeferredReason=%s circuitOpen=%s missing=%s",
+        tostring(reason), tostring(received), tostring(applied), tostring(BridgeState.resyncDeferredReason),
+        tostring(BridgeState.resyncCircuitOpen == true), tostring(missing))
+
+    BridgeState.desyncLatched = true
+    BridgeState.resyncLastFailureReason = descriptor
+    BridgeSetStatus("RECOVERY BLOCKED", descriptor)
+    BridgeLog("[Bridge] TERMINAL_RECOVERY_ERROR " .. descriptor)
+    return true
 end
 
 function BridgeEnsureDesyncRecovery(reason)
