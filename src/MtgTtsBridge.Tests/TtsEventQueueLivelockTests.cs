@@ -399,6 +399,35 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void SameSessionResyncSupersedesStaleBootstrapOwnershipAndFetchesSnapshot()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.resyncInFlight = true
+            BridgeState.bootstrapping = true
+            BridgeState.resyncBootstrapGeneration = 4
+            snapshotRequests = 0
+            function BridgeGetEmbodimentSnapshot(callback)
+                snapshotRequests = snapshotRequests + 1
+                callback(false, nil, 'probe snapshot failure')
+            end
+            callbackOk = nil
+            callbackError = nil
+            BridgeBootstrapCurrentSnapshot('session', function(ok, err)
+                callbackOk, callbackError = ok, err
+            end, true, 'manual')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(1, lua.Globals.Get("snapshotRequests").Number);
+        Assert.False(lua.Globals.Get("callbackOk").Boolean);
+        Assert.Equal("authoritative snapshot unavailable: probe snapshot failure",
+            lua.Globals.Get("callbackError").String);
+        Assert.False(state.Get("bootstrapping").Boolean);
+    }
+
+    [Fact]
     public void RecoveryOwnsSchedulersAndSuspendsFastForward()
     {
         var lua = NewQueueProbe();

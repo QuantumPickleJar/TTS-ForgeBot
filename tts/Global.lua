@@ -8827,8 +8827,21 @@ end
 
 function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotCursor, resyncOrigin)
     if BridgeState.bootstrapping then
-        callback(false, "an embodiment bootstrap is already in progress")
-        return
+        -- A previous hand-readiness/bootstrap attempt can leave only its
+        -- local ownership flag behind after a callback is abandoned.  A
+        -- same-session authoritative resync is the recovery owner and must
+        -- be able to supersede that stale attempt; otherwise every valid
+        -- snapshot is rejected before reconciliation even begins.  The
+        -- generation fence makes the old continuation inert.
+        if resumeFromSnapshotCursor == true and BridgeState.resyncInFlight == true
+            and BridgeState.eventSessionId == sessionId then
+            BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
+            BridgeState.bootstrapping = false
+            BridgeLog("[Bridge] superseded stale bootstrap ownership for authoritative resync")
+        else
+            callback(false, "an embodiment bootstrap is already in progress")
+            return
+        end
     end
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     local bootstrapGeneration = BridgeState.resyncBootstrapGeneration
