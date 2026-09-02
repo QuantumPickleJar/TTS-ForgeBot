@@ -6368,8 +6368,95 @@ function BridgeDoPressResume(playerColor, altClick)
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
         return
     end
+    -- RESUME is a continuation operation, not an attach/bootstrap operation.
+    -- An active session already owns its event cursor and physical mappings;
+    -- routing it through BridgeAttachToActiveSession used the fresh-attach
+    -- bootstrap path (BridgePrepareEventSession(..., true)), which reset a
+    -- healthy cursor and rebuilt unrelated cards.  Classify the local state
+    -- before considering authoritative recovery.
+    if BridgeState.eventSessionId ~= nil
+        and BridgeState.eventSessionId ~= "session-not-started"
+        and BridgeState.lifecycleState ~= BRIDGE_LIFECYCLE_READY_NO_SESSION
+        and BridgeState.lifecycleState ~= BRIDGE_LIFECYCLE_START_FAILED then
+        BridgeResumeActiveSession("resume")
+        return
+    end
     BridgeSetSetupBusy(true, "Checking the active Forge match; RESUME is temporarily disabled.")
     BridgeAttachToActiveSession(function() BridgeSetSetupBusy(false) end)
+end
+
+function BridgeClassifyResumeState()
+    if BridgeState.eventSessionId == nil or BridgeState.eventSessionId == "session-not-started" then
+        return "SESSION_MISMATCH"
+    end
+    if BridgeState.lifecycleState == BRIDGE_LIFECYCLE_ENDING then return "MATCH_TEARDOWN_ACTIVE" end
+    if BridgeState.resyncInFlight == true or BridgeState.bootstrapping == true then return "RECOVERY_ACTIVE" end
+    local received = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    if received ~= applied or #(BridgeState.eventQueue or {}) > 0 then return "CURSOR_BEHIND" end
+    if BridgeState.lastDecision ~= nil and BridgeDecisionPhysicalMappingsReady ~= nil then
+        local ready, missing = BridgeDecisionPhysicalMappingsReady(BridgeState.lastDecision)
+        if not ready then
+            return "CURSOR_CURRENT_MAPPING_DEFECT", missing
+        end
+    end
+    if BridgeState.desyncLatched == true then
+        return "CURSOR_CURRENT_MAPPING_DEFECT", BridgeState.desyncLastMessage
+    end
+    if BridgeState.lastDecision ~= nil then return "PROTOCOL_PAUSED_AND_COHERENT" end
+    return "PROTOCOL_PAUSED_AND_COHERENT"
+end
+
+function BridgeResumeActiveSession(reason)
+    local classification, detail = BridgeClassifyResumeState()
+    BridgeLog("[Bridge] RESUME_CLASSIFIED state=" .. tostring(classification)
+        .. " detail=" .. tostring(detail) .. " session=" .. tostring(BridgeState.eventSessionId)
+        .. " received=" .. tostring(BridgeState.lastReceivedEventSequence)
+        .. " applied=" .. tostring(BridgeState.lastAppliedEventSequence))
+
+    if classification == "MATCH_TEARDOWN_ACTIVE" or classification == "SESSION_MISMATCH" then
+        BridgeShowError("RESUME is unavailable because no continuous active Forge session can be proven")
+        return false
+    end
+    if classification == "RECOVERY_ACTIVE" then
+        BridgeShowError("authoritative recovery is already in progress; use RESUME after it completes")
+        return false
+    end
+    if classification == "CURSOR_BEHIND" then
+        BridgeSetStatus("SYNCHRONIZING", "RESUME is waiting for the authoritative event checkpoint")
+        if BridgeState.desyncLatched == true then
+            BridgeEnsureDesyncRecovery("resume-cursor-behind")
+        else
+            -- A paused poller with queued authoritative work is not a new
+            -- session. Resume its existing event session and let the normal
+            -- ordered consumer catch up; only a latched desync escalates to
+            -- snapshot recovery.
+            BridgeStartEventPolling(BridgeState.eventSessionId, false)
+            BridgeStartDecisionPolling(false)
+        end
+        return false
+    end
+    if classification == "CURSOR_CURRENT_MAPPING_DEFECT" then
+        -- Never use the fresh-session bootstrap here.  The recovery scheduler
+        -- owns any authoritative identity repair and its transaction preserves
+        -- the committed cursor/mapping registry until a replacement is valid.
+        BridgeLog("[Bridge] TARGETED_MAPPING_REPAIR_REQUESTED instance=" .. tostring(detail))
+        BridgeSetStatus("MAPPING REPAIR", "Repairing only the missing authoritative physical identity")
+        BridgeScheduleSnapshotReconcile("resume-targeted-mapping-repair", "RECOVERY")
+        return false
+    end
+
+    BridgeResumeChoiceProtocol(reason or "resume-active-session")
+    if BridgeStartEventPolling ~= nil then BridgeStartEventPolling(BridgeState.eventSessionId, false) end
+    if BridgeState.lastDecision ~= nil then
+        BridgeRenderDecision(BridgeState.lastDecision, true)
+    else
+        BridgeStartDecisionPolling(true)
+    end
+    BridgeSetSetupBusy(false)
+    BridgeSetStatus("MATCH ACTIVE", "Resumed the existing Forge match without resetting its checkpoint")
+    BridgeUiMarkDirty("resume-active-session")
+    return true
 end
 
 function BridgePressNewMatch(object, playerColor, altClick)

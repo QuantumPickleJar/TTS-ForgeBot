@@ -477,6 +477,79 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Equal(1, lua.Globals.Get("BridgeState").Table.Get("resyncNoProgressAttempts").Number);
     }
 
+    [Fact]
+    public void ResumeOnActiveCoherentSessionDoesNotAttachOrResetCheckpoint()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'active-session'
+            BridgeState.lifecycleState = 'SESSION_ACTIVE'
+            BridgeState.lastReceivedEventSequence = 213
+            BridgeState.lastAppliedEventSequence = 213
+            BridgeState.lastDecision = {
+                decisionId='forge-tui-10', sessionId='active-session', eventCursor=213,
+                kind='main_priority', seatId='forge-player-1',
+                actions={{actionId='pass-10', type='pass_priority'}}
+            }
+            BridgeState.desyncLatched = false
+            BridgeState.setupBusy = false
+            BridgeState.ui = {fastForwardActive=false}
+            BridgeDecisionPhysicalMappingsReady = function(decision) return true, nil end
+            attached = false
+            rendered = false
+            eventStarted = false
+            function BridgeAttachToActiveSession(done) attached = true end
+            function BridgeRenderDecision(decision, force) rendered = true end
+            function BridgeStartEventPolling(sessionId, skipExisting) eventStarted = true end
+            function BridgeStartDecisionPolling(allowCurrent) end
+            function BridgeResumeChoiceProtocol(reason) end
+            function BridgeSetSetupBusy(value, detail) BridgeState.setupBusy = value end
+            function BridgeSetStatus(headline, detail) end
+            function BridgeUiMarkDirty(reason) end
+            BridgeWaitFrames = function(callback, frames) callback() end
+            BridgeDoPressResume(nil, false)
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.False(lua.Globals.Get("attached").Boolean);
+        Assert.True(lua.Globals.Get("rendered").Boolean);
+        Assert.True(lua.Globals.Get("eventStarted").Boolean);
+        Assert.Equal("active-session", state.Get("eventSessionId").String);
+        Assert.Equal(213, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal("forge-tui-10", state.Get("lastDecision").Table.Get("decisionId").String);
+    }
+
+    [Fact]
+    public void ResumeWithCurrentCursorMappingDefectRequestsScopedRepairWithoutAttach()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'active-session'
+            BridgeState.lifecycleState = 'SESSION_ACTIVE'
+            BridgeState.lastReceivedEventSequence = 213
+            BridgeState.lastAppliedEventSequence = 213
+            BridgeState.lastDecision = {decisionId='forge-tui-10', sessionId='active-session', eventCursor=213, actions={}}
+            BridgeState.desyncLatched = true
+            BridgeState.desyncLastMessage = 'missing live mapping'
+            BridgeState.setupBusy = false
+            BridgeState.ui = {fastForwardActive=false}
+            BridgeDecisionPhysicalMappingsReady = function(decision) return false, 'mountain-51' end
+            attached = false
+            repairRequested = false
+            function BridgeAttachToActiveSession(done) attached = true end
+            function BridgeScheduleSnapshotReconcile(reason, category) repairRequested = reason == 'resume-targeted-mapping-repair' end
+            function BridgeSetStatus(headline, detail) end
+            function BridgeUiMarkDirty(reason) end
+            BridgeDoPressResume(nil, false)
+        ");
+
+        Assert.False(lua.Globals.Get("attached").Boolean);
+        Assert.True(lua.Globals.Get("repairRequested").Boolean);
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(213, state.Get("lastAppliedEventSequence").Number);
+        Assert.True(state.Get("desyncLatched").Boolean);
+    }
+
     private static Script NewQueueProbe()
     {
         var lua = new Script();
