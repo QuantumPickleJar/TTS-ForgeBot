@@ -965,6 +965,12 @@ function BridgeRenderDecision(decision, force)
         and not BridgeDecisionHasNonPassAction(decision) then
         for _, action in ipairs(decision.actions) do
             if action.type == "pass_priority" then
+                local blockedReason = BridgeAutomaticDecisionBlocked(decision)
+                if blockedReason ~= nil then
+                    BridgeRecordDecisionLifecycle(decision, "smart", "AUTO_ACTION_BLOCKED",
+                        blockedReason, action.actionId, action.type, "SMART", "blocked")
+                    return
+                end
                 if BridgeAutomaticPassBackpressured() then
                     BridgeRecordDecisionLifecycle(decision, "smart", "AUTO_ACTION_BLOCKED",
                         "event-backpressure", action.actionId, action.type, "SMART", "blocked_backpressure")
@@ -1879,6 +1885,7 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     BridgeState.resyncWatchdogToken = nil
     BridgeState.resyncInFlight = false
+    BridgeState.resyncScheduled = false
     BridgeState.bootstrapping = false
     BridgeState.resyncStartedAt = nil
     BridgeState.resyncDeferredReason = "stalled"
@@ -1966,6 +1973,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     end
     BridgeState.resyncDeferredSince = nil
     BridgeState.resyncDeferredRetryScheduled = false
+    BridgeState.resyncScheduled = false
     if explicit then
         -- Invalidate delayed local callbacks even when the physical queues
         -- happened to look idle.  An event-drain continuation or other frame
@@ -2026,6 +2034,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             return
         end
         BridgeState.resyncInFlight = false
+        BridgeState.resyncScheduled = false
         BridgeState.resyncWatchdogToken = nil
         BridgeState.resyncStartedAt = nil
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end

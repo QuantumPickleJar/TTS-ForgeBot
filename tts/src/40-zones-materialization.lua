@@ -1440,12 +1440,18 @@ function BridgePollEvents(generation)
     local requestedAfter = BridgeState.lastReceivedEventSequence
     local path = "/api/v1/events?after=" .. tostring(requestedAfter)
     BridgeState.eventRequestInFlight = true
+    BridgeState.eventRequestGeneration = generation
     BridgeHttp.requestJson("GET", path, nil, function(ok, body, err)
         if generation ~= BridgeState.eventPollGeneration then
+            if BridgeState.eventRequestGeneration == generation then
+                BridgeState.eventRequestInFlight = false
+                BridgeState.eventRequestGeneration = nil
+            end
             return
         end
 
         BridgeState.eventRequestInFlight = false
+        BridgeState.eventRequestGeneration = nil
         if not ok or body == nil then
             if body ~= nil and body.errorCode == "event_history_gap" then
                 BridgeStopOnDesync("event history gap after sequence " .. tostring(requestedAfter) .. ": " .. tostring(body.message))
@@ -1485,6 +1491,10 @@ function BridgePollEvents(generation)
                 end
                 BridgeState.lastReceivedEventSequence = event.sequence
                 table.insert(BridgeState.eventQueue, event)
+                if #BridgeState.eventQueue > BRIDGE_EVENT_QUEUE_MAX then
+                    BridgeStopOnDesync("authoritative event queue exceeded bounded capacity")
+                    return
+                end
             end
             BridgeProcessEventQueue()
             BridgeTryPresentPendingDecision("poll-noqueue")

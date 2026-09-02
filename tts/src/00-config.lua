@@ -25,6 +25,7 @@ BRIDGE_OPENING_HAND_READINESS_RETRY_FRAMES = 2
 -- synchronization failure.
 BRIDGE_HAND_READINESS_RECOVERY_ATTEMPTS = 2
 BRIDGE_PERFORMANCE_TRACE_CAPACITY = 384
+BRIDGE_EVENT_QUEUE_MAX = 128
 BRIDGE_PERFORMANCE_SLOW_OPERATION_SECONDS = 0.25
 -- Diagnostic capture is deliberately best-effort. A lost WebRequest callback
 -- must not leave report controls latched forever after a freeze capture.
@@ -165,6 +166,7 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         eventQueueLength = #(BridgeState.eventQueue or {}),
         eventPolling = BridgeState.eventPolling == true,
         eventRequestInFlight = BridgeState.eventRequestInFlight == true,
+        eventRequestGeneration = BridgeState.eventRequestGeneration,
         eventPollScheduled = BridgeState.eventPollScheduled == true,
         eventPollGeneration = BridgeState.eventPollGeneration,
         eventSessionGeneration = BridgeState.eventSessionGeneration,
@@ -189,6 +191,7 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
         eventDrainBlockReason = BridgeEventDrainBlockReason(),
         resyncInFlight = BridgeState.resyncInFlight == true,
+        resyncScheduled = BridgeState.resyncScheduled == true,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncStartedAt = BridgeState.resyncStartedAt,
         resyncDeferredReason = BridgeState.resyncDeferredReason,
@@ -865,6 +868,7 @@ BridgeState = {
     eventPollGeneration = 0,
     eventRequestInFlight = false,
     eventPollScheduled = false,
+    eventRequestGeneration = nil,
     decisionPollGeneration = 0,
     decisionPresentationGeneration = 0,
     decisionPollInFlight = false,
@@ -1000,6 +1004,7 @@ BridgeState = {
     },
     resyncLifecycle = {},
     resyncCheckpoint = nil,
+    resyncScheduled = false,
     resyncDeferredRetryScheduled = false,
     resyncDeferredSince = nil,
     resyncWatchdogToken = nil,

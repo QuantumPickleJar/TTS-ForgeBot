@@ -478,7 +478,7 @@ public sealed partial class ForgeTuiParser
     }
 
     private static bool RequiresForgeCollectionConfirmation(string kind, string? mulliganStage) =>
-        kind is "discard" or "sacrifice" or "payment_option" or "search_selection" or "entity_selection" or "cost_selection"
+        kind is "discard" or "sacrifice" or "payment_option" or "search_selection" or "entity_selection" or "cost_selection" or "mode_selection"
         || (kind == "mulligan" && string.Equals(mulliganStage, "bottom_selection", StringComparison.Ordinal));
 
     private bool TryResolveSeat(string playerName, out string seatId)

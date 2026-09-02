@@ -189,6 +189,24 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void DesyncLatchAlwaysSchedulesRecovery()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.desyncLatched = true
+            BridgeState.resyncInFlight = false
+            BridgeState.resyncScheduled = false
+            function BridgeWaitFrames(callback, frames) recoveryScheduled = true end
+            BridgeEnsureDesyncRecovery('test')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(lua.Globals.Get("recoveryScheduled").Boolean);
+        Assert.True(state.Get("resyncScheduled").Boolean);
+    }
+
+    [Fact]
     public void RetiredLibraryCallbackCannotMutateThePostResyncQueues()
     {
         var lua = NewQueueProbe();

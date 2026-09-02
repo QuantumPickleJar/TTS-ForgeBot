@@ -508,8 +508,28 @@ function BridgeDisarmYieldPolicy(reason)
     end
 end
 
+function BridgeAutomaticDecisionBlocked(decision)
+    if decision == nil or decision.decisionId == nil or decision.decisionId == "" then return "no-current-decision" end
+    if BridgeState.desyncLatched == true then return "desync-latched" end
+    if BridgeState.resyncInFlight == true or BridgeState.resyncScheduled == true then return "resync-active" end
+    local ui = BridgeState.ui or {}
+    if ui.reportCaptureInFlight == true then return "diagnostic-capture" end
+    local received = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    if received ~= applied or #(BridgeState.eventQueue or {}) > 0 then return "event-backpressure" end
+    local cursor = tonumber(decision.eventCursor or 0) or 0
+    if cursor > 0 and cursor ~= applied then return "decision-cursor-mismatch" end
+    return nil
+end
+
 function BridgeConsiderYieldAutomaticAction(decision, action, policy)
     if decision == nil or action == nil then return false end
+    local blockedReason = BridgeAutomaticDecisionBlocked(decision)
+    if blockedReason ~= nil then
+        BridgeRecordDecisionLifecycle(decision, "yield", "AUTO_ACTION_BLOCKED", blockedReason,
+            action.actionId, action.type or action.actionType, policy, "blocked")
+        return false
+    end
     local actionType = tostring(action.type or action.actionType or "unknown")
     local result = "submitted"
     if BridgeAutomaticPassBackpressured() then
@@ -904,6 +924,7 @@ function BridgeIsStructuredForgeToggleChoice(decision)
     local kind = tostring(decision.kind or "")
     return kind == "discard" or kind == "sacrifice" or kind == "payment_option"
         or kind == "search_selection" or kind == "entity_selection" or kind == "cost_selection"
+        or kind == "mode_selection"
         or (kind == "mulligan" and tostring(decision.mulliganStage or "") == "bottom_selection")
 end
 

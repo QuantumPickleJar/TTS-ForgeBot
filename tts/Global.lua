@@ -26,6 +26,7 @@ BRIDGE_OPENING_HAND_READINESS_RETRY_FRAMES = 2
 -- synchronization failure.
 BRIDGE_HAND_READINESS_RECOVERY_ATTEMPTS = 2
 BRIDGE_PERFORMANCE_TRACE_CAPACITY = 384
+BRIDGE_EVENT_QUEUE_MAX = 128
 BRIDGE_PERFORMANCE_SLOW_OPERATION_SECONDS = 0.25
 -- Diagnostic capture is deliberately best-effort. A lost WebRequest callback
 -- must not leave report controls latched forever after a freeze capture.
@@ -166,6 +167,7 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         eventQueueLength = #(BridgeState.eventQueue or {}),
         eventPolling = BridgeState.eventPolling == true,
         eventRequestInFlight = BridgeState.eventRequestInFlight == true,
+        eventRequestGeneration = BridgeState.eventRequestGeneration,
         eventPollScheduled = BridgeState.eventPollScheduled == true,
         eventPollGeneration = BridgeState.eventPollGeneration,
         eventSessionGeneration = BridgeState.eventSessionGeneration,
@@ -190,6 +192,7 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
         eventDrainBlockReason = BridgeEventDrainBlockReason(),
         resyncInFlight = BridgeState.resyncInFlight == true,
+        resyncScheduled = BridgeState.resyncScheduled == true,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncStartedAt = BridgeState.resyncStartedAt,
         resyncDeferredReason = BridgeState.resyncDeferredReason,
@@ -866,6 +869,7 @@ BridgeState = {
     eventPollGeneration = 0,
     eventRequestInFlight = false,
     eventPollScheduled = false,
+    eventRequestGeneration = nil,
     decisionPollGeneration = 0,
     decisionPresentationGeneration = 0,
     decisionPollInFlight = false,
@@ -1001,6 +1005,7 @@ BridgeState = {
     },
     resyncLifecycle = {},
     resyncCheckpoint = nil,
+    resyncScheduled = false,
     resyncDeferredRetryScheduled = false,
     resyncDeferredSince = nil,
     resyncWatchdogToken = nil,
@@ -2660,6 +2665,7 @@ function onLoad()
 end
 
 function onUpdate()
+    if BridgeEnforceDesyncRecovery ~= nil then BridgeEnforceDesyncRecovery("onUpdate") end
     -- Wait.time is normally sufficient, but a bootstrap can be waiting on a
     -- TTS callback while the time scheduler is delayed.  Keep the resync
     -- watchdog reactive from the frame loop as well.
@@ -3354,8 +3360,28 @@ function BridgeDisarmYieldPolicy(reason)
     end
 end
 
+function BridgeAutomaticDecisionBlocked(decision)
+    if decision == nil or decision.decisionId == nil or decision.decisionId == "" then return "no-current-decision" end
+    if BridgeState.desyncLatched == true then return "desync-latched" end
+    if BridgeState.resyncInFlight == true or BridgeState.resyncScheduled == true then return "resync-active" end
+    local ui = BridgeState.ui or {}
+    if ui.reportCaptureInFlight == true then return "diagnostic-capture" end
+    local received = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
+    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    if received ~= applied or #(BridgeState.eventQueue or {}) > 0 then return "event-backpressure" end
+    local cursor = tonumber(decision.eventCursor or 0) or 0
+    if cursor > 0 and cursor ~= applied then return "decision-cursor-mismatch" end
+    return nil
+end
+
 function BridgeConsiderYieldAutomaticAction(decision, action, policy)
     if decision == nil or action == nil then return false end
+    local blockedReason = BridgeAutomaticDecisionBlocked(decision)
+    if blockedReason ~= nil then
+        BridgeRecordDecisionLifecycle(decision, "yield", "AUTO_ACTION_BLOCKED", blockedReason,
+            action.actionId, action.type or action.actionType, policy, "blocked")
+        return false
+    end
     local actionType = tostring(action.type or action.actionType or "unknown")
     local result = "submitted"
     if BridgeAutomaticPassBackpressured() then
@@ -3750,6 +3776,7 @@ function BridgeIsStructuredForgeToggleChoice(decision)
     local kind = tostring(decision.kind or "")
     return kind == "discard" or kind == "sacrifice" or kind == "payment_option"
         or kind == "search_selection" or kind == "entity_selection" or kind == "cost_selection"
+        or kind == "mode_selection"
         or (kind == "mulligan" and tostring(decision.mulliganStage or "") == "bottom_selection")
 end
 
@@ -7493,6 +7520,12 @@ function BridgeRenderDecision(decision, force)
         and not BridgeDecisionHasNonPassAction(decision) then
         for _, action in ipairs(decision.actions) do
             if action.type == "pass_priority" then
+                local blockedReason = BridgeAutomaticDecisionBlocked(decision)
+                if blockedReason ~= nil then
+                    BridgeRecordDecisionLifecycle(decision, "smart", "AUTO_ACTION_BLOCKED",
+                        blockedReason, action.actionId, action.type, "SMART", "blocked")
+                    return
+                end
                 if BridgeAutomaticPassBackpressured() then
                     BridgeRecordDecisionLifecycle(decision, "smart", "AUTO_ACTION_BLOCKED",
                         "event-backpressure", action.actionId, action.type, "SMART", "blocked_backpressure")
@@ -8407,6 +8440,7 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     BridgeState.resyncWatchdogToken = nil
     BridgeState.resyncInFlight = false
+    BridgeState.resyncScheduled = false
     BridgeState.bootstrapping = false
     BridgeState.resyncStartedAt = nil
     BridgeState.resyncDeferredReason = "stalled"
@@ -8494,6 +8528,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     end
     BridgeState.resyncDeferredSince = nil
     BridgeState.resyncDeferredRetryScheduled = false
+    BridgeState.resyncScheduled = false
     if explicit then
         -- Invalidate delayed local callbacks even when the physical queues
         -- happened to look idle.  An event-drain continuation or other frame
@@ -8554,6 +8589,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             return
         end
         BridgeState.resyncInFlight = false
+        BridgeState.resyncScheduled = false
         BridgeState.resyncWatchdogToken = nil
         BridgeState.resyncStartedAt = nil
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
@@ -10128,12 +10164,18 @@ function BridgePollEvents(generation)
     local requestedAfter = BridgeState.lastReceivedEventSequence
     local path = "/api/v1/events?after=" .. tostring(requestedAfter)
     BridgeState.eventRequestInFlight = true
+    BridgeState.eventRequestGeneration = generation
     BridgeHttp.requestJson("GET", path, nil, function(ok, body, err)
         if generation ~= BridgeState.eventPollGeneration then
+            if BridgeState.eventRequestGeneration == generation then
+                BridgeState.eventRequestInFlight = false
+                BridgeState.eventRequestGeneration = nil
+            end
             return
         end
 
         BridgeState.eventRequestInFlight = false
+        BridgeState.eventRequestGeneration = nil
         if not ok or body == nil then
             if body ~= nil and body.errorCode == "event_history_gap" then
                 BridgeStopOnDesync("event history gap after sequence " .. tostring(requestedAfter) .. ": " .. tostring(body.message))
@@ -10173,6 +10215,10 @@ function BridgePollEvents(generation)
                 end
                 BridgeState.lastReceivedEventSequence = event.sequence
                 table.insert(BridgeState.eventQueue, event)
+                if #BridgeState.eventQueue > BRIDGE_EVENT_QUEUE_MAX then
+                    BridgeStopOnDesync("authoritative event queue exceeded bounded capacity")
+                    return
+                end
             end
             BridgeProcessEventQueue()
             BridgeTryPresentPendingDecision("poll-noqueue")
@@ -14026,6 +14072,8 @@ function BridgeStopOnDesync(message)
     if BridgeState.desyncLatched == true then
         BridgeState.desyncFailureCount = (BridgeState.desyncFailureCount or 0) + 1
         BridgeState.desyncLastMessage = diagnostic
+        BridgeStopEventPolling("desync-latched")
+        BridgeEnsureDesyncRecovery("duplicate-desync")
         BridgeLog("[Bridge] duplicate synchronization failure suppressed: " .. diagnostic)
         return
     end
@@ -14048,9 +14096,40 @@ function BridgeStopOnDesync(message)
         -- one concise status diagnostic rather than broadcasting retries.
         BridgeLog("[Bridge] synchronization stopped: " .. diagnostic)
         BridgeSetStatus("LIBRARY MISMATCH", diagnostic)
+        BridgeEnsureDesyncRecovery("library-mismatch")
         return
     end
     BridgeShowError("synchronization stopped: " .. diagnostic)
+    BridgeEnsureDesyncRecovery("desync")
+end
+
+function BridgeEnforceDesyncRecovery(reason)
+    if BridgeState.desyncLatched == true
+        and not BridgeState.resyncInFlight
+        and not BridgeState.resyncScheduled
+        and not BridgeState.recoveryCheckpointCommitInProgress then
+        BridgeEnsureDesyncRecovery(reason or "liveness-watchdog")
+    end
+end
+
+function BridgeEnsureDesyncRecovery(reason)
+    if BridgeState.desyncLatched ~= true or BridgeState.resyncInFlight == true then return end
+    if BridgeState.resyncScheduled == true then return end
+    if BridgeState.eventSessionId == nil then
+        BridgeState.desyncLatched = false
+        BridgeLog("[Bridge] cleared desync latch: no active session reason=" .. tostring(reason))
+        return
+    end
+    BridgeState.resyncScheduled = true
+    BridgeLog("[Bridge] RESYNC_SCHEDULED reason=" .. tostring(reason))
+    BridgeWaitFrames(function()
+        if BridgeState.resyncScheduled ~= true then return end
+        if BridgeState.desyncLatched ~= true or BridgeState.resyncInFlight == true then
+            BridgeState.resyncScheduled = false
+            return
+        end
+        BridgeResyncFromAuthoritativeSnapshot("automatic-desync-recovery")
+    end, 1)
 end
 
 function BridgePrintEventSyncStatus()
@@ -14350,6 +14429,7 @@ function BridgeHudSubmitReport(category, summary)
     local captureToken = requestUi.reportCaptureToken
     local completed = false
 
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_REQUESTED", captureToken, "user-request")
     BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_BEGIN", captureToken, "capture-start")
 
     ui.reportCaptureInFlight = true
@@ -14373,11 +14453,14 @@ function BridgeHudSubmitReport(category, summary)
             local reportPath = tostring(body.reportPath or "BugReports")
             requestUi.reportStatus = "CAPTURED â€¢ " .. reportId .. "\n" .. reportPath
             BridgeLog("[Bridge] diagnostic report captured id=" .. reportId .. " path=" .. reportPath)
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_COMPLETED", captureToken, "response-success")
         else
             local detail = BridgeHttpFailureDetail(body, err or "capture failed")
             requestUi.reportStatus = "ERROR â€¢ " .. detail
             BridgeLog("[Bridge] diagnostic report failed: " .. detail)
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FAILED", captureToken, detail)
         end
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_CLEANUP_COMPLETED", captureToken, "capture-state-released")
         BridgeUiMarkDirty("report-capture-result")
         -- Recovery runs on a safe frame, after the capture callback has
         -- returned. It is single-flight and re-observes the current decision.
@@ -14407,6 +14490,7 @@ function BridgeHudSubmitReport(category, summary)
         finish(false, nil, "diagnostic payload failed: " .. tostring(performance), "payload-failure")
         return
     end
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_SNAPSHOT_COPIED", captureToken, "immutable-payload-copied")
     local request = {
         summary = summary or BridgeHudReportSummaryText(),
         category = category or BRIDGE_REPORT_CATEGORIES[tonumber(ui.reportCategoryIndex or 1) or 1] or "Other",
@@ -14428,6 +14512,7 @@ function BridgeHudSubmitReport(category, summary)
         eventDrainDiagnostics = performance.eventDrainDiagnostics
     }
     local requestOk, requestError = pcall(function()
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_HANDED_OFF", captureToken, "bridge-request")
         BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
             finish(ok, body, err, "callback", "DIAG_CAPTURE_CALLBACK")
             return

@@ -1776,6 +1776,8 @@ function BridgeStopOnDesync(message)
     if BridgeState.desyncLatched == true then
         BridgeState.desyncFailureCount = (BridgeState.desyncFailureCount or 0) + 1
         BridgeState.desyncLastMessage = diagnostic
+        BridgeStopEventPolling("desync-latched")
+        BridgeEnsureDesyncRecovery("duplicate-desync")
         BridgeLog("[Bridge] duplicate synchronization failure suppressed: " .. diagnostic)
         return
     end
@@ -1798,9 +1800,40 @@ function BridgeStopOnDesync(message)
         -- one concise status diagnostic rather than broadcasting retries.
         BridgeLog("[Bridge] synchronization stopped: " .. diagnostic)
         BridgeSetStatus("LIBRARY MISMATCH", diagnostic)
+        BridgeEnsureDesyncRecovery("library-mismatch")
         return
     end
     BridgeShowError("synchronization stopped: " .. diagnostic)
+    BridgeEnsureDesyncRecovery("desync")
+end
+
+function BridgeEnforceDesyncRecovery(reason)
+    if BridgeState.desyncLatched == true
+        and not BridgeState.resyncInFlight
+        and not BridgeState.resyncScheduled
+        and not BridgeState.recoveryCheckpointCommitInProgress then
+        BridgeEnsureDesyncRecovery(reason or "liveness-watchdog")
+    end
+end
+
+function BridgeEnsureDesyncRecovery(reason)
+    if BridgeState.desyncLatched ~= true or BridgeState.resyncInFlight == true then return end
+    if BridgeState.resyncScheduled == true then return end
+    if BridgeState.eventSessionId == nil then
+        BridgeState.desyncLatched = false
+        BridgeLog("[Bridge] cleared desync latch: no active session reason=" .. tostring(reason))
+        return
+    end
+    BridgeState.resyncScheduled = true
+    BridgeLog("[Bridge] RESYNC_SCHEDULED reason=" .. tostring(reason))
+    BridgeWaitFrames(function()
+        if BridgeState.resyncScheduled ~= true then return end
+        if BridgeState.desyncLatched ~= true or BridgeState.resyncInFlight == true then
+            BridgeState.resyncScheduled = false
+            return
+        end
+        BridgeResyncFromAuthoritativeSnapshot("automatic-desync-recovery")
+    end, 1)
 end
 
 function BridgePrintEventSyncStatus()
@@ -2100,6 +2133,7 @@ function BridgeHudSubmitReport(category, summary)
     local captureToken = requestUi.reportCaptureToken
     local completed = false
 
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_REQUESTED", captureToken, "user-request")
     BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_BEGIN", captureToken, "capture-start")
 
     ui.reportCaptureInFlight = true
@@ -2123,11 +2157,14 @@ function BridgeHudSubmitReport(category, summary)
             local reportPath = tostring(body.reportPath or "BugReports")
             requestUi.reportStatus = "CAPTURED â€¢ " .. reportId .. "\n" .. reportPath
             BridgeLog("[Bridge] diagnostic report captured id=" .. reportId .. " path=" .. reportPath)
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_COMPLETED", captureToken, "response-success")
         else
             local detail = BridgeHttpFailureDetail(body, err or "capture failed")
             requestUi.reportStatus = "ERROR â€¢ " .. detail
             BridgeLog("[Bridge] diagnostic report failed: " .. detail)
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FAILED", captureToken, detail)
         end
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_CLEANUP_COMPLETED", captureToken, "capture-state-released")
         BridgeUiMarkDirty("report-capture-result")
         -- Recovery runs on a safe frame, after the capture callback has
         -- returned. It is single-flight and re-observes the current decision.
@@ -2157,6 +2194,7 @@ function BridgeHudSubmitReport(category, summary)
         finish(false, nil, "diagnostic payload failed: " .. tostring(performance), "payload-failure")
         return
     end
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_SNAPSHOT_COPIED", captureToken, "immutable-payload-copied")
     local request = {
         summary = summary or BridgeHudReportSummaryText(),
         category = category or BRIDGE_REPORT_CATEGORIES[tonumber(ui.reportCategoryIndex or 1) or 1] or "Other",
@@ -2178,6 +2216,7 @@ function BridgeHudSubmitReport(category, summary)
         eventDrainDiagnostics = performance.eventDrainDiagnostics
     }
     local requestOk, requestError = pcall(function()
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_HANDED_OFF", captureToken, "bridge-request")
         BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
             finish(ok, body, err, "callback", "DIAG_CAPTURE_CALLBACK")
             return

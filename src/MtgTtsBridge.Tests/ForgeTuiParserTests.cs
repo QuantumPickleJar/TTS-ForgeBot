@@ -499,6 +499,31 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void ModeSelectionIsAForgeOwnedCollectionWithStableSelectionAndDone()
+    {
+        var parser = new ForgeTuiParser();
+        var first = parser.Append(
+            "=== FORGE CHOICE ===\nChoose mode for See Double\n" +
+            "[kind=mode_selection min=2 max=2 selected=0 ordered=true]\n" +
+            "  0. Done\n  1. Copy spell\n  2. Copy permanent\n" +
+            "Enter choice (0-2): ");
+        var firstDecision = Assert.IsType<ForgeTuiDecision>(first.ParsedDecision).Decision;
+        Assert.True(firstDecision.ConfirmRequired);
+        Assert.Equal("choose_none", firstDecision.Actions[0].Type);
+
+        var second = parser.Append(
+            "=== FORGE CHOICE ===\nChoose mode for See Double\n" +
+            "[kind=mode_selection min=2 max=2 selected=1 ordered=true]\n" +
+            "  0. Done\n  1. Copy spell [SELECTED]\n  2. Copy permanent\n" +
+            "Enter choice (0-2): ");
+        var secondDecision = Assert.IsType<ForgeTuiDecision>(second.ParsedDecision).Decision;
+        Assert.Equal(firstDecision.DecisionId, secondDecision.DecisionId);
+        Assert.Equal(1, secondDecision.SelectedCount);
+        Assert.True(secondDecision.Actions.Single(action => action.Type == "choose_mode" && action.IsSelected).IsSelected);
+        Assert.Contains(secondDecision.Actions, action => action.Type == "choose_none");
+    }
+
+    [Fact]
     public void GenericPlayerSelection_MapsSeatWithoutTreatingTtsColorAsRulesIdentity()
     {
         var parser = new ForgeTuiParser(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

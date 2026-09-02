@@ -32,6 +32,30 @@ public sealed class TtsYieldPolicyLuaTests
     }
 
     [Fact]
+    public void AutomaticYieldIsBlockedWhileSynchronizationIsUnsafe()
+    {
+        var lua = NewProbe(true, "forge-player-1");
+        lua.DoString(@"
+            BridgeState.desyncLatched = true
+            BridgeState.resyncInFlight = false
+            BridgeState.resyncScheduled = false
+            BridgeState.lastAppliedEventSequence = 4
+            BridgeState.lastReceivedEventSequence = 5
+            decision = {
+                decisionId='blocked', sessionId='session', kind='main_priority',
+                seatId='forge-player-1', activeSeatId='forge-player-1', prioritySeatId='forge-player-1',
+                turnNumber=1, phaseName='Main phase, precombat', eventCursor=5,
+                actions={{
+                    {actionId='pass-blocked', type='pass_priority', isPresentationAuthorized=true}
+                }}
+            }
+            BridgeRenderDecision(decision, true)
+        ");
+
+        Assert.Null(lua.Globals.Get("submittedAction").ToObject());
+    }
+
+    [Fact]
     public void OwnTurnYieldFinishesAttackingWithForgeCompletionAction()
     {
         var lua = NewProbe(true, "forge-player-1");
@@ -39,7 +63,7 @@ public sealed class TtsYieldPolicyLuaTests
             decision = {
                 decisionId='own-attackers', sessionId='session', kind='attacker_selection',
                 seatId='forge-player-1', activeSeatId='forge-player-1', prioritySeatId='forge-player-1',
-                turnNumber=1, phaseName='Combat, declare attackers', eventCursor=11,
+                turnNumber=1, phaseName='Combat, declare attackers', eventCursor=10,
                 actions={
                     {actionId='attacker-1', type='choose_attacker', isPresentationAuthorized=true, isSelected=true},
                     {actionId='finish-1', type='finish_attacking', isPresentationAuthorized=true}
