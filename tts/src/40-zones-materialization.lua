@@ -1200,6 +1200,13 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.renderedDecisionPresentationKey = nil
     BridgeState.renderedDecisionPhysicalGeneration = nil
     BridgeState.eventSessionId = sessionId
+    if replacingMatch or checkpoint == nil then
+        BridgeState.resyncStage = "Idle"
+        BridgeState.resyncStageChangedAt = nil
+        BridgeState.resyncAttempt = 0
+        BridgeState.resyncSnapshotFingerprint = nil
+        BridgeState.resyncSnapshotRepeatCount = 0
+    end
     BridgeState.desyncLatched = false
     BridgeState.desyncFailureCount = 0
     BridgeState.desyncLastMessage = nil
@@ -1666,6 +1673,9 @@ function BridgeProcessEventQueue()
     local oldLastApplied = BridgeState.lastAppliedEventSequence
     table.remove(BridgeState.eventQueue, 1)
     BridgeState.lastAppliedEventSequence = event.sequence
+    BridgeState.lastConsumedEventSequence = event.sequence
+    BridgeState.lastStateProjectedEventSequence = event.sequence
+    BridgeState.lastPhysicalPresentationEventSequence = event.sequence
     if event.revealPresentation ~= nil and BridgeApplyRevealPresentation ~= nil then
         local revealOk, revealError = pcall(BridgeApplyRevealPresentation, event.revealPresentation, event.sequence)
         if not revealOk then BridgeLog("[Bridge] reveal presentation failed: " .. tostring(revealError)) end

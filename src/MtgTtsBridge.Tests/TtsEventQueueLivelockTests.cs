@@ -276,6 +276,26 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Equal("physical-library-queue", state.Get("resyncDeferredReason").String);
     }
 
+    [Fact]
+    public void ValidMulliganSnapshotSupersedesQueuedIntermediateEvents()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventQueue = {}
+            for sequence = 76, 88 do
+                table.insert(BridgeState.eventQueue, {sequence=sequence, kind='card_moved', sourceZone='hand', destinationZone='library'})
+            end
+            table.insert(BridgeState.eventQueue, {sequence=89, kind='draw', sourceZone='library', destinationZone='hand'})
+            BridgeState.lastReceivedEventSequence = 88
+            BridgeState.lastAppliedEventSequence = 75
+            BridgeSupersedeEventsThroughSnapshot(88, 'mulligan-checkpoint')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(88, state.Get("lastReceivedEventSequence").Number);
+        Assert.Equal(1, state.Get("eventQueue").Table.Length);
+    }
+
     private static Script NewQueueProbe()
     {
         var lua = new Script();

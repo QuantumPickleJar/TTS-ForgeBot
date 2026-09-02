@@ -2509,7 +2509,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeStartDecisionPolling()", resync);
         Assert.Contains("lastAppliedEventSequence = cursor", Script);
         Assert.Contains("lastReceivedEventSequence = cursor", Script);
-        Assert.Contains("authoritative resync snapshot is missing a valid event cursor", Script);
+        Assert.Contains("authoritative snapshot is missing a valid event cursor", Script);
         Assert.Contains("BridgeState.submitting = false", resync);
         Assert.Contains("BridgeResumeChoiceProtocol(\"authoritative_resync\")", resync);
         Assert.Contains("resyncPresentationState", Script);
@@ -2864,7 +2864,7 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void DiagnosticCapture_RecoversOrdinaryPollingAfterCallbackOrTimeout()
+    public void DiagnosticCapture_IsObserverOnlyAfterCallbackOrTimeout()
     {
         var start = Script.IndexOf("function BridgeHudSubmitReport", StringComparison.Ordinal);
         var end = Script.IndexOf("function BridgeHudReportCapture", start, StringComparison.Ordinal);
@@ -2873,8 +2873,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("local captureToken = requestUi.reportCaptureToken", report);
         Assert.Contains("BridgeRecordDiagnosticCaptureLifecycle(\"DIAG_CAPTURE_BEGIN\"", report);
         Assert.Contains("requestUi.reportCaptureToken ~= captureToken", report);
-        Assert.Contains("BridgeWaitFrames(function()", report);
-        Assert.Contains("BridgeRecoverGameplayPumps(recoveryReason or \"callback\"", report);
+        Assert.DoesNotContain("BridgeWaitFrames(function()", report);
+        Assert.DoesNotContain("BridgeRecoverGameplayPumps(recoveryReason or \"callback\"", report);
         Assert.Contains("local completed = false", report);
         Assert.Contains("BridgePerformanceDiagnosticPayload", report);
         Assert.Contains("diagnosticCaptureLifecycle = performance.diagnosticCaptureLifecycle", report);
@@ -3239,9 +3239,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.True(start >= 0 && end > start);
         var body = Script[start..end];
         Assert.Contains("BridgeRecordDiagnosticCaptureLifecycle(\"DIAG_CAPTURE_BEGIN\"", body);
-        Assert.Contains("BridgeRecoverGameplayPumps(recoveryReason or \"callback\"", body);
+        Assert.DoesNotContain("BridgeRecoverGameplayPumps(recoveryReason or \"callback\"", body);
         Assert.Contains("\"DIAG_CAPTURE_TIMEOUT\"", body);
-        Assert.Contains("BridgeWaitFrames(function()", body);
+        Assert.Contains("BridgeCheckDiagnosticCapturePurity(capturePurityBefore", body);
         Assert.DoesNotContain("lastDecision = nil", body);
         Assert.DoesNotContain("BridgeSubmit", body);
     }

@@ -2008,6 +2008,42 @@ function BridgeScheduleDiagnosticCaptureFollowup(token, sessionId, epoch)
     BridgeWaitTime(sample, BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_INTERVAL_SECONDS)
 end
 
+function BridgeDiagnosticCaptureGameplayFingerprint()
+    local decision = BridgeState.lastDecision
+    local pending = BridgeState.pendingDecision
+    local ui = BridgeState.ui or {}
+    local function value(v) return tostring(v == nil and "<nil>" or v) end
+    return table.concat({
+        value(BridgeState.eventSessionId), value(decision and decision.decisionId),
+        value(pending and pending.decisionId), value(BridgeState.currentPhase),
+        value(BridgeState.currentTurnSeatId), value(BridgeState.prioritySeatId),
+        value(BridgeState.lastReceivedEventSequence), value(BridgeState.lastAppliedEventSequence),
+        value(BridgeState.lastConsumedEventSequence), value(BridgeState.lastStateProjectedEventSequence),
+        value(BridgeState.lastPhysicalPresentationEventSequence), value(#(BridgeState.eventQueue or {})),
+        value(BridgeState.eventPollGeneration), value(BridgeState.eventSessionGeneration),
+        value(BridgeState.eventPolling), value(BridgeState.eventRequestInFlight),
+        value(BridgeState.eventPollScheduled), value(BridgeState.decisionPollGeneration),
+        value(BridgeState.decisionPollInFlight), value(BridgeState.decisionPollScheduled),
+        value(BridgeState.decisionPresentationGeneration), value(BridgeState.submitting),
+        value(BridgeState.choiceProtocolPaused), value(BridgeState.animationRunning),
+        value(BridgeState.yieldPolicyTurnNumber), value(BridgeState.yieldPolicyActiveSeatId),
+        value(BridgeState.yieldPolicySessionId), value(BridgeState.resyncInFlight),
+        value(BridgeState.resyncScheduled), value(BridgeState.desyncLatched),
+        value(ui.autoAdvanceMode), value(ui.autoPassEmpty), value(ui.fastForwardActive)
+    }, "|")
+end
+
+function BridgeCheckDiagnosticCapturePurity(before, token, stage)
+    local after = BridgeDiagnosticCaptureGameplayFingerprint()
+    if before ~= after then
+        BridgeLog(string.format("[Bridge] DIAG_CAPTURE_PURITY_VIOLATION token=%s stage=%s before=%s after=%s",
+            tostring(token), tostring(stage), tostring(before), tostring(after)))
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_PURITY_VIOLATION", token, stage)
+        return false
+    end
+    return true
+end
+
 function BridgeRecoverGameplayPumps(reason, expectedSessionId, expectedEpoch, captureToken)
     local sessionId = expectedSessionId or BridgeState.eventSessionId
     local epoch = expectedEpoch or BRIDGE_RUNTIME_EPOCH_LOCAL
@@ -2135,6 +2171,7 @@ function BridgeHudSubmitReport(category, summary)
 
     BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_REQUESTED", captureToken, "user-request")
     BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_BEGIN", captureToken, "capture-start")
+    local capturePurityBefore = BridgeDiagnosticCaptureGameplayFingerprint()
 
     ui.reportCaptureInFlight = true
     ui.reportStatus = "Capturing..."
@@ -2166,18 +2203,10 @@ function BridgeHudSubmitReport(category, summary)
         end
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_CLEANUP_COMPLETED", captureToken, "capture-state-released")
         BridgeUiMarkDirty("report-capture-result")
-        -- Recovery runs on a safe frame, after the capture callback has
-        -- returned. It is single-flight and re-observes the current decision.
-        BridgeWaitFrames(function()
-            if requestUi.reportCaptureToken ~= captureToken
-                or not BridgeRuntimeIsCurrent(requestEpoch)
-                or BridgeState.ui ~= requestUi
-                or BridgeState.eventSessionId ~= requestSession then
-                BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_RECOVERY_SKIPPED", captureToken, "runtime-or-token-fence")
-                return
-            end
-            BridgeRecoverGameplayPumps(recoveryReason or "callback", requestSession, requestEpoch, captureToken)
-        end, 1)
+        -- A report is an observer. Completion must not restart pollers,
+        -- refresh a decision, or rebuild presentation; normal liveness and
+        -- recovery watchdogs own those mutations.
+        BridgeCheckDiagnosticCapturePurity(capturePurityBefore, captureToken, "completion")
     end
 
     -- Arm the watchdog before collecting any diagnostic payload.  Payload

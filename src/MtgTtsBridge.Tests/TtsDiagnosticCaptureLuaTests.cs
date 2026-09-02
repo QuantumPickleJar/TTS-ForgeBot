@@ -81,7 +81,7 @@ public sealed class TtsDiagnosticCaptureLuaTests
     }
 
     [Fact]
-    public void FailedCapture_RecoversDecisionObservationOnSafeFrame()
+    public void FailedCapture_IsObserverOnlyAndDoesNotRecoverGameplay()
     {
         var lua = NewProbe();
         lua.DoString(@"
@@ -126,9 +126,10 @@ public sealed class TtsDiagnosticCaptureLuaTests
 
         var bridgeState = lua.Globals.Get("BridgeState").Table;
         Assert.False(bridgeState.Get("ui").Table.Get("reportCaptureInFlight").Boolean);
-        Assert.Equal(1, lua.Globals.Get("decisionGets").Number);
-        Assert.Equal(1, lua.Globals.Get("accepted").Number);
+        Assert.Equal(0, lua.Globals.Get("decisionGets").Number);
+        Assert.Equal(0, lua.Globals.Get("accepted").Number);
         Assert.Equal(0, lua.Globals.Get("submitted").Number);
+        Assert.Equal(0, lua.Globals.Get("eventPollCalls").Number);
     }
 
     [Fact]
@@ -186,6 +187,53 @@ public sealed class TtsDiagnosticCaptureLuaTests
         Assert.Equal(4, lua.Globals.Get("BridgeState").Table.Get("resyncNoProgress").Table.Get("count").Number);
         Assert.Equal(1, lua.Globals.Get("resyncLogs").Table.Values
             .Count(value => value.String.Contains("RESYNC_NO_PROGRESS", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void DroppedDecisionTimer_IsRearmedByIndependentLivenessWatchdog()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'timer-session'
+            BridgeState.gameEnded = nil
+            BridgeState.submitting = false
+            BridgeState.choiceProtocolPaused = false
+            BridgeState.lastDecision = nil
+            BridgeState.decisionPollInFlight = false
+            BridgeState.decisionPollScheduled = true
+            BridgeState.decisionPollScheduledAt = 1
+            BridgeState.decisionPollDueAt = 1
+            BridgeState.decisionPollTimerToken = 9
+            BridgeState.decisionPollGeneration = 4
+            BridgeState.eventQueue = {}
+            BridgeState.lastReceivedEventSequence = 12
+            BridgeState.lastAppliedEventSequence = 12
+            os.clock = function() return 2 end
+            rearmed = 0
+            function BridgeStartDecisionPolling() rearmed = rearmed + 1 end
+            BridgeCheckDecisionPollingLiveness('test-dropped-timer')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(1, lua.Globals.Get("rearmed").Number);
+        Assert.False(state.Get("decisionPollScheduled").Boolean);
+        Assert.Equal("timer_lost", state.Get("lastDecisionPollOutcome").String);
+    }
+
+    [Fact]
+    public void AlreadyProjectedDecisionCursor_IsNotRejectedForExactEqualityMismatch()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.lastAppliedEventSequence = 324
+            BridgeState.lastStateProjectedEventSequence = 324
+            BridgeState.lastReceivedEventSequence = 324
+            BridgeState.eventQueue = {}
+            decision = {decisionId = 'forge-tui-48', eventCursor = 323, kind = 'main_priority', actions = {}}
+            blocked = BridgeAutomaticDecisionBlocked(decision)
+        ");
+
+        Assert.True(lua.Globals.Get("blocked").IsNil());
     }
 
     private static Script NewProbe()

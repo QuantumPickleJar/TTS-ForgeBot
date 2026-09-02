@@ -173,6 +173,13 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         eventSessionGeneration = BridgeState.eventSessionGeneration,
         decisionPollInFlight = BridgeState.decisionPollInFlight == true,
         decisionPollScheduled = BridgeState.decisionPollScheduled == true,
+        decisionPollScheduledAt = BridgeState.decisionPollScheduledAt,
+        decisionPollDueAt = BridgeState.decisionPollDueAt,
+        decisionPollTimerToken = BridgeState.decisionPollTimerToken,
+        lastDecisionPollStartedAt = BridgeState.lastDecisionPollStartedAt,
+        lastDecisionPollCompletedAt = BridgeState.lastDecisionPollCompletedAt,
+        lastDecisionPollOutcome = BridgeState.lastDecisionPollOutcome,
+        decisionAuthoritativeWatermark = BridgeState.decisionAuthoritativeWatermark,
         decisionPollGeneration = BridgeState.decisionPollGeneration,
         decisionRefreshInFlight = BridgeState.decisionRefreshInFlight == true,
         submitting = BridgeState.submitting == true,
@@ -189,6 +196,9 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         fastForwardStops = ui.fastForwardStops,
         presentationGeneration = BridgeState.decisionPresentationGeneration,
         physicalPresentationGeneration = BridgeState.currentPhysicalPresentationGeneration,
+        lastConsumedEventSequence = BridgeState.lastConsumedEventSequence,
+        lastStateProjectedEventSequence = BridgeState.lastStateProjectedEventSequence,
+        lastPhysicalPresentationEventSequence = BridgeState.lastPhysicalPresentationEventSequence,
         physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
         eventDrainBlockReason = BridgeEventDrainBlockReason(),
         resyncInFlight = BridgeState.resyncInFlight == true,
@@ -294,6 +304,16 @@ function BridgeRecordResyncLifecycle(stage, origin, generation, snapshot, reason
         tostring(beforeReceived), tostring(record.receivedAfter), tostring(beforeApplied),
         tostring(record.appliedAfter), tostring(reason)))
     return record
+end
+
+function BridgeSetResyncStage(stage, reason, snapshot)
+    local prior = BridgeState.resyncStage or "Idle"
+    BridgeState.resyncStage = stage
+    BridgeState.resyncStageChangedAt = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+    BridgeLog(string.format("[Bridge] RESYNC_STAGE %s -> %s session=%s generation=%s token=%s cursor=%s reason=%s",
+        tostring(prior), tostring(stage), tostring(BridgeState.eventSessionId),
+        tostring(BridgeState.eventSessionGeneration), tostring(BridgeState.resyncToken),
+        tostring(snapshot and snapshot.eventCursor or nil), tostring(reason)))
 end
 
 function BridgePresentationMetric(name)
@@ -865,6 +885,9 @@ BridgeState = {
     eventSessionGeneration = 0,
     lastReceivedEventSequence = 0,
     lastAppliedEventSequence = 0,
+    lastConsumedEventSequence = 0,
+    lastStateProjectedEventSequence = 0,
+    lastPhysicalPresentationEventSequence = 0,
     eventPolling = false,
     eventPollGeneration = 0,
     eventRequestInFlight = false,
@@ -874,6 +897,13 @@ BridgeState = {
     decisionPresentationGeneration = 0,
     decisionPollInFlight = false,
     decisionPollScheduled = false,
+    decisionPollScheduledAt = nil,
+    decisionPollDueAt = nil,
+    decisionPollTimerToken = nil,
+    lastDecisionPollStartedAt = nil,
+    lastDecisionPollCompletedAt = nil,
+    lastDecisionPollOutcome = nil,
+    decisionAuthoritativeWatermark = nil,
     decisionRefreshInFlight = false,
     eventRetryCount = 0,
     skipExistingEventsOnAttach = false,
@@ -1063,6 +1093,11 @@ BridgeState = {
     sessionRecoveryInFlight = false,
     resyncToken = 0,
     resyncStartedAt = nil,
+    resyncStage = "Idle",
+    resyncStageChangedAt = nil,
+    resyncAttempt = 0,
+    resyncSnapshotFingerprint = nil,
+    resyncSnapshotRepeatCount = 0,
     resyncOrigin = nil,
     resyncDeferredReason = nil,
     manualResyncGraceUntil = 0,
@@ -2671,6 +2706,7 @@ end
 
 function onUpdate()
     if BridgeEnforceDesyncRecovery ~= nil then BridgeEnforceDesyncRecovery("onUpdate") end
+    if BridgeCheckDecisionPollingLiveness ~= nil then BridgeCheckDecisionPollingLiveness("onUpdate") end
     -- Wait.time is normally sufficient, but a bootstrap can be waiting on a
     -- TTS callback while the time scheduler is delayed.  Keep the resync
     -- watchdog reactive from the frame loop as well.
@@ -3376,7 +3412,8 @@ function BridgeAutomaticDecisionBlocked(decision)
     local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
     if received ~= applied or #(BridgeState.eventQueue or {}) > 0 then return "event-backpressure" end
     local cursor = tonumber(decision.eventCursor or 0) or 0
-    if cursor > 0 and cursor ~= applied then return "decision-cursor-mismatch" end
+    local projected = math.max(applied, tonumber(BridgeState.lastStateProjectedEventSequence or 0) or 0)
+    if cursor > 0 and cursor > projected then return "decision-cursor-mismatch" end
     return nil
 end
 
@@ -3498,6 +3535,46 @@ function BridgeStopDecisionPolling()
     BridgeState.decisionPollGeneration = BridgeState.decisionPollGeneration + 1
     BridgeState.decisionPollInFlight = false
     BridgeState.decisionPollScheduled = false
+    BridgeState.decisionPollScheduledAt = nil
+    BridgeState.decisionPollDueAt = nil
+    BridgeState.decisionPollTimerToken = nil
+end
+
+function BridgeDecisionPollNow()
+    return os.clock()
+end
+
+-- A scheduled flag is only a claim made by the scheduler.  The timer token
+-- and deadline make that claim auditable and let the frame watchdog recover a
+-- callback which TTS silently drops.
+function BridgeCheckDecisionPollingLiveness(reason)
+    if BridgeState.gameEnded ~= nil or BridgeState.eventSessionId == nil
+        or BridgeState.submitting or BridgeState.choiceProtocolPaused then return false end
+
+    local now = BridgeDecisionPollNow()
+    if BridgeState.decisionPollScheduled == true
+        and BridgeState.decisionPollDueAt ~= nil
+        and now >= tonumber(BridgeState.decisionPollDueAt) then
+        BridgeLog(string.format("[Bridge] DECISION_POLL_TIMER_LOST reason=%s token=%s due=%s now=%s",
+            tostring(reason), tostring(BridgeState.decisionPollTimerToken),
+            tostring(BridgeState.decisionPollDueAt), tostring(now)))
+        BridgeState.decisionPollScheduled = false
+        BridgeState.decisionPollScheduledAt = nil
+        BridgeState.decisionPollDueAt = nil
+        BridgeState.decisionPollTimerToken = nil
+        BridgeState.lastDecisionPollOutcome = "timer_lost"
+    end
+
+    -- A current decision is presentation state, not proof that a poller is
+    -- alive.  The normal caller may explicitly allow a same-decision refresh.
+    if BridgeState.lastDecision == nil
+        and not BridgeState.decisionPollInFlight
+        and not BridgeState.decisionPollScheduled then
+        BridgeLog("[Bridge] DECISION_POLL_LIVENESS_REARM reason=" .. tostring(reason))
+        BridgeStartDecisionPolling()
+        return true
+    end
+    return false
 end
 
 function BridgeMarkTransitionExpected(seconds)
@@ -3550,7 +3627,6 @@ function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDeci
     if (BridgeState.lastDecision ~= nil and allowCurrentDecision ~= true) or BridgeState.submitting then return end
     if BridgeState.decisionPollInFlight or BridgeState.decisionPollScheduled then return end
 
-    BridgeState.decisionPollScheduled = true
     local nextDelay = delay or 0.1
     -- FAST is for a known short authoritative transition, not a blanket
     -- override of Forge's normal no-decision backoff. Polling an idle Forge at
@@ -3559,9 +3635,20 @@ function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDeci
     if BridgeState.ui ~= nil and BridgeState.ui.fastPlaytest and BridgeTransitionExpected() then
         nextDelay = math.min(nextDelay, 0.05)
     end
+    BridgeState.decisionPollScheduled = true
+    BridgeState.decisionPollScheduledAt = BridgeDecisionPollNow()
+    BridgeState.decisionPollDueAt = BridgeState.decisionPollScheduledAt + nextDelay
+    BridgeState.decisionPollTimerToken = (BridgeState.decisionPollTimerToken or 0) + 1
+    local timerToken = BridgeState.decisionPollTimerToken
     BridgeWaitTime(function()
         if generation ~= BridgeState.decisionPollGeneration then return end
+        if BridgeState.decisionPollTimerToken ~= timerToken then return end
         BridgeState.decisionPollScheduled = false
+        BridgeState.decisionPollScheduledAt = nil
+        BridgeState.decisionPollDueAt = nil
+        BridgeState.decisionPollTimerToken = nil
+        BridgeState.lastDecisionPollStartedAt = BridgeDecisionPollNow()
+        BridgeState.lastDecisionPollOutcome = "started"
         BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
     end, nextDelay)
 end
@@ -3690,13 +3777,17 @@ function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
     local expectedSessionId = BridgeState.eventSessionId
     local presentationGeneration = BridgeState.decisionPresentationGeneration
     BridgeState.decisionPollInFlight = true
+    BridgeState.lastDecisionPollStartedAt = BridgeDecisionPollNow()
     BridgeHttp.requestJson("GET", "/api/v1/decision", nil, function(ok, body, err, request)
         if generation ~= BridgeState.decisionPollGeneration then return end
         if expectedSessionId ~= BridgeState.eventSessionId
             or presentationGeneration ~= BridgeState.decisionPresentationGeneration then return end
 
         BridgeState.decisionPollInFlight = false
+        BridgeState.lastDecisionPollCompletedAt = BridgeDecisionPollNow()
         if ok and body ~= nil then
+            BridgeState.lastDecisionPollOutcome = "decision"
+            BridgeState.decisionAuthoritativeWatermark = body.eventCursor
             BridgeMarkTransitionExpected(0)
             BridgeRecordLatencyProbeDecisionReady(body)
             BridgeAcceptDecision(body, "decision_poll", expectedSessionId, presentationGeneration)
@@ -3706,6 +3797,7 @@ function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
         local responseCode = request and tonumber(request.response_code) or nil
         local noPendingDecision = (body ~= nil and body.errorCode == "no_pending_decision") or responseCode == 404
         if noPendingDecision then
+            BridgeState.lastDecisionPollOutcome = "no_pending_decision"
             if attempt == 1 or attempt % 10 == 0 then
                 BridgeLog("[Bridge] waiting for Forge's next decision...")
             end
@@ -3723,6 +3815,7 @@ function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
         end
 
         BridgeShowError("decision poll failed: " .. tostring(err))
+        BridgeState.lastDecisionPollOutcome = "failed"
         BridgeScheduleDecisionPoll(1.0, generation, attempt + 1, allowCurrentDecision)
     end)
 end
@@ -4607,7 +4700,9 @@ function BridgeShouldDeferDecision(decision)
         end
     end
     local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
-    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    local applied = math.max(
+        tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+        tonumber(BridgeState.lastStateProjectedEventSequence or 0) or 0)
     if eventCursor <= 0 then return false, eventCursor, applied end
     return eventCursor > applied, eventCursor, applied
 end
@@ -5114,16 +5209,25 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     -- pipeline. These values come directly from Forge; they never advance a
     -- phase or infer legality in Lua.
     local turnStateToken = BridgePerformanceBegin("snapshot_reconcile.turn_state")
-    if snapshot.turnNumber ~= nil then BridgeState.tableTurnCount = snapshot.turnNumber end
-    if snapshot.activeSeatId ~= nil then BridgeState.currentTurnSeatId = snapshot.activeSeatId end
-    if snapshot.prioritySeatId ~= nil then BridgeState.prioritySeatId = snapshot.prioritySeatId end
-    if snapshot.phase ~= nil and tostring(snapshot.phase) ~= "" then
-        BridgeState.currentPhase = snapshot.phase
+    local snapshotCursor = tonumber(snapshot and snapshot.eventCursor or 0) or 0
+    local projectedCursor = tonumber(BridgeState.lastStateProjectedEventSequence
+        or BridgeState.lastAppliedEventSequence or 0) or 0
+    local mayProjectTurnState = snapshotCursor >= projectedCursor
+    if mayProjectTurnState then
+        if snapshot.turnNumber ~= nil then BridgeState.tableTurnCount = snapshot.turnNumber end
+        if snapshot.activeSeatId ~= nil then BridgeState.currentTurnSeatId = snapshot.activeSeatId end
+        if snapshot.prioritySeatId ~= nil then BridgeState.prioritySeatId = snapshot.prioritySeatId end
+        if snapshot.phase ~= nil and tostring(snapshot.phase) ~= "" then
+            BridgeState.currentPhase = snapshot.phase
+        end
+    else
+        BridgeLog(string.format("[Bridge] retaining newer event projection over older snapshot cursor=%s projected=%s",
+            tostring(snapshotCursor), tostring(projectedCursor)))
     end
     BridgeUiMarkDirty("authoritative-snapshot-turn-state")
     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
     if BridgeRestoreAuthoritativeReveals ~= nil then BridgeRestoreAuthoritativeReveals(snapshot) end
-    BridgeState.snapshotReconcileLastAppliedCursor = tonumber(snapshot.eventCursor or 0) or 0
+    BridgeState.snapshotReconcileLastAppliedCursor = snapshotCursor
     BridgeState.snapshotReconcileLastAppliedGeneration = BridgeState.snapshotReconcileRequestGeneration or 0
     BridgeState.snapshotReconcileLastAppliedCategory = BridgeSnapshotRequestCategory(reason)
     BridgePerformanceEnd(turnStateToken, "snapshot_reconcile.turn_state.end", "snapshotReconcileTurnState")
@@ -8324,6 +8428,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
     end
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     local bootstrapGeneration = BridgeState.resyncBootstrapGeneration
+    BridgeSetResyncStage("FetchingSnapshot", "bootstrap", nil)
     BridgeRecordResyncLifecycle("SNAPSHOT_REQUESTED", resyncOrigin, bootstrapGeneration)
     local function currentBootstrap()
         return BridgeState.resyncBootstrapGeneration == bootstrapGeneration
@@ -8372,6 +8477,30 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                 finishBootstrap(false, "snapshot session mismatch")
                 return
             end
+            local snapshotCursor = tonumber(snapshot.eventCursor)
+            if snapshotCursor == nil or snapshotCursor < 0 then
+                finishBootstrap(false, "authoritative snapshot is missing a valid event cursor")
+                return
+            end
+            local snapshotFingerprint = table.concat({
+                tostring(snapshot.sessionId), tostring(snapshot.eventCursor),
+                tostring(snapshot.forgeSequence or "")
+            }, "|")
+            if BridgeState.resyncSnapshotFingerprint == snapshotFingerprint then
+                BridgeState.resyncSnapshotRepeatCount = (BridgeState.resyncSnapshotRepeatCount or 0) + 1
+            else
+                BridgeState.resyncSnapshotFingerprint = snapshotFingerprint
+                BridgeState.resyncSnapshotRepeatCount = 1
+            end
+            if BridgeState.resyncSnapshotRepeatCount > 2 then
+                BridgeLog("[Bridge] RESYNC_NO_PROGRESS identical snapshot limit reached fingerprint=" .. snapshotFingerprint)
+                finishBootstrap(false, "authoritative resync made no progress across identical snapshots")
+                return
+            end
+            if resumeFromSnapshotCursor == true then
+                BridgeRecordResyncLifecycle("VALIDATING_SNAPSHOT", resyncOrigin, bootstrapGeneration, snapshot)
+                BridgeSupersedeEventsThroughSnapshot(snapshotCursor, "validated-snapshot")
+            end
             BridgeRecordResyncSnapshotProgress(resyncOrigin, snapshot)
             BridgeRecordExpectedHandIdentities(snapshot)
             local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids()
@@ -8383,6 +8512,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                 return
             end
             BridgeTraceStart("START-12 physical-bootstrap-begin")
+            BridgeSetResyncStage("ReconcilingSnapshot", "snapshot-validated", snapshot)
             BridgeRecordResyncLifecycle("RECONCILE_STARTED", resyncOrigin, bootstrapGeneration, snapshot)
             BridgeStageSeatCardsForBootstrap(snapshot, function(stagedOk, stagedError, stagedGuids)
                 if not currentBootstrap() then return end
@@ -8419,17 +8549,17 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                                     if not seatsOk then finishBootstrap(false, seatsError); return end
                                     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
                                     if resumeFromSnapshotCursor == true then
-                                        local cursor = tonumber(snapshot.eventCursor)
-                                        if cursor == nil or cursor < 0 then
-                                            finishBootstrap(false, "authoritative resync snapshot is missing a valid event cursor")
-                                            return
-                                        end
+                                        local cursor = snapshotCursor
                                         -- The snapshot is coherent through this bridge event cursor.
                                         -- Resume polling after it so no pre-snapshot transition is
                                         -- replayed over the just-rebuilt physical embodiment.
+                                        BridgeSetResyncStage("CommittingCheckpoint", "physical-reconcile-complete", snapshot)
                                         BridgeState.lastReceivedEventSequence = cursor
                                         BridgeState.lastAppliedEventSequence = cursor
-                                        BridgeState.eventQueue = {}
+                                        BridgeState.lastConsumedEventSequence = cursor
+                                        BridgeState.lastStateProjectedEventSequence = cursor
+                                        BridgeState.lastPhysicalPresentationEventSequence = cursor
+                                        BridgeSupersedeEventsThroughSnapshot(cursor, "checkpoint-commit")
                                         BridgeState.skipExistingEventsOnAttach = false
                                     end
                                     BridgeRecordResyncLifecycle("CHECKPOINT_COMMITTED", resyncOrigin, bootstrapGeneration, snapshot)
@@ -8564,6 +8694,23 @@ function BridgeRestoreResyncCheckpoint(reason)
     BridgeLog(string.format("[Bridge] RESYNC_CHECKPOINT_RESTORED received=%s applied=%s reason=%s",
         tostring(checkpoint.lastReceived), tostring(checkpoint.lastApplied), tostring(reason)))
     return true
+end
+
+-- A validated authoritative snapshot supersedes the unsafe queued prefix.
+-- This is essential for mulligan batches: replaying intermediate hand-return
+-- events can dismantle an already-correct replacement hand and block recovery.
+function BridgeSupersedeEventsThroughSnapshot(snapshotCursor, reason)
+    local cursor = tonumber(snapshotCursor or 0) or 0
+    local prior = BridgeState.eventQueue or {}
+    local retained = {}
+    for _, event in ipairs(prior) do
+        if tonumber(event.sequence or 0) > cursor then table.insert(retained, event) end
+    end
+    BridgeState.eventQueue = retained
+    BridgeState.lastReceivedEventSequence = math.max(
+        tonumber(BridgeState.lastReceivedEventSequence or 0) or 0, cursor)
+    BridgeLog(string.format("[Bridge] SNAPSHOT_CHECKPOINT_QUEUE_SUPERSEDED cursor=%s prior=%s retained=%s reason=%s",
+        tostring(cursor), tostring(#prior), tostring(#retained), tostring(reason)))
 end
 
 function BridgeReleaseStalledResync(sessionId, token, reason)
@@ -8705,6 +8852,8 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     }
     BridgeState.resyncToken = (BridgeState.resyncToken or 0) + 1
     local resyncToken = BridgeState.resyncToken
+    BridgeState.resyncAttempt = (BridgeState.resyncAttempt or 0) + 1
+    BridgeSetResyncStage("Requested", origin, nil)
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     BridgeState.resyncOrigin = origin
     BridgeState.resyncStartedAt = BridgeResyncClockNow()
@@ -8729,15 +8878,19 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         .. " session=" .. tostring(sessionId) .. " token=" .. tostring(resyncToken))
     BridgeRecordResyncLifecycle("REQUESTED", origin, resyncToken, nil, nil, nil,
         checkpointReceived, checkpointApplied)
+    BridgeSetResyncStage("FetchingSnapshot", "request-started", nil)
     BridgeBootstrapCurrentSnapshot(sessionId, function(ok, err)
         if BridgeState.resyncToken ~= resyncToken or BridgeState.eventSessionId ~= sessionId then
             BridgeLog("[Bridge] RESYNC_FAILED reason=stale-callback token=" .. tostring(resyncToken))
             return
         end
+        BridgeSetResyncStage(ok and "RestartingPipelines" or "Failed", ok and "snapshot-committed" or tostring(err), nil)
         BridgeState.resyncInFlight = false
         BridgeState.resyncScheduled = false
         BridgeState.resyncWatchdogToken = nil
         BridgeState.resyncStartedAt = nil
+        BridgeState.resyncSnapshotFingerprint = nil
+        BridgeState.resyncSnapshotRepeatCount = 0
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
         if not ok then
             BridgeRestoreResyncCheckpoint("bootstrap-failed")
@@ -8758,6 +8911,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeLog("[Bridge] RESYNC_COMPLETE eventCursor="
             .. tostring(BridgeState.lastAppliedEventSequence))
         BridgeRecordResyncLifecycle("COMPLETED", origin, resyncToken, nil, nil, nil, nil, nil)
+        BridgeSetResyncStage("Completed", "pipelines-restarted", nil)
     end, true, origin)
     return true
 end
@@ -10070,6 +10224,13 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.renderedDecisionPresentationKey = nil
     BridgeState.renderedDecisionPhysicalGeneration = nil
     BridgeState.eventSessionId = sessionId
+    if replacingMatch or checkpoint == nil then
+        BridgeState.resyncStage = "Idle"
+        BridgeState.resyncStageChangedAt = nil
+        BridgeState.resyncAttempt = 0
+        BridgeState.resyncSnapshotFingerprint = nil
+        BridgeState.resyncSnapshotRepeatCount = 0
+    end
     BridgeState.desyncLatched = false
     BridgeState.desyncFailureCount = 0
     BridgeState.desyncLastMessage = nil
@@ -10536,6 +10697,9 @@ function BridgeProcessEventQueue()
     local oldLastApplied = BridgeState.lastAppliedEventSequence
     table.remove(BridgeState.eventQueue, 1)
     BridgeState.lastAppliedEventSequence = event.sequence
+    BridgeState.lastConsumedEventSequence = event.sequence
+    BridgeState.lastStateProjectedEventSequence = event.sequence
+    BridgeState.lastPhysicalPresentationEventSequence = event.sequence
     if event.revealPresentation ~= nil and BridgeApplyRevealPresentation ~= nil then
         local revealOk, revealError = pcall(BridgeApplyRevealPresentation, event.revealPresentation, event.sequence)
         if not revealOk then BridgeLog("[Bridge] reveal presentation failed: " .. tostring(revealError)) end
@@ -14454,6 +14618,42 @@ function BridgeScheduleDiagnosticCaptureFollowup(token, sessionId, epoch)
     BridgeWaitTime(sample, BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_INTERVAL_SECONDS)
 end
 
+function BridgeDiagnosticCaptureGameplayFingerprint()
+    local decision = BridgeState.lastDecision
+    local pending = BridgeState.pendingDecision
+    local ui = BridgeState.ui or {}
+    local function value(v) return tostring(v == nil and "<nil>" or v) end
+    return table.concat({
+        value(BridgeState.eventSessionId), value(decision and decision.decisionId),
+        value(pending and pending.decisionId), value(BridgeState.currentPhase),
+        value(BridgeState.currentTurnSeatId), value(BridgeState.prioritySeatId),
+        value(BridgeState.lastReceivedEventSequence), value(BridgeState.lastAppliedEventSequence),
+        value(BridgeState.lastConsumedEventSequence), value(BridgeState.lastStateProjectedEventSequence),
+        value(BridgeState.lastPhysicalPresentationEventSequence), value(#(BridgeState.eventQueue or {})),
+        value(BridgeState.eventPollGeneration), value(BridgeState.eventSessionGeneration),
+        value(BridgeState.eventPolling), value(BridgeState.eventRequestInFlight),
+        value(BridgeState.eventPollScheduled), value(BridgeState.decisionPollGeneration),
+        value(BridgeState.decisionPollInFlight), value(BridgeState.decisionPollScheduled),
+        value(BridgeState.decisionPresentationGeneration), value(BridgeState.submitting),
+        value(BridgeState.choiceProtocolPaused), value(BridgeState.animationRunning),
+        value(BridgeState.yieldPolicyTurnNumber), value(BridgeState.yieldPolicyActiveSeatId),
+        value(BridgeState.yieldPolicySessionId), value(BridgeState.resyncInFlight),
+        value(BridgeState.resyncScheduled), value(BridgeState.desyncLatched),
+        value(ui.autoAdvanceMode), value(ui.autoPassEmpty), value(ui.fastForwardActive)
+    }, "|")
+end
+
+function BridgeCheckDiagnosticCapturePurity(before, token, stage)
+    local after = BridgeDiagnosticCaptureGameplayFingerprint()
+    if before ~= after then
+        BridgeLog(string.format("[Bridge] DIAG_CAPTURE_PURITY_VIOLATION token=%s stage=%s before=%s after=%s",
+            tostring(token), tostring(stage), tostring(before), tostring(after)))
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_PURITY_VIOLATION", token, stage)
+        return false
+    end
+    return true
+end
+
 function BridgeRecoverGameplayPumps(reason, expectedSessionId, expectedEpoch, captureToken)
     local sessionId = expectedSessionId or BridgeState.eventSessionId
     local epoch = expectedEpoch or BRIDGE_RUNTIME_EPOCH_LOCAL
@@ -14581,6 +14781,7 @@ function BridgeHudSubmitReport(category, summary)
 
     BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_REQUESTED", captureToken, "user-request")
     BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_BEGIN", captureToken, "capture-start")
+    local capturePurityBefore = BridgeDiagnosticCaptureGameplayFingerprint()
 
     ui.reportCaptureInFlight = true
     ui.reportStatus = "Capturing..."
@@ -14612,18 +14813,10 @@ function BridgeHudSubmitReport(category, summary)
         end
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_CLEANUP_COMPLETED", captureToken, "capture-state-released")
         BridgeUiMarkDirty("report-capture-result")
-        -- Recovery runs on a safe frame, after the capture callback has
-        -- returned. It is single-flight and re-observes the current decision.
-        BridgeWaitFrames(function()
-            if requestUi.reportCaptureToken ~= captureToken
-                or not BridgeRuntimeIsCurrent(requestEpoch)
-                or BridgeState.ui ~= requestUi
-                or BridgeState.eventSessionId ~= requestSession then
-                BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_RECOVERY_SKIPPED", captureToken, "runtime-or-token-fence")
-                return
-            end
-            BridgeRecoverGameplayPumps(recoveryReason or "callback", requestSession, requestEpoch, captureToken)
-        end, 1)
+        -- A report is an observer. Completion must not restart pollers,
+        -- refresh a decision, or rebuild presentation; normal liveness and
+        -- recovery watchdogs own those mutations.
+        BridgeCheckDiagnosticCapturePurity(capturePurityBefore, captureToken, "completion")
     end
 
     -- Arm the watchdog before collecting any diagnostic payload.  Payload

@@ -1298,6 +1298,7 @@ end
 
 function onUpdate()
     if BridgeEnforceDesyncRecovery ~= nil then BridgeEnforceDesyncRecovery("onUpdate") end
+    if BridgeCheckDecisionPollingLiveness ~= nil then BridgeCheckDecisionPollingLiveness("onUpdate") end
     -- Wait.time is normally sufficient, but a bootstrap can be waiting on a
     -- TTS callback while the time scheduler is delayed.  Keep the resync
     -- watchdog reactive from the frame loop as well.

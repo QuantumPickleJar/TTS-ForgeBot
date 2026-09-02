@@ -519,7 +519,8 @@ function BridgeAutomaticDecisionBlocked(decision)
     local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
     if received ~= applied or #(BridgeState.eventQueue or {}) > 0 then return "event-backpressure" end
     local cursor = tonumber(decision.eventCursor or 0) or 0
-    if cursor > 0 and cursor ~= applied then return "decision-cursor-mismatch" end
+    local projected = math.max(applied, tonumber(BridgeState.lastStateProjectedEventSequence or 0) or 0)
+    if cursor > 0 and cursor > projected then return "decision-cursor-mismatch" end
     return nil
 end
 
@@ -641,6 +642,46 @@ function BridgeStopDecisionPolling()
     BridgeState.decisionPollGeneration = BridgeState.decisionPollGeneration + 1
     BridgeState.decisionPollInFlight = false
     BridgeState.decisionPollScheduled = false
+    BridgeState.decisionPollScheduledAt = nil
+    BridgeState.decisionPollDueAt = nil
+    BridgeState.decisionPollTimerToken = nil
+end
+
+function BridgeDecisionPollNow()
+    return os.clock()
+end
+
+-- A scheduled flag is only a claim made by the scheduler.  The timer token
+-- and deadline make that claim auditable and let the frame watchdog recover a
+-- callback which TTS silently drops.
+function BridgeCheckDecisionPollingLiveness(reason)
+    if BridgeState.gameEnded ~= nil or BridgeState.eventSessionId == nil
+        or BridgeState.submitting or BridgeState.choiceProtocolPaused then return false end
+
+    local now = BridgeDecisionPollNow()
+    if BridgeState.decisionPollScheduled == true
+        and BridgeState.decisionPollDueAt ~= nil
+        and now >= tonumber(BridgeState.decisionPollDueAt) then
+        BridgeLog(string.format("[Bridge] DECISION_POLL_TIMER_LOST reason=%s token=%s due=%s now=%s",
+            tostring(reason), tostring(BridgeState.decisionPollTimerToken),
+            tostring(BridgeState.decisionPollDueAt), tostring(now)))
+        BridgeState.decisionPollScheduled = false
+        BridgeState.decisionPollScheduledAt = nil
+        BridgeState.decisionPollDueAt = nil
+        BridgeState.decisionPollTimerToken = nil
+        BridgeState.lastDecisionPollOutcome = "timer_lost"
+    end
+
+    -- A current decision is presentation state, not proof that a poller is
+    -- alive.  The normal caller may explicitly allow a same-decision refresh.
+    if BridgeState.lastDecision == nil
+        and not BridgeState.decisionPollInFlight
+        and not BridgeState.decisionPollScheduled then
+        BridgeLog("[Bridge] DECISION_POLL_LIVENESS_REARM reason=" .. tostring(reason))
+        BridgeStartDecisionPolling()
+        return true
+    end
+    return false
 end
 
 function BridgeMarkTransitionExpected(seconds)
@@ -693,7 +734,6 @@ function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDeci
     if (BridgeState.lastDecision ~= nil and allowCurrentDecision ~= true) or BridgeState.submitting then return end
     if BridgeState.decisionPollInFlight or BridgeState.decisionPollScheduled then return end
 
-    BridgeState.decisionPollScheduled = true
     local nextDelay = delay or 0.1
     -- FAST is for a known short authoritative transition, not a blanket
     -- override of Forge's normal no-decision backoff. Polling an idle Forge at
@@ -702,9 +742,20 @@ function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDeci
     if BridgeState.ui ~= nil and BridgeState.ui.fastPlaytest and BridgeTransitionExpected() then
         nextDelay = math.min(nextDelay, 0.05)
     end
+    BridgeState.decisionPollScheduled = true
+    BridgeState.decisionPollScheduledAt = BridgeDecisionPollNow()
+    BridgeState.decisionPollDueAt = BridgeState.decisionPollScheduledAt + nextDelay
+    BridgeState.decisionPollTimerToken = (BridgeState.decisionPollTimerToken or 0) + 1
+    local timerToken = BridgeState.decisionPollTimerToken
     BridgeWaitTime(function()
         if generation ~= BridgeState.decisionPollGeneration then return end
+        if BridgeState.decisionPollTimerToken ~= timerToken then return end
         BridgeState.decisionPollScheduled = false
+        BridgeState.decisionPollScheduledAt = nil
+        BridgeState.decisionPollDueAt = nil
+        BridgeState.decisionPollTimerToken = nil
+        BridgeState.lastDecisionPollStartedAt = BridgeDecisionPollNow()
+        BridgeState.lastDecisionPollOutcome = "started"
         BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
     end, nextDelay)
 end
@@ -833,13 +884,17 @@ function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
     local expectedSessionId = BridgeState.eventSessionId
     local presentationGeneration = BridgeState.decisionPresentationGeneration
     BridgeState.decisionPollInFlight = true
+    BridgeState.lastDecisionPollStartedAt = BridgeDecisionPollNow()
     BridgeHttp.requestJson("GET", "/api/v1/decision", nil, function(ok, body, err, request)
         if generation ~= BridgeState.decisionPollGeneration then return end
         if expectedSessionId ~= BridgeState.eventSessionId
             or presentationGeneration ~= BridgeState.decisionPresentationGeneration then return end
 
         BridgeState.decisionPollInFlight = false
+        BridgeState.lastDecisionPollCompletedAt = BridgeDecisionPollNow()
         if ok and body ~= nil then
+            BridgeState.lastDecisionPollOutcome = "decision"
+            BridgeState.decisionAuthoritativeWatermark = body.eventCursor
             BridgeMarkTransitionExpected(0)
             BridgeRecordLatencyProbeDecisionReady(body)
             BridgeAcceptDecision(body, "decision_poll", expectedSessionId, presentationGeneration)
@@ -849,6 +904,7 @@ function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
         local responseCode = request and tonumber(request.response_code) or nil
         local noPendingDecision = (body ~= nil and body.errorCode == "no_pending_decision") or responseCode == 404
         if noPendingDecision then
+            BridgeState.lastDecisionPollOutcome = "no_pending_decision"
             if attempt == 1 or attempt % 10 == 0 then
                 BridgeLog("[Bridge] waiting for Forge's next decision...")
             end
@@ -866,6 +922,7 @@ function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
         end
 
         BridgeShowError("decision poll failed: " .. tostring(err))
+        BridgeState.lastDecisionPollOutcome = "failed"
         BridgeScheduleDecisionPoll(1.0, generation, attempt + 1, allowCurrentDecision)
     end)
 end
@@ -1750,7 +1807,9 @@ function BridgeShouldDeferDecision(decision)
         end
     end
     local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
-    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    local applied = math.max(
+        tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+        tonumber(BridgeState.lastStateProjectedEventSequence or 0) or 0)
     if eventCursor <= 0 then return false, eventCursor, applied end
     return eventCursor > applied, eventCursor, applied
 end
@@ -2257,16 +2316,25 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     -- pipeline. These values come directly from Forge; they never advance a
     -- phase or infer legality in Lua.
     local turnStateToken = BridgePerformanceBegin("snapshot_reconcile.turn_state")
-    if snapshot.turnNumber ~= nil then BridgeState.tableTurnCount = snapshot.turnNumber end
-    if snapshot.activeSeatId ~= nil then BridgeState.currentTurnSeatId = snapshot.activeSeatId end
-    if snapshot.prioritySeatId ~= nil then BridgeState.prioritySeatId = snapshot.prioritySeatId end
-    if snapshot.phase ~= nil and tostring(snapshot.phase) ~= "" then
-        BridgeState.currentPhase = snapshot.phase
+    local snapshotCursor = tonumber(snapshot and snapshot.eventCursor or 0) or 0
+    local projectedCursor = tonumber(BridgeState.lastStateProjectedEventSequence
+        or BridgeState.lastAppliedEventSequence or 0) or 0
+    local mayProjectTurnState = snapshotCursor >= projectedCursor
+    if mayProjectTurnState then
+        if snapshot.turnNumber ~= nil then BridgeState.tableTurnCount = snapshot.turnNumber end
+        if snapshot.activeSeatId ~= nil then BridgeState.currentTurnSeatId = snapshot.activeSeatId end
+        if snapshot.prioritySeatId ~= nil then BridgeState.prioritySeatId = snapshot.prioritySeatId end
+        if snapshot.phase ~= nil and tostring(snapshot.phase) ~= "" then
+            BridgeState.currentPhase = snapshot.phase
+        end
+    else
+        BridgeLog(string.format("[Bridge] retaining newer event projection over older snapshot cursor=%s projected=%s",
+            tostring(snapshotCursor), tostring(projectedCursor)))
     end
     BridgeUiMarkDirty("authoritative-snapshot-turn-state")
     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence
     if BridgeRestoreAuthoritativeReveals ~= nil then BridgeRestoreAuthoritativeReveals(snapshot) end
-    BridgeState.snapshotReconcileLastAppliedCursor = tonumber(snapshot.eventCursor or 0) or 0
+    BridgeState.snapshotReconcileLastAppliedCursor = snapshotCursor
     BridgeState.snapshotReconcileLastAppliedGeneration = BridgeState.snapshotReconcileRequestGeneration or 0
     BridgeState.snapshotReconcileLastAppliedCategory = BridgeSnapshotRequestCategory(reason)
     BridgePerformanceEnd(turnStateToken, "snapshot_reconcile.turn_state.end", "snapshotReconcileTurnState")

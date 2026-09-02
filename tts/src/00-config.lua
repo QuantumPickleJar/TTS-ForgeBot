@@ -172,6 +172,13 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         eventSessionGeneration = BridgeState.eventSessionGeneration,
         decisionPollInFlight = BridgeState.decisionPollInFlight == true,
         decisionPollScheduled = BridgeState.decisionPollScheduled == true,
+        decisionPollScheduledAt = BridgeState.decisionPollScheduledAt,
+        decisionPollDueAt = BridgeState.decisionPollDueAt,
+        decisionPollTimerToken = BridgeState.decisionPollTimerToken,
+        lastDecisionPollStartedAt = BridgeState.lastDecisionPollStartedAt,
+        lastDecisionPollCompletedAt = BridgeState.lastDecisionPollCompletedAt,
+        lastDecisionPollOutcome = BridgeState.lastDecisionPollOutcome,
+        decisionAuthoritativeWatermark = BridgeState.decisionAuthoritativeWatermark,
         decisionPollGeneration = BridgeState.decisionPollGeneration,
         decisionRefreshInFlight = BridgeState.decisionRefreshInFlight == true,
         submitting = BridgeState.submitting == true,
@@ -188,6 +195,9 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         fastForwardStops = ui.fastForwardStops,
         presentationGeneration = BridgeState.decisionPresentationGeneration,
         physicalPresentationGeneration = BridgeState.currentPhysicalPresentationGeneration,
+        lastConsumedEventSequence = BridgeState.lastConsumedEventSequence,
+        lastStateProjectedEventSequence = BridgeState.lastStateProjectedEventSequence,
+        lastPhysicalPresentationEventSequence = BridgeState.lastPhysicalPresentationEventSequence,
         physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
         eventDrainBlockReason = BridgeEventDrainBlockReason(),
         resyncInFlight = BridgeState.resyncInFlight == true,
@@ -293,6 +303,16 @@ function BridgeRecordResyncLifecycle(stage, origin, generation, snapshot, reason
         tostring(beforeReceived), tostring(record.receivedAfter), tostring(beforeApplied),
         tostring(record.appliedAfter), tostring(reason)))
     return record
+end
+
+function BridgeSetResyncStage(stage, reason, snapshot)
+    local prior = BridgeState.resyncStage or "Idle"
+    BridgeState.resyncStage = stage
+    BridgeState.resyncStageChangedAt = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+    BridgeLog(string.format("[Bridge] RESYNC_STAGE %s -> %s session=%s generation=%s token=%s cursor=%s reason=%s",
+        tostring(prior), tostring(stage), tostring(BridgeState.eventSessionId),
+        tostring(BridgeState.eventSessionGeneration), tostring(BridgeState.resyncToken),
+        tostring(snapshot and snapshot.eventCursor or nil), tostring(reason)))
 end
 
 function BridgePresentationMetric(name)
@@ -864,6 +884,9 @@ BridgeState = {
     eventSessionGeneration = 0,
     lastReceivedEventSequence = 0,
     lastAppliedEventSequence = 0,
+    lastConsumedEventSequence = 0,
+    lastStateProjectedEventSequence = 0,
+    lastPhysicalPresentationEventSequence = 0,
     eventPolling = false,
     eventPollGeneration = 0,
     eventRequestInFlight = false,
@@ -873,6 +896,13 @@ BridgeState = {
     decisionPresentationGeneration = 0,
     decisionPollInFlight = false,
     decisionPollScheduled = false,
+    decisionPollScheduledAt = nil,
+    decisionPollDueAt = nil,
+    decisionPollTimerToken = nil,
+    lastDecisionPollStartedAt = nil,
+    lastDecisionPollCompletedAt = nil,
+    lastDecisionPollOutcome = nil,
+    decisionAuthoritativeWatermark = nil,
     decisionRefreshInFlight = false,
     eventRetryCount = 0,
     skipExistingEventsOnAttach = false,
@@ -1062,6 +1092,11 @@ BridgeState = {
     sessionRecoveryInFlight = false,
     resyncToken = 0,
     resyncStartedAt = nil,
+    resyncStage = "Idle",
+    resyncStageChangedAt = nil,
+    resyncAttempt = 0,
+    resyncSnapshotFingerprint = nil,
+    resyncSnapshotRepeatCount = 0,
     resyncOrigin = nil,
     resyncDeferredReason = nil,
     manualResyncGraceUntil = 0,

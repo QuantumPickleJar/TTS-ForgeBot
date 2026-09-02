@@ -1624,6 +1624,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
     end
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     local bootstrapGeneration = BridgeState.resyncBootstrapGeneration
+    BridgeSetResyncStage("FetchingSnapshot", "bootstrap", nil)
     BridgeRecordResyncLifecycle("SNAPSHOT_REQUESTED", resyncOrigin, bootstrapGeneration)
     local function currentBootstrap()
         return BridgeState.resyncBootstrapGeneration == bootstrapGeneration
@@ -1672,6 +1673,30 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                 finishBootstrap(false, "snapshot session mismatch")
                 return
             end
+            local snapshotCursor = tonumber(snapshot.eventCursor)
+            if snapshotCursor == nil or snapshotCursor < 0 then
+                finishBootstrap(false, "authoritative snapshot is missing a valid event cursor")
+                return
+            end
+            local snapshotFingerprint = table.concat({
+                tostring(snapshot.sessionId), tostring(snapshot.eventCursor),
+                tostring(snapshot.forgeSequence or "")
+            }, "|")
+            if BridgeState.resyncSnapshotFingerprint == snapshotFingerprint then
+                BridgeState.resyncSnapshotRepeatCount = (BridgeState.resyncSnapshotRepeatCount or 0) + 1
+            else
+                BridgeState.resyncSnapshotFingerprint = snapshotFingerprint
+                BridgeState.resyncSnapshotRepeatCount = 1
+            end
+            if BridgeState.resyncSnapshotRepeatCount > 2 then
+                BridgeLog("[Bridge] RESYNC_NO_PROGRESS identical snapshot limit reached fingerprint=" .. snapshotFingerprint)
+                finishBootstrap(false, "authoritative resync made no progress across identical snapshots")
+                return
+            end
+            if resumeFromSnapshotCursor == true then
+                BridgeRecordResyncLifecycle("VALIDATING_SNAPSHOT", resyncOrigin, bootstrapGeneration, snapshot)
+                BridgeSupersedeEventsThroughSnapshot(snapshotCursor, "validated-snapshot")
+            end
             BridgeRecordResyncSnapshotProgress(resyncOrigin, snapshot)
             BridgeRecordExpectedHandIdentities(snapshot)
             local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids()
@@ -1683,6 +1708,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                 return
             end
             BridgeTraceStart("START-12 physical-bootstrap-begin")
+            BridgeSetResyncStage("ReconcilingSnapshot", "snapshot-validated", snapshot)
             BridgeRecordResyncLifecycle("RECONCILE_STARTED", resyncOrigin, bootstrapGeneration, snapshot)
             BridgeStageSeatCardsForBootstrap(snapshot, function(stagedOk, stagedError, stagedGuids)
                 if not currentBootstrap() then return end
@@ -1719,17 +1745,17 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                                     if not seatsOk then finishBootstrap(false, seatsError); return end
                                     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
                                     if resumeFromSnapshotCursor == true then
-                                        local cursor = tonumber(snapshot.eventCursor)
-                                        if cursor == nil or cursor < 0 then
-                                            finishBootstrap(false, "authoritative resync snapshot is missing a valid event cursor")
-                                            return
-                                        end
+                                        local cursor = snapshotCursor
                                         -- The snapshot is coherent through this bridge event cursor.
                                         -- Resume polling after it so no pre-snapshot transition is
                                         -- replayed over the just-rebuilt physical embodiment.
+                                        BridgeSetResyncStage("CommittingCheckpoint", "physical-reconcile-complete", snapshot)
                                         BridgeState.lastReceivedEventSequence = cursor
                                         BridgeState.lastAppliedEventSequence = cursor
-                                        BridgeState.eventQueue = {}
+                                        BridgeState.lastConsumedEventSequence = cursor
+                                        BridgeState.lastStateProjectedEventSequence = cursor
+                                        BridgeState.lastPhysicalPresentationEventSequence = cursor
+                                        BridgeSupersedeEventsThroughSnapshot(cursor, "checkpoint-commit")
                                         BridgeState.skipExistingEventsOnAttach = false
                                     end
                                     BridgeRecordResyncLifecycle("CHECKPOINT_COMMITTED", resyncOrigin, bootstrapGeneration, snapshot)
@@ -1864,6 +1890,23 @@ function BridgeRestoreResyncCheckpoint(reason)
     BridgeLog(string.format("[Bridge] RESYNC_CHECKPOINT_RESTORED received=%s applied=%s reason=%s",
         tostring(checkpoint.lastReceived), tostring(checkpoint.lastApplied), tostring(reason)))
     return true
+end
+
+-- A validated authoritative snapshot supersedes the unsafe queued prefix.
+-- This is essential for mulligan batches: replaying intermediate hand-return
+-- events can dismantle an already-correct replacement hand and block recovery.
+function BridgeSupersedeEventsThroughSnapshot(snapshotCursor, reason)
+    local cursor = tonumber(snapshotCursor or 0) or 0
+    local prior = BridgeState.eventQueue or {}
+    local retained = {}
+    for _, event in ipairs(prior) do
+        if tonumber(event.sequence or 0) > cursor then table.insert(retained, event) end
+    end
+    BridgeState.eventQueue = retained
+    BridgeState.lastReceivedEventSequence = math.max(
+        tonumber(BridgeState.lastReceivedEventSequence or 0) or 0, cursor)
+    BridgeLog(string.format("[Bridge] SNAPSHOT_CHECKPOINT_QUEUE_SUPERSEDED cursor=%s prior=%s retained=%s reason=%s",
+        tostring(cursor), tostring(#prior), tostring(#retained), tostring(reason)))
 end
 
 function BridgeReleaseStalledResync(sessionId, token, reason)
@@ -2005,6 +2048,8 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     }
     BridgeState.resyncToken = (BridgeState.resyncToken or 0) + 1
     local resyncToken = BridgeState.resyncToken
+    BridgeState.resyncAttempt = (BridgeState.resyncAttempt or 0) + 1
+    BridgeSetResyncStage("Requested", origin, nil)
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     BridgeState.resyncOrigin = origin
     BridgeState.resyncStartedAt = BridgeResyncClockNow()
@@ -2029,15 +2074,19 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         .. " session=" .. tostring(sessionId) .. " token=" .. tostring(resyncToken))
     BridgeRecordResyncLifecycle("REQUESTED", origin, resyncToken, nil, nil, nil,
         checkpointReceived, checkpointApplied)
+    BridgeSetResyncStage("FetchingSnapshot", "request-started", nil)
     BridgeBootstrapCurrentSnapshot(sessionId, function(ok, err)
         if BridgeState.resyncToken ~= resyncToken or BridgeState.eventSessionId ~= sessionId then
             BridgeLog("[Bridge] RESYNC_FAILED reason=stale-callback token=" .. tostring(resyncToken))
             return
         end
+        BridgeSetResyncStage(ok and "RestartingPipelines" or "Failed", ok and "snapshot-committed" or tostring(err), nil)
         BridgeState.resyncInFlight = false
         BridgeState.resyncScheduled = false
         BridgeState.resyncWatchdogToken = nil
         BridgeState.resyncStartedAt = nil
+        BridgeState.resyncSnapshotFingerprint = nil
+        BridgeState.resyncSnapshotRepeatCount = 0
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
         if not ok then
             BridgeRestoreResyncCheckpoint("bootstrap-failed")
@@ -2058,6 +2107,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeLog("[Bridge] RESYNC_COMPLETE eventCursor="
             .. tostring(BridgeState.lastAppliedEventSequence))
         BridgeRecordResyncLifecycle("COMPLETED", origin, resyncToken, nil, nil, nil, nil, nil)
+        BridgeSetResyncStage("Completed", "pipelines-restarted", nil)
     end, true, origin)
     return true
 end
