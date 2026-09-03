@@ -539,6 +539,52 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void CombatSnapshot_PreservesDefenderSeatAndObjectIdentityAcrossStructuredAttackGraph()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        var frame = ForgeStructuredOutputParser.Sentinel
+            + "{\"version\":1,\"type\":\"snapshot\",\"sequence\":1,\"reason\":\"combat\",\"players\":["
+            + Player(battlefield: [
+                Card(11, "Attacker A", "battlefield", 0),
+                Card(12, "Attacker B", "battlefield", 1),
+                Card(21, "Blocker", "battlefield", 2),
+                Card(22, "Second Blocker", "battlefield", 3)])
+            + "],\"stack\":[],\"combat\":{\"attacks\":["
+            + "{\"attackerForgeObjectId\":11,\"defenderSeatId\":\"forge-player-1\",\"defenderForgeObjectId\":null,\"blockerForgeObjectIds\":[21]},"
+            + "{\"attackerForgeObjectId\":12,\"defenderSeatId\":\"forge-player-2\",\"defenderForgeObjectId\":42,\"blockerForgeObjectIds\":[21,22]}]}}";
+
+        Assert.Empty(reconciler.Apply("session-a", Parse(parser, frame)));
+        var attacks = reconciler.Current!.Combat!.Attacks;
+        Assert.Equal("forge-player-1", attacks[0].DefenderSeatId);
+        Assert.Null(attacks[0].DefenderForgeObjectId);
+        Assert.Equal("forge-player-2", attacks[1].DefenderSeatId);
+        Assert.Equal(42, attacks[1].DefenderForgeObjectId);
+        Assert.Equal(["forge:session-a:21", "forge:session-a:22"], attacks[1].BlockerCardInstanceIds);
+    }
+
+    [Fact]
+    public void CombatSnapshotEquality_ChangesWhenDefenderIdentityChangesEvenIfAttackerAndBlockersStayTheSame()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        var first = Parse(parser, ForgeStructuredOutputParser.Sentinel
+            + "{\"version\":1,\"type\":\"snapshot\",\"sequence\":1,\"reason\":\"combat\",\"players\":["
+            + Player(battlefield: [Card(11, "Attacker A", "battlefield", 0), Card(21, "Blocker", "battlefield", 1)])
+            + "],\"stack\":[],\"combat\":{\"attacks\":[{\"attackerForgeObjectId\":11,\"defenderSeatId\":\"forge-player-1\",\"defenderForgeObjectId\":null,\"blockerForgeObjectIds\":[21]}]}}"
+        );
+        var second = Parse(parser, ForgeStructuredOutputParser.Sentinel
+            + "{\"version\":1,\"type\":\"snapshot\",\"sequence\":2,\"reason\":\"combat\",\"players\":["
+            + Player(battlefield: [Card(11, "Attacker A", "battlefield", 0), Card(21, "Blocker", "battlefield", 1)])
+            + "],\"stack\":[],\"combat\":{\"attacks\":[{\"attackerForgeObjectId\":11,\"defenderSeatId\":\"forge-player-2\",\"defenderForgeObjectId\":99,\"blockerForgeObjectIds\":[21]}]}}"
+        );
+
+        Assert.Empty(reconciler.Apply("session-a", first));
+        var events = reconciler.Apply("session-a", second);
+        Assert.Contains(events, item => item.Kind == "attack_declared");
+    }
+
+    [Fact]
     public void ContinuousCharacteristicSnapshot_UpdatesEveryAffectedPermanentAndRevertsWithoutCombat()
     {
         var parser = new ForgeStructuredOutputParser();

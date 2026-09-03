@@ -162,6 +162,17 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void CombatPresentationSignature_UsesOnlyAttackerAndBlockerIdentityNotDefenderFields()
+    {
+        Assert.Contains("local parts = {}", Script.IndexOf("function BridgeApplyCombatSnapshot", StringComparison.Ordinal) >= 0 ? Script.Substring(Script.IndexOf("function BridgeApplyCombatSnapshot", StringComparison.Ordinal)) : Script);
+        Assert.Contains("tostring(attack.attackerCardInstanceId)", Script);
+        Assert.Contains("attack.blockerCardInstanceIds or {}", Script);
+        Assert.DoesNotContain("attack.defenderSeatId", Script, StringComparison.Ordinal);
+        Assert.DoesNotContain("attack.defenderForgeObjectId", Script, StringComparison.Ordinal);
+        Assert.Contains("BridgeState.presentedCombatSignature = signature", Script);
+    }
+
+    [Fact]
     public void CombatSelections_UsePhysicalDropPreviewAndExplicitForgeFinishActions()
     {
         Assert.Contains("function BridgeEnsureContextualCompletionControl", Script);

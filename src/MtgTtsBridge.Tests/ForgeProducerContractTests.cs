@@ -104,6 +104,22 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void AllBlockingNumericTuiDecisionsUseTheSharedReadinessBoundary()
+    {
+        var input = Patch.IndexOf("private int getIntInput(int min, int max)", StringComparison.Ordinal);
+        Assert.True(input >= 0);
+        var inputBody = Patch[input..Patch.IndexOf("@@ -1165,7 +1549,7", input, StringComparison.Ordinal)];
+        Assert.Contains("BridgeStateFeed.emitDecisionReadyFromController();", inputBody);
+
+        var entity = Patch.IndexOf("int choice = getIntInput(0, candidates.size())", StringComparison.Ordinal);
+        var mulligan = Patch.IndexOf("int choice = getIntInput(0, 1)", StringComparison.Ordinal);
+        Assert.True(entity > input);
+        Assert.True(mulligan > input);
+        Assert.DoesNotContain("BridgeStateFeed.emitDecisionReadyFromController();", Patch[(entity - 180)..entity]);
+        Assert.DoesNotContain("BridgeStateFeed.emitDecisionReadyFromController();", Patch[(mulligan - 180)..mulligan]);
+    }
+
+    [Fact]
     public void TrackedBridgeStateFeed_UsesOnlyTheCompleteCombatSnapshotForBlockers()
     {
         Assert.Contains("GameEventBlockersDeclared", Patch);
