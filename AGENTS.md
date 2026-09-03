@@ -245,6 +245,14 @@ The rest of the application should not care which Forge transport is active.
 - Do not vendor the Forge source tree into this repository unless explicitly instructed.
 - Keep local Forge checkouts/build artifacts under a gitignored dependency directory such as `.deps/`.
 
+### Bootstrap and dirty patch safety
+
+- Before invoking `tools/forge/bootstrap.ps1` or any Forge rebuild, check the repo and `.deps/forge` status for local edits or patch drift.
+- Treat Forge patch-touched files as protected work. An unsaved or uncommitted patch is not disposable state; it must be preserved before running a clean reconstruction or forced build.
+- Do not overwrite a dirty Forge checkout with a fresh upstream-plus-patch rebuild unless the local patch state has been reviewed, saved, or intentionally rebased.
+- The bootstrapper explicitly refuses to clobber unrelated local edits in patch-touched Forge sources; when that happens, stop and report the dirty state instead of trying to force the build.
+- If a local Forge patch is being edited, preserve it via git worktree, stash, diff, or separate backup before registry or build steps that may fail on dirty state.
+
 ---
 
 ## Bridge Requirements
