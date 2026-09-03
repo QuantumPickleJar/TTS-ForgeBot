@@ -75,6 +75,35 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void TrackedBridgeStateFeed_SerializesSnapshotSequenceAllocationAndPublication()
+    {
+        Assert.Contains("synchronized void emitSnapshot", Patch);
+        Assert.Contains("final long snapshotSequence = sequence + 1;", Patch);
+        Assert.Contains("property(json, \"sequence\", snapshotSequence)", Patch);
+        Assert.Contains("sequence = snapshotSequence;", Patch);
+        Assert.Contains("synchronized (System.out)", Patch);
+    }
+
+    [Fact]
+    public void TrackedBridgeStateFeed_DoesNotAdvertiseAPublishedSequenceBeforeEmitCompletion()
+    {
+        Assert.Contains("final long snapshotSequence = sequence + 1;", Patch);
+        Assert.Contains("final long publishedSnapshotSequence = sequence;", Patch);
+        Assert.Contains("property(json, \"snapshotSequence\", publishedSnapshotSequence)", Patch);
+        Assert.Contains("sequence = snapshotSequence;", Patch);
+        Assert.Contains("emitWhenStable();", Patch);
+    }
+
+    [Fact]
+    public void TrackedBridgeStateFeed_EmitsReadinessForHumanPriorityMenuBeforeBlockingInput()
+    {
+        Assert.Contains("BridgeStateFeed.emitDecisionReadyFromController();", Patch);
+        Assert.Contains("What would you like to do?", Patch);
+        Assert.Contains("emitPriorityDiagnostic", Patch);
+        Assert.Contains("getIntInput(0, uniqueActions)", Patch);
+    }
+
+    [Fact]
     public void TrackedBridgeStateFeed_UsesOnlyTheCompleteCombatSnapshotForBlockers()
     {
         Assert.Contains("GameEventBlockersDeclared", Patch);

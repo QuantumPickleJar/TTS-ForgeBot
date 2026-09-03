@@ -43,16 +43,31 @@ R701 — §701 Actions + Special Game Operations
         │
         ▼
 PW1 — Exotic Planeswalker Systems
+        ↓
+MP0 — Multi-Seat Bot Simulation
         │
-        ▼
+        ├─ 3–4 independent Forge seats
+        ├─ bot-vs-bot games
+        ├─ 1-human + N-bot games
+        ├─ opponent-set semantics
+        ├─ APNAP / priority / turn order
+        ├─ multiplayer combat
+        ├─ cross-seat control
+        └─ deterministic multiplayer regression
+        ↓
 CMD — Commander
         │
-        ▼
-MP — Multiplayer
-        │
-        ▼
-PW2 — Full Planeswalker Certification
-        │
+        └─ initially certify using MP0 bots
+        ↓
+MP1 — Human Multiplayer
+        ├─ private information presentation
+        ├─ human decision routing
+        ├─ TTS seat/color mapping
+        ├─ controlled-human turns
+        ├─ reconnect/recovery
+        └─ multi-human UX
+        ↓
+PW2 — Full Planeswalker Certification        │
         ▼
 SUP — Supplemental Product Coverage
         │
