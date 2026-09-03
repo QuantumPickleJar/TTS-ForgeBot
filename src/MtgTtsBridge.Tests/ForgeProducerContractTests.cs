@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace MtgTtsBridge.Tests;
 
 public sealed class ForgeProducerContractTests
@@ -106,17 +108,71 @@ public sealed class ForgeProducerContractTests
     [Fact]
     public void AllBlockingNumericTuiDecisionsUseTheSharedReadinessBoundary()
     {
-        var input = Patch.IndexOf("private int getIntInput(int min, int max)", StringComparison.Ordinal);
-        Assert.True(input >= 0);
-        var inputBody = Patch[input..Patch.IndexOf("@@ -1165,7 +1549,7", input, StringComparison.Ordinal)];
+        var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
+        var inputBody = ExtractMethodBody(controller, "private int getIntInput(int min, int max)");
         Assert.Contains("BridgeStateFeed.emitDecisionReadyFromController();", inputBody);
 
-        var entity = Patch.IndexOf("int choice = getIntInput(0, candidates.size())", StringComparison.Ordinal);
-        var mulligan = Patch.IndexOf("int choice = getIntInput(0, 1)", StringComparison.Ordinal);
-        Assert.True(entity > input);
-        Assert.True(mulligan > input);
-        Assert.DoesNotContain("BridgeStateFeed.emitDecisionReadyFromController();", Patch[(entity - 180)..entity]);
-        Assert.DoesNotContain("BridgeStateFeed.emitDecisionReadyFromController();", Patch[(mulligan - 180)..mulligan]);
+        var entityBody = ExtractMethodBody(controller, "private <T extends GameEntity> List<T> chooseEntitiesThroughTui(");
+        // chooseYesNo is the other blocking numeric caller in this producer;
+        // mulligan/entity callers (when present in a Forge revision) are
+        // covered by the single-call invariant below as well.
+        var otherCallerBody = ExtractMethodBody(controller, "private boolean chooseYesNo(");
+        Assert.DoesNotContain("BridgeStateFeed.emitDecisionReadyFromController();", entityBody);
+        Assert.DoesNotContain("BridgeStateFeed.emitDecisionReadyFromController();", otherCallerBody);
+        Assert.Equal(1, CountOccurrences(controller, "BridgeStateFeed.emitDecisionReadyFromController();"));
+    }
+
+    private static string ExtractPatchedFile(string path)
+    {
+        var header = $"diff --git a/{path} b/{path}";
+        var start = Patch.IndexOf(header, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Patch does not contain {path}");
+        var end = Patch.IndexOf("\ndiff --git ", start + header.Length, StringComparison.Ordinal);
+        if (end < 0) end = Patch.Length;
+
+        var source = new StringBuilder();
+        foreach (var line in Patch[start..end].Split('\n'))
+        {
+            if (line.StartsWith("+++ ", StringComparison.Ordinal)
+                || line.StartsWith("--- ", StringComparison.Ordinal)
+                || line.StartsWith("@@", StringComparison.Ordinal)
+                || line.StartsWith("index ", StringComparison.Ordinal)
+                || line.StartsWith("diff --git ", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            if (line.StartsWith("-", StringComparison.Ordinal)) continue;
+            if (line.StartsWith("+", StringComparison.Ordinal)) source.AppendLine(line[1..]);
+            else if (line.StartsWith(" ", StringComparison.Ordinal)) source.AppendLine(line[1..]);
+        }
+        return source.ToString();
+    }
+
+    private static string ExtractMethodBody(string source, string signature)
+    {
+        var start = source.IndexOf(signature, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Method signature not found: {signature}");
+        var open = source.IndexOf('{', start);
+        Assert.True(open >= 0, $"Method body not found: {signature}");
+        var depth = 0;
+        for (var i = open; i < source.Length; i++)
+        {
+            if (source[i] == '{') depth++;
+            else if (source[i] == '}' && --depth == 0) return source[start..(i + 1)];
+        }
+        throw new Xunit.Sdk.XunitException($"Unclosed method body: {signature}");
+    }
+
+    private static int CountOccurrences(string source, string value)
+    {
+        var count = 0;
+        var offset = 0;
+        while ((offset = source.IndexOf(value, offset, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            offset += value.Length;
+        }
+        return count;
     }
 
     [Fact]

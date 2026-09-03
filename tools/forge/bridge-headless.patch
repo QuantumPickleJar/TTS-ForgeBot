@@ -1,5 +1,5 @@
 diff --git a/forge-core/src/main/java/forge/CardStorageReader.java b/forge-core/src/main/java/forge/CardStorageReader.java
-index 02efbf84c0935a508b87cc5e5e7656de3a31beb2..43d34492c9e2b015d6c1d2b4c3a8c84553fc2b39 100644
+index 02efbf84..43d34492 100644
 --- a/forge-core/src/main/java/forge/CardStorageReader.java
 +++ b/forge-core/src/main/java/forge/CardStorageReader.java
 @@ -220,6 +220,7 @@ public class CardStorageReader {
@@ -47,7 +47,7 @@ index 02efbf84c0935a508b87cc5e5e7656de3a31beb2..43d34492c9e2b015d6c1d2b4c3a8c845
      }
  
 diff --git a/forge-core/src/main/java/forge/StaticData.java b/forge-core/src/main/java/forge/StaticData.java
-index 818d355ebf8a2c96663ef5d84cbd6c2a06163453..812cab74a57e029c8be74c2f8c5a1152ce343aa3 100644
+index 818d355e..812cab74 100644
 --- a/forge-core/src/main/java/forge/StaticData.java
 +++ b/forge-core/src/main/java/forge/StaticData.java
 @@ -67,9 +67,20 @@ public class StaticData {
@@ -155,7 +155,7 @@ index 818d355ebf8a2c96663ef5d84cbd6c2a06163453..812cab74a57e029c8be74c2f8c5a1152
  
      public static StaticData instance() {
 diff --git a/forge-core/src/main/java/forge/util/Localizer.java b/forge-core/src/main/java/forge/util/Localizer.java
-index 6b0e01fa825f31be917e3c3382ab989893c5aea4..7b8667d4d69109cd1d16625b953ec4220c0641e3 100644
+index 6b0e01fa..7b8667d4 100644
 --- a/forge-core/src/main/java/forge/util/Localizer.java
 +++ b/forge-core/src/main/java/forge/util/Localizer.java
 @@ -159,11 +159,12 @@ public class Localizer {
@@ -175,7 +175,7 @@ index 6b0e01fa825f31be917e3c3382ab989893c5aea4..7b8667d4d69109cd1d16625b953ec422
              }
  
 diff --git a/forge-game/src/main/java/forge/game/card/Card.java b/forge-game/src/main/java/forge/game/card/Card.java
-index 5249b18cd2aaabb945b08081a2628b3d2c6db547..2c73fe2ffa378bc173889c8a8440c84e6245b9d7 100644
+index 5249b18c..2c73fe2f 100644
 --- a/forge-game/src/main/java/forge/game/card/Card.java
 +++ b/forge-game/src/main/java/forge/game/card/Card.java
 @@ -427,6 +427,15 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
@@ -195,7 +195,7 @@ index 5249b18cd2aaabb945b08081a2628b3d2c6db547..2c73fe2ffa378bc173889c8a8440c84e
      public void setTransformedTimestamp(long ts) { this.transformedTimestamp = ts; }
  
 diff --git a/forge-gui/src/main/java/forge/model/FModel.java b/forge-gui/src/main/java/forge/model/FModel.java
-index 922d78e12047b32f9d498f5cd93d6c60de33c691..7be622744a8700b07b8e209574b7d91a91f8739f 100644
+index 922d78e1..7be62274 100644
 --- a/forge-gui/src/main/java/forge/model/FModel.java
 +++ b/forge-gui/src/main/java/forge/model/FModel.java
 @@ -144,12 +144,23 @@ public final class FModel {
@@ -340,649 +340,8 @@ index 922d78e12047b32f9d498f5cd93d6c60de33c691..7be622744a8700b07b8e209574b7d91a
      }
  
      private static boolean deckGenMatrixLoaded = false;
-diff --git a/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
-new file mode 100644
-index 0000000000000000000000000000000000000000..a04ea0566af2ec201270e606e9008ab94c65665d
---- /dev/null
-+++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
-@@ -0,0 +1,635 @@
-+package forge.headless;
-+
-+import com.google.common.collect.Multiset;
-+import com.google.common.eventbus.Subscribe;
-+import forge.card.MagicColor;
-+import forge.card.CardType;
-+import forge.card.CardTypeView;
-+import forge.game.Game;
-+import forge.game.GameEntity;
-+import forge.game.card.Card;
-+import forge.game.GameObject;
-+import forge.game.spellability.SpellAbility;
-+import forge.game.spellability.SpellAbilityStackInstance;
-+import forge.card.CardStateName;
-+import forge.game.combat.Combat;
-+import forge.game.card.CounterType;
-+import forge.game.event.GameEvent;
-+import forge.game.event.GameEventCardChangeZone;
-+import forge.game.event.GameEventCardCounters;
-+import forge.game.event.GameEventCardStatsChanged;
-+import forge.game.event.GameEventCardTapped;
-+import forge.game.event.GameEventBlockersDeclared;
-+import forge.game.event.GameEventGameStarted;
-+import forge.game.event.GameEventGameOutcome;
-+import forge.game.event.GameEventMulligan;
-+import forge.game.event.GameEventManaPool;
-+import forge.game.event.GameEventPlayerCounters;
-+import forge.game.event.GameEventPlayerLivesChanged;
-+import forge.game.event.GameEventPlayerPoisoned;
-+import forge.game.event.GameEventPlayerStatsChanged;
-+import forge.game.event.GameEventShuffle;
-+import forge.game.event.GameEventSnapshotRestored;
-+import forge.game.event.GameEventTurnBegan;
-+import forge.game.keyword.KeywordInterface;
-+import forge.game.player.Player;
-+import forge.game.zone.ZoneType;
-+import forge.util.ThreadUtil;
-+
-+import java.util.IdentityHashMap;
-+import java.util.HashSet;
-+import java.util.LinkedHashSet;
-+import java.util.List;
-+import java.util.Map;
-+import java.util.Set;
-+import java.util.ConcurrentModificationException;
-+import java.util.concurrent.atomic.AtomicBoolean;
-+import java.util.concurrent.atomic.AtomicLong;
-+import java.util.concurrent.atomic.AtomicReference;
-+
-+/**
-+ * Emits bridge-internal authoritative snapshots without changing game behavior.
-+ * The sentinel lets the child-process adapter remove these records before the
-+ * human TUI parser sees them.
-+ */
-+final class BridgeStateFeed {
-+    private static final class DuplicateCardIdentityException extends RuntimeException {
-+        DuplicateCardIdentityException(final Card card, final String zone) {
-+            super("CardInstanceId " + card.getId() + " appeared more than once while emitting " + zone);
-+        }
-+    }
-+    static final String SENTINEL = "@@FORGE_BRIDGE_STATE@@";
-+    static final String DECISION_READY_SENTINEL = "@@FORGE_BRIDGE_DECISION_READY@@";
-+    private static final String BRIDGE_SESSION_ID = System.getenv("FORGEBOT_BRIDGE_SESSION_ID");
-+    private static final AtomicReference<BridgeStateFeed> activeFeed = new AtomicReference<>();
-+    private static final List<ZoneType> PLAYER_ZONES = List.of(
-+            ZoneType.Library,
-+            ZoneType.Hand,
-+            ZoneType.Battlefield,
-+            ZoneType.Graveyard,
-+            ZoneType.Exile,
-+            ZoneType.Command);
-+
-+    private final Game game;
-+    private final Map<Player, String> seats = new IdentityHashMap<>();
-+    private final AtomicBoolean snapshotScheduled = new AtomicBoolean();
-+    private final AtomicLong mutationGeneration = new AtomicLong();
-+    private final AtomicReference<String> latestReason = new AtomicReference<>("initial");
-+    private final AtomicBoolean terminalSnapshotEmitted = new AtomicBoolean();
-+    private long sequence;
-+    private long decisionGeneration;
-+
-+    BridgeStateFeed(final Game game) {
-+        this.game = game;
-+        int index = 1;
-+        for (Player player : game.getPlayers()) {
-+            seats.put(player, "forge-player-" + index++);
-+        }
-+        activeFeed.set(this);
-+    }
-+
-+    static void emitDecisionReadyFromController() {
-+        final BridgeStateFeed feed = activeFeed.get();
-+        if (feed != null) feed.emitDecisionReady();
-+    }
-+
-+    @Subscribe
-+    public void receive(final GameEvent event) {
-+        if (event instanceof GameEventGameOutcome) {
-+            emitTerminalSnapshot();
-+            return;
-+        }
-+        if (event instanceof GameEventBlockersDeclared) {
-+            // GameEventBlockersDeclared uses the attacker itself as a sentinel
-+            // value for an unblocked attacker. Its event payload is therefore
-+            // not an exact blocker identity. The following complete combat
-+            // snapshot is the sole authoritative source for presentation.
-+            scheduleSnapshot(event.getClass().getSimpleName());
-+            return;
-+        }
-+        if (event instanceof GameEventCardChangeZone
-+                || event instanceof GameEventCardTapped
-+                || event instanceof GameEventCardCounters
-+                || event instanceof GameEventCardStatsChanged
-+                || event instanceof GameEventPlayerLivesChanged
-+                || event instanceof GameEventPlayerStatsChanged
-+                || event instanceof GameEventPlayerCounters
-+                || event instanceof GameEventPlayerPoisoned
-+                || event instanceof GameEventManaPool
-+                || event instanceof GameEventShuffle
-+                || event instanceof GameEventGameStarted
-+                || event instanceof GameEventMulligan
-+                || event instanceof GameEventTurnBegan
-+                || event instanceof GameEventSnapshotRestored) {
-+            scheduleSnapshot(event.getClass().getSimpleName());
-+        }
-+    }
-+
-+    /**
-+     * Game events fire while Forge is mutating zone collections. Reading all
-+     * zones re-entrantly from the event bus caused ConcurrentModificationException
-+     * during opening-hand setup. Coalesce events and snapshot shortly after the
-+     * mutation batch on the bridge's read-only observer path instead.
-+     */
-+    private void scheduleSnapshot(final String reason) {
-+        final long generation = mutationGeneration.incrementAndGet();
-+        latestReason.set(reason);
-+        trace("event=" + reason + " generation=" + generation + " scheduled=" + snapshotScheduled.get());
-+        if (!snapshotScheduled.compareAndSet(false, true)) {
-+            return;
-+        }
-+        ThreadUtil.delay(25, this::emitWhenStable);
-+    }
-+
-+    void emitTerminalSnapshot() {
-+        if (!game.isGameOver() || !terminalSnapshotEmitted.compareAndSet(false, true)) return;
-+        emitSnapshot("game_ended", mutationGeneration.get());
-+    }
-+
-+    /**
-+     * A batch can contain zone movement followed by static characteristic
-+     * recalculation. Never clear the pending flag until the generation that
-+     * was emitted is still current; otherwise the final static state can be
-+     * lost until a later unrelated game event happens to cause a snapshot.
-+     */
-+    private void emitWhenStable() {
-+        final long generation = mutationGeneration.get();
-+        final String reason = latestReason.get();
-+        try {
-+            emitSnapshot(reason, generation);
-+            if (mutationGeneration.get() != generation) {
-+                ThreadUtil.delay(25, this::emitWhenStable);
-+                return;
-+            }
-+            snapshotScheduled.set(false);
-+            // Close the race where an event arrived after the equality check
-+            // but before clearing the scheduled flag.
-+            if (mutationGeneration.get() != generation) {
-+                scheduleSnapshot(latestReason.get());
-+            }
-+        } catch (ConcurrentModificationException ignored) {
-+            ThreadUtil.delay(25, this::emitWhenStable);
-+        } catch (DuplicateCardIdentityException duplicate) {
-+            // Opening-hand/mulligan setup can transiently expose the same Card
-+            // reference twice while Forge is moving it between zones. Never
-+            // publish that impossible snapshot; retry after the mutation batch
-+            // settles. The bridge retains a loud duplicate check for any
-+            // duplicate that still escapes this producer barrier.
-+            trace("snapshot deferred: " + duplicate.getMessage());
-+            ThreadUtil.delay(25, this::emitWhenStable);
-+        } catch (RuntimeException exception) {
-+            // A diagnostics feed must never change or terminate Forge gameplay.
-+            snapshotScheduled.set(false);
-+            System.err.println("Forge bridge state snapshot skipped: " + exception.getClass().getSimpleName());
-+        }
-+    }
-+
-+    private void emitSnapshot(final String reason, final long generation) {
-+        final StringBuilder json = new StringBuilder(32768);
-+        final Set<Integer> emittedCardIds = new HashSet<>();
-+        json.append('{');
-+        property(json, "version", 1).append(',');
-+        property(json, "type", "snapshot").append(',');
-+        property(json, "sequence", ++sequence).append(',');
-+        property(json, "reason", reason).append(',');
-+        property(json, "mutationGeneration", generation).append(',');
-+        property(json, "monarchSeatId", seatOf(game.getMonarch())).append(',');
-+        json.append("\"players\":[");
-+
-+        boolean firstPlayer = true;
-+        for (Player player : game.getPlayers()) {
-+            if (!firstPlayer) json.append(',');
-+            firstPlayer = false;
-+            appendPlayer(json, player, emittedCardIds);
-+        }
-+
-+        json.append("],\"stack\":[");
-+        boolean firstCard = true;
-+        int position = 0;
-+        for (Card card : game.getStackZone().getCards()) {
-+            if (!firstCard) json.append(',');
-+            firstCard = false;
-+            appendCard(json, card, "stack", position++, emittedCardIds);
-+        }
-+        json.append("],\"stackObjects\":[");
-+        boolean firstStackObject = true;
-+        int stackIndex = game.getStack().size();
-+        for (SpellAbilityStackInstance item : game.getStack()) {
-+            if (!firstStackObject) json.append(',');
-+            firstStackObject = false;
-+            appendStackObject(json, item, stackIndex--, generation);
-+        }
-+        json.append("],\"combat\":");
-+        appendCombat(json);
-+        if (game.isGameOver()) {
-+            json.append(",\"gameEnded\":");
-+            appendGameEnded(json);
-+        }
-+        json.append('}');
-+
-+        synchronized (System.out) {
-+            System.out.println(SENTINEL + json);
-+        }
-+        trace("snapshot sequence=" + sequence + " generation=" + generation + " reason=" + reason
-+                + " battlefield=" + battlefieldSummary());
-+    }
-+
-+    private synchronized void emitDecisionReady() {
-+        if (BRIDGE_SESSION_ID == null || BRIDGE_SESSION_ID.isBlank()) {
-+            trace("decision_ready skipped: FORGEBOT_BRIDGE_SESSION_ID is not set");
-+            return;
-+        }
-+        for (int attempt = 0; attempt < 40; attempt++) {
-+            final long before = mutationGeneration.get();
-+            emitWhenStable();
-+            if (!snapshotScheduled.get() && mutationGeneration.get() == before) break;
-+            try {
-+                Thread.sleep(10);
-+            } catch (InterruptedException exception) {
-+                Thread.currentThread().interrupt();
-+                return;
-+            }
-+        }
-+
-+        final StringBuilder json = new StringBuilder(256);
-+        json.append('{');
-+        property(json, "version", 1).append(',');
-+        property(json, "type", "decision_ready").append(',');
-+        property(json, "sessionId", BRIDGE_SESSION_ID).append(',');
-+        property(json, "decisionGeneration", ++decisionGeneration).append(',');
-+        property(json, "mutationGeneration", mutationGeneration.get()).append(',');
-+        property(json, "snapshotSequence", sequence);
-+        json.append('}');
-+        synchronized (System.out) {
-+            System.out.println(DECISION_READY_SENTINEL + json);
-+            System.out.flush();
-+        }
-+        trace("decision_ready snapshotSequence=" + sequence + " mutationGeneration=" + mutationGeneration.get());
-+    }
-+
-+    private void appendStackObject(final StringBuilder json, final SpellAbilityStackInstance item,
-+            final int stackIndex, final long creationSequence) {
-+        final SpellAbility ability = item.getSpellAbility();
-+        final Card source = item.getSourceCard();
-+        final String kind = item.isTrigger() ? "triggered-ability"
-+                : item.isSpell() ? (ability.isCopied() ? "copied-spell" : "spell")
-+                : ability.isCopied() ? "copied-ability" : "activated-ability";
-+        json.append('{');
-+        property(json, "stackObjectId", "forge-stack:" + item.getId()).append(',');
-+        property(json, "stackKind", kind).append(',');
-+        property(json, "sourceCardInstanceId", source == null ? null : "forge-object:" + source.getId()).append(',');
-+        property(json, "sourceName", source == null ? null : source.getName()).append(',');
-+        property(json, "controllerSeatId", seatOf(item.getActivatingPlayer())).append(',');
-+        property(json, "abilityName", ability == null ? null : ability.getDescription()).append(',');
-+        property(json, "abilityText", item.getStackDescription()).append(',');
-+        property(json, "creationSequence", creationSequence).append(',');
-+        property(json, "stackIndex", stackIndex).append(',');
-+        property(json, "provenance", ability != null && ability.isCopied() ? "copy" : kind).append(',');
-+        json.append("\"targets\":[");
-+        boolean firstTarget = true;
-+        if (ability != null && ability.getTargets() != null) {
-+            for (GameObject target : ability.getTargets()) {
-+                if (!firstTarget) json.append(',');
-+                firstTarget = false;
-+                string(json, target instanceof Card
-+                        ? "forge-object:" + ((Card) target).getId()
-+                        : target instanceof Player ? seatOf((Player) target) : String.valueOf(target));
-+            }
-+        }
-+        json.append("]}");
-+    }
-+
-+    private void appendPlayer(final StringBuilder json, final Player player, final Set<Integer> emittedCardIds) {
-+        json.append('{');
-+        property(json, "seatId", seatOf(player)).append(',');
-+        property(json, "forgePlayerId", player.getId()).append(',');
-+        property(json, "displayName", player.getName()).append(',');
-+        property(json, "life", player.getLife()).append(',');
-+        property(json, "poison", player.getPoisonCounters()).append(',');
-+        property(json, "speed", player.getSpeed()).append(',');
-+        json.append("\"designations\":[");
-+        appendDesignations(json, player);
-+        json.append("],");
-+        json.append("\"counters\":");
-+        appendCounters(json, player.getCounters());
-+        json.append(",\"manaPool\":");
-+        appendManaPool(json, player);
-+        json.append(",\"zones\":[");
-+
-+        boolean firstZone = true;
-+        for (ZoneType zoneType : PLAYER_ZONES) {
-+            if (!firstZone) json.append(',');
-+            firstZone = false;
-+            json.append('{');
-+            property(json, "name", zoneName(zoneType)).append(',');
-+            json.append("\"cards\":[");
-+            boolean firstCard = true;
-+            int position = 0;
-+            for (Card card : player.getZone(zoneType).getCards(false)) {
-+                // Forge owns PreparedSpell copies in exile. They are legal
-+                // virtual/UI-only spell objects, not physical TTS cards; their
-+                // cast action carries an exact relation to the source instead.
-+                if (card.getCurrentStateName() == CardStateName.PreparedSpell) continue;
-+                if (!firstCard) json.append(',');
-+                firstCard = false;
-+                appendCard(json, card, zoneName(zoneType), position++, emittedCardIds);
-+            }
-+            json.append("]}");
-+        }
-+        json.append("]}");
-+    }
-+
-+    private void appendCard(final StringBuilder json, final Card card, final String zone, final int position, final Set<Integer> emittedCardIds) {
-+        if (!emittedCardIds.add(card.getId())) {
-+            throw new DuplicateCardIdentityException(card, zone);
-+        }
-+        final String canonicalName = card.getPaperCard() == null ? card.getName() : card.getPaperCard().getName();
-+        final Card cloneOrigin = card.getCloneOrigin();
-+        // Forge keeps the creating effect and the copied permanent as
-+        // separate relationships.  The effect is provenance; the copied
-+        // permanent is the identity whose characteristics were copied.
-+        final Card copySource = card.getCopiedPermanent();
-+        final boolean copied = card.isCloned() || card.getCopiedPermanent() != null;
-+        final String objectKind = card.isRealToken() || card.isTokenCard()
-+                ? "forge-token" : (copied ? ("stack".equals(zone) ? "copy-spell" : "copy-permanent") : "physical-original");
-+        json.append('{');
-+        property(json, "forgeCardId", card.getId()).append(',');
-+        property(json, "cardName", canonicalName).append(',');
-+        property(json, "currentCardName", card.getName()).append(',');
-+        property(json, "zone", zone).append(',');
-+        property(json, "zonePosition", position).append(',');
-+        property(json, "ownerSeatId", seatOf(card.getOwner())).append(',');
-+        property(json, "controllerSeatId", seatOf(card.getController())).append(',');
-+        property(json, "tapped", card.isTapped()).append(',');
-+        property(json, "faceDown", card.isFaceDown()).append(',');
-+        property(json, "phasedOut", card.isPhasedOut()).append(',');
-+        property(json, "netPower", card.isCreature() ? card.getNetPower() : 0).append(',');
-+        property(json, "netToughness", card.isCreature() ? card.getNetToughness() : 0).append(',');
-+        property(json, "currentPower", card.isCreature() ? card.getNetPower() : 0).append(',');
-+        property(json, "currentToughness", card.isCreature() ? card.getNetToughness() : 0).append(',');
-+        json.append("\"currentTypes\":");
-+        appendCurrentTypes(json, card.getType());
-+        json.append(',');
-+        // Printed deck cards and Forge-created tokens must never share the
-+        // ordinary library-card materialization fallback in TTS.
-+        property(json, "isToken", card.isToken() || card.isTokenCard()).append(',');
-+        property(json, "authoritativeObjectId", "forge-object:" + card.getId()).append(',');
-+        property(json, "originObjectId", cloneOrigin == null ? null : "forge-object:" + cloneOrigin.getId()).append(',');
-+        property(json, "copySourceObjectId", copySource == null ? null : "forge-object:" + copySource.getId()).append(',');
-+        property(json, "objectKind", objectKind).append(',');
-+        property(json, "isCopy", copied).append(',');
-+        property(json, "isVirtual", "stack".equals(zone) && copied).append(',');
-+        property(json, "materializationPolicy", "stack".equals(zone) && copied ? "virtual-stack" : "physical").append(',');
-+        json.append("\"cardDesignations\":[");
-+        if (card.isPrepared()) string(json, "prepared");
-+        if (card.isPrototyped()) {
-+            if (card.isPrepared()) json.append(',');
-+            string(json, "prototyped");
-+        }
-+        json.append("],");
-+        json.append("\"counters\":");
-+        appendCounters(json, card.getCounters());
-+        json.append(",\"keywords\":[");
-+
-+        final Set<String> keywords = new LinkedHashSet<>();
-+        for (KeywordInterface keyword : card.getKeywords()) {
-+            final String name = keyword.getKeyword().toString();
-+            if (!name.isEmpty()) keywords.add(name);
-+        }
-+        boolean firstKeyword = true;
-+        for (String keyword : keywords) {
-+            if (!firstKeyword) json.append(',');
-+            firstKeyword = false;
-+            string(json, keyword);
-+        }
-+        json.append("],");
-+        appendCharacteristics(json, card, keywords);
-+        json.append("}");
-+    }
-+
-+    private void appendCharacteristics(final StringBuilder json, final Card card, final Set<String> keywords) {
-+        json.append("\"characteristics\":{");
-+        property(json, "currentCardName", card.getName()).append(',');
-+        property(json, "currentManaCost", String.valueOf(card.getManaCost())).append(',');
-+        property(json, "currentManaValue", card.getCMC()).append(',');
-+        json.append("\"currentColors\":[");
-+        boolean firstColor = true;
-+        for (byte mask : forge.card.MagicColor.WUBRG) {
-+            if (!card.getColor().hasAnyColor(mask)) continue;
-+            if (!firstColor) json.append(',');
-+            firstColor = false;
-+            string(json, forge.card.MagicColor.toLongString(mask).toLowerCase(java.util.Locale.ROOT));
-+        }
-+        json.append("],");
-+        json.append("\"currentSupertypes\":[");
-+        boolean first = true;
-+        for (CardType.Supertype value : card.getType().getSupertypes()) {
-+            if (!first) json.append(',');
-+            first = false;
-+            string(json, value.toString().toLowerCase(java.util.Locale.ROOT));
-+        }
-+        json.append("],\"currentCardTypes\":[");
-+        first = true;
-+        for (CardType.CoreType value : card.getType().getCoreTypes()) {
-+            if (!first) json.append(',');
-+            first = false;
-+            string(json, value.toString().toLowerCase(java.util.Locale.ROOT));
-+        }
-+        json.append("],\"currentSubtypes\":[");
-+        first = true;
-+        for (String value : card.getType().getSubtypes()) {
-+            if (!first) json.append(',');
-+            first = false;
-+            string(json, value.toLowerCase(java.util.Locale.ROOT));
-+        }
-+        json.append("],");
-+        property(json, "currentPower", card.isCreature() ? String.valueOf(card.getNetPower()) : null).append(',');
-+        property(json, "currentToughness", card.isCreature() ? String.valueOf(card.getNetToughness()) : null).append(',');
-+        // Loyalty/Defense semantics: current CardState characteristic values, not counter totals.
-+        String loyalty = card.getCurrentState() == null ? null : card.getCurrentState().getBaseLoyalty();
-+        if (loyalty != null && loyalty.isBlank()) {
-+            loyalty = null;
-+        }
-+        String defense = card.getCurrentState() == null ? null : card.getCurrentState().getBaseDefense();
-+        if (defense != null && defense.isBlank()) {
-+            defense = null;
-+        }
-+        property(json, "currentLoyalty", loyalty).append(',');
-+        property(json, "currentDefense", defense).append(',');
-+        json.append("\"currentKeywords\":[");
-+        boolean firstKeyword = true;
-+        for (String keyword : keywords) {
-+            if (!firstKeyword) json.append(',');
-+            firstKeyword = false;
-+            string(json, keyword);
-+        }
-+        json.append("]}");
-+    }
-+
-+    private void appendCombat(final StringBuilder json) {
-+        final Combat combat = game.getCombat();
-+        json.append("{\"attacks\":[");
-+        // A game has no Combat object during startup and between combat phases.
-+        // Snapshot emission must remain total: the empty combat state is authoritative.
-+        if (combat == null) {
-+            json.append("]}");
-+            return;
-+        }
-+        boolean first = true;
-+        for (Card attacker : combat.getAttackers()) {
-+            if (!first) json.append(',');
-+            first = false;
-+            final GameEntity defender = combat.getDefenderByAttacker(attacker);
-+            json.append('{');
-+            property(json, "attackerForgeObjectId", attacker.getId()).append(',');
-+            property(json, "defenderSeatId", defender instanceof Player player ? seatOf(player) : null).append(',');
-+            if (defender instanceof Card card) {
-+                property(json, "defenderForgeObjectId", (long) card.getId()).append(',');
-+            } else {
-+                property(json, "defenderForgeObjectId", (String) null).append(',');
-+            }
-+            json.append("\"blockerForgeObjectIds\":[");
-+            boolean firstBlocker = true;
-+            for (Card blocker : combat.getBlockers(attacker)) { if (!firstBlocker) json.append(','); firstBlocker = false; json.append(blocker.getId()); }
-+            json.append("]}");
-+        }
-+        json.append("]}");
-+    }
-+
-+    private static void appendCounters(final StringBuilder json, final Multiset<CounterType> counters) {
-+        json.append('{');
-+        boolean first = true;
-+        for (Multiset.Entry<CounterType> entry : counters.entrySet()) {
-+            if (!first) json.append(',');
-+            first = false;
-+            string(json, entry.getElement().getName());
-+            json.append(':').append(entry.getCount());
-+        }
-+        json.append('}');
-+    }
-+
-+    private static void appendManaPool(final StringBuilder json, final Player player) {
-+        json.append('{');
-+        property(json, "W", player.getManaPool().getAmountOfColor(MagicColor.WHITE)).append(',');
-+        property(json, "U", player.getManaPool().getAmountOfColor(MagicColor.BLUE)).append(',');
-+        property(json, "B", player.getManaPool().getAmountOfColor(MagicColor.BLACK)).append(',');
-+        property(json, "R", player.getManaPool().getAmountOfColor(MagicColor.RED)).append(',');
-+        property(json, "G", player.getManaPool().getAmountOfColor(MagicColor.GREEN)).append(',');
-+        property(json, "C", player.getManaPool().getAmountOfColor(MagicColor.COLORLESS));
-+        json.append('}');
-+    }
-+
-+    private void appendGameEnded(final StringBuilder json) {
-+        json.append('{');
-+        property(json, "reason", game.getOutcome() == null ? null : game.getOutcome().getWinCondition().name()).append(',');
-+        json.append("\"winnerSeatIds\":[");
-+        boolean first = true;
-+        for (Player player : game.getPlayers()) {
-+            if (!player.hasWon()) continue;
-+            if (!first) json.append(',');
-+            first = false;
-+            string(json, seatOf(player));
-+        }
-+        json.append("],\"loserSeatIds\":[");
-+        first = true;
-+        for (Player player : game.getPlayers()) {
-+            if (!player.hasLost()) continue;
-+            if (!first) json.append(',');
-+            first = false;
-+            string(json, seatOf(player));
-+        }
-+        json.append("]}");
-+    }
-+
-+    private void appendDesignations(final StringBuilder json, final Player player) {
-+        final Set<String> designations = new LinkedHashSet<>();
-+        if (player.isMonarch()) designations.add("monarch");
-+        if (player.hasInitiative()) designations.add("initiative");
-+        if (player.hasBlessing()) designations.add("citys_blessing");
-+        if (player.hasEnduringStory()) designations.add("enduring_story");
-+        boolean first = true;
-+        for (String designation : designations) {
-+            if (!first) json.append(',');
-+            first = false;
-+            string(json, designation);
-+        }
-+    }
-+
-+    private static void appendCurrentTypes(final StringBuilder json, final CardTypeView type) {
-+        final Set<String> types = new LinkedHashSet<>();
-+        type.getSupertypes().forEach(value -> types.add(value.toString().toLowerCase(java.util.Locale.ROOT)));
-+        type.getCoreTypes().forEach(value -> types.add(value.toString().toLowerCase(java.util.Locale.ROOT)));
-+        type.getSubtypes().forEach(value -> types.add(value.toLowerCase(java.util.Locale.ROOT)));
-+        json.append('[');
-+        boolean first = true;
-+        for (String value : types) {
-+            if (!first) json.append(',');
-+            first = false;
-+            string(json, value);
-+        }
-+        json.append(']');
-+    }
-+
-+    private String battlefieldSummary() {
-+        if (!Boolean.getBoolean("forge.bridge.trace")) return "disabled";
-+        final StringBuilder summary = new StringBuilder();
-+        for (Player player : game.getPlayers()) {
-+            for (Card card : player.getZone(ZoneType.Battlefield).getCards(false)) {
-+                if (summary.length() > 0) summary.append(';');
-+                summary.append(card.getName()).append('=')
-+                        .append(card.isCreature() ? card.getNetPower() : 0).append('/')
-+                        .append(card.isCreature() ? card.getNetToughness() : 0);
-+            }
-+        }
-+        return summary.toString();
-+    }
-+
-+    private static void trace(final String message) {
-+        if (Boolean.getBoolean("forge.bridge.trace")) {
-+            System.err.println("Forge bridge state " + message);
-+        }
-+    }
-+
-+    private String seatOf(final Player player) {
-+        return player == null ? null : seats.get(player);
-+    }
-+
-+    private static String zoneName(final ZoneType zoneType) {
-+        return zoneType.name().toLowerCase(java.util.Locale.ROOT);
-+    }
-+
-+    private static StringBuilder property(final StringBuilder json, final String name, final String value) {
-+        string(json, name).append(':');
-+        if (value == null) return json.append("null");
-+        return string(json, value);
-+    }
-+
-+    private static StringBuilder property(final StringBuilder json, final String name, final long value) {
-+        return string(json, name).append(':').append(value);
-+    }
-+
-+    private static StringBuilder property(final StringBuilder json, final String name, final boolean value) {
-+        return string(json, name).append(':').append(value);
-+    }
-+
-+    private static StringBuilder string(final StringBuilder json, final String value) {
-+        json.append('"');
-+        for (int i = 0; i < value.length(); i++) {
-+            final char ch = value.charAt(i);
-+            switch (ch) {
-+                case '"' -> json.append("\\\"");
-+                case '\\' -> json.append("\\\\");
-+                case '\b' -> json.append("\\b");
-+                case '\f' -> json.append("\\f");
-+                case '\n' -> json.append("\\n");
-+                case '\r' -> json.append("\\r");
-+                case '\t' -> json.append("\\t");
-+                default -> {
-+                    if (ch < 0x20) json.append(String.format("\\u%04x", (int) ch));
-+                    else json.append(ch);
-+                }
-+            }
-+        }
-+        return json.append('"');
-+    }
-+}
 diff --git a/forge-headless/src/main/java/forge/headless/HeadlessGuiBase.java b/forge-headless/src/main/java/forge/headless/HeadlessGuiBase.java
-index 44aee4f4cc9d2307eda4a6281e1e52c21f5305d6..959cd69435adcab77a2f7a6339331e50a4ce2493 100644
+index 44aee4f4..959cd694 100644
 --- a/forge-headless/src/main/java/forge/headless/HeadlessGuiBase.java
 +++ b/forge-headless/src/main/java/forge/headless/HeadlessGuiBase.java
 @@ -46,6 +46,26 @@ public class HeadlessGuiBase implements IGuiBase {
@@ -1013,7 +372,7 @@ index 44aee4f4cc9d2307eda4a6281e1e52c21f5305d6..959cd69435adcab77a2f7a6339331e50
          String version = BuildInfo.getVersionString().toLowerCase();
          if (version.contains("git") || version.contains("snapshot")) {
 diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..63d5443da000de231be39b54babf0972795a1ee1 100644
+index 0d731bb6..63d5443d 100644
 --- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 +++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 @@ -4,16 +4,25 @@ import com.google.common.collect.Multimap;
@@ -1621,7 +980,7 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..63d5443da000de231be39b54babf0972
 +
  }
 diff --git a/forge-headless/src/main/java/forge/headless/TUICommand.java b/forge-headless/src/main/java/forge/headless/TUICommand.java
-index 3626ea898c0da5a6d8d849b37419094c42641bbf..b0e8729cd1719a817451862b8910eb302b24cdbd 100644
+index 3626ea89..b0e8729c 100644
 --- a/forge-headless/src/main/java/forge/headless/TUICommand.java
 +++ b/forge-headless/src/main/java/forge/headless/TUICommand.java
 @@ -53,6 +53,14 @@ public class TUICommand implements Runnable {
@@ -1640,7 +999,7 @@ index 3626ea898c0da5a6d8d849b37419094c42641bbf..b0e8729cd1719a817451862b8910eb30
      @Option(names = "--player2-tui",
              hidden = true,
 diff --git a/forge-headless/src/main/java/forge/headless/TextUIGame.java b/forge-headless/src/main/java/forge/headless/TextUIGame.java
-index 15b7a60f91a20f9f3064fa577f521e849b4352ed..75acb0122171c529ea900e4c845e591cdf693060 100644
+index 15b7a60f..75acb012 100644
 --- a/forge-headless/src/main/java/forge/headless/TextUIGame.java
 +++ b/forge-headless/src/main/java/forge/headless/TextUIGame.java
 @@ -11,6 +11,7 @@ import forge.game.player.RegisteredPlayer;
@@ -1715,3 +1074,651 @@ index 15b7a60f91a20f9f3064fa577f521e849b4352ed..75acb0122171c529ea900e4c845e591c
              });
          } else {
              // Normal game start
+diff --git a/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
+new file mode 100644
+index 00000000..7ba3cf74
+--- /dev/null
++++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
+@@ -0,0 +1,642 @@
++package forge.headless;
++
++import com.google.common.collect.Multiset;
++import com.google.common.eventbus.Subscribe;
++import forge.card.MagicColor;
++import forge.card.CardType;
++import forge.card.CardTypeView;
++import forge.game.Game;
++import forge.game.GameEntity;
++import forge.game.card.Card;
++import forge.game.GameObject;
++import forge.game.spellability.SpellAbility;
++import forge.game.spellability.SpellAbilityStackInstance;
++import forge.card.CardStateName;
++import forge.game.combat.Combat;
++import forge.game.card.CounterType;
++import forge.game.event.GameEvent;
++import forge.game.event.GameEventCardChangeZone;
++import forge.game.event.GameEventCardCounters;
++import forge.game.event.GameEventCardStatsChanged;
++import forge.game.event.GameEventCardTapped;
++import forge.game.event.GameEventBlockersDeclared;
++import forge.game.event.GameEventGameStarted;
++import forge.game.event.GameEventGameOutcome;
++import forge.game.event.GameEventMulligan;
++import forge.game.event.GameEventManaPool;
++import forge.game.event.GameEventPlayerCounters;
++import forge.game.event.GameEventPlayerLivesChanged;
++import forge.game.event.GameEventPlayerPoisoned;
++import forge.game.event.GameEventPlayerStatsChanged;
++import forge.game.event.GameEventShuffle;
++import forge.game.event.GameEventSnapshotRestored;
++import forge.game.event.GameEventTurnBegan;
++import forge.game.keyword.KeywordInterface;
++import forge.game.player.Player;
++import forge.game.zone.ZoneType;
++import forge.util.ThreadUtil;
++
++import java.util.IdentityHashMap;
++import java.util.HashSet;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++import java.util.ConcurrentModificationException;
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.concurrent.atomic.AtomicLong;
++import java.util.concurrent.atomic.AtomicReference;
++
++/**
++ * Emits bridge-internal authoritative snapshots without changing game behavior.
++ * The sentinel lets the child-process adapter remove these records before the
++ * human TUI parser sees them.
++ */
++final class BridgeStateFeed {
++    private static final class DuplicateCardIdentityException extends RuntimeException {
++        DuplicateCardIdentityException(final Card card, final String zone) {
++            super("CardInstanceId " + card.getId() + " appeared more than once while emitting " + zone);
++        }
++    }
++    static final String SENTINEL = "@@FORGE_BRIDGE_STATE@@";
++    static final String DECISION_READY_SENTINEL = "@@FORGE_BRIDGE_DECISION_READY@@";
++    private static final String BRIDGE_SESSION_ID = System.getenv("FORGEBOT_BRIDGE_SESSION_ID");
++    private static final AtomicReference<BridgeStateFeed> activeFeed = new AtomicReference<>();
++    private static final List<ZoneType> PLAYER_ZONES = List.of(
++            ZoneType.Library,
++            ZoneType.Hand,
++            ZoneType.Battlefield,
++            ZoneType.Graveyard,
++            ZoneType.Exile,
++            ZoneType.Command);
++
++    private final Game game;
++    private final Map<Player, String> seats = new IdentityHashMap<>();
++    private final AtomicBoolean snapshotScheduled = new AtomicBoolean();
++    private final AtomicLong mutationGeneration = new AtomicLong();
++    private final AtomicReference<String> latestReason = new AtomicReference<>("initial");
++    private final AtomicBoolean terminalSnapshotEmitted = new AtomicBoolean();
++    private long sequence;
++    private long decisionGeneration;
++
++    BridgeStateFeed(final Game game) {
++        this.game = game;
++        int index = 1;
++        for (Player player : game.getPlayers()) {
++            seats.put(player, "forge-player-" + index++);
++        }
++        activeFeed.set(this);
++    }
++
++    static void emitDecisionReadyFromController() {
++        final BridgeStateFeed feed = activeFeed.get();
++        if (feed != null) feed.emitDecisionReady();
++    }
++
++    @Subscribe
++    public void receive(final GameEvent event) {
++        if (event instanceof GameEventGameOutcome) {
++            emitTerminalSnapshot();
++            return;
++        }
++        if (event instanceof GameEventBlockersDeclared) {
++            // GameEventBlockersDeclared uses the attacker itself as a sentinel
++            // value for an unblocked attacker. Its event payload is therefore
++            // not an exact blocker identity. The following complete combat
++            // snapshot is the sole authoritative source for presentation.
++            scheduleSnapshot(event.getClass().getSimpleName());
++            return;
++        }
++        if (event instanceof GameEventCardChangeZone
++                || event instanceof GameEventCardTapped
++                || event instanceof GameEventCardCounters
++                || event instanceof GameEventCardStatsChanged
++                || event instanceof GameEventPlayerLivesChanged
++                || event instanceof GameEventPlayerStatsChanged
++                || event instanceof GameEventPlayerCounters
++                || event instanceof GameEventPlayerPoisoned
++                || event instanceof GameEventManaPool
++                || event instanceof GameEventShuffle
++                || event instanceof GameEventGameStarted
++                || event instanceof GameEventMulligan
++                || event instanceof GameEventTurnBegan
++                || event instanceof GameEventSnapshotRestored) {
++            scheduleSnapshot(event.getClass().getSimpleName());
++        }
++    }
++
++    /**
++     * Game events fire while Forge is mutating zone collections. Reading all
++     * zones re-entrantly from the event bus caused ConcurrentModificationException
++     * during opening-hand setup. Coalesce events and snapshot shortly after the
++     * mutation batch on the bridge's read-only observer path instead.
++     */
++    private void scheduleSnapshot(final String reason) {
++        final long generation = mutationGeneration.incrementAndGet();
++        latestReason.set(reason);
++        trace("event=" + reason + " generation=" + generation + " scheduled=" + snapshotScheduled.get());
++        if (!snapshotScheduled.compareAndSet(false, true)) {
++            return;
++        }
++        ThreadUtil.delay(25, this::emitWhenStable);
++    }
++
++    void emitTerminalSnapshot() {
++        if (!game.isGameOver() || !terminalSnapshotEmitted.compareAndSet(false, true)) return;
++        emitSnapshot("game_ended", mutationGeneration.get());
++    }
++
++    /**
++     * A batch can contain zone movement followed by static characteristic
++     * recalculation. Never clear the pending flag until the generation that
++     * was emitted is still current; otherwise the final static state can be
++     * lost until a later unrelated game event happens to cause a snapshot.
++     */
++    private void emitWhenStable() {
++        final long generation = mutationGeneration.get();
++        final String reason = latestReason.get();
++        try {
++            emitSnapshot(reason, generation);
++            if (mutationGeneration.get() != generation) {
++                ThreadUtil.delay(25, this::emitWhenStable);
++                return;
++            }
++            snapshotScheduled.set(false);
++            // Close the race where an event arrived after the equality check
++            // but before clearing the scheduled flag.
++            if (mutationGeneration.get() != generation) {
++                scheduleSnapshot(latestReason.get());
++            }
++        } catch (ConcurrentModificationException ignored) {
++            ThreadUtil.delay(25, this::emitWhenStable);
++        } catch (DuplicateCardIdentityException duplicate) {
++            // Opening-hand/mulligan setup can transiently expose the same Card
++            // reference twice while Forge is moving it between zones. Never
++            // publish that impossible snapshot; retry after the mutation batch
++            // settles. The bridge retains a loud duplicate check for any
++            // duplicate that still escapes this producer barrier.
++            trace("snapshot deferred: " + duplicate.getMessage());
++            ThreadUtil.delay(25, this::emitWhenStable);
++        } catch (RuntimeException exception) {
++            // A diagnostics feed must never change or terminate Forge gameplay.
++            snapshotScheduled.set(false);
++            System.err.println("Forge bridge state snapshot skipped: " + exception.getClass().getSimpleName());
++        }
++    }
++
++    private synchronized void emitSnapshot(final String reason, final long generation) {
++        final StringBuilder json = new StringBuilder(32768);
++        final Set<Integer> emittedCardIds = new HashSet<>();
++        final long snapshotSequence = sequence + 1;
++        json.append('{');
++        property(json, "version", 1).append(',');
++        property(json, "type", "snapshot").append(',');
++        property(json, "sequence", snapshotSequence).append(',');
++        property(json, "reason", reason).append(',');
++        property(json, "mutationGeneration", generation).append(',');
++        property(json, "monarchSeatId", seatOf(game.getMonarch())).append(',');
++        json.append("\"players\":[");
++
++        boolean firstPlayer = true;
++        for (Player player : game.getPlayers()) {
++            if (!firstPlayer) json.append(',');
++            firstPlayer = false;
++            appendPlayer(json, player, emittedCardIds);
++        }
++
++        json.append("],\"stack\":[");
++        boolean firstCard = true;
++        int position = 0;
++        for (Card card : game.getStackZone().getCards()) {
++            if (!firstCard) json.append(',');
++            firstCard = false;
++            appendCard(json, card, "stack", position++, emittedCardIds);
++        }
++        json.append("],\"stackObjects\":[");
++        boolean firstStackObject = true;
++        int stackIndex = game.getStack().size();
++        for (SpellAbilityStackInstance item : game.getStack()) {
++            if (!firstStackObject) json.append(',');
++            firstStackObject = false;
++            appendStackObject(json, item, stackIndex--, generation);
++        }
++        json.append("],\"combat\":");
++        appendCombat(json);
++        if (game.isGameOver()) {
++            json.append(",\"gameEnded\":");
++            appendGameEnded(json);
++        }
++        json.append('}');
++
++        synchronized (System.out) {
++            System.out.println(SENTINEL + json);
++            System.out.flush();
++        }
++        sequence = snapshotSequence;
++        trace("snapshot sequence=" + snapshotSequence + " generation=" + generation + " reason=" + reason
++                + " battlefield=" + battlefieldSummary());
++    }
++
++    private synchronized void emitDecisionReady() {
++        if (BRIDGE_SESSION_ID == null || BRIDGE_SESSION_ID.isBlank()) {
++            trace("decision_ready skipped: FORGEBOT_BRIDGE_SESSION_ID is not set");
++            return;
++        }
++        for (int attempt = 0; attempt < 40; attempt++) {
++            final long before = mutationGeneration.get();
++            emitWhenStable();
++            if (!snapshotScheduled.get() && mutationGeneration.get() == before) break;
++            try {
++                Thread.sleep(10);
++            } catch (InterruptedException exception) {
++                Thread.currentThread().interrupt();
++                return;
++            }
++        }
++
++        // The readiness watermark is sampled only after the snapshot
++        // publication loop has observed a completed emit. It must never
++        // advertise the candidate sequence allocated before stdout flush.
++        final long publishedSnapshotSequence = sequence;
++        final StringBuilder json = new StringBuilder(256);
++        json.append('{');
++        property(json, "version", 1).append(',');
++        property(json, "type", "decision_ready").append(',');
++        property(json, "sessionId", BRIDGE_SESSION_ID).append(',');
++        property(json, "decisionGeneration", ++decisionGeneration).append(',');
++        property(json, "mutationGeneration", mutationGeneration.get()).append(',');
++        property(json, "snapshotSequence", publishedSnapshotSequence);
++        json.append('}');
++        synchronized (System.out) {
++            System.out.println(DECISION_READY_SENTINEL + json);
++            System.out.flush();
++        }
++        trace("decision_ready snapshotSequence=" + publishedSnapshotSequence + " mutationGeneration=" + mutationGeneration.get());
++    }
++
++    private void appendStackObject(final StringBuilder json, final SpellAbilityStackInstance item,
++            final int stackIndex, final long creationSequence) {
++        final SpellAbility ability = item.getSpellAbility();
++        final Card source = item.getSourceCard();
++        final String kind = item.isTrigger() ? "triggered-ability"
++                : item.isSpell() ? (ability.isCopied() ? "copied-spell" : "spell")
++                : ability.isCopied() ? "copied-ability" : "activated-ability";
++        json.append('{');
++        property(json, "stackObjectId", "forge-stack:" + item.getId()).append(',');
++        property(json, "stackKind", kind).append(',');
++        property(json, "sourceCardInstanceId", source == null ? null : "forge-object:" + source.getId()).append(',');
++        property(json, "sourceName", source == null ? null : source.getName()).append(',');
++        property(json, "controllerSeatId", seatOf(item.getActivatingPlayer())).append(',');
++        property(json, "abilityName", ability == null ? null : ability.getDescription()).append(',');
++        property(json, "abilityText", item.getStackDescription()).append(',');
++        property(json, "creationSequence", creationSequence).append(',');
++        property(json, "stackIndex", stackIndex).append(',');
++        property(json, "provenance", ability != null && ability.isCopied() ? "copy" : kind).append(',');
++        json.append("\"targets\":[");
++        boolean firstTarget = true;
++        if (ability != null && ability.getTargets() != null) {
++            for (GameObject target : ability.getTargets()) {
++                if (!firstTarget) json.append(',');
++                firstTarget = false;
++                string(json, target instanceof Card
++                        ? "forge-object:" + ((Card) target).getId()
++                        : target instanceof Player ? seatOf((Player) target) : String.valueOf(target));
++            }
++        }
++        json.append("]}");
++    }
++
++    private void appendPlayer(final StringBuilder json, final Player player, final Set<Integer> emittedCardIds) {
++        json.append('{');
++        property(json, "seatId", seatOf(player)).append(',');
++        property(json, "forgePlayerId", player.getId()).append(',');
++        property(json, "displayName", player.getName()).append(',');
++        property(json, "life", player.getLife()).append(',');
++        property(json, "poison", player.getPoisonCounters()).append(',');
++        property(json, "speed", player.getSpeed()).append(',');
++        json.append("\"designations\":[");
++        appendDesignations(json, player);
++        json.append("],");
++        json.append("\"counters\":");
++        appendCounters(json, player.getCounters());
++        json.append(",\"manaPool\":");
++        appendManaPool(json, player);
++        json.append(",\"zones\":[");
++
++        boolean firstZone = true;
++        for (ZoneType zoneType : PLAYER_ZONES) {
++            if (!firstZone) json.append(',');
++            firstZone = false;
++            json.append('{');
++            property(json, "name", zoneName(zoneType)).append(',');
++            json.append("\"cards\":[");
++            boolean firstCard = true;
++            int position = 0;
++            for (Card card : player.getZone(zoneType).getCards(false)) {
++                // Forge owns PreparedSpell copies in exile. They are legal
++                // virtual/UI-only spell objects, not physical TTS cards; their
++                // cast action carries an exact relation to the source instead.
++                if (card.getCurrentStateName() == CardStateName.PreparedSpell) continue;
++                if (!firstCard) json.append(',');
++                firstCard = false;
++                appendCard(json, card, zoneName(zoneType), position++, emittedCardIds);
++            }
++            json.append("]}");
++        }
++        json.append("]}");
++    }
++
++    private void appendCard(final StringBuilder json, final Card card, final String zone, final int position, final Set<Integer> emittedCardIds) {
++        if (!emittedCardIds.add(card.getId())) {
++            throw new DuplicateCardIdentityException(card, zone);
++        }
++        final String canonicalName = card.getPaperCard() == null ? card.getName() : card.getPaperCard().getName();
++        final Card cloneOrigin = card.getCloneOrigin();
++        // Forge keeps the creating effect and the copied permanent as
++        // separate relationships.  The effect is provenance; the copied
++        // permanent is the identity whose characteristics were copied.
++        final Card copySource = card.getCopiedPermanent();
++        final boolean copied = card.isCloned() || card.getCopiedPermanent() != null;
++        final String objectKind = card.isRealToken() || card.isTokenCard()
++                ? "forge-token" : (copied ? ("stack".equals(zone) ? "copy-spell" : "copy-permanent") : "physical-original");
++        json.append('{');
++        property(json, "forgeCardId", card.getId()).append(',');
++        property(json, "cardName", canonicalName).append(',');
++        property(json, "currentCardName", card.getName()).append(',');
++        property(json, "zone", zone).append(',');
++        property(json, "zonePosition", position).append(',');
++        property(json, "ownerSeatId", seatOf(card.getOwner())).append(',');
++        property(json, "controllerSeatId", seatOf(card.getController())).append(',');
++        property(json, "tapped", card.isTapped()).append(',');
++        property(json, "faceDown", card.isFaceDown()).append(',');
++        property(json, "phasedOut", card.isPhasedOut()).append(',');
++        property(json, "netPower", card.isCreature() ? card.getNetPower() : 0).append(',');
++        property(json, "netToughness", card.isCreature() ? card.getNetToughness() : 0).append(',');
++        property(json, "currentPower", card.isCreature() ? card.getNetPower() : 0).append(',');
++        property(json, "currentToughness", card.isCreature() ? card.getNetToughness() : 0).append(',');
++        json.append("\"currentTypes\":");
++        appendCurrentTypes(json, card.getType());
++        json.append(',');
++        // Printed deck cards and Forge-created tokens must never share the
++        // ordinary library-card materialization fallback in TTS.
++        property(json, "isToken", card.isToken() || card.isTokenCard()).append(',');
++        property(json, "authoritativeObjectId", "forge-object:" + card.getId()).append(',');
++        property(json, "originObjectId", cloneOrigin == null ? null : "forge-object:" + cloneOrigin.getId()).append(',');
++        property(json, "copySourceObjectId", copySource == null ? null : "forge-object:" + copySource.getId()).append(',');
++        property(json, "objectKind", objectKind).append(',');
++        property(json, "isCopy", copied).append(',');
++        property(json, "isVirtual", "stack".equals(zone) && copied).append(',');
++        property(json, "materializationPolicy", "stack".equals(zone) && copied ? "virtual-stack" : "physical").append(',');
++        json.append("\"cardDesignations\":[");
++        if (card.isPrepared()) string(json, "prepared");
++        if (card.isPrototyped()) {
++            if (card.isPrepared()) json.append(',');
++            string(json, "prototyped");
++        }
++        json.append("],");
++        json.append("\"counters\":");
++        appendCounters(json, card.getCounters());
++        json.append(",\"keywords\":[");
++
++        final Set<String> keywords = new LinkedHashSet<>();
++        for (KeywordInterface keyword : card.getKeywords()) {
++            final String name = keyword.getKeyword().toString();
++            if (!name.isEmpty()) keywords.add(name);
++        }
++        boolean firstKeyword = true;
++        for (String keyword : keywords) {
++            if (!firstKeyword) json.append(',');
++            firstKeyword = false;
++            string(json, keyword);
++        }
++        json.append("],");
++        appendCharacteristics(json, card, keywords);
++        json.append("}");
++    }
++
++    private void appendCharacteristics(final StringBuilder json, final Card card, final Set<String> keywords) {
++        json.append("\"characteristics\":{");
++        property(json, "currentCardName", card.getName()).append(',');
++        property(json, "currentManaCost", String.valueOf(card.getManaCost())).append(',');
++        property(json, "currentManaValue", card.getCMC()).append(',');
++        json.append("\"currentColors\":[");
++        boolean firstColor = true;
++        for (byte mask : forge.card.MagicColor.WUBRG) {
++            if (!card.getColor().hasAnyColor(mask)) continue;
++            if (!firstColor) json.append(',');
++            firstColor = false;
++            string(json, forge.card.MagicColor.toLongString(mask).toLowerCase(java.util.Locale.ROOT));
++        }
++        json.append("],");
++        json.append("\"currentSupertypes\":[");
++        boolean first = true;
++        for (CardType.Supertype value : card.getType().getSupertypes()) {
++            if (!first) json.append(',');
++            first = false;
++            string(json, value.toString().toLowerCase(java.util.Locale.ROOT));
++        }
++        json.append("],\"currentCardTypes\":[");
++        first = true;
++        for (CardType.CoreType value : card.getType().getCoreTypes()) {
++            if (!first) json.append(',');
++            first = false;
++            string(json, value.toString().toLowerCase(java.util.Locale.ROOT));
++        }
++        json.append("],\"currentSubtypes\":[");
++        first = true;
++        for (String value : card.getType().getSubtypes()) {
++            if (!first) json.append(',');
++            first = false;
++            string(json, value.toLowerCase(java.util.Locale.ROOT));
++        }
++        json.append("],");
++        property(json, "currentPower", card.isCreature() ? String.valueOf(card.getNetPower()) : null).append(',');
++        property(json, "currentToughness", card.isCreature() ? String.valueOf(card.getNetToughness()) : null).append(',');
++        // Loyalty/Defense semantics: current CardState characteristic values, not counter totals.
++        String loyalty = card.getCurrentState() == null ? null : card.getCurrentState().getBaseLoyalty();
++        if (loyalty != null && loyalty.isBlank()) {
++            loyalty = null;
++        }
++        String defense = card.getCurrentState() == null ? null : card.getCurrentState().getBaseDefense();
++        if (defense != null && defense.isBlank()) {
++            defense = null;
++        }
++        property(json, "currentLoyalty", loyalty).append(',');
++        property(json, "currentDefense", defense).append(',');
++        json.append("\"currentKeywords\":[");
++        boolean firstKeyword = true;
++        for (String keyword : keywords) {
++            if (!firstKeyword) json.append(',');
++            firstKeyword = false;
++            string(json, keyword);
++        }
++        json.append("]}");
++    }
++
++    private void appendCombat(final StringBuilder json) {
++        final Combat combat = game.getCombat();
++        json.append("{\"attacks\":[");
++        // A game has no Combat object during startup and between combat phases.
++        // Snapshot emission must remain total: the empty combat state is authoritative.
++        if (combat == null) {
++            json.append("]}");
++            return;
++        }
++        boolean first = true;
++        for (Card attacker : combat.getAttackers()) {
++            if (!first) json.append(',');
++            first = false;
++            final GameEntity defender = combat.getDefenderByAttacker(attacker);
++            json.append('{');
++            property(json, "attackerForgeObjectId", attacker.getId()).append(',');
++            property(json, "defenderSeatId", defender instanceof Player player ? seatOf(player) : null).append(',');
++            if (defender instanceof Card card) {
++                property(json, "defenderForgeObjectId", (long) card.getId()).append(',');
++            } else {
++                property(json, "defenderForgeObjectId", (String) null).append(',');
++            }
++            json.append("\"blockerForgeObjectIds\":[");
++            boolean firstBlocker = true;
++            for (Card blocker : combat.getBlockers(attacker)) { if (!firstBlocker) json.append(','); firstBlocker = false; json.append(blocker.getId()); }
++            json.append("]}");
++        }
++        json.append("]}");
++    }
++
++    private static void appendCounters(final StringBuilder json, final Multiset<CounterType> counters) {
++        json.append('{');
++        boolean first = true;
++        for (Multiset.Entry<CounterType> entry : counters.entrySet()) {
++            if (!first) json.append(',');
++            first = false;
++            string(json, entry.getElement().getName());
++            json.append(':').append(entry.getCount());
++        }
++        json.append('}');
++    }
++
++    private static void appendManaPool(final StringBuilder json, final Player player) {
++        json.append('{');
++        property(json, "W", player.getManaPool().getAmountOfColor(MagicColor.WHITE)).append(',');
++        property(json, "U", player.getManaPool().getAmountOfColor(MagicColor.BLUE)).append(',');
++        property(json, "B", player.getManaPool().getAmountOfColor(MagicColor.BLACK)).append(',');
++        property(json, "R", player.getManaPool().getAmountOfColor(MagicColor.RED)).append(',');
++        property(json, "G", player.getManaPool().getAmountOfColor(MagicColor.GREEN)).append(',');
++        property(json, "C", player.getManaPool().getAmountOfColor(MagicColor.COLORLESS));
++        json.append('}');
++    }
++
++    private void appendGameEnded(final StringBuilder json) {
++        json.append('{');
++        property(json, "reason", game.getOutcome() == null ? null : game.getOutcome().getWinCondition().name()).append(',');
++        json.append("\"winnerSeatIds\":[");
++        boolean first = true;
++        for (Player player : game.getPlayers()) {
++            if (!player.hasWon()) continue;
++            if (!first) json.append(',');
++            first = false;
++            string(json, seatOf(player));
++        }
++        json.append("],\"loserSeatIds\":[");
++        first = true;
++        for (Player player : game.getPlayers()) {
++            if (!player.hasLost()) continue;
++            if (!first) json.append(',');
++            first = false;
++            string(json, seatOf(player));
++        }
++        json.append("]}");
++    }
++
++    private void appendDesignations(final StringBuilder json, final Player player) {
++        final Set<String> designations = new LinkedHashSet<>();
++        if (player.isMonarch()) designations.add("monarch");
++        if (player.hasInitiative()) designations.add("initiative");
++        if (player.hasBlessing()) designations.add("citys_blessing");
++        if (player.hasEnduringStory()) designations.add("enduring_story");
++        boolean first = true;
++        for (String designation : designations) {
++            if (!first) json.append(',');
++            first = false;
++            string(json, designation);
++        }
++    }
++
++    private static void appendCurrentTypes(final StringBuilder json, final CardTypeView type) {
++        final Set<String> types = new LinkedHashSet<>();
++        type.getSupertypes().forEach(value -> types.add(value.toString().toLowerCase(java.util.Locale.ROOT)));
++        type.getCoreTypes().forEach(value -> types.add(value.toString().toLowerCase(java.util.Locale.ROOT)));
++        type.getSubtypes().forEach(value -> types.add(value.toLowerCase(java.util.Locale.ROOT)));
++        json.append('[');
++        boolean first = true;
++        for (String value : types) {
++            if (!first) json.append(',');
++            first = false;
++            string(json, value);
++        }
++        json.append(']');
++    }
++
++    private String battlefieldSummary() {
++        if (!Boolean.getBoolean("forge.bridge.trace")) return "disabled";
++        final StringBuilder summary = new StringBuilder();
++        for (Player player : game.getPlayers()) {
++            for (Card card : player.getZone(ZoneType.Battlefield).getCards(false)) {
++                if (summary.length() > 0) summary.append(';');
++                summary.append(card.getName()).append('=')
++                        .append(card.isCreature() ? card.getNetPower() : 0).append('/')
++                        .append(card.isCreature() ? card.getNetToughness() : 0);
++            }
++        }
++        return summary.toString();
++    }
++
++    private static void trace(final String message) {
++        if (Boolean.getBoolean("forge.bridge.trace")) {
++            System.err.println("Forge bridge state " + message);
++        }
++    }
++
++    private String seatOf(final Player player) {
++        return player == null ? null : seats.get(player);
++    }
++
++    private static String zoneName(final ZoneType zoneType) {
++        return zoneType.name().toLowerCase(java.util.Locale.ROOT);
++    }
++
++    private static StringBuilder property(final StringBuilder json, final String name, final String value) {
++        string(json, name).append(':');
++        if (value == null) return json.append("null");
++        return string(json, value);
++    }
++
++    private static StringBuilder property(final StringBuilder json, final String name, final long value) {
++        return string(json, name).append(':').append(value);
++    }
++
++    private static StringBuilder property(final StringBuilder json, final String name, final boolean value) {
++        return string(json, name).append(':').append(value);
++    }
++
++    private static StringBuilder string(final StringBuilder json, final String value) {
++        json.append('"');
++        for (int i = 0; i < value.length(); i++) {
++            final char ch = value.charAt(i);
++            switch (ch) {
++                case '"' -> json.append("\\\"");
++                case '\\' -> json.append("\\\\");
++                case '\b' -> json.append("\\b");
++                case '\f' -> json.append("\\f");
++                case '\n' -> json.append("\\n");
++                case '\r' -> json.append("\\r");
++                case '\t' -> json.append("\\t");
++                default -> {
++                    if (ch < 0x20) json.append(String.format("\\u%04x", (int) ch));
++                    else json.append(ch);
++                }
++            }
++        }
++        return json.append('"');
++    }
++}

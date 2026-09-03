@@ -872,6 +872,48 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Contains("START MATCH unavailable", lua.Globals.Get("blockedMessage").String);
     }
 
+    [Fact]
+    public void ContainedGraveyardIdentitiesRemainExactWhenPrintedNamesDuplicate()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeRecordContainedCardIdentity('forge-object:1', 'grave-deck', 'contained-1', 'forge-player-1', 'graveyard', 'Plains')
+            BridgeRecordContainedCardIdentity('forge-object:2', 'grave-deck', 'contained-2', 'forge-player-1', 'graveyard', 'Plains')
+            first = BridgeState.physicalContainerByInstanceId['forge-object:1']
+            second = BridgeState.physicalContainerByInstanceId['forge-object:2']
+        ");
+
+        var first = lua.Globals.Get("first").Table;
+        var second = lua.Globals.Get("second").Table;
+        Assert.Equal("grave-deck", first.Get("deckGuid").String);
+        Assert.Equal("contained-1", first.Get("cardGuid").String);
+        Assert.Equal("contained-2", second.Get("cardGuid").String);
+        Assert.Equal("forge-object:1", lua.Globals.Get("BridgeState").Table
+            .Get("physicalContainedInstanceIdByGuid").Table.Get("contained-1").String);
+        Assert.Equal("forge-object:2", lua.Globals.Get("BridgeState").Table
+            .Get("physicalContainedInstanceIdByGuid").Table.Get("contained-2").String);
+    }
+
+    [Fact]
+    public void GraveyardDeckCollapseRebindsOnlyTheExactContainedIdentityToLooseCard()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeRecordContainedCardIdentity('forge-object:1', 'grave-deck', 'contained-1', 'forge-player-1', 'graveyard', 'Plains')
+            BridgeRecordContainedCardIdentity('forge-object:2', 'grave-deck', 'contained-2', 'forge-player-1', 'graveyard', 'Plains')
+            BridgeRecordLooseCardIdentity('forge-object:2', 'physical-2', 'forge-player-1', 'graveyard')
+            retained = BridgeState.physicalContainerByInstanceId['forge-object:1']
+            collapsed = BridgeState.physicalByInstanceId['forge-object:2']
+            collapsedContainer = BridgeState.physicalContainerByInstanceId['forge-object:2']
+        ");
+
+        Assert.Equal("contained-1", lua.Globals.Get("retained").Table.Get("cardGuid").String);
+        Assert.Equal("physical-2", lua.Globals.Get("collapsed").String);
+        Assert.True(lua.Globals.Get("collapsedContainer").IsNil());
+    }
+
     private static Script NewQueueProbe()
     {
         var lua = new Script();
@@ -885,7 +927,14 @@ public sealed class TtsEventQueueLivelockTests
             JSON = { encode = function(value) return '{}' end, decode = function(value) return {} end }
             os = { time = function() return 1 end, clock = function() return 0 end }
             math.randomseed(1)
-            table.concat = function(values, separator) return 'probe-runtime' end
+            table.concat = function(values, separator)
+                local result = ''
+                for index, value in ipairs(values) do
+                    if index > 1 then result = result .. separator end
+                    result = result .. tostring(value)
+                end
+                return result
+            end
         ");
         lua.DoString(Script);
         lua.DoString(@"

@@ -1920,7 +1920,8 @@ function BridgeBeginResyncMappingTransaction()
     if BridgeState.resyncMappingTransaction ~= nil then return end
     local names = {
         "physicalByInstanceId", "physicalInstanceIdByGuid", "physicalSeatByGuid",
-        "physicalZoneByGuid", "cardNameByInstanceId", "canonicalCardNameByGuid",
+        "physicalZoneByGuid", "physicalContainerByInstanceId", "physicalContainedInstanceIdByGuid",
+        "cardNameByInstanceId", "canonicalCardNameByGuid",
         "authoritativeObjectByInstanceId", "battlefieldKindByInstanceId",
         "pendingPrivateHandIdentityByInstanceId", "untappedRotationByGuid",
         "physicalTappedByGuid", "counterStateByInstanceId", "keywordStateByInstanceId",
@@ -1961,6 +1962,8 @@ function BridgeRetireLocalPhysicalTransactions(reason)
     BridgeAdvancePhysicalTransactionGeneration(reason or "manual-resync-force")
     BridgeState.libraryExtractionQueueBySeatId = {}
     BridgeState.libraryExtractionActiveBySeatId = {}
+    BridgeState.libraryExtractionTransactionBySeatId = {}
+    BridgeState.graveyardExtractionActiveBySeatId = {}
     BridgeState.mulliganBottomQueueBySeatId = {}
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
     BridgeState.mulliganReturningInstanceIds = {}

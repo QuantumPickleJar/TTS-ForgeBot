@@ -105,31 +105,40 @@ end
 -- selecting the top entry, to diagnose a physical-order desync without
 -- changing which object Forge's ordered transition embodies.
 function BridgeTakeTopCardFromLibrary(deck, expectedName, position, smooth, callback)
+    local callbackFinished = false
+    local function finish(...)
+        if callbackFinished then
+            BridgeLog("[Bridge] ignored duplicate library takeObject callback")
+            return
+        end
+        callbackFinished = true
+        callback(...)
+    end
     if not BridgeObjectIsUsable(deck) then
-        callback(nil, "physical library deck is no longer available")
+        finish(nil, "physical library deck is no longer available")
         return
     end
 
     if deck.tag == "Card" then
         if expectedName ~= nil and expectedName ~= "" and not BridgeCardNameMatches(deck.getName(), expectedName) then
-            callback(nil, "physical single-card library top order mismatched authoritative transition")
+            finish(nil, "physical single-card library top order mismatched authoritative transition")
             return
         end
         deck.setLock(false)
         deck.use_hands = true
         deck.setPositionSmooth(position, smooth == true, true)
-        callback(deck, nil)
+        finish(deck, nil)
         return
     end
 
     local containedCards = {}
     local containedOk = pcall(function() containedCards = deck.getObjects() or {} end)
     if not containedOk then
-        callback(nil, "could not inspect physical library deck contents")
+        finish(nil, "could not inspect physical library deck contents")
         return
     end
     if #containedCards == 0 then
-        callback(nil, "physical library deck is empty")
+        finish(nil, "physical library deck is empty")
         return
     end
     table.sort(containedCards, function(left, right)
@@ -142,11 +151,11 @@ function BridgeTakeTopCardFromLibrary(deck, expectedName, position, smooth, call
     local top = containedCards[1]
     local topName = top and (top.nickname or top.name) or nil
     if top == nil or top.index == nil then
-        callback(nil, "physical library has no extractable top card")
+        finish(nil, "physical library has no extractable top card")
         return
     end
     if expectedName ~= nil and expectedName ~= "" and not BridgeCardNameMatches(topName, expectedName) then
-        callback(nil, "physical library top order mismatched authoritative transition")
+        finish(nil, "physical library top order mismatched authoritative transition")
         return
     end
 
@@ -156,10 +165,10 @@ function BridgeTakeTopCardFromLibrary(deck, expectedName, position, smooth, call
         smooth = smooth,
         callback_function = function(taken)
             if not BridgeObjectIsUsable(taken) then
-                callback(nil, "physical library returned an unusable top card object")
+                finish(nil, "physical library returned an unusable top card object")
                 return
             end
-            callback(taken, nil)
+            finish(taken, nil)
         end
     })
 end
@@ -1712,20 +1721,61 @@ function BridgeMoveToBlockerLane(seatId, object)
 end
 
 function BridgeGraveyardPosition(seatId)
-    local seat = BRIDGE_SEATS[seatId]
     local anchor = BridgeResolveSeatZoneAnchor(seatId, "graveyard")
     if anchor == nil then return nil end
-
-    -- Visually pile the graveyard in one place, but retain each card object
-    -- and its exact Forge-instance mapping rather than letting TTS merge the
-    -- pile into a Deck.
-    local count = BridgeState.graveyardCounts[seatId] or 0
-    BridgeState.graveyardCounts[seatId] = count + 1
+    -- Let TTS own the pile. Two or more cards are merged by the native
+    -- putObject path so hovering exposes the normal Deck count/search UI.
     return {
         x = anchor.x,
-        y = anchor.y + 0.08 + count * 0.12,
+        y = anchor.y,
         z = anchor.z
     }
+end
+
+-- Extract a graveyard card by its contained GUID, never by printed name. The
+-- containing Deck is re-resolved at dispatch time because TTS replaces a Deck
+-- when it collapses from two cards to one.
+function BridgeTakeContainedCardByIdentity(cardInstanceId, position, smooth, callback)
+    local finished = false
+    local function finish(...)
+        if finished then
+            BridgeLog("[Bridge] ignored duplicate contained-card callback instance=" .. tostring(cardInstanceId))
+            return
+        end
+        finished = true
+        callback(...)
+    end
+    local deck, entry, resolveError = BridgeFindContainedCardEntry(cardInstanceId, "graveyard")
+    if deck == nil or entry == nil then
+        finish(nil, resolveError or "contained graveyard card is unavailable")
+        return
+    end
+    local expectedGuid = entry.guid or entry.GUID
+    local deckGuid = BridgeSafeObjectGuid(deck)
+    local ok, takeError = pcall(function()
+        deck.takeObject({
+            guid = expectedGuid,
+            index = expectedGuid == nil and entry.index or nil,
+            position = position,
+            smooth = smooth == true,
+            callback_function = function(taken)
+                if not BridgeObjectIsUsable(taken) then
+                    finish(nil, "contained graveyard extraction returned an unusable Card")
+                    return
+                end
+                local actualGuid = BridgeSafeObjectGuid(taken)
+                if actualGuid ~= expectedGuid then
+                    local liveDeck = BridgeGetLiveObjectByGuid(deckGuid)
+                    if liveDeck ~= nil then BridgeSafeObjectCall(liveDeck, function(d) d.putObject(taken, 0) end) end
+                    finish(nil, "contained graveyard extraction returned the wrong physical GUID")
+                    return
+                end
+                BridgeRefreshContainedMappingsAfterDeckMutation(deckGuid)
+                finish(taken, nil)
+            end
+        })
+    end)
+    if not ok then finish(nil, "contained graveyard takeObject failed: " .. tostring(takeError)) end
 end
 
 function BridgeReturnCombatPreviewCard(seatId, object)

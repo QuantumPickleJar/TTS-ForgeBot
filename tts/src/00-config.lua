@@ -1043,6 +1043,11 @@ BridgeState = {
     renderedDecisionPhysicalGeneration = nil,
     physicalByInstanceId = {},
     physicalInstanceIdByGuid = {},
+    -- A card inside a native TTS Deck is not a live top-level object. Keep
+    -- its exact physical card GUID together with the containing Deck GUID so
+    -- duplicate printed names never become an identity source.
+    physicalContainerByInstanceId = {},
+    physicalContainedInstanceIdByGuid = {},
     cardNameByInstanceId = {},
     canonicalCardNameByGuid = {},
     encoderIdentityLoggedGuids = {},
@@ -1121,6 +1126,8 @@ BridgeState = {
     mulliganBottomInsertionActiveBySeatId = {},
     libraryExtractionQueueBySeatId = {},
     libraryExtractionActiveBySeatId = {},
+    libraryExtractionTransactionBySeatId = {},
+    graveyardExtractionActiveBySeatId = {},
     -- Consecutive library transitions emitted by one Forge mutation are one
     -- physical transaction.  The queue still serializes Deck operations, but
     -- this owner prevents verification/recovery from observing its middle.
@@ -1469,6 +1476,8 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.pendingCastBySeatId = {}
     BridgeState.libraryExtractionQueueBySeatId = {}
     BridgeState.libraryExtractionActiveBySeatId = {}
+    BridgeState.libraryExtractionTransactionBySeatId = {}
+    BridgeState.graveyardExtractionActiveBySeatId = {}
     BridgeState.libraryBatchBySeatId = {}
     BridgeState.mulliganBottomQueueBySeatId = {}
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
@@ -1476,6 +1485,8 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.mulliganBottomInstanceIds = {}
     BridgeState.physicalByInstanceId = {}
     BridgeState.physicalInstanceIdByGuid = {}
+    BridgeState.physicalContainerByInstanceId = {}
+    BridgeState.physicalContainedInstanceIdByGuid = {}
     BridgeState.physicalSeatByGuid = {}
     BridgeState.physicalZoneByGuid = {}
     BridgeState.cardNameByInstanceId = {}
@@ -1684,6 +1695,16 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
         return false
     end
     local previousGuid = BridgeState.physicalByInstanceId[cardInstanceId]
+    local previousContainer = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+    if previousContainer ~= nil then
+        if previousContainer.cardGuid ~= nil
+            and BridgeState.physicalContainedInstanceIdByGuid[previousContainer.cardGuid] == cardInstanceId then
+            BridgeState.physicalContainedInstanceIdByGuid[previousContainer.cardGuid] = nil
+            BridgeState.physicalSeatByGuid[previousContainer.cardGuid] = nil
+            BridgeState.physicalZoneByGuid[previousContainer.cardGuid] = nil
+        end
+        BridgeState.physicalContainerByInstanceId[cardInstanceId] = nil
+    end
     if previousGuid ~= nil and previousGuid ~= guid then
         local previousObject = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(previousGuid) or nil
         if previousObject ~= nil then
@@ -1721,6 +1742,107 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
     if changed then BridgeAdvancePhysicalPresentationGeneration("card-mapping") end
     if BridgeCaptureCanonicalCardScale ~= nil then BridgeCaptureCanonicalCardScale(object) end
     return true
+end
+
+-- Record the exact identity of a card that is currently contained by a
+-- native TTS Deck. The contained card GUID is stable even though
+-- getObjectFromGUID(cardGuid) returns nil until the card is extracted.
+function BridgeRecordContainedCardIdentity(cardInstanceId, containingDeckGuid, containedCardGuid, seatId, zoneName, cardName)
+    if cardInstanceId == nil or containingDeckGuid == nil or containedCardGuid == nil
+        or tostring(containingDeckGuid) == "" or tostring(containedCardGuid) == "" then
+        BridgeLog("[Bridge] refusing incomplete contained Forge mapping")
+        return false
+    end
+    local activeSessionId = BridgeState.eventSessionId
+    if activeSessionId == nil or activeSessionId == "session-not-started" then
+        BridgeLog("[Bridge] refusing contained Forge mapping without an active session")
+        return false
+    end
+    local existingInstanceId = BridgeState.physicalContainedInstanceIdByGuid[containedCardGuid]
+    if existingInstanceId ~= nil and existingInstanceId ~= cardInstanceId then
+        BridgeLog("[Bridge] refusing contained GUID reassignment guid=" .. tostring(containedCardGuid)
+            .. " existingInstance=" .. tostring(existingInstanceId)
+            .. " requestedInstance=" .. tostring(cardInstanceId))
+        return false
+    end
+    local previousGuid = BridgeState.physicalByInstanceId[cardInstanceId]
+    if previousGuid ~= nil then
+        BridgeState.physicalInstanceIdByGuid[previousGuid] = nil
+        BridgeState.physicalSeatByGuid[previousGuid] = nil
+        BridgeState.physicalZoneByGuid[previousGuid] = nil
+        BridgeState.physicalByInstanceId[cardInstanceId] = nil
+    end
+    local previousContainer = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+    if previousContainer ~= nil and previousContainer.cardGuid ~= containedCardGuid
+        and BridgeState.physicalContainedInstanceIdByGuid[previousContainer.cardGuid] == cardInstanceId then
+        BridgeState.physicalContainedInstanceIdByGuid[previousContainer.cardGuid] = nil
+    end
+    local changed = previousContainer == nil
+        or previousContainer.deckGuid ~= containingDeckGuid
+        or previousContainer.cardGuid ~= containedCardGuid
+        or previousContainer.seatId ~= seatId
+        or previousContainer.zoneName ~= zoneName
+    BridgeState.physicalContainerByInstanceId[cardInstanceId] = {
+        deckGuid = containingDeckGuid,
+        cardGuid = containedCardGuid,
+        seatId = seatId,
+        zoneName = zoneName
+    }
+    BridgeState.physicalContainedInstanceIdByGuid[containedCardGuid] = cardInstanceId
+    BridgeState.physicalSeatByGuid[containedCardGuid] = seatId
+    BridgeState.physicalZoneByGuid[containedCardGuid] = zoneName
+    if cardName ~= nil and cardName ~= "" then
+        BridgeState.cardNameByInstanceId[cardInstanceId] = cardName
+    end
+    if changed then BridgeAdvancePhysicalPresentationGeneration("card-contained") end
+    return true
+end
+
+function BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
+    local mapping = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+    if mapping == nil then return nil, nil, "no contained mapping for card instance" end
+    if expectedZone ~= nil and mapping.zoneName ~= nil and mapping.zoneName ~= expectedZone then
+        return nil, nil, "contained mapping is in " .. tostring(mapping.zoneName)
+    end
+    local deck = BridgeGetLiveObjectByGuid(mapping.deckGuid)
+    if deck == nil or deck.tag ~= "Deck" then
+        return nil, nil, "containing Deck is unavailable"
+    end
+    local entries = {}
+    local ok = pcall(function() entries = deck.getObjects() or {} end)
+    if not ok then return nil, nil, "containing Deck inventory is unavailable" end
+    for _, entry in ipairs(entries) do
+        local guid = entry and (entry.guid or entry.GUID) or nil
+        if tostring(guid or "") == tostring(mapping.cardGuid) then
+            mapping.index = entry.index
+            return deck, entry, nil
+        end
+    end
+    return nil, nil, "contained card GUID is absent from its Deck"
+end
+
+function BridgeRefreshContainedMappingsAfterDeckMutation(deckGuid)
+    if deckGuid == nil then return end
+    local recovered = {}
+    for instanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+        if mapping.deckGuid == deckGuid and mapping.cardGuid ~= nil then
+            local object = BridgeGetLiveObjectByGuid(mapping.cardGuid)
+            if object ~= nil and object.tag == "Card" then
+                table.insert(recovered, {
+                    instanceId = instanceId,
+                    guid = mapping.cardGuid,
+                    seatId = mapping.seatId,
+                    zoneName = mapping.zoneName,
+                    cardName = BridgeState.cardNameByInstanceId[instanceId]
+                })
+            end
+        end
+    end
+    for _, item in ipairs(recovered) do
+        BridgeRecordLooseCardIdentity(item.instanceId, item.guid, item.seatId, item.zoneName)
+        BridgeLog(string.format("[Bridge] contained card became loose after Deck mutation instance=%s guid=%s deckGuid=%s",
+            tostring(item.instanceId), tostring(item.guid), tostring(deckGuid)))
+    end
 end
 
 function BridgeBeginTokenMaterialization(cardInstanceId)
@@ -1790,8 +1912,15 @@ function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)
     return true, nil
 end
 
-function BridgeRecordLibraryContainedState(cardInstanceId, seatId, cardName)
-    if cardInstanceId == nil then return end
+function BridgeRecordLibraryContainedState(cardInstanceId, seatId, cardName, containingDeck, containedCardGuid)
+    if cardInstanceId == nil then return false end
+    if containingDeck ~= nil and containedCardGuid ~= nil then
+        local deckGuid = BridgeSafeObjectGuid(containingDeck)
+        if deckGuid ~= nil then
+            return BridgeRecordContainedCardIdentity(
+                cardInstanceId, deckGuid, containedCardGuid, seatId, "library", cardName)
+        end
+    end
     local existingGuid = BridgeState.physicalByInstanceId[cardInstanceId]
     if existingGuid ~= nil then
         BridgeState.physicalInstanceIdByGuid[existingGuid] = nil
@@ -1800,10 +1929,21 @@ function BridgeRecordLibraryContainedState(cardInstanceId, seatId, cardName)
         BridgeState.physicalTappedByGuid[existingGuid] = nil
         BridgeAdvancePhysicalPresentationGeneration("card-contained")
     end
+    local existingContainer = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+    if existingContainer ~= nil then
+        if BridgeState.physicalContainedInstanceIdByGuid[existingContainer.cardGuid] == cardInstanceId then
+            BridgeState.physicalContainedInstanceIdByGuid[existingContainer.cardGuid] = nil
+        end
+        BridgeState.physicalContainerByInstanceId[cardInstanceId] = nil
+        BridgeState.physicalSeatByGuid[existingContainer.cardGuid] = nil
+        BridgeState.physicalZoneByGuid[existingContainer.cardGuid] = nil
+        BridgeAdvancePhysicalPresentationGeneration("card-contained-library")
+    end
     BridgeState.physicalByInstanceId[cardInstanceId] = nil
     if cardName ~= nil and cardName ~= "" then
         BridgeState.cardNameByInstanceId[cardInstanceId] = cardName
     end
+    return true
 end
 
 function BridgeTraceStart(marker, detail)

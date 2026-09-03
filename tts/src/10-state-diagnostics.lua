@@ -960,7 +960,7 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
                 callback(false, stabilityError)
                 return
             end
-            callback(true, nil, deck)
+            callback(true, nil, deck, guid)
         end, 1, guid)
     end, 1, resultingLibrary)
 end
@@ -996,7 +996,7 @@ function BridgeProcessMulliganBottomQueue(seatId)
 
     local guid = BridgeSafeObjectGuid(item.object)
     local instanceId = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
-    BridgeInsertPhysicalCardIntoLibrary(seatId, item.object, "BOTTOM", function(ok, err)
+    BridgeInsertPhysicalCardIntoLibrary(seatId, item.object, "BOTTOM", function(ok, err, containingDeck, containedGuid)
         if not current() then return end
         if not ok then
             BridgeStopOnDesync("mulligan bottom library insertion failed: " .. tostring(err))
@@ -1010,7 +1010,8 @@ function BridgeProcessMulliganBottomQueue(seatId)
             return
         end
         if instanceId ~= nil then
-            BridgeRecordLibraryContainedState(instanceId, seatId, BridgeState.cardNameByInstanceId[instanceId])
+            BridgeRecordLibraryContainedState(instanceId, seatId, BridgeState.cardNameByInstanceId[instanceId],
+                containingDeck, containedGuid)
         end
         complete()
     end, instanceId)
@@ -1027,34 +1028,80 @@ end
 -- Library-to-public-zone events can arrive as a burst while TTS is still
 -- resolving the prior Deck.takeObject callback (notably the opening seven).
 -- Serialize those physical extractions per seat so deck indices never race.
+function BridgeLogLibraryExtraction(seatId, stage, generation, item, library, reason)
+    local queue = BridgeState.libraryExtractionQueueBySeatId[seatId] or {}
+    local active = BridgeState.libraryExtractionTransactionBySeatId[seatId]
+    local itemCardInstanceId = type(item) == "table" and item.cardInstanceId or nil
+    local itemExpectedCardName = type(item) == "table" and item.expectedCardName or nil
+    local libraryGuid = library and BridgeSafeObjectGuid(library) or nil
+    local libraryTag = library and library.tag or nil
+    BridgeLog(string.format(
+        "[Bridge] LIBRARY_EXTRACTION_%s seat=%s generation=%s queueLength=%s activeItem=%s expectedCard=%s libraryGuid=%s libraryTag=%s reason=%s",
+        tostring(stage), tostring(seatId), tostring(generation), tostring(#queue),
+        tostring(active and active.cardInstanceId or itemCardInstanceId),
+        tostring(active and active.expectedCardName or itemExpectedCardName),
+        tostring(libraryGuid), tostring(libraryTag), tostring(reason or "")))
+end
+
 function BridgeProcessLibraryExtractionQueue(seatId)
+    BridgeState.libraryExtractionQueueBySeatId = BridgeState.libraryExtractionQueueBySeatId or {}
+    BridgeState.libraryExtractionActiveBySeatId = BridgeState.libraryExtractionActiveBySeatId or {}
+    BridgeState.libraryExtractionTransactionBySeatId = BridgeState.libraryExtractionTransactionBySeatId or {}
+    BridgeState.mulliganBottomQueueBySeatId = BridgeState.mulliganBottomQueueBySeatId or {}
+    BridgeState.mulliganBottomInsertionActiveBySeatId = BridgeState.mulliganBottomInsertionActiveBySeatId or {}
+    BridgeLog(string.format("[Bridge] LIBRARY_EXTRACTION_GUARD seat=%s active=%s mulliganActive=%s mulliganQueue=%s queue=%s",
+        tostring(seatId), tostring(BridgeState.libraryExtractionActiveBySeatId[seatId] == true),
+        tostring(BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true),
+        tostring(#(BridgeState.mulliganBottomQueueBySeatId[seatId] or {})),
+        tostring(#(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}))))
     if BridgeState.libraryExtractionActiveBySeatId[seatId] == true then return end
     if BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
         or #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {}) > 0 then
         return
     end
     local queue = BridgeState.libraryExtractionQueueBySeatId[seatId]
-    local job = queue and queue[1] or nil
-    if job == nil then return end
+    local item = queue and queue[1] or nil
+    if item == nil then return end
+    local job = type(item) == "table" and item.run or item
     BridgeState.libraryExtractionActiveBySeatId[seatId] = true
     local transactionSessionId = BridgeState.eventSessionId
     local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
+    local transaction = {
+        job = item,
+        cardInstanceId = type(item) == "table" and item.cardInstanceId or nil,
+        expectedCardName = type(item) == "table" and item.expectedCardName or nil,
+        sessionId = transactionSessionId,
+        generation = transactionGeneration
+    }
+    BridgeState.libraryExtractionTransactionBySeatId[seatId] = transaction
+    local _, dispatchLibrary = pcall(function() return BridgeFindLibraryDeckForSeat(seatId) end)
+    BridgeLogLibraryExtraction(seatId, "DISPATCH", transactionGeneration, item, dispatchLibrary)
     local finished = false
     local function current()
         return transactionSessionId == BridgeState.eventSessionId
             and transactionGeneration == (BridgeState.physicalTransactionGeneration or 0)
     end
-    local function complete()
+    local function complete(reason)
         if finished then return end
         finished = true
-        if not current() then
-            BridgeLog("[Bridge] ignored stale library extraction callback seat=" .. tostring(seatId)
-                .. " generation=" .. tostring(transactionGeneration))
+        local ownsTransaction = BridgeState.libraryExtractionTransactionBySeatId[seatId] == transaction
+        local wasCurrent = current()
+        if ownsTransaction then
+            local currentQueue = BridgeState.libraryExtractionQueueBySeatId[seatId]
+            if currentQueue ~= nil and currentQueue[1] == item then table.remove(currentQueue, 1) end
+            BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
+            BridgeState.libraryExtractionTransactionBySeatId[seatId] = nil
+        end
+        BridgeLogLibraryExtraction(seatId, "COMPLETE", transactionGeneration, item, nil,
+            reason or (wasCurrent and "success" or "stale-generation"))
+        if not ownsTransaction then return end
+        if not wasCurrent then
+            -- A resync may have retired the old table, or a stale callback may
+            -- have advanced the transaction generation. The old item is
+            -- terminal either way; a still-owned newer queue may continue.
+            BridgeProcessLibraryExtractionQueue(seatId)
             return
         end
-        local current = BridgeState.libraryExtractionQueueBySeatId[seatId]
-        if current ~= nil then table.remove(current, 1) end
-    BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
         local batch = BridgeState.libraryBatchBySeatId[seatId]
         local nextEvent = BridgeState.eventQueue and BridgeState.eventQueue[1] or nil
         if batch ~= nil and (nextEvent == nil or tostring(nextEvent.forgeSequence or "") ~= tostring(batch.forgeSequence or "")) then
@@ -1064,6 +1111,8 @@ function BridgeProcessLibraryExtractionQueue(seatId)
             BridgeLog(string.format("[Bridge] LIBRARY_BATCH_COMMITTED seat=%s forgeSequence=%s count=%s",
                 tostring(seatId), tostring(batch.forgeSequence), tostring(#(batch.cardInstanceIds or {}))))
         end
+        local _, nextLibrary = pcall(function() return BridgeFindLibraryDeckForSeat(seatId) end)
+        BridgeLogLibraryExtraction(seatId, "NEXT", transactionGeneration, nil, nextLibrary)
         BridgeProcessLibraryExtractionQueue(seatId)
         BridgeTryPresentPendingDecision("library-extraction-complete")
         if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
@@ -1075,21 +1124,30 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         if not current() then
             BridgeLog("[Bridge] ignored stale library extraction completion seat=" .. tostring(seatId)
                 .. " generation=" .. tostring(transactionGeneration))
+            complete("stale-callback")
             return
         end
         complete(...)
     end) end)
     if not started then
-        complete()
+        complete("start-error")
         BridgeStopOnDesync("library extraction transaction failed to start: " .. tostring(startError))
     end
 end
 
-function BridgeQueueLibraryExtraction(seatId, job)
+function BridgeQueueLibraryExtraction(seatId, job, metadata)
+    BridgeState.libraryExtractionQueueBySeatId = BridgeState.libraryExtractionQueueBySeatId or {}
     if BridgeState.libraryExtractionQueueBySeatId[seatId] == nil then
         BridgeState.libraryExtractionQueueBySeatId[seatId] = {}
     end
-    table.insert(BridgeState.libraryExtractionQueueBySeatId[seatId], job)
+    local item = {run = job}
+    if type(metadata) == "table" then
+        item.cardInstanceId = metadata.cardInstanceId
+        item.expectedCardName = metadata.expectedCardName
+    end
+    table.insert(BridgeState.libraryExtractionQueueBySeatId[seatId], item)
+    local _, queuedLibrary = pcall(function() return BridgeFindLibraryDeckForSeat(seatId) end)
+    BridgeLogLibraryExtraction(seatId, "ENQUEUE", BridgeState.physicalTransactionGeneration or 0, item, queuedLibrary)
     BridgeProcessMulliganBottomQueue(seatId)
     BridgeProcessLibraryExtractionQueue(seatId)
 end

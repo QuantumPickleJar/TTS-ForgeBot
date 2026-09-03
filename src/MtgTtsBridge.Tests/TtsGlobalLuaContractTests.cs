@@ -1037,7 +1037,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("table.sort(containedCards, function(left, right)", Script);
         Assert.Contains("local authoritativeCountByName = {}", Script);
         Assert.Contains("local assignedContainedByName = {}", Script);
-        Assert.Contains("local containedCandidates = ledger.byName[normalized] or {}", Script);
+        Assert.Contains("local containedCandidates = (zoneName == \"graveyard\"", Script);
         Assert.Contains("table.remove(containedCandidates, 1)", Script);
     }
 
@@ -1368,7 +1368,7 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("local physicalCount = looseCount + containedCount", Script);
         Assert.Contains("if physicalCount < expectedCount then", Script);
-        Assert.Contains("local containedCandidates = ledger.byName[normalized] or {}", Script);
+        Assert.Contains("local containedCandidates = (zoneName == \"graveyard\"", Script);
     }
 
     [Fact]
@@ -1625,14 +1625,17 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void GraveyardCards_RemainIndividuallyMappedAndCenteredOnThePrintedZone()
+    public void GraveyardCardsUseNativeDeckContainmentAndPrintedZoneAnchor()
     {
         Assert.Contains("graveyardAnchor = {x = 1.7714, y = 2.0, z = -12.2921}", Script);
         Assert.Contains("function BridgeGraveyardPosition", Script);
-        Assert.Contains("BridgeState.graveyardCounts[seatId]", Script);
+        Assert.Contains("ledger.countByName", Script);
         Assert.Contains("local graveyardPosition = BridgeGraveyardPosition(event.seatId)", Script);
         Assert.Contains("x = anchor.x", Script);
-        Assert.Contains("y = anchor.y + 0.08 + count * 0.12", Script);
+        Assert.DoesNotContain("count * 0.12", Script);
+        Assert.Contains("BridgeEnsureNativeGraveyardContainer", Script);
+        Assert.Contains("container.putObject(object, 0)", Script);
+        Assert.Contains("getObjects()", Script);
         Assert.Contains("object.setLock(true)", Script);
     }
 

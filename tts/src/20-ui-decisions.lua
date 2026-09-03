@@ -2454,6 +2454,7 @@ function BridgePhysicalLibraryQueuesIdle()
         end
         if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
             or #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}) > 0
+            or BridgeState.graveyardExtractionActiveBySeatId[seatId] == true
             or BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
             or #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {}) > 0 then
             return false

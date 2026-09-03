@@ -17,6 +17,11 @@ function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
     local seat = BRIDGE_SEATS[seatId]
     local assets = {}
     local assetByGuid = {}
+    local graveyardReady, graveyardError = BridgeEnsureNativeGraveyardContainer(seatId)
+    if not graveyardReady then
+        callback(false, nil, graveyardError)
+        return
+    end
     -- Reuse one TTS object snapshot for both library discovery and candidate
     -- collection.  TTS getAllObjects() is a native boundary and can take
     -- hundreds of milliseconds in a large table; scanning it twice during
@@ -117,6 +122,7 @@ function BridgeBuildSeatLibraryLedger(seatSnapshot)
             local normalizedName = BridgeNormalizeCardName(containedName)
             local entry = {
                 guid = contained.guid,
+                deckGuid = deckGuid,
                 normalizedName = normalizedName,
                 cardName = containedName,
                 index = tonumber(contained.index or -1) or -1
@@ -133,6 +139,41 @@ function BridgeBuildSeatLibraryLedger(seatSnapshot)
         byName = byName,
         countByName = countByName
     }, nil
+end
+
+function BridgeBuildSeatGraveyardLedger(seatId)
+    local ledger = {byName = {}, countByName = {}, byGuid = {}}
+    local container = BridgeFindGraveyardContainer(seatId)
+    if container == nil then return ledger, nil end
+    local deckGuid = BridgeSafeObjectGuid(container)
+    local entries = {}
+    if container.tag == "Deck" then
+        local ok = pcall(function() entries = container.getObjects() or {} end)
+        if not ok then return nil, "graveyard ledger could not inspect native Deck" end
+    else
+        entries = {{guid = BridgeSafeObjectGuid(container), nickname = BridgePhysicalCanonicalCardName(container), index = 1}}
+    end
+    for _, entry in ipairs(entries) do
+        local guid = entry and (entry.guid or entry.GUID) or nil
+        if guid ~= nil then
+            local name = entry.nickname or entry.name or ""
+            local normalized = BridgeNormalizeCardName(name)
+            local item = {
+                guid = guid,
+                deckGuid = container.tag == "Deck" and deckGuid or nil,
+                cardName = name,
+                normalizedName = normalized,
+                index = tonumber(entry.index or -1) or -1,
+                instanceId = BridgeState.physicalContainedInstanceIdByGuid[guid]
+                    or BridgeState.physicalInstanceIdByGuid[guid]
+            }
+            ledger.byName[normalized] = ledger.byName[normalized] or {}
+            table.insert(ledger.byName[normalized], item)
+            ledger.countByName[normalized] = (ledger.countByName[normalized] or 0) + 1
+            ledger.byGuid[guid] = item
+        end
+    end
+    return ledger, nil
 end
 
 function BridgeObjectIsOnSeatSide(object, seat)
@@ -265,6 +306,8 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
     if ledger == nil then
         return false, ledgerError
     end
+    local graveyardLedger, graveyardLedgerError = BridgeBuildSeatGraveyardLedger(seatSnapshot.seatId)
+    if graveyardLedger == nil then return false, graveyardLedgerError end
 
     local authoritativeCards = {}
     local authoritativeCountByName = {}
@@ -280,7 +323,8 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
 
     for normalizedName, expectedCount in pairs(authoritativeCountByName) do
         local looseCount = looseCountByName[normalizedName] or 0
-        local containedCount = ledger.countByName[normalizedName] or 0
+        local containedCount = (ledger.countByName[normalizedName] or 0)
+            + (graveyardLedger.countByName[normalizedName] or 0)
         local physicalCount = looseCount + containedCount
         if physicalCount < expectedCount then
             local deficit = expectedCount - physicalCount
@@ -304,7 +348,8 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
         local assigned = nil
 
         local function consumeContained()
-            local containedCandidates = ledger.byName[normalized] or {}
+            local containedCandidates = (zoneName == "graveyard"
+                and graveyardLedger.byName[normalized] or ledger.byName[normalized]) or {}
             while #containedCandidates > 0 and containedCandidates[1].assigned == true do
                 table.remove(containedCandidates, 1)
             end
@@ -313,7 +358,10 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
                 contained.assigned = true
                 assigned = {
                     cardName = contained.cardName,
-                    object = nil
+                    object = nil,
+                    guid = contained.guid,
+                    deckGuid = contained.deckGuid,
+                    contained = zoneName == "graveyard" or contained.deckGuid ~= nil
                 }
                 assignedContainedByName[normalized] = (assignedContainedByName[normalized] or 0) + 1
             end
@@ -356,7 +404,24 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
                 end
             end
         end
-        if preservedAsset ~= nil and preservedAsset.assigned ~= true then
+        local preservedContainer = BridgeState.physicalContainerByInstanceId[card.cardInstanceId]
+        local preservedContained = preservedContainer ~= nil and zoneName == "graveyard"
+        if preservedContained then
+            local preservedEntry = graveyardLedger.byGuid[preservedContainer.cardGuid]
+            if preservedEntry ~= nil and preservedEntry.cardName ~= nil
+                and BridgeCardNameMatches(preservedEntry.cardName, card.cardName) then
+                assigned = {
+                    cardName = preservedEntry.cardName,
+                    object = nil,
+                    guid = preservedEntry.guid,
+                    deckGuid = preservedEntry.deckGuid,
+                    contained = true
+                }
+                preservedEntry.assigned = true
+                assignedContainedByName[normalized] = (assignedContainedByName[normalized] or 0) + 1
+            end
+        end
+        if assigned == nil and preservedAsset ~= nil and preservedAsset.assigned ~= true then
             assigned = preservedAsset
             preservedAsset.assigned = true
         elseif zoneName == "library" then
@@ -396,8 +461,12 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
     for _, mapping in ipairs(mappings) do
         BridgeState.cardNameByInstanceId[mapping.card.cardInstanceId] = mapping.card.cardName
         local guid = mapping.asset.guid
-        if mapping.zoneName == "library" or guid == nil then
-            BridgeRecordLibraryContainedState(mapping.card.cardInstanceId, seatSnapshot.seatId, mapping.card.cardName)
+        if mapping.asset.contained == true and mapping.asset.deckGuid ~= nil then
+            BridgeRecordContainedCardIdentity(mapping.card.cardInstanceId, mapping.asset.deckGuid,
+                mapping.asset.guid, seatSnapshot.seatId, mapping.zoneName, mapping.card.cardName)
+        elseif mapping.zoneName == "library" or guid == nil then
+            BridgeRecordLibraryContainedState(mapping.card.cardInstanceId, seatSnapshot.seatId,
+                mapping.card.cardName, ledger.deck, mapping.asset.guid)
         else
             BridgeRecordLooseCardIdentity(mapping.card.cardInstanceId, guid, seatSnapshot.seatId, mapping.zoneName)
             if mapping.asset.object ~= nil then
@@ -412,7 +481,12 @@ end
 
 function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callback)
     local zones = seatSnapshot.zones or {}
-    if zoneIndex > #zones then callback(true, nil); return end
+    if zoneIndex > #zones then
+        local graveyardOk, graveyardError = BridgeEnsureNativeGraveyardContainer(seatSnapshot.seatId)
+        if not graveyardOk then callback(false, graveyardError); return end
+        callback(true, nil)
+        return
+    end
     local zone = zones[zoneIndex]
     local cards = zone.cards or {}
 
@@ -438,6 +512,15 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
         }
         BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex + 1, callback)
         return
+    end
+    if zone.name == "graveyard" and BridgeState.physicalContainerByInstanceId[card.cardInstanceId] ~= nil then
+        local containedDeck, containedEntry = BridgeFindContainedCardEntry(card.cardInstanceId, "graveyard")
+        if containedDeck ~= nil and containedEntry ~= nil
+            and BridgeCardNameMatches(containedEntry.nickname or containedEntry.name, card.cardName) then
+            BridgeState.cardNameByInstanceId[card.cardInstanceId] = card.cardName
+            BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex + 1, callback)
+            return
+        end
     end
     local guid = BridgeState.physicalByInstanceId[card.cardInstanceId]
 
@@ -1203,6 +1286,18 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
                 }
             end
         end
+        for instanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+            if mapping.deckGuid ~= nil and mapping.cardGuid ~= nil
+                and BridgeGetLiveObjectByGuid(mapping.deckGuid) ~= nil then
+                preservedLiveMappings[instanceId] = {
+                    deckGuid = mapping.deckGuid,
+                    cardGuid = mapping.cardGuid,
+                    seatId = mapping.seatId,
+                    zoneName = mapping.zoneName,
+                    cardName = BridgeState.cardNameByInstanceId[instanceId]
+                }
+            end
+        end
     end
 
     BridgeStopEventPolling("session-prepare")
@@ -1277,6 +1372,8 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeGraveyardClear("session-replaced")
     BridgeState.physicalByInstanceId = {}
     BridgeState.physicalInstanceIdByGuid = {}
+    BridgeState.physicalContainerByInstanceId = {}
+    BridgeState.physicalContainedInstanceIdByGuid = {}
     BridgeState.cardNameByInstanceId = {}
     BridgeState.canonicalCardNameByGuid = {}
     BridgeState.encoderIdentityLoggedGuids = {}
@@ -1333,6 +1430,8 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
     BridgeState.libraryExtractionQueueBySeatId = {}
     BridgeState.libraryExtractionActiveBySeatId = {}
+    BridgeState.libraryExtractionTransactionBySeatId = {}
+    BridgeState.graveyardExtractionActiveBySeatId = {}
     BridgeState.libraryBatchBySeatId = {}
     BridgeState.battlefieldCounts = {}
     BridgeState.graveyardCounts = {}
@@ -1391,7 +1490,11 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     -- already-milled duplicate during a Thought Scour burst. New sessions
     -- never enter this branch, so old-match identities cannot cross the fence.
     for instanceId, mapping in pairs(preservedLiveMappings or {}) do
-        if mapping.guid ~= nil and BridgeGetLiveObjectByGuid(mapping.guid) ~= nil then
+        if mapping.deckGuid ~= nil and mapping.cardGuid ~= nil
+            and BridgeGetLiveObjectByGuid(mapping.deckGuid) ~= nil then
+            BridgeRecordContainedCardIdentity(instanceId, mapping.deckGuid, mapping.cardGuid,
+                mapping.seatId, mapping.zoneName, mapping.cardName)
+        elseif mapping.guid ~= nil and BridgeGetLiveObjectByGuid(mapping.guid) ~= nil then
             BridgeState.physicalByInstanceId[instanceId] = mapping.guid
             BridgeState.physicalInstanceIdByGuid[mapping.guid] = instanceId
             BridgeState.physicalSeatByGuid[mapping.guid] = mapping.seatId
@@ -3153,6 +3256,45 @@ function BridgeApplyStructuredCardMove(event)
 
     local guid = BridgeState.physicalByInstanceId[event.cardInstanceId]
     local object = guid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
+    local contained = BridgeState.physicalContainerByInstanceId[event.cardInstanceId]
+    if object == nil and event.sourceZone == "graveyard" and event.destinationZone ~= "graveyard"
+        and contained ~= nil then
+        if BridgeState.graveyardExtractionActiveBySeatId[event.seatId] == true then
+            return true, nil
+        end
+        BridgeState.graveyardExtractionActiveBySeatId[event.seatId] = true
+        local extractionSessionId = BridgeState.eventSessionId
+        local extractionGeneration = BridgeState.physicalTransactionGeneration or 0
+        local function finishGraveyardExtraction(taken, extractionError)
+            if BridgeState.graveyardExtractionActiveBySeatId[event.seatId] ~= true then
+                if taken ~= nil then BridgeSafeObjectCall(taken, function(card) card.destruct() end) end
+                return
+            end
+            BridgeState.graveyardExtractionActiveBySeatId[event.seatId] = nil
+            if extractionSessionId ~= BridgeState.eventSessionId
+                or extractionGeneration ~= (BridgeState.physicalTransactionGeneration or 0) then
+                BridgeLog(string.format("[Bridge] stale graveyard extraction completion seat=%s generation=%s instance=%s",
+                    tostring(event.seatId), tostring(extractionGeneration), tostring(event.cardInstanceId)))
+                return
+            end
+            if taken == nil then
+                BridgeStopOnDesync("contained graveyard extraction failed: " .. tostring(extractionError))
+                return
+            end
+            local takenGuid = BridgeSafeObjectGuid(taken)
+            local recorded = BridgeRecordLooseCardIdentity(event.cardInstanceId, takenGuid,
+                event.seatId, event.destinationZone)
+            if not recorded then
+                BridgeStopOnDesync("contained graveyard extraction could not rebind exact Card")
+                return
+            end
+            BridgeApplyStructuredCardMove(event)
+        end
+        BridgeTakeContainedCardByIdentity(event.cardInstanceId,
+            BridgeResolveSeatZoneAnchor(event.seatId, event.destinationZone or "graveyard"), false,
+            finishGraveyardExtraction)
+        return true, nil
+    end
     if guid ~= nil and object == nil then
         staleMappedGuid = guid
         BridgeState.physicalByInstanceId[event.cardInstanceId] = nil
@@ -3269,7 +3411,7 @@ function BridgeApplyStructuredCardMove(event)
         local transactionSessionId = BridgeState.eventSessionId
         local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
-            if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete(); return end
+            if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
             local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
             if liveDeck == nil then
                 BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued extraction"))
@@ -3277,7 +3419,7 @@ function BridgeApplyStructuredCardMove(event)
                 return
             end
             BridgeTakeTopCardFromLibrary(liveDeck, expectedName, hand.position, true, function(drawn, takeError)
-                if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then return end
+                if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
                 if drawn == nil then
                     if BridgeRecoverFromLibraryOrderMismatch(takeError) then complete(); return end
                     BridgeStopOnDesync(libraryDrawError(takeError))
@@ -3300,7 +3442,7 @@ function BridgeApplyStructuredCardMove(event)
                 BridgeSetPhysicalFaceDown(drawn, seat, event.faceDown == true)
                 BridgeWaitFrames(complete, 1)
             end)
-        end)
+        end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
         return true, nil
     end
 
@@ -3314,7 +3456,7 @@ function BridgeApplyStructuredCardMove(event)
         local transactionSessionId = BridgeState.eventSessionId
         local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
-            if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete(); return end
+            if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
             local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
             if liveDeck == nil then
                 BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued extraction"))
@@ -3323,7 +3465,7 @@ function BridgeApplyStructuredCardMove(event)
             end
             BridgeTakeTopCardFromLibrary(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
                 function(taken, takeError)
-                    if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then return end
+                if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
                     if taken == nil then
                         if BridgeRecoverFromLibraryOrderMismatch(takeError) then complete(); return end
                         BridgeStopOnDesync(libraryDrawError(takeError))
@@ -3340,7 +3482,7 @@ function BridgeApplyStructuredCardMove(event)
                     if not moved then BridgeStopOnDesync(libraryDrawError(moveError)) end
                     BridgeWaitFrames(complete, 1)
                 end)
-        end)
+        end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
         return true, nil
     end
 
@@ -3359,7 +3501,7 @@ function BridgeApplyStructuredCardMove(event)
         local transactionSessionId = BridgeState.eventSessionId
         local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
-            if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete(); return end
+            if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
             local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
             if liveDeck == nil then
                 BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued graveyard extraction"))
@@ -3368,7 +3510,7 @@ function BridgeApplyStructuredCardMove(event)
             end
             BridgeTakeTopCardFromLibrary(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
                 function(taken, takeError)
-                    if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then return end
+                if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
                     if taken == nil then
                         if BridgeRecoverFromLibraryOrderMismatch(takeError) then complete(); return end
                         BridgeStopOnDesync(libraryDrawError(takeError))
@@ -3389,7 +3531,7 @@ function BridgeApplyStructuredCardMove(event)
                     -- library extraction (including its following draw).
                     BridgeWaitTime(complete, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)
                 end)
-        end)
+        end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
         return true, nil
     end
 
@@ -3652,7 +3794,7 @@ function BridgeApplyStructuredCardMove(event)
         else
             local transactionSessionId = BridgeState.eventSessionId
             local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
-            BridgeInsertPhysicalCardIntoLibrary(event.seatId, object, "NORMAL", function(inserted, insertError)
+            BridgeInsertPhysicalCardIntoLibrary(event.seatId, object, "NORMAL", function(inserted, insertError, containingDeck, containedGuid)
                 if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then
                     BridgeLog("[Bridge] ignored stale library insertion callback event=" .. tostring(event.sequence)
                         .. " generation=" .. tostring(transactionGeneration))
@@ -3667,7 +3809,8 @@ function BridgeApplyStructuredCardMove(event)
                 end
                 -- The exact loose GUID is retired only after Deck.getObjects()
                 -- proves that TTS absorbed this card.
-                BridgeRecordLibraryContainedState(event.cardInstanceId, event.seatId, event.cardName)
+                BridgeRecordLibraryContainedState(event.cardInstanceId, event.seatId, event.cardName,
+                    containingDeck, containedGuid)
             end, event.cardInstanceId)
         end
         return true, nil
@@ -3675,6 +3818,100 @@ function BridgeApplyStructuredCardMove(event)
 
     BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, event.destinationZone)
     return true, nil
+end
+
+function BridgeFindGraveyardContainer(seatId, excludeGuid)
+    local anchor = BridgeResolveSeatZoneAnchor(seatId, "graveyard")
+    local seat = BRIDGE_SEATS[seatId]
+    if anchor == nil or seat == nil then return nil end
+    local library = BridgeResolveSeatLibraryDeck(seatId)
+    local libraryGuid = library and BridgeSafeObjectGuid(library) or nil
+    local fallback = nil
+    for _, candidate in ipairs(getAllObjects()) do
+        if BridgeObjectIsUsable(candidate) and candidate ~= nil then
+            local guid = BridgeSafeObjectGuid(candidate)
+            if guid ~= excludeGuid and guid ~= libraryGuid
+                and not BridgeIsPresentationOnlyObject(candidate) then
+                if candidate.tag == "Deck" then
+                    if BridgeDeckContainsTrackedCardForSeat(candidate, seatId)
+                        or BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
+                        return candidate
+                    end
+                elseif candidate.tag == "Card"
+                    and BridgeState.physicalSeatByGuid[guid] == seatId
+                    and BridgeState.physicalZoneByGuid[guid] == "graveyard"
+                    and BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
+                    fallback = candidate
+                end
+            end
+        end
+    end
+    return fallback
+end
+
+function BridgeRecordGraveyardContainerEntries(seatId, deck)
+    if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then return false end
+    local entries = BridgeLibraryEntries(deck)
+    if entries == nil then return false end
+    local deckGuid = BridgeSafeObjectGuid(deck)
+    local recorded = 0
+    for _, entry in ipairs(entries) do
+        local cardGuid = entry and (entry.guid or entry.GUID) or nil
+        local instanceId = cardGuid and (BridgeState.physicalContainedInstanceIdByGuid[cardGuid]
+            or BridgeState.physicalInstanceIdByGuid[cardGuid]) or nil
+        if instanceId ~= nil then
+            local cardName = BridgeState.cardNameByInstanceId[instanceId]
+                or (entry.nickname or entry.name)
+            if BridgeRecordContainedCardIdentity(instanceId, deckGuid, cardGuid,
+                seatId, "graveyard", cardName) then
+                recorded = recorded + 1
+            end
+        end
+    end
+    return recorded == #entries
+end
+
+-- TTS's native putObject is the graveyard presentation boundary. A one-card
+-- graveyard remains a loose Card; adding a second card promotes it to a Deck,
+-- and all subsequent cards enter that same Deck at its authoritative top.
+function BridgeEnsureNativeGraveyardContainer(seatId)
+    local loose = {}
+    for _, object in ipairs(getAllObjects()) do
+        local guid = BridgeSafeObjectGuid(object)
+        if BridgeObjectIsUsable(object) and object.tag == "Card" and guid ~= nil
+            and not BridgeIsPresentationOnlyObject(object)
+            and BridgeState.physicalSeatByGuid[guid] == seatId
+            and BridgeState.physicalZoneByGuid[guid] == "graveyard" then
+            table.insert(loose, object)
+        end
+    end
+    local container = BridgeFindGraveyardContainer(seatId)
+    if container ~= nil and container.tag == "Deck" then
+        for _, object in ipairs(loose) do
+            local guid = BridgeSafeObjectGuid(object)
+            local ok = pcall(function() container.putObject(object, 0) end)
+            if not ok then return false, "could not merge loose graveyard card into native Deck" end
+            BridgeLog(string.format("[Bridge] graveyard container merge seat=%s deckGuid=%s cardGuid=%s",
+                tostring(seatId), tostring(BridgeSafeObjectGuid(container)), tostring(guid)))
+        end
+        return BridgeRecordGraveyardContainerEntries(seatId, container), nil
+    end
+    if #loose < 2 then return true, nil end
+    container = loose[1]
+    for index = 2, #loose do
+        local card = loose[index]
+        local ok, result = pcall(function() return container.putObject(card, 0) end)
+        if not ok then return false, "could not promote graveyard Cards into a native Deck" end
+        if result ~= nil and result.tag == "Deck" then container = result end
+        if container == nil or container.tag ~= "Deck" then
+            container = BridgeFindGraveyardContainer(seatId)
+        end
+        if container == nil or container.tag ~= "Deck" then
+            return false, "TTS did not produce a native graveyard Deck after merging Cards"
+        end
+    end
+    local stable = BridgeRecordGraveyardContainerEntries(seatId, container)
+    return stable, stable and nil or "native graveyard Deck inventory did not preserve exact identities"
 end
 
 function BridgeMoveToGraveyard(event, object)
@@ -3699,7 +3936,32 @@ function BridgeMoveToGraveyard(event, object)
     BridgeRetirePendingCastForInstance(
         event.seatId, event.cardInstanceId, guid, "graveyard-move")
     BridgeClearCardDesignationPresentation(event.cardInstanceId, object)
-    BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "graveyard")
+    local existing = BridgeFindGraveyardContainer(event.seatId, guid)
+    if existing == nil then
+        BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "graveyard")
+        return true, nil
+    end
+    local existingGuid = BridgeSafeObjectGuid(existing)
+    local existingInstanceId = existingGuid and BridgeState.physicalInstanceIdByGuid[existingGuid] or nil
+    local target = existing
+    local ok, result = pcall(function() return target.putObject(object, 0) end)
+    if not ok then return false, "could not add card to native graveyard container: " .. tostring(result) end
+    if result ~= nil and result.tag == "Deck" then target = result end
+    if target == nil or target.tag ~= "Deck" then
+        target = BridgeFindGraveyardContainer(event.seatId)
+    end
+    if target == nil or target.tag ~= "Deck" then
+        return false, "TTS did not produce a native graveyard Deck for two cards"
+    end
+    if existingInstanceId ~= nil then
+        BridgeRecordContainedCardIdentity(existingInstanceId, BridgeSafeObjectGuid(target), existingGuid,
+            event.seatId, "graveyard", BridgeState.cardNameByInstanceId[existingInstanceId])
+    end
+    BridgeRecordContainedCardIdentity(event.cardInstanceId, BridgeSafeObjectGuid(target), guid,
+        event.seatId, "graveyard", event.cardName)
+    if not BridgeRecordGraveyardContainerEntries(event.seatId, target) then
+        return false, "native graveyard Deck did not expose every contained card identity"
+    end
     return true, nil
 end
 
