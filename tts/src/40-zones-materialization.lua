@@ -1375,6 +1375,12 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         BridgeState.ui.autoAdvanceMode = BridgeState.ui.autoPassEmpty and "AUTO-PASS EMPTY" or "NORMAL"
     end
     BridgeState.gameEnded = nil
+    BridgeState.resultSourceEventId = nil
+    BridgeState.resultEventCursor = nil
+    BridgeState.resultSessionId = nil
+    BridgeState.resultOutcome = nil
+    BridgeState.resultReason = nil
+    BridgeState.resultPresentationGeneration = 0
     BridgeState.playerStateBySeatId = {}
     BridgeState.playerCountersBySeatId = {}
 
@@ -1889,11 +1895,47 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "game_ended" then
+        local winners = event.winnerSeatIds or {}
+        local losers = event.loserSeatIds or {}
+        local reason = event.gameEndReason
+        local function recognizedDrawReason(value)
+            local normalized = string.lower(tostring(value or ""))
+            return normalized == "draw"
+                or normalized == "mutual_destruction"
+                or normalized == "simultaneous_loss"
+                or normalized == "state_based_draw"
+                or normalized == "both_lost"
+        end
+        local humanWon = false
+        for _, seatId in ipairs(winners) do
+            if seatId == "forge-player-1" then humanWon = true end
+        end
+        local outcome = nil
+        if #winners == 0 and recognizedDrawReason(reason) then
+            outcome = "draw"
+        elseif #winners > 0 then
+            outcome = humanWon and "victory" or "defeat"
+        else
+            outcome = "unknown"
+        end
+
         BridgeState.gameEnded = {
-            winnerSeatIds = event.winnerSeatIds or {},
-            loserSeatIds = event.loserSeatIds or {},
-            reason = event.gameEndReason
+            authoritative = true,
+            winnerSeatIds = winners,
+            loserSeatIds = losers,
+            reason = reason,
+            outcome = outcome,
+            sourceEventId = event.eventId,
+            sourceEventCursor = event.sequence,
+            sourceSessionId = BridgeState.eventSessionId,
+            presentationGeneration = BridgeState.decisionPresentationGeneration
         }
+        BridgeState.resultSourceEventId = event.eventId
+        BridgeState.resultEventCursor = event.sequence
+        BridgeState.resultSessionId = BridgeState.eventSessionId
+        BridgeState.resultOutcome = outcome
+        BridgeState.resultReason = reason
+        BridgeState.resultPresentationGeneration = BridgeState.decisionPresentationGeneration
         BridgeState.pendingDecision = nil
         BridgeState.lastDecision = nil
         BridgeState.submitting = false
@@ -1905,17 +1947,21 @@ function BridgeApplyAuthoritativeEvent(event)
         BridgeStopDecisionPolling()
         BridgeStopEventPolling("game-ended")
         BridgeScheduleSnapshotReconcile("game_ended final state")
-        local humanWon = false
-        for _, seatId in ipairs(BridgeState.gameEnded.winnerSeatIds) do
-            if seatId == "forge-player-1" then humanWon = true end
-        end
-        local label = #BridgeState.gameEnded.winnerSeatIds == 0 and "DRAW"
-            or (humanWon and "VICTORY" or "DEFEAT")
+        local label = outcome == "draw" and "DRAW"
+            or (outcome == "victory" and "VICTORY"
+                or (outcome == "defeat" and "DEFEAT" or "GAME OVER"))
         BridgeSetStatus(label, "GAME OVER" .. (event.gameEndReason and (": " .. tostring(event.gameEndReason)) or ""))
-        broadcastToAll("[Bridge] " .. label .. " — game over", humanWon and {0.2, 0.9, 0.3} or {0.95, 0.3, 0.3})
+        local bannerColor = outcome == "draw" and {0.95, 0.78, 0.15}
+            or (humanWon and {0.2, 0.9, 0.3}
+                or (outcome == "defeat" and {0.95, 0.3, 0.3} or {0.9, 0.9, 0.9}))
+        broadcastToAll("[Bridge] " .. label .. " — game over", bannerColor)
         BridgeLog("[Bridge] GAME_ENDED winners=" .. table.concat(BridgeState.gameEnded.winnerSeatIds, ",")
             .. " losers=" .. table.concat(BridgeState.gameEnded.loserSeatIds, ",")
-            .. " reason=" .. tostring(event.gameEndReason))
+            .. " reason=" .. tostring(event.gameEndReason)
+            .. " outcome=" .. tostring(outcome)
+            .. " sourceEventId=" .. tostring(event.eventId)
+            .. " cursor=" .. tostring(event.sequence)
+            .. " session=" .. tostring(BridgeState.eventSessionId))
         return true, 0
     end
 

@@ -16,10 +16,21 @@ public sealed record DiagnosticReportRequestDto(
     IReadOnlyList<string>? MappedCardInstanceIds = null,
     IReadOnlyList<DiagnosticPhysicalMappingDto>? PhysicalMappings = null,
     string? Status = null,
+    DiagnosticPresentedResultDto? PresentedResult = null,
     DiagnosticPerformanceSummaryDto? PerformanceSummary = null,
     IReadOnlyList<TtsPerformanceTraceRecordDto>? RecentTtsTrace = null,
     IReadOnlyList<DiagnosticCaptureLifecycleRecordDto>? DiagnosticCaptureLifecycle = null,
     DiagnosticEventDrainDiagnosticsDto? EventDrainDiagnostics = null);
+
+public sealed record DiagnosticPresentedResultDto(
+    bool Presented = false,
+    string? SourceEventId = null,
+    long? SourceEventCursor = null,
+    string? SourceSessionId = null,
+    string? Outcome = null,
+    string? Reason = null,
+    int? PresentationGeneration = null,
+    bool TerminalRecoveryError = false);
 
 /// <summary>Live TTS evidence for one authoritative physical mapping.</summary>
 public sealed record DiagnosticPhysicalMappingDto(

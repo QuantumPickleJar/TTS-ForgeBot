@@ -599,6 +599,29 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void G2B_MentalNoteQueueEntryDoesNotBlockDecisionProgression()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.lastAppliedEventSequence = 20
+            BridgeState.eventQueue = {{sequence=21, kind='mental_note', forgeSequence=0, summary='waiting for next authoritative mutation'}}
+            defer, cursor, applied, reason = BridgeShouldDeferDecision({
+                decisionId='forge-tui-21',
+                kind='main_priority',
+                seatId='forge-player-1',
+                eventCursor=20,
+                forgeSequence=77,
+                actions={{actionId='pass-21', type='pass_priority'}}
+            })
+        ");
+
+        Assert.False(lua.Globals.Get("defer").Boolean);
+        Assert.Equal(20, lua.Globals.Get("cursor").Number);
+        Assert.Equal(20, lua.Globals.Get("applied").Number);
+        Assert.True(lua.Globals.Get("reason").IsNil() || string.IsNullOrWhiteSpace(lua.Globals.Get("reason").String));
+    }
+
+    [Fact]
     public void StaleDecisionAcceptanceDoesNotCrashAndRearmsDecisionPolling()
     {
         var lua = NewQueueProbe();
@@ -745,6 +768,91 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Equal("decision_provenance_lag", state.Get("terminalRecoveryError").Table.Get("kind").String);
         Assert.Equal(177, state.Get("physicalPresentationGeneration").Number);
         Assert.Equal(2, state.Get("physicalTransactionGeneration").Number);
+    }
+
+    [Fact]
+    public void G2C_NullResultIsNotPresentedAsDrawDuringTerminalRecovery()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.terminalRecoveryError = {kind='decision_provenance_lag', detail='stale decision'}
+            BridgeState.gameEnded = {winnerSeatIds={}, loserSeatIds={}, reason=nil}
+            presented = BridgeDiagnosticPresentedResult()
+            authoritative = BridgeCurrentAuthoritativeResult()
+        ");
+
+        Assert.True(lua.Globals.Get("authoritative").IsNil());
+        var presented = lua.Globals.Get("presented").Table;
+        Assert.False(presented.Get("presented").Boolean);
+        Assert.True(presented.Get("terminalRecoveryError").Boolean);
+    }
+
+    [Fact]
+    public void G2D_ExplicitAuthoritativeDrawIncludesSourceEventMetadata()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            function BridgeScheduleSnapshotReconcile(reason) end
+            function BridgeSetStatus(headline, detail) end
+            function BridgeStopDecisionPolling() end
+            function BridgeStopEventPolling(reason) end
+            function BridgeClearHighlights() end
+            function BridgeRollbackPendingIntent() end
+            function BridgeResetSelectionState() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeCancelFastForward(reason) end
+            applied = BridgeApplyAuthoritativeEvent({
+                kind='game_ended',
+                eventId='forge-event-session-200',
+                sequence=200,
+                winnerSeatIds={},
+                loserSeatIds={'forge-player-1','forge-player-2'},
+                gameEndReason='draw'
+            })
+            presented = BridgeDiagnosticPresentedResult()
+            authoritative = BridgeCurrentAuthoritativeResult()
+        ");
+
+        Assert.True(lua.Globals.Get("applied").Boolean);
+        var authoritative = lua.Globals.Get("authoritative").Table;
+        Assert.Equal("draw", authoritative.Get("outcome").String);
+        Assert.Equal("forge-event-session-200", authoritative.Get("sourceEventId").String);
+        Assert.Equal(200, authoritative.Get("sourceEventCursor").Number);
+        var presented = lua.Globals.Get("presented").Table;
+        Assert.True(presented.Get("presented").Boolean);
+    }
+
+    [Fact]
+    public void G2E_NewSessionClearsStalePriorSessionResultState()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'new-session'
+            BridgeState.gameEnded = {
+                authoritative=true,
+                sourceEventId='forge-event-old-9',
+                sourceEventCursor=9,
+                sourceSessionId='old-session',
+                outcome='draw',
+                reason='draw',
+                presentationGeneration=1,
+                winnerSeatIds={},
+                loserSeatIds={}
+            }
+            BridgeState.resultSourceEventId = 'forge-event-old-9'
+            BridgeState.resultEventCursor = 9
+            BridgeState.resultSessionId = 'old-session'
+            BridgeState.resultOutcome = 'draw'
+            BridgeState.resultReason = 'draw'
+            BridgeState.resultPresentationGeneration = 1
+            presented = BridgeDiagnosticPresentedResult()
+            authoritative = BridgeCurrentAuthoritativeResult()
+        ");
+
+        Assert.True(lua.Globals.Get("authoritative").IsNil());
+        Assert.False(lua.Globals.Get("presented").Table.Get("presented").Boolean);
     }
 
     [Fact]

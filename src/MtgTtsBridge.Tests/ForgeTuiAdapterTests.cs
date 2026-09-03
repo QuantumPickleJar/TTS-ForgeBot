@@ -11,6 +11,108 @@ namespace MtgTtsBridge.Tests;
 public sealed class ForgeTuiAdapterTests
 {
     [Fact]
+    public async Task G2A_DecisionPublicationWaitsForStructuredWatermarkAdvance()
+    {
+        await using var adapter = new ForgeTuiAdapter(
+            Options.Create(new ForgeTuiOptions { Executable = "unused", Arguments = "noop", WorkingDirectory = Environment.CurrentDirectory }),
+            NullLogger<ForgeTuiAdapter>.Instance);
+
+        SetPrivateField(adapter, "_sessionId", "session-a");
+        SetPrivateField(adapter, "_state", "awaiting_forge");
+        SetPrivateField(adapter, "_latestEventSequence", 96L);
+        SetPrivateField(adapter, "_latestCommittedMutationCursor", 96L);
+        SetPrivateField(adapter, "_latestDecisionEligibleCursor", 96L);
+        SetPrivateField(adapter, "_latestCommittedMutationForgeSequence", 12L);
+        SetPrivateField(adapter, "_latestObservedForgeSequence", 12L);
+        SetPrivateField(adapter, "_latestObservedTurnNumber", 2);
+        SetPrivateField(adapter, "_latestObservedActiveSeatId", "forge-player-1");
+        SetPrivateField(adapter, "_latestObservedPrioritySeatId", "forge-player-1");
+        SetPrivateField(adapter, "_latestObservedPhaseName", "Main phase, precombat");
+
+        var stage = typeof(ForgeTuiAdapter).GetMethod("StageDecisionCandidate", BindingFlags.Instance | BindingFlags.NonPublic);
+        var applyReady = typeof(ForgeTuiAdapter).GetMethod("ApplyDecisionReadyMarker", BindingFlags.Instance | BindingFlags.NonPublic);
+        var publish = typeof(ForgeTuiAdapter).GetMethod("TryPublishPendingDecision", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(stage);
+        Assert.NotNull(applyReady);
+        Assert.NotNull(publish);
+
+        var candidate = new ForgeTuiDecision(
+            new DecisionDto(
+                "forge-tui-5",
+                "main_priority",
+                [new LegalActionDto("forge-tui-5-choice-0", "pass_priority", "Pass priority", false, null, null)]
+            ),
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["forge-tui-5-choice-0"] = "0"
+            });
+
+        stage!.Invoke(adapter, [candidate, true]);
+        publish!.Invoke(adapter, ["before-watermark"]);
+        var early = await adapter.GetStateAsync(CancellationToken.None);
+        Assert.Null(early.CurrentDecision);
+
+        SetPrivateField(adapter, "_latestEventSequence", 100L);
+        SetPrivateField(adapter, "_latestCommittedMutationCursor", 100L);
+        SetPrivateField(adapter, "_latestDecisionEligibleCursor", 100L);
+        SetPrivateField(adapter, "_latestCommittedMutationForgeSequence", 13L);
+        SetPrivateField(adapter, "_latestObservedForgeSequence", 13L);
+        applyReady!.Invoke(adapter, [new ForgeDecisionReadyMarker("session-a", "forge-tui-5", 13, 100, 1)]);
+
+        publish.Invoke(adapter, ["after-watermark"]);
+        var state = await adapter.GetStateAsync(CancellationToken.None);
+        var published = Assert.IsType<DecisionDto>(state.CurrentDecision);
+        Assert.Equal("forge-tui-5", published.DecisionId);
+        Assert.True((published.EventCursor ?? 0) >= 100);
+        Assert.True((published.ForgeSequence ?? 0) >= 13);
+    }
+
+    [Fact]
+    public async Task G2F_FirstTurnLimitedDecisionPublishesWhenEligible()
+    {
+        await using var adapter = new ForgeTuiAdapter(
+            Options.Create(new ForgeTuiOptions { Executable = "unused", Arguments = "noop", WorkingDirectory = Environment.CurrentDirectory }),
+            NullLogger<ForgeTuiAdapter>.Instance);
+
+        SetPrivateField(adapter, "_sessionId", "session-f");
+        SetPrivateField(adapter, "_state", "awaiting_forge");
+        SetPrivateField(adapter, "_latestEventSequence", 1L);
+        SetPrivateField(adapter, "_latestCommittedMutationCursor", 1L);
+        SetPrivateField(adapter, "_latestDecisionEligibleCursor", 1L);
+        SetPrivateField(adapter, "_latestCommittedMutationForgeSequence", 1L);
+        SetPrivateField(adapter, "_latestObservedForgeSequence", 1L);
+        SetPrivateField(adapter, "_latestObservedTurnNumber", 1);
+        SetPrivateField(adapter, "_latestObservedActiveSeatId", "forge-player-1");
+        SetPrivateField(adapter, "_latestObservedPrioritySeatId", "forge-player-1");
+        SetPrivateField(adapter, "_latestObservedPhaseName", "Untap step");
+
+        var stage = typeof(ForgeTuiAdapter).GetMethod("StageDecisionCandidate", BindingFlags.Instance | BindingFlags.NonPublic);
+        var publish = typeof(ForgeTuiAdapter).GetMethod("TryPublishPendingDecision", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(stage);
+        Assert.NotNull(publish);
+
+        var candidate = new ForgeTuiDecision(
+            new DecisionDto(
+                "forge-tui-1",
+                "main_priority",
+                [new LegalActionDto("forge-tui-1-choice-0", "pass_priority", "Pass priority", false, null, null)]),
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["forge-tui-1-choice-0"] = "0"
+            });
+
+        stage!.Invoke(adapter, [candidate, false]);
+        publish!.Invoke(adapter, ["first-turn-limited"]);
+        var state = await adapter.GetStateAsync(CancellationToken.None);
+
+        var decision = Assert.IsType<DecisionDto>(state.CurrentDecision);
+        Assert.Equal("forge-tui-1", decision.DecisionId);
+        Assert.Equal(1, decision.TurnNumber);
+        Assert.Equal(1, decision.EventCursor);
+        Assert.Equal(1, decision.ForgeSequence);
+    }
+
+    [Fact]
     public async Task SeedTemplate_IsRenderedAsANewConcreteSeedForEachForgeSession()
     {
         await using var adapter = new ForgeTuiAdapter(
@@ -30,6 +132,13 @@ public sealed class ForgeTuiAdapterTests
         Assert.Matches(@"^tui --seed [1-9]\d*$", first);
         Assert.Matches(@"^tui --seed [1-9]\d*$", second);
         Assert.NotEqual(first, second);
+    }
+
+    private static void SetPrivateField(object target, string fieldName, object? value)
+    {
+        var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field!.SetValue(target, value);
     }
 
     [Fact]
@@ -209,7 +318,7 @@ public sealed class ForgeTuiAdapterTests
             echo @@FORGE_BRIDGE_STATE@@{"version":1,"type":"snapshot","sequence":1,"reason":"main","turnNumber":1,"activeSeatId":"forge-player-1","prioritySeatId":"forge-player-1","phase":"Main phase, precombat","players":[],"stack":[]}
             echo What would you like to do?
             echo   0. Pass priority (do nothing)
-            echo   1. Play land: Plains [id=42] [bridge actionKind=play_land sourceZone=hand]
+            echo   1. Play land: Plains [bridge actionKind=play_land sourceZone=hand]
             <nul set /p "=Enter choice (0-1): "
             set /p choice=
             """);

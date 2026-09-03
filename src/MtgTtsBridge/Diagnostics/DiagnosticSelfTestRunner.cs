@@ -36,16 +36,52 @@ public sealed class DiagnosticSelfTestRunner
             CheckSessionExists(adapterState, request),
             CheckSessionAgreement(adapterState, request),
             CheckDecisionAgreement(adapterState, request),
+            CheckDecisionWatermarks(adapterState),
             CheckEventSequence(eventBatch),
             CheckTtsNotAhead(eventBatch, request),
             CheckTtsBehind(eventBatch, request),
             CheckSnapshot(snapshot),
             CheckCardMappings(snapshot, request),
             CheckDecisionProvenanceLag(adapterState, eventBatch, snapshot, request),
+            CheckResultPresentationInvariants(adapterState, request),
             CheckRecoveryInvariants(eventBatch, snapshot, request),
             CheckGenerationChurn(adapterState, eventBatch, snapshot, request)
         };
         return new DiagnosticSelfTestResult(checks);
+    }
+
+    private static DiagnosticSelfTestCheck CheckDecisionWatermarks(AdapterStateDto? state)
+    {
+        if (state?.Diagnostic is null)
+            return Check("decision_watermark_ordering", "info", "unavailable", "Adapter did not provide decision watermark diagnostics.");
+        var decision = state.CurrentDecision;
+        if (decision is null)
+            return Check("decision_watermark_ordering", "info", "unavailable", "No authoritative current decision is available.");
+
+        var eligible = state.Diagnostic.LatestDecisionEligibleCursor;
+        if (eligible is not null && decision.EventCursor is not null && decision.EventCursor < eligible)
+        {
+            return Check("decision_watermark_ordering", "error", "fail",
+                "Current decision cursor is behind the latest decision-eligible cursor.",
+                new Dictionary<string, object?>
+                {
+                    ["decisionId"] = decision.DecisionId,
+                    ["decisionCursor"] = decision.EventCursor,
+                    ["eligibleCursor"] = eligible,
+                    ["committedCursor"] = state.Diagnostic.LatestCommittedMutationCursor,
+                    ["observedCursor"] = state.Diagnostic.LatestObservedEventCursor
+                });
+        }
+
+        if (state.Diagnostic.PendingDecisionAwaitingWatermark
+            && string.Equals(state.Diagnostic.PendingDecisionId, decision.DecisionId, StringComparison.Ordinal))
+        {
+            return Check("decision_watermark_ordering", "error", "fail",
+                "A pending textual decision is exposed before its structured watermark completed.",
+                new Dictionary<string, object?> { ["decisionId"] = decision.DecisionId });
+        }
+
+        return Check("decision_watermark_ordering", "info", "pass", "Decision publication respects watermark ordering.");
     }
 
     private static DiagnosticSelfTestCheck CheckBridgeProcess(BridgeProcessIdentity identity, AdapterStateDto? state) =>
@@ -216,6 +252,33 @@ public sealed class DiagnosticSelfTestRunner
             ? Check("recovery_state_invariants", "info", "pass", "No recovery scheduler invariant failure was detected.")
             : Check("recovery_state_invariants", "error", "fail", "Recovery scheduler state violates terminal/liveness invariants.",
                 new Dictionary<string, object?> { ["failures"] = failures.ToArray() });
+    }
+
+    private static DiagnosticSelfTestCheck CheckResultPresentationInvariants(AdapterStateDto? state, DiagnosticReportRequestDto request)
+    {
+        var presented = request.PresentedResult;
+        if (presented is null || !presented.Presented)
+            return Check("result_presentation_invariants", "info", "unavailable", "TTS did not report a presented match result.");
+
+        var failures = new List<string>();
+        if (presented.TerminalRecoveryError) failures.Add("TERMINAL_RECOVERY_PRESENTED_AS_MATCH_RESULT");
+        if (state?.Result is null && string.Equals(presented.Outcome, "draw", StringComparison.OrdinalIgnoreCase))
+            failures.Add("NULL_RESULT_PRESENTED_AS_DRAW");
+        if (string.IsNullOrWhiteSpace(presented.SourceEventId) || presented.SourceEventCursor is null)
+            failures.Add("RESULT_PRESENTED_WITHOUT_SOURCE_EVENT");
+        if (!string.IsNullOrWhiteSpace(presented.SourceSessionId)
+            && !string.IsNullOrWhiteSpace(request.SessionId)
+            && !string.Equals(presented.SourceSessionId, request.SessionId, StringComparison.Ordinal))
+            failures.Add("RESULT_EVENT_FROM_OTHER_SESSION");
+
+        if (failures.Count > 0)
+        {
+            return Check("result_presentation_invariants", "error", "fail",
+                "Result presentation violates authoritative result gating.",
+                new Dictionary<string, object?> { ["failures"] = failures.ToArray() });
+        }
+
+        return Check("result_presentation_invariants", "info", "pass", "Presented match result has authoritative source metadata.");
     }
 
     private static DiagnosticSelfTestCheck CheckGenerationChurn(

@@ -2053,7 +2053,7 @@ public sealed class TtsGlobalLuaContractTests
     public void HudPhaseColorIsDerivedFromAuthoritativePhaseWithoutAdvancingTurn()
     {
         Assert.Contains("function BridgeHudPhaseColor(phase)", Script);
-        Assert.Contains("BridgeHudStatus\", \"color\", terminal and \"#F8FAFC\" or BridgeHudPhaseColor(BridgeState.currentPhase)", Script);
+        Assert.Contains("BridgeHudStatus\", \"color\", (terminal or protocolStopped) and \"#F8FAFC\" or BridgeHudPhaseColor(BridgeState.currentPhase)", Script);
         Assert.Contains("BridgeHudRefreshPhaseRibbon()", Script);
     }
 
@@ -2653,7 +2653,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void YieldTurn_IsVisibleWithoutHumanDecisionAndRemainsTurnScoped()
     {
-        Assert.Contains("local yieldPolicyAvailable = BridgeState.gameEnded == nil", Script);
+        Assert.Contains("local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil and BridgeState.terminalRecoveryError == nil", Script);
         Assert.Contains("(hasYield or yieldPolicyAvailable)", Script);
         Assert.Contains("yieldPolicyTurnNumber = tonumber(BridgeState.tableTurnCount or 0)", Script);
         Assert.Contains("BridgeArmYieldPolicy(activeSeat, decision == nil and \"no-human-decision\"", Script);

@@ -229,6 +229,118 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public void SelfTests_FailWhenDecisionCursorIsBehindEligibleWatermark()
+    {
+        var decision = new DecisionDto(
+            "forge-tui-5", "main_priority",
+            [new LegalActionDto("forge-tui-5-choice-0", "pass_priority", "Pass priority", false, null, null)])
+        {
+            SessionId = "session",
+            EventCursor = 96,
+            ForgeSequence = 12
+        };
+        var diagnostic = new AdapterDiagnosticDto(
+            null, null, null, [],
+            LatestObservedEventCursor: 100,
+            LatestCommittedMutationCursor: 100,
+            LatestDecisionEligibleCursor: 100,
+            LatestCommittedMutationForgeSequence: 13,
+            PendingDecisionId: null,
+            PendingDecisionAwaitingWatermark: false);
+        var state = new AdapterStateDto("session", "awaiting_human_decision", decision, null, diagnostic);
+
+        var result = new DiagnosticSelfTestRunner().Run(
+            state,
+            new EventBatchDto(0, 1, 100, false, []),
+            new GameSnapshotDto("session", 13, "after-mutation", [], [], EventCursor: 100),
+            new DiagnosticReportRequestDto(SessionId: "session", LastAppliedEventSequence: 100),
+            new BridgeProcessIdentity());
+
+        var check = Assert.Single(result.Checks, item => item.Id == "decision_watermark_ordering");
+        Assert.Equal("fail", check.Status);
+    }
+
+    [Fact]
+    public void SelfTests_FailWhenNullResultIsPresentedAsDraw()
+    {
+        var result = new DiagnosticSelfTestRunner().Run(
+            new AdapterStateDto("session", "awaiting_human_decision", null, null, null, null),
+            new EventBatchDto(0, 1, 100, false, []),
+            null,
+            new DiagnosticReportRequestDto(
+                SessionId: "session",
+                PresentedResult: new DiagnosticPresentedResultDto(
+                    Presented: true,
+                    SourceEventId: "forge-event-session-100",
+                    SourceEventCursor: 100,
+                    SourceSessionId: "session",
+                    Outcome: "draw",
+                    Reason: "draw")),
+            new BridgeProcessIdentity());
+
+        var check = Assert.Single(result.Checks, item => item.Id == "result_presentation_invariants");
+        Assert.Equal("fail", check.Status);
+        Assert.Contains("NULL_RESULT_PRESENTED_AS_DRAW", Assert.IsType<string[]>(check.Evidence!["failures"]));
+    }
+
+    [Fact]
+    public void SelfTests_PassForAuthoritativeExplicitDrawPresentation()
+    {
+        var state = new AdapterStateDto(
+            "session",
+            "game_ended",
+            null,
+            null,
+            null,
+            new GameResultDto([], [], "draw"));
+        var result = new DiagnosticSelfTestRunner().Run(
+            state,
+            new EventBatchDto(0, 1, 140, false, []),
+            null,
+            new DiagnosticReportRequestDto(
+                SessionId: "session",
+                PresentedResult: new DiagnosticPresentedResultDto(
+                    Presented: true,
+                    SourceEventId: "forge-event-session-140",
+                    SourceEventCursor: 140,
+                    SourceSessionId: "session",
+                    Outcome: "draw",
+                    Reason: "state_based_draw",
+                    PresentationGeneration: 3)),
+            new BridgeProcessIdentity());
+
+        var check = Assert.Single(result.Checks, item => item.Id == "result_presentation_invariants");
+        Assert.Equal("pass", check.Status);
+    }
+
+    [Fact]
+    public void SelfTests_FailWhenTerminalRecoveryIsPresentedAsMatchResultOrWrongSession()
+    {
+        var result = new DiagnosticSelfTestRunner().Run(
+            new AdapterStateDto("session-a", "awaiting_human_decision", null, null),
+            new EventBatchDto(0, 1, 100, false, []),
+            null,
+            new DiagnosticReportRequestDto(
+                SessionId: "session-a",
+                PresentedResult: new DiagnosticPresentedResultDto(
+                    Presented: true,
+                    SourceEventId: null,
+                    SourceEventCursor: null,
+                    SourceSessionId: "session-b",
+                    Outcome: "draw",
+                    Reason: null,
+                    TerminalRecoveryError: true)),
+            new BridgeProcessIdentity());
+
+        var check = Assert.Single(result.Checks, item => item.Id == "result_presentation_invariants");
+        Assert.Equal("fail", check.Status);
+        var failures = Assert.IsType<string[]>(check.Evidence!["failures"]);
+        Assert.Contains("TERMINAL_RECOVERY_PRESENTED_AS_MATCH_RESULT", failures);
+        Assert.Contains("RESULT_PRESENTED_WITHOUT_SOURCE_EVENT", failures);
+        Assert.Contains("RESULT_EVENT_FROM_OTHER_SESSION", failures);
+    }
+
+    [Fact]
     public void SelfTests_FailTerminalRecoveryWhenResyncStillInFlight()
     {
         var request = new DiagnosticReportRequestDto(

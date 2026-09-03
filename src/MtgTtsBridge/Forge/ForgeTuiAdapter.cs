@@ -38,9 +38,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     // parser/reconciler/session state.
     private long _processGeneration;
     private Task? _stdoutReaderTask;
-    private TaskCompletionSource<ForgeTuiDecision>? _nextDecision;
+    private TaskCompletionSource<DecisionDto>? _nextDecision;
     private DecisionDto? _currentDecision;
     private IReadOnlyDictionary<string, string>? _currentInputs;
+    private PendingDecisionCandidate? _pendingDecision;
     private string _sessionId = "session-not-started";
     private string _state = "not_started";
     private string? _diagnosticCode;
@@ -63,6 +64,9 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private string? _latestObservedPrioritySeatId;
     private string? _latestObservedActiveSeatId;
     private long? _latestObservedForgeSequence;
+    private long _latestCommittedMutationCursor;
+    private long _latestDecisionEligibleCursor;
+    private long? _latestCommittedMutationForgeSequence;
     private bool _firstForgeOutputLogged;
 
     private const int EventHistoryLimit = 512;
@@ -229,7 +233,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         var cancellation = new CancellationTokenSource();
-        TaskCompletionSource<ForgeTuiDecision> initialDecision;
+        TaskCompletionSource<DecisionDto> initialDecision;
         long processGeneration;
 
         lock (_sync)
@@ -249,6 +253,9 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _latestObservedPrioritySeatId = null;
             _latestObservedActiveSeatId = null;
             _latestObservedForgeSequence = null;
+            _latestCommittedMutationCursor = 0;
+            _latestDecisionEligibleCursor = 0;
+            _latestCommittedMutationForgeSequence = null;
             _firstForgeOutputLogged = false;
             _resolvedChoices.Clear();
             _seenDecisions.Clear();
@@ -257,6 +264,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _state = "starting";
             _currentDecision = null;
             _currentInputs = null;
+            _pendingDecision = null;
             _diagnosticCode = null;
             _diagnosticMessage = null;
             _diagnosticContext = null;
@@ -296,8 +304,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
         try
         {
-            var decision = await WaitForDecisionAsync(initialDecision, _options.StartupTimeoutSeconds, cancellationToken, "startup").ConfigureAwait(false);
-            SetDecision(decision);
+            _ = await WaitForDecisionAsync(initialDecision, _options.StartupTimeoutSeconds, cancellationToken, "startup").ConfigureAwait(false);
             return CreateState();
         }
         catch (ForgeUnsupportedPromptException)
@@ -313,7 +320,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
     public async Task<ForgeChoiceResult> SubmitChoiceAsync(ChoiceRequestDto request, CancellationToken cancellationToken)
     {
-        TaskCompletionSource<ForgeTuiDecision> waiter;
+        TaskCompletionSource<DecisionDto> waiter;
         string forgeInput = string.Empty;
         Process? process;
         DecisionDto? decisionForRequest;
@@ -439,8 +446,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
         try
         {
-            var decision = await WaitForDecisionAsync(waiter, _options.DecisionTimeoutSeconds, cancellationToken, "decision").ConfigureAwait(false);
-            SetDecision(decision);
+            _ = await WaitForDecisionAsync(waiter, _options.DecisionTimeoutSeconds, cancellationToken, "decision").ConfigureAwait(false);
             lock (_sync)
             {
                 if (_resolvedChoices.TryGetValue(request.DecisionId, out var choice))
@@ -472,6 +478,16 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
     private sealed record ResolvedChoice(string ActionId, string State);
     private sealed record SeenDecision(DateTimeOffset FirstPresentedAtUtc, string? ResolvedActionId, DateTimeOffset? ResolvedAtUtc);
+    private readonly record struct PendingDecisionCandidate(
+        DecisionDto Decision,
+        IReadOnlyDictionary<string, string> Inputs,
+        long BaselineObservedCursor,
+        long BaselineCommittedCursor,
+        long? BaselineForgeSequence,
+        bool RequireMutationAdvance,
+        bool WaitingForFrameCompletion,
+        long? RequiredReadySequence,
+        long? RequiredMutationGeneration);
 
     private bool IsCurrentProcessGeneration(Process process, long processGeneration)
     {
@@ -525,6 +541,9 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     {
                         _latestObservedForgeSequence = snapshot.Sequence;
                         foreach (var rawEvent in _structuredState.Apply(_sessionId, snapshot)) EnqueueEvent(rawEvent);
+                        _latestCommittedMutationCursor = _latestEventSequence;
+                        _latestCommittedMutationForgeSequence = snapshot.Sequence;
+                        _latestDecisionEligibleCursor = _latestCommittedMutationCursor;
                         var current = _structuredState.Current;
                         if (current is not null)
                         {
@@ -539,6 +558,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                             snapshot.Sequence,
                             snapshot.Reason);
                     }
+                    foreach (var marker in output.DecisionReadyMarkers ?? [])
+                    {
+                        ApplyDecisionReadyMarker(marker);
+                    }
+                    TryPublishPendingDecision("structured-watermark");
 
                     var tuiText = output.TuiText;
                     if (tuiText.Length > 0)
@@ -571,6 +595,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                         }
                     }
                     result = _parser.Append(tuiText);
+                    if (result.ParsedDecision is not null)
+                    {
+                        StageDecisionCandidate(result.ParsedDecision, output.FrameInProgress);
+                        TryPublishPendingDecision("parsed-decision");
+                    }
                 }
                 var stopForParserFailure = false;
                 lock (_sync)
@@ -585,7 +614,6 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                             parsed.Decision.Kind,
                             parsed.Decision.Prompt ?? "(none)",
                             parsed.Decision.Actions.Count);
-                        _nextDecision?.TrySetResult(parsed);
                     }
                     if (result.UnsupportedPrompt is not null)
                     {
@@ -619,13 +647,13 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
     }
 
-    private TaskCompletionSource<ForgeTuiDecision> NewDecisionWaiter()
+    private TaskCompletionSource<DecisionDto> NewDecisionWaiter()
     {
         _nextDecision = new(TaskCreationOptions.RunContinuationsAsynchronously);
         return _nextDecision;
     }
 
-    private async Task<ForgeTuiDecision> WaitForDecisionAsync(TaskCompletionSource<ForgeTuiDecision> waiter, int seconds, CancellationToken cancellationToken, string operation)
+    private async Task<DecisionDto> WaitForDecisionAsync(TaskCompletionSource<DecisionDto> waiter, int seconds, CancellationToken cancellationToken, string operation)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(1, seconds)));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
@@ -636,46 +664,194 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
     }
 
-    private void SetDecision(ForgeTuiDecision decision)
+    private static string? NormalizeInstanceId(string sessionId, string? value) =>
+        value is not null && value.StartsWith("forge-object:", StringComparison.Ordinal)
+            ? $"forge:{sessionId}:{value["forge-object:".Length..]}"
+            : value;
+
+    private void StageDecisionCandidate(ForgeTuiDecision parsed, bool structuredFrameInProgress)
     {
-        lock (_sync)
+        var baselineForgeSequence = _latestCommittedMutationForgeSequence
+            ?? _latestObservedForgeSequence
+            ?? _structuredState.Current?.ForgeSequence;
+        var sessionId = _sessionId;
+        var normalizedActions = parsed.Decision.Actions.Select(action => action with
         {
-            if (_currentDecision is null && _state == "starting") _startupTracker.MarkFirstDecision();
-            string? NormalizeInstanceId(string? value) =>
-                value is not null && value.StartsWith("forge-object:", StringComparison.Ordinal)
-                    ? $"forge:{_sessionId}:{value["forge-object:".Length..]}"
-                    : value;
-            var actions = decision.Decision.Actions.Select(action => action with
-            {
-                CardInstanceId = NormalizeInstanceId(action.CardInstanceId),
-                SourceCardInstanceId = NormalizeInstanceId(action.SourceCardInstanceId),
-                PreparedSourceCardInstanceId = NormalizeInstanceId(action.PreparedSourceCardInstanceId)
-            }).ToArray();
+            CardInstanceId = NormalizeInstanceId(sessionId, action.CardInstanceId),
+            SourceCardInstanceId = NormalizeInstanceId(sessionId, action.SourceCardInstanceId),
+            PreparedSourceCardInstanceId = NormalizeInstanceId(sessionId, action.PreparedSourceCardInstanceId)
+        }).ToArray();
+        var normalizedDecision = parsed.Decision with
+        {
+            SeatId = _options.HumanSeatId,
+            Actions = normalizedActions,
+            SourceCardInstanceId = NormalizeInstanceId(sessionId, parsed.Decision.SourceCardInstanceId),
+            ContextCardInstanceId = NormalizeInstanceId(sessionId, parsed.Decision.ContextCardInstanceId),
+            SessionId = sessionId,
+        };
 
-            var inputs = decision.Inputs.ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.Ordinal);
+        _pendingDecision = new PendingDecisionCandidate(
+            normalizedDecision,
+            parsed.Inputs.ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.Ordinal),
+            _latestEventSequence,
+            _latestCommittedMutationCursor,
+            baselineForgeSequence,
+            _state == "awaiting_forge" && baselineForgeSequence is not null && structuredFrameInProgress,
+            structuredFrameInProgress,
+            null,
+            null);
+    }
 
-            _currentDecision = decision.Decision with { SeatId = _options.HumanSeatId, Actions = actions };
-            _currentDecision = _currentDecision with
-            {
-                SourceCardInstanceId = NormalizeInstanceId(_currentDecision.SourceCardInstanceId),
-                ContextCardInstanceId = NormalizeInstanceId(_currentDecision.ContextCardInstanceId),
-                SessionId = _sessionId,
-                EventCursor = _latestEventSequence,
-                ForgeSequence = _latestObservedForgeSequence ?? _structuredState.Current?.ForgeSequence,
-                TurnNumber = _latestObservedTurnNumber,
-                ActiveSeatId = _latestObservedActiveSeatId,
-                PrioritySeatId = _latestObservedPrioritySeatId,
-                PhaseName = _latestObservedPhaseName,
-            };
-            _currentInputs = inputs;
-            _state = "awaiting_human_decision";
-            RecordDecisionPresented(_currentDecision.DecisionId);
-            _logger.LogInformation(
-                "DECISION_PRESENTED session={SessionId} decision={DecisionId} state={State}",
-                _sessionId,
-                _currentDecision.DecisionId,
-                _state);
+    private void ApplyDecisionReadyMarker(ForgeDecisionReadyMarker marker)
+    {
+        if (_pendingDecision is null) return;
+        if (!string.Equals(marker.SessionId, _sessionId, StringComparison.Ordinal)) return;
+        var pendingDecisionId = _pendingDecision.Value.Decision.DecisionId;
+        if (!string.IsNullOrWhiteSpace(marker.DecisionId)
+            && !string.Equals(marker.DecisionId, pendingDecisionId, StringComparison.Ordinal)) return;
+        _pendingDecision = _pendingDecision.Value with
+        {
+            RequiredReadySequence = marker.StructuredSnapshotSequence,
+            RequiredMutationGeneration = marker.MutationGeneration,
+            WaitingForFrameCompletion = false,
+        };
+    }
+
+    private bool PendingDecisionEligible(PendingDecisionCandidate candidate)
+    {
+        if (candidate.WaitingForFrameCompletion) return false;
+
+        if (candidate.RequiredReadySequence is not null)
+        {
+            var committedSequence = _latestCommittedMutationForgeSequence
+                ?? _latestObservedForgeSequence
+                ?? _structuredState.Current?.ForgeSequence
+                ?? 0;
+            return committedSequence >= candidate.RequiredReadySequence.Value;
         }
+
+        if (!candidate.RequireMutationAdvance) return true;
+        var committedSequenceForDecision = _latestCommittedMutationForgeSequence
+            ?? _latestObservedForgeSequence
+            ?? _structuredState.Current?.ForgeSequence;
+        if (committedSequenceForDecision is null || candidate.BaselineForgeSequence is null) return true;
+        if (committedSequenceForDecision > candidate.BaselineForgeSequence) return true;
+        return _latestCommittedMutationCursor > candidate.BaselineCommittedCursor;
+    }
+
+    private bool ValidatePublishedDecision(DecisionDto decision, out string reason)
+    {
+        var current = _structuredState.Current;
+        if (current is null)
+        {
+            reason = string.Empty;
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(current.PrioritySeatId)
+            && !string.IsNullOrWhiteSpace(decision.PrioritySeatId)
+            && !string.Equals(decision.PrioritySeatId, current.PrioritySeatId, StringComparison.Ordinal))
+        {
+            reason = "priority_mismatch";
+            return false;
+        }
+        if (!string.IsNullOrWhiteSpace(current.ActiveSeatId)
+            && !string.IsNullOrWhiteSpace(decision.ActiveSeatId)
+            && !string.Equals(decision.ActiveSeatId, current.ActiveSeatId, StringComparison.Ordinal))
+        {
+            reason = "active_seat_mismatch";
+            return false;
+        }
+        if (!string.IsNullOrWhiteSpace(current.Phase)
+            && !string.IsNullOrWhiteSpace(decision.PhaseName)
+            && !string.Equals(decision.PhaseName, current.Phase, StringComparison.Ordinal))
+        {
+            reason = "phase_mismatch";
+            return false;
+        }
+        if (current.TurnNumber is not null && decision.TurnNumber is not null && decision.TurnNumber != current.TurnNumber)
+        {
+            reason = "turn_mismatch";
+            return false;
+        }
+
+        var visibleInstances = current.Seats.SelectMany(seat => seat.Zones)
+            .SelectMany(zone => zone.Cards)
+            .Select(card => card.CardInstanceId)
+            .Concat(current.Stack.Select(card => card.CardInstanceId))
+            .ToHashSet(StringComparer.Ordinal);
+
+        bool HasInstance(string? instanceId) => string.IsNullOrWhiteSpace(instanceId) || visibleInstances.Contains(instanceId);
+
+        if (!HasInstance(decision.SourceCardInstanceId) || !HasInstance(decision.ContextCardInstanceId))
+        {
+            reason = "decision_context_card_missing";
+            return false;
+        }
+
+        foreach (var action in decision.Actions)
+        {
+            if (!HasInstance(action.CardInstanceId)
+                || !HasInstance(action.SourceCardInstanceId)
+                || !HasInstance(action.PreparedSourceCardInstanceId))
+            {
+                reason = "action_card_reference_missing";
+                return false;
+            }
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private void TryPublishPendingDecision(string reason)
+    {
+        if (_pendingDecision is null) return;
+        var pending = _pendingDecision.Value;
+        if (!PendingDecisionEligible(pending)) return;
+
+        var published = pending.Decision with
+        {
+            SessionId = _sessionId,
+            EventCursor = _latestDecisionEligibleCursor > 0 ? _latestDecisionEligibleCursor : _latestEventSequence,
+            ForgeSequence = _latestCommittedMutationForgeSequence ?? _latestObservedForgeSequence ?? _structuredState.Current?.ForgeSequence,
+            TurnNumber = _latestObservedTurnNumber,
+            ActiveSeatId = _latestObservedActiveSeatId,
+            PrioritySeatId = _latestObservedPrioritySeatId,
+            PhaseName = _latestObservedPhaseName,
+        };
+
+        if (!ValidatePublishedDecision(published, out var validationFailure))
+        {
+            _logger.LogWarning(
+                "Discarded staged decision {DecisionId} after watermark due to {ValidationFailure}; baselineCursor={BaselineCursor} committedCursor={CommittedCursor} baselineForge={BaselineForge} committedForge={CommittedForge}",
+                pending.Decision.DecisionId,
+                validationFailure,
+                pending.BaselineCommittedCursor,
+                _latestCommittedMutationCursor,
+                pending.BaselineForgeSequence,
+                _latestCommittedMutationForgeSequence);
+            _pendingDecision = null;
+            return;
+        }
+
+        if (_currentDecision is null && _state == "starting") _startupTracker.MarkFirstDecision();
+        _currentDecision = published;
+        _currentInputs = pending.Inputs;
+        _state = "awaiting_human_decision";
+        _pendingDecision = null;
+        RecordDecisionPresented(_currentDecision.DecisionId);
+        _logger.LogInformation(
+            "DECISION_PRESENTED session={SessionId} decision={DecisionId} state={State} reason={Reason} observedCursor={ObservedCursor} committedCursor={CommittedCursor} eligibleCursor={EligibleCursor} forgeSequence={ForgeSequence}",
+            _sessionId,
+            _currentDecision.DecisionId,
+            _state,
+            reason,
+            _latestEventSequence,
+            _latestCommittedMutationCursor,
+            _latestDecisionEligibleCursor,
+            _latestCommittedMutationForgeSequence ?? _latestObservedForgeSequence);
+        _nextDecision?.TrySetResult(_currentDecision);
     }
 
     private void RecordDecisionPresented(string decisionId)
@@ -1058,7 +1234,13 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 _diagnosticContext,
                 _startupTracker.Snapshot(),
                 new Dictionary<string, int>(_inheritedHumanDecisionKinds, StringComparer.Ordinal),
-                _recentControllerDiagnostics.ToArray());
+                _recentControllerDiagnostics.ToArray(),
+                _latestEventSequence,
+                _latestCommittedMutationCursor,
+                _latestDecisionEligibleCursor,
+                _latestCommittedMutationForgeSequence,
+                _pendingDecision?.Decision.DecisionId,
+                _pendingDecision is not null);
             return new AdapterStateDto(_sessionId, _state, _currentDecision, null, diagnostic, _structuredState.Current?.Result);
         }
     }

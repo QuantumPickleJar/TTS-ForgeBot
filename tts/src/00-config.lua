@@ -275,6 +275,29 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
     return record
 end
 
+function BridgeCurrentAuthoritativeResult()
+    local result = BridgeState.gameEnded
+    if result == nil then return nil end
+    if result.authoritative ~= true then return nil end
+    if result.sourceEventId == nil or result.sourceEventCursor == nil then return nil end
+    if result.sourceSessionId == nil or result.sourceSessionId ~= BridgeState.eventSessionId then return nil end
+    return result
+end
+
+function BridgeDiagnosticPresentedResult()
+    local result = BridgeCurrentAuthoritativeResult()
+    return {
+        presented = result ~= nil,
+        sourceEventId = result and result.sourceEventId or nil,
+        sourceEventCursor = result and result.sourceEventCursor or nil,
+        sourceSessionId = result and result.sourceSessionId or nil,
+        outcome = result and result.outcome or nil,
+        reason = result and result.reason or nil,
+        presentationGeneration = result and result.presentationGeneration or nil,
+        terminalRecoveryError = BridgeState.terminalRecoveryError ~= nil
+    }
+end
+
 -- Keep repeated stale automatic-resync responses visible without changing
 -- recovery behavior. A same-cursor response is not progress merely because
 -- the request succeeded; this bounded streak makes a readiness loop
@@ -1220,6 +1243,12 @@ BridgeState = {
     choiceProtocolPaused = false,
     choiceProtocolFailureTimes = {},
     gameEnded = nil,
+    resultSourceEventId = nil,
+    resultEventCursor = nil,
+    resultSessionId = nil,
+    resultOutcome = nil,
+    resultReason = nil,
+    resultPresentationGeneration = 0,
     playerStateBySeatId = {},
     playerCountersBySeatId = {},
     ui = {mounted = false, dirty = false, flushScheduled = false, actionRows = {}, contextInstanceId = nil,
@@ -1460,6 +1489,12 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.attackOriginByGuid = {}
     BridgeState.pendingCastBySeatId = {}
     BridgeState.gameEnded = nil
+    BridgeState.resultSourceEventId = nil
+    BridgeState.resultEventCursor = nil
+    BridgeState.resultSessionId = nil
+    BridgeState.resultOutcome = nil
+    BridgeState.resultReason = nil
+    BridgeState.resultPresentationGeneration = 0
     BridgeState.eventPolling = false
     BridgeState.eventRequestInFlight = false
     BridgeState.eventPollScheduled = false

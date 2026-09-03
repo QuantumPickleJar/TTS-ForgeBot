@@ -2276,6 +2276,7 @@ function BridgeHudSubmitReport(category, summary)
         mappedCardInstanceIds = BridgeHudReportMappedCardInstanceIds(),
         physicalMappings = BridgeHudReportPhysicalMappings(),
         status = BridgeState.statusHeadline,
+        presentedResult = BridgeDiagnosticPresentedResult ~= nil and BridgeDiagnosticPresentedResult() or nil,
         performanceSummary = performance.performanceSummary,
         recentTtsTrace = performance.recentTtsTrace,
         diagnosticCaptureLifecycle = performance.diagnosticCaptureLifecycle,
@@ -2490,16 +2491,17 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudReportStatus", "color", string.find(string.upper(tostring(ui.reportStatus or "")), "ERROR", 1, true) and BRIDGE_HUD_COLORS.danger or BRIDGE_HUD_COLORS.success)
 
     local decision = BridgeState.lastDecision
-    local terminal = BridgeState.gameEnded
+    local terminal = BridgeCurrentAuthoritativeResult ~= nil and BridgeCurrentAuthoritativeResult() or nil
+    local protocolStopped = BridgeState.terminalRecoveryError ~= nil
     local requiresConfirm = decision ~= nil and BridgeDecisionNeedsConfirmation(decision)
     local creatureTypeDecision = decision ~= nil and decision.kind == "creature_type_selection"
     local castPreviewPending = BridgeState.pendingIntent ~= nil
         and BridgeState.pendingIntent.action ~= nil
         and BridgeState.pendingIntent.action.type == "cast_spell"
-    local gameControlsActive = terminal == nil and not requiresConfirm and not creatureTypeDecision
+    local gameControlsActive = terminal == nil and not protocolStopped and not requiresConfirm and not creatureTypeDecision
         and not castPreviewPending
     BridgeUiSet("BridgeHudGameControls", "active", gameControlsActive and "true" or "false")
-    BridgeUiSet("BridgeHudDecisionControls", "active", (terminal == nil and (requiresConfirm or castPreviewPending)) and "true" or "false")
+    BridgeUiSet("BridgeHudDecisionControls", "active", (terminal == nil and not protocolStopped and (requiresConfirm or castPreviewPending)) and "true" or "false")
 
     -- Keep the fixed 24-row action transport intact.  The tray itself is now
     -- contextual and disappears when PASS/YIELD are the only available choice.

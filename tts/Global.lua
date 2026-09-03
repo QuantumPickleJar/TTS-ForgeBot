@@ -276,6 +276,29 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
     return record
 end
 
+function BridgeCurrentAuthoritativeResult()
+    local result = BridgeState.gameEnded
+    if result == nil then return nil end
+    if result.authoritative ~= true then return nil end
+    if result.sourceEventId == nil or result.sourceEventCursor == nil then return nil end
+    if result.sourceSessionId == nil or result.sourceSessionId ~= BridgeState.eventSessionId then return nil end
+    return result
+end
+
+function BridgeDiagnosticPresentedResult()
+    local result = BridgeCurrentAuthoritativeResult()
+    return {
+        presented = result ~= nil,
+        sourceEventId = result and result.sourceEventId or nil,
+        sourceEventCursor = result and result.sourceEventCursor or nil,
+        sourceSessionId = result and result.sourceSessionId or nil,
+        outcome = result and result.outcome or nil,
+        reason = result and result.reason or nil,
+        presentationGeneration = result and result.presentationGeneration or nil,
+        terminalRecoveryError = BridgeState.terminalRecoveryError ~= nil
+    }
+end
+
 -- Keep repeated stale automatic-resync responses visible without changing
 -- recovery behavior. A same-cursor response is not progress merely because
 -- the request succeeded; this bounded streak makes a readiness loop
@@ -1221,6 +1244,12 @@ BridgeState = {
     choiceProtocolPaused = false,
     choiceProtocolFailureTimes = {},
     gameEnded = nil,
+    resultSourceEventId = nil,
+    resultEventCursor = nil,
+    resultSessionId = nil,
+    resultOutcome = nil,
+    resultReason = nil,
+    resultPresentationGeneration = 0,
     playerStateBySeatId = {},
     playerCountersBySeatId = {},
     ui = {mounted = false, dirty = false, flushScheduled = false, actionRows = {}, contextInstanceId = nil,
@@ -1461,6 +1490,12 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.attackOriginByGuid = {}
     BridgeState.pendingCastBySeatId = {}
     BridgeState.gameEnded = nil
+    BridgeState.resultSourceEventId = nil
+    BridgeState.resultEventCursor = nil
+    BridgeState.resultSessionId = nil
+    BridgeState.resultOutcome = nil
+    BridgeState.resultReason = nil
+    BridgeState.resultPresentationGeneration = 0
     BridgeState.eventPolling = false
     BridgeState.eventRequestInFlight = false
     BridgeState.eventPollScheduled = false
@@ -3479,11 +3514,10 @@ end
 
 function BridgeUiTerminalLabel(terminal)
     if terminal == nil then return "" end
-    if #(terminal.winnerSeatIds or {}) == 0 then return "DRAW" end
-    for _, seatId in ipairs(terminal.winnerSeatIds or {}) do
-        if seatId == "forge-player-1" then return "VICTORY" end
-    end
-    return "DEFEAT"
+    if terminal.outcome == "draw" then return "DRAW" end
+    if terminal.outcome == "victory" then return "VICTORY" end
+    if terminal.outcome == "defeat" then return "DEFEAT" end
+    return "GAME OVER"
 end
 
 function BridgeUiFlush()
@@ -3491,7 +3525,8 @@ function BridgeUiFlush()
     if ui == nil or not ui.mounted or not ui.dirty then return end
     ui.dirty = false
     local decision = BridgeState.lastDecision
-    local terminal = BridgeState.gameEnded
+    local terminal = BridgeCurrentAuthoritativeResult ~= nil and BridgeCurrentAuthoritativeResult() or nil
+    local protocolStopped = BridgeState.terminalRecoveryError ~= nil
     local owner = BridgeState.currentTurnSeatId == "forge-player-1" and "YOUR TURN"
         or (BridgeState.currentTurnSeatId and "OPPONENT TURN" or "TURN OWNER UNKNOWN")
     local turn = BridgeTurnLabel() .. " — " .. owner .. " — " .. tostring(BridgeState.currentPhase or "WAITING")
@@ -3508,8 +3543,9 @@ function BridgeUiFlush()
     -- in the large status lane.  The phase ribbon is supplemental; this text
     -- remains readable when color updates are unavailable in a TTS client.
     local phaseStatus = tostring(BridgeState.currentPhase or "WAITING")
-    BridgeUiSet("BridgeHudStatus", "text", terminal and "GAME OVER" or (priority .. " • " .. phaseStatus))
-    BridgeUiSet("BridgeHudStatus", "color", terminal and "#F8FAFC" or BridgeHudPhaseColor(BridgeState.currentPhase))
+    BridgeUiSet("BridgeHudStatus", "text", terminal and "GAME OVER"
+        or (protocolStopped and "SYNC ERROR" or (priority .. " • " .. phaseStatus)))
+    BridgeUiSet("BridgeHudStatus", "color", (terminal or protocolStopped) and "#F8FAFC" or BridgeHudPhaseColor(BridgeState.currentPhase))
     local castPreviewPending = BridgeState.pendingIntent ~= nil
         and BridgeState.pendingIntent.action ~= nil
         and BridgeState.pendingIntent.action.type == "cast_spell"
@@ -3528,7 +3564,8 @@ function BridgeUiFlush()
         and tostring(decision.mulliganStage or "") == "bottom_selection" then
         prompt = "MULLIGAN - PUT CARD ON BOTTOM, THEN CONFIRM"
     end
-    BridgeUiSet("BridgeHudPrompt", "text", terminal and BridgeUiTerminalLabel(terminal) or prompt)
+    BridgeUiSet("BridgeHudPrompt", "text", terminal and BridgeUiTerminalLabel(terminal)
+        or (protocolStopped and "PROTOCOL RECOVERY ERROR" or prompt))
     BridgeUiSet("BridgeHudMana", "text", "MANA: " .. tostring(ui.manaMode or "AUTO"))
     local yieldMode = BridgeYieldControllerMode ~= nil and BridgeYieldControllerMode() or "normal"
     BridgeUiSet("BridgeHudMode", "text", ui.autoPassEmpty and "AUTO-PASS: ON" or "AUTO-PASS: OFF")
@@ -3539,7 +3576,7 @@ function BridgeUiFlush()
             or "NORMAL: every human Forge decision requires input.")
     BridgeUiSet("BridgeHudHelp", "text", help)
     local actions = {}
-    for _, action in ipairs(terminal and {} or (decision and decision.actions or {})) do
+    for _, action in ipairs((terminal or protocolStopped) and {} or (decision and decision.actions or {})) do
         if BridgeActionPresentationAuthorized(action) then
             table.insert(actions, action)
         end
@@ -3621,7 +3658,7 @@ function BridgeUiFlush()
     local targetCanCancel = decision ~= nil and decision.allowsCancel == true
         and (decision.kind == "target_selection" or decision.kind == "defender_selection"
             or decision.kind == "player_selection")
-    local yieldPolicyAvailable = BridgeState.gameEnded == nil
+    local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil and BridgeState.terminalRecoveryError == nil
         and not BridgeDecisionNeedsConfirmation(decision)
         and BridgeState.pendingIntent == nil
     BridgeUiSet("BridgeHudPass", "active", hasPass and "true" or "false")
@@ -3640,9 +3677,10 @@ function BridgeUiFlush()
         ((BridgeDecisionNeedsConfirmation(decision) and not BridgeIsStructuredForgeToggleChoice(decision))
             or targetCanCancel))) and "true" or "false")
     BridgeUiSet("BridgeHudCancel", "text", castPreviewPending and "CANCEL / RETURN" or "CANCEL")
-    BridgeUiSet("BridgeHudNewMatch", "active", terminal and "true" or "false")
+    BridgeUiSet("BridgeHudNewMatch", "active", (terminal or protocolStopped) and "true" or "false")
     BridgeUiSet("BridgeHudNewMatch", "text", BridgeState.resetConfirmationArmed and "CONFIRM NEW MATCH" or "NEW MATCH")
     local footer = terminal and "NEW MATCH is available on the table."
+        or (protocolStopped and "Protocol recovery failed. Use NEW MATCH or RESYNC diagnostics.")
         or (ui.contextInstanceId and "CARD CONTEXT — choose a Forge-provided action" or "Forge decides legality. Screen actions submit exact Forge choices.")
     if not terminal and #(BridgeState.stackSummary or {}) > 0 then footer = "STACK: " .. table.concat(BridgeState.stackSummary, " > ") end
     if not terminal and ui.gameLogVisible and #(ui.gameLog or {}) > 0 then footer = ui.gameLog[#ui.gameLog] end
@@ -3763,7 +3801,7 @@ function BridgeHudCancel(player, value, id)
 end
 
 function BridgeHudNewMatch(player, value, id)
-    if BridgeState.gameEnded == nil then return end
+    if BridgeCurrentAuthoritativeResult() == nil and BridgeState.terminalRecoveryError == nil then return end
     if BridgeState.resetConfirmationArmed then
         BridgeDoPressConfirmNewMatch(player, false)
     else
@@ -4175,12 +4213,13 @@ function BridgeStopOnDecisionProvenanceLag(detail, fault)
         appliedEventCursor = fault and fault.appliedEventCursor or nil,
         payloadHash = fault and fault.payloadHash or nil
     }
-    BridgeState.gameEnded = {
-        terminalRecoveryError = true,
-        reason = "decision_provenance_lag",
-        detail = BridgeState.terminalRecoveryError.detail,
-        winnerSeatIds = {}
-    }
+    BridgeState.gameEnded = nil
+    BridgeState.resultSourceEventId = nil
+    BridgeState.resultEventCursor = nil
+    BridgeState.resultSessionId = nil
+    BridgeState.resultOutcome = nil
+    BridgeState.resultReason = nil
+    BridgeState.resultPresentationGeneration = 0
     BridgeState.desyncLatched = false
     BridgeState.resyncInFlight = false
     BridgeState.resyncScheduled = false
@@ -11562,6 +11601,12 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         BridgeState.ui.autoAdvanceMode = BridgeState.ui.autoPassEmpty and "AUTO-PASS EMPTY" or "NORMAL"
     end
     BridgeState.gameEnded = nil
+    BridgeState.resultSourceEventId = nil
+    BridgeState.resultEventCursor = nil
+    BridgeState.resultSessionId = nil
+    BridgeState.resultOutcome = nil
+    BridgeState.resultReason = nil
+    BridgeState.resultPresentationGeneration = 0
     BridgeState.playerStateBySeatId = {}
     BridgeState.playerCountersBySeatId = {}
 
@@ -12076,11 +12121,47 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "game_ended" then
+        local winners = event.winnerSeatIds or {}
+        local losers = event.loserSeatIds or {}
+        local reason = event.gameEndReason
+        local function recognizedDrawReason(value)
+            local normalized = string.lower(tostring(value or ""))
+            return normalized == "draw"
+                or normalized == "mutual_destruction"
+                or normalized == "simultaneous_loss"
+                or normalized == "state_based_draw"
+                or normalized == "both_lost"
+        end
+        local humanWon = false
+        for _, seatId in ipairs(winners) do
+            if seatId == "forge-player-1" then humanWon = true end
+        end
+        local outcome = nil
+        if #winners == 0 and recognizedDrawReason(reason) then
+            outcome = "draw"
+        elseif #winners > 0 then
+            outcome = humanWon and "victory" or "defeat"
+        else
+            outcome = "unknown"
+        end
+
         BridgeState.gameEnded = {
-            winnerSeatIds = event.winnerSeatIds or {},
-            loserSeatIds = event.loserSeatIds or {},
-            reason = event.gameEndReason
+            authoritative = true,
+            winnerSeatIds = winners,
+            loserSeatIds = losers,
+            reason = reason,
+            outcome = outcome,
+            sourceEventId = event.eventId,
+            sourceEventCursor = event.sequence,
+            sourceSessionId = BridgeState.eventSessionId,
+            presentationGeneration = BridgeState.decisionPresentationGeneration
         }
+        BridgeState.resultSourceEventId = event.eventId
+        BridgeState.resultEventCursor = event.sequence
+        BridgeState.resultSessionId = BridgeState.eventSessionId
+        BridgeState.resultOutcome = outcome
+        BridgeState.resultReason = reason
+        BridgeState.resultPresentationGeneration = BridgeState.decisionPresentationGeneration
         BridgeState.pendingDecision = nil
         BridgeState.lastDecision = nil
         BridgeState.submitting = false
@@ -12092,17 +12173,21 @@ function BridgeApplyAuthoritativeEvent(event)
         BridgeStopDecisionPolling()
         BridgeStopEventPolling("game-ended")
         BridgeScheduleSnapshotReconcile("game_ended final state")
-        local humanWon = false
-        for _, seatId in ipairs(BridgeState.gameEnded.winnerSeatIds) do
-            if seatId == "forge-player-1" then humanWon = true end
-        end
-        local label = #BridgeState.gameEnded.winnerSeatIds == 0 and "DRAW"
-            or (humanWon and "VICTORY" or "DEFEAT")
+        local label = outcome == "draw" and "DRAW"
+            or (outcome == "victory" and "VICTORY"
+                or (outcome == "defeat" and "DEFEAT" or "GAME OVER"))
         BridgeSetStatus(label, "GAME OVER" .. (event.gameEndReason and (": " .. tostring(event.gameEndReason)) or ""))
-        broadcastToAll("[Bridge] " .. label .. " — game over", humanWon and {0.2, 0.9, 0.3} or {0.95, 0.3, 0.3})
+        local bannerColor = outcome == "draw" and {0.95, 0.78, 0.15}
+            or (humanWon and {0.2, 0.9, 0.3}
+                or (outcome == "defeat" and {0.95, 0.3, 0.3} or {0.9, 0.9, 0.9}))
+        broadcastToAll("[Bridge] " .. label .. " — game over", bannerColor)
         BridgeLog("[Bridge] GAME_ENDED winners=" .. table.concat(BridgeState.gameEnded.winnerSeatIds, ",")
             .. " losers=" .. table.concat(BridgeState.gameEnded.loserSeatIds, ",")
-            .. " reason=" .. tostring(event.gameEndReason))
+            .. " reason=" .. tostring(event.gameEndReason)
+            .. " outcome=" .. tostring(outcome)
+            .. " sourceEventId=" .. tostring(event.eventId)
+            .. " cursor=" .. tostring(event.sequence)
+            .. " session=" .. tostring(BridgeState.eventSessionId))
         return true, 0
     end
 
@@ -16131,6 +16216,7 @@ function BridgeHudSubmitReport(category, summary)
         mappedCardInstanceIds = BridgeHudReportMappedCardInstanceIds(),
         physicalMappings = BridgeHudReportPhysicalMappings(),
         status = BridgeState.statusHeadline,
+        presentedResult = BridgeDiagnosticPresentedResult ~= nil and BridgeDiagnosticPresentedResult() or nil,
         performanceSummary = performance.performanceSummary,
         recentTtsTrace = performance.recentTtsTrace,
         diagnosticCaptureLifecycle = performance.diagnosticCaptureLifecycle,
@@ -16345,16 +16431,17 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudReportStatus", "color", string.find(string.upper(tostring(ui.reportStatus or "")), "ERROR", 1, true) and BRIDGE_HUD_COLORS.danger or BRIDGE_HUD_COLORS.success)
 
     local decision = BridgeState.lastDecision
-    local terminal = BridgeState.gameEnded
+    local terminal = BridgeCurrentAuthoritativeResult ~= nil and BridgeCurrentAuthoritativeResult() or nil
+    local protocolStopped = BridgeState.terminalRecoveryError ~= nil
     local requiresConfirm = decision ~= nil and BridgeDecisionNeedsConfirmation(decision)
     local creatureTypeDecision = decision ~= nil and decision.kind == "creature_type_selection"
     local castPreviewPending = BridgeState.pendingIntent ~= nil
         and BridgeState.pendingIntent.action ~= nil
         and BridgeState.pendingIntent.action.type == "cast_spell"
-    local gameControlsActive = terminal == nil and not requiresConfirm and not creatureTypeDecision
+    local gameControlsActive = terminal == nil and not protocolStopped and not requiresConfirm and not creatureTypeDecision
         and not castPreviewPending
     BridgeUiSet("BridgeHudGameControls", "active", gameControlsActive and "true" or "false")
-    BridgeUiSet("BridgeHudDecisionControls", "active", (terminal == nil and (requiresConfirm or castPreviewPending)) and "true" or "false")
+    BridgeUiSet("BridgeHudDecisionControls", "active", (terminal == nil and not protocolStopped and (requiresConfirm or castPreviewPending)) and "true" or "false")
 
     -- Keep the fixed 24-row action transport intact.  The tray itself is now
     -- contextual and disappears when PASS/YIELD are the only available choice.
