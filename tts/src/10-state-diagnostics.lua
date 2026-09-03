@@ -177,7 +177,8 @@ function BridgeFindLibraryDeckCandidatesForSeat(seatId, objectSnapshot)
     if seat == nil then return {} end
     local candidates = {}
     for _, object in ipairs(objectSnapshot or _all()) do
-        if BridgeObjectIsUsable(object) and object.tag == "Deck" and BridgeObjectIsOnSeatSide(object, seat) then
+        if BridgeObjectIsUsable(object) and object.tag == "Deck" and BridgeObjectIsOnSeatSide(object, seat)
+            and BridgeObjectNearSeatZone(object, seatId, "library") then
             table.insert(candidates, object)
         end
     end

@@ -150,6 +150,9 @@ function BridgeTakeTopCardFromLibrary(deck, expectedName, position, smooth, call
 
     local top = containedCards[1]
     local topName = top and (top.nickname or top.name) or nil
+    BridgeLog(string.format("[Bridge] LIBRARY_TOP_CHECK expectedName=%s libraryGuid=%s libraryTag=%s containedCount=%d selectedIndex=%s selectedGuid=%s selectedName=%s",
+        tostring(expectedName), tostring(BridgeSafeObjectGuid(deck)), tostring(deck.tag), #containedCards,
+        tostring(top and top.index), tostring(top and top.guid), tostring(topName)))
     if top == nil or top.index == nil then
         finish(nil, "physical library has no extractable top card")
         return
@@ -2078,23 +2081,6 @@ function BridgeHudReportSummaryText()
     return value ~= "" and value or nil
 end
 
-function BridgeScheduleDiagnosticCaptureFollowup(token, sessionId, epoch)
-    if token == nil or BridgeState.diagnosticCaptureFollowupToken == token then return end
-    BridgeState.diagnosticCaptureFollowupToken = token
-    BridgeState.diagnosticCaptureFollowupUntil = os.clock() + BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_SECONDS
-    local function sample()
-        if not BridgeRuntimeIsCurrent(epoch)
-            or BridgeState.eventSessionId ~= sessionId
-            or BridgeState.diagnosticCaptureFollowupToken ~= token then
-            return
-        end
-        if os.clock() > BridgeState.diagnosticCaptureFollowupUntil then return end
-        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_POSTCHECK", token, "post-capture")
-        BridgeWaitTime(sample, BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_INTERVAL_SECONDS)
-    end
-    BridgeWaitTime(sample, BRIDGE_DIAGNOSTIC_CAPTURE_FOLLOWUP_INTERVAL_SECONDS)
-end
-
 function BridgeDiagnosticCaptureGameplayFingerprint()
     local decision = BridgeState.lastDecision
     local pending = BridgeState.pendingDecision
@@ -2131,23 +2117,11 @@ function BridgeCheckDiagnosticCapturePurity(before, token, stage)
     return true
 end
 
-function BridgeRecoverGameplayPumps(reason, expectedSessionId, expectedEpoch, captureToken)
+function BridgeRecoverGameplayPumps(reason, expectedSessionId, expectedEpoch)
     local sessionId = expectedSessionId or BridgeState.eventSessionId
     local epoch = expectedEpoch or BRIDGE_RUNTIME_EPOCH_LOCAL
-    local isCaptureRecovery = captureToken ~= nil
-    local recoveryEnded = false
     local function endRecovery(detail)
-        if recoveryEnded then return end
-        recoveryEnded = true
-        if isCaptureRecovery then
-            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_RECOVERY_END", captureToken, detail or reason)
-            BridgeScheduleDiagnosticCaptureFollowup(captureToken, sessionId, epoch)
-        else
-            BridgeLog("[Bridge] gameplay pump recovery complete reason=" .. tostring(detail or reason))
-        end
-    end
-    if isCaptureRecovery then
-        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_RECOVERY_BEGIN", captureToken, reason)
+        BridgeLog("[Bridge] gameplay pump recovery complete reason=" .. tostring(detail or reason))
     end
     if not BridgeRuntimeIsCurrent(epoch)
         or BridgeState.eventSessionId ~= sessionId
@@ -2193,9 +2167,6 @@ function BridgeRecoverGameplayPumps(reason, expectedSessionId, expectedEpoch, ca
             or not BridgeRuntimeIsCurrent(epoch)
             or expectedPresentationGeneration ~= BridgeState.decisionPresentationGeneration then
             BridgeState.decisionRefreshInFlight = false
-            if isCaptureRecovery then
-                BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_DECISION_REFRESH_CALLBACK", captureToken, "stale")
-            end
             return
         end
         BridgeState.decisionRefreshInFlight = false
@@ -2206,12 +2177,9 @@ function BridgeRecoverGameplayPumps(reason, expectedSessionId, expectedEpoch, ca
                 -- A submitted/active transaction is presentation-live only
                 -- through its existing response path. Do not re-accept it and
                 -- risk clearing the transaction during diagnostic recovery.
-                BridgeLog("[Bridge] diagnostic decision refresh preserved active choice transaction decision=" .. tostring(priorDecisionId))
+                BridgeLog("[Bridge] decision refresh preserved active choice transaction decision=" .. tostring(priorDecisionId))
             else
-                BridgeAcceptDecision(body, "diagnostic_capture_recovery", sessionId, expectedPresentationGeneration)
-            end
-            if isCaptureRecovery then
-                BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_DECISION_REFRESH_CALLBACK", captureToken, sameDecision and "same-decision" or "new-decision")
+                BridgeAcceptDecision(body, "manual_pump_recovery", sessionId, expectedPresentationGeneration)
             end
             endRecovery(sameDecision and "same-decision-represented" or "new-decision-accepted")
             return
@@ -2225,10 +2193,7 @@ function BridgeRecoverGameplayPumps(reason, expectedSessionId, expectedEpoch, ca
             -- authoritative response.
             BridgeStartDecisionPolling(true)
         end
-        BridgeLog("[Bridge] diagnostic decision refresh failed: " .. tostring(err or responseCode or "unknown"))
-        if isCaptureRecovery then
-            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_DECISION_REFRESH_CALLBACK", captureToken, responseCode or "failed")
-        end
+        BridgeLog("[Bridge] decision refresh failed: " .. tostring(err or responseCode or "unknown"))
         endRecovery("decision-refresh-failed")
     end)
     return true
@@ -2265,16 +2230,16 @@ function BridgeHudSubmitReport(category, summary)
     BridgeUiMarkDirty("report-capture-start")
 
     local function finish(ok, body, err, recoveryReason, lifecycleStage)
-        BridgeRecordDiagnosticCaptureLifecycle(lifecycleStage or "DIAG_CAPTURE_CALLBACK", captureToken, recoveryReason or "callback")
         if completed then return end
         if requestUi.reportCaptureToken ~= captureToken then return end
-        completed = true
         if not BridgeRuntimeIsCurrent(requestEpoch)
             or BridgeState.ui ~= requestUi
             or BridgeState.eventSessionId ~= requestSession then
             BridgeLog("[Bridge] diagnostic capture completion ignored by runtime/session fence")
             return
         end
+        completed = true
+        BridgeRecordDiagnosticCaptureLifecycle(lifecycleStage or "DIAG_CAPTURE_CALLBACK", captureToken, recoveryReason or "callback")
         requestUi.reportCaptureInFlight = false
         if ok and body ~= nil and body.success == true then
             local reportId = tostring(body.reportId or "unknown")

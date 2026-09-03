@@ -61,23 +61,12 @@ public sealed class TtsDiagnosticCaptureLuaTests
         Assert.Equal(1, lua.Globals.Get("eventPollCalls").Number);
         Assert.Equal(1, lua.Globals.Get("decisionGets").Number);
         Assert.Equal(1, lua.Globals.Get("accepted").Number);
-        Assert.Equal("diagnostic_capture_recovery", lua.Globals.Get("acceptedOrigin").String);
+        Assert.Equal("manual_pump_recovery", lua.Globals.Get("acceptedOrigin").String);
         Assert.Equal(0, lua.Globals.Get("submitted").Number);
         Assert.Equal("forge-tui-12", lua.Globals.Get("BridgeState").Table.Get("lastDecision").Table.Get("decisionId").String);
         var state = lua.Globals.Get("BridgeState").Table;
         Assert.Equal(6, state.Get("yieldPolicyTurnNumber").Number);
         Assert.Equal("forge-player-1", state.Get("yieldPolicyActiveSeatId").String);
-        lua.DoString(@"
-            hasBegin = false; hasRefresh = false; hasEnd = false
-            for _, record in ipairs(BridgeState.diagnosticCaptureLifecycle) do
-                if record.stage == 'DIAG_CAPTURE_RECOVERY_BEGIN' then hasBegin = true end
-                if record.stage == 'DIAG_CAPTURE_DECISION_REFRESH_CALLBACK' then hasRefresh = true end
-                if record.stage == 'DIAG_CAPTURE_RECOVERY_END' then hasEnd = true end
-            end
-        ");
-        Assert.True(lua.Globals.Get("hasBegin").Boolean);
-        Assert.True(lua.Globals.Get("hasRefresh").Boolean);
-        Assert.True(lua.Globals.Get("hasEnd").Boolean);
     }
 
     [Fact]
@@ -133,6 +122,83 @@ public sealed class TtsDiagnosticCaptureLuaTests
     }
 
     [Fact]
+    public void PendingCapture_DoesNotBlockLiveDecisionPumpsOrManualResync()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'capture-session'
+            BridgeState.lastReceivedEventSequence = 22
+            BridgeState.lastAppliedEventSequence = 22
+            BridgeState.lastDecision = {
+                decisionId = 'forge-tui-12', sessionId = 'capture-session',
+                eventCursor = 22, kind = 'main_priority',
+                actions = {{actionId = 'pass-12', type = 'pass_priority'}}
+            }
+            BridgeState.ui = {reportCaptureInFlight = false, reportCaptureToken = 0, resyncInFlight = false, reportCategoryIndex = 1}
+            BridgeState.desyncLatched = false
+            BridgeState.physicalTransactionGeneration = 7
+            BridgeState.schedulerOwner = 'NORMAL'
+            eventPollCalls = 0; decisionGets = 0; recoveryCalls = 0; resyncCalls = 0
+            function BridgePollEvents(generation) eventPollCalls = eventPollCalls + 1 end
+            function BridgeGetDecision(callback) decisionGets = decisionGets + 1 end
+            function BridgeRecoverGameplayPumps(reason, sessionId, epoch, token) recoveryCalls = recoveryCalls + 1 end
+            function BridgeEventDrainQueueState() return {physicalLibraryQueuesIdle = true, headSequence = 22, queueLength = 0, desyncLatched = false, bootstrapping = false} end
+            function BridgeResyncFromAuthoritativeSnapshot(origin) resyncCalls = resyncCalls + 1; return true end
+            function BridgeWaitTime(callback, delay) end
+            function BridgePerformanceDiagnosticPayload() return {performanceSummary = {}, recentTtsTrace = {}, diagnosticCaptureLifecycle = {}, eventDrainDiagnostics = {}} end
+            function BridgeHudReportSummaryText() return 'capture probe' end
+            function BridgeHudReportMappedCardInstanceIds() return {} end
+            function BridgeHudReportPhysicalMappings() return {} end
+            function BridgeUiMarkDirty(reason) end
+            pendingReportCallback = nil
+            BridgeHttp.requestJson = function(method, path, payload, callback)
+                if method == 'POST' and path == '/api/v1/diagnostics/report' then pendingReportCallback = callback end
+            end
+            BridgeHudSubmitReport('Gameplay sync', 'capture probe')
+            captureInFlightWhilePending = BridgeState.ui.reportCaptureInFlight
+            blockedWhilePending = BridgeAutomaticDecisionBlocked(BridgeState.lastDecision)
+            BridgeHudResyncFromForge(nil, nil, nil)
+            pendingReportCallback(true, {success = true, reportId = 'report-1'}, nil)
+            blockedAfterCompletion = BridgeAutomaticDecisionBlocked(BridgeState.lastDecision)
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        var ui = state.Get("ui").Table;
+        Assert.True(lua.Globals.Get("captureInFlightWhilePending").Boolean);
+        Assert.True(ui.Get("reportCaptureInFlight").Boolean == false);
+        Assert.True(lua.Globals.Get("blockedWhilePending").IsNil());
+        Assert.True(lua.Globals.Get("blockedAfterCompletion").IsNil());
+        Assert.Equal(1, lua.Globals.Get("resyncCalls").Number);
+        Assert.Equal(0, lua.Globals.Get("eventPollCalls").Number);
+        Assert.Equal(0, lua.Globals.Get("decisionGets").Number);
+        Assert.Equal(0, lua.Globals.Get("recoveryCalls").Number);
+        Assert.Equal("forge-tui-12", state.Get("lastDecision").Table.Get("decisionId").String);
+        Assert.Equal(22, state.Get("lastReceivedEventSequence").Number);
+        Assert.Equal(22, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(7, state.Get("physicalTransactionGeneration").Number);
+        Assert.Equal("NORMAL", state.Get("schedulerOwner").String);
+    }
+
+    [Fact]
+    public void DiagnosticPayload_UsesDetachedCopiesInsteadOfMutatingLiveSummary()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.performanceSummary = {sentinel = 'live'}
+            BridgeState.presentationMetrics = {}
+            BridgeState.startupTrace = {}
+            BridgeState.lastDecision = nil
+            payload = BridgePerformanceDiagnosticPayload()
+        ");
+
+        var stateSummary = lua.Globals.Get("BridgeState").Table.Get("performanceSummary").Table;
+        var payloadSummary = lua.Globals.Get("payload").Table.Get("performanceSummary").Table;
+        Assert.Equal("live", stateSummary.Get("sentinel").String);
+        Assert.True(stateSummary.Get("landActionCanary").IsNil());
+        Assert.False(payloadSummary.Get("landActionCanary").IsNil());
+    }
+
+    [Fact]
     public void StaleCaptureCallback_CannotStartRecoveryForNewerToken()
     {
         var lua = NewProbe();
@@ -156,13 +222,17 @@ public sealed class TtsDiagnosticCaptureLuaTests
                 if method == 'POST' then pendingReportCallback = callback end
             end
             BridgeHudSubmitReport('Gameplay sync', 'capture probe')
+            lifecycleBeforeStaleCallback = #BridgeState.diagnosticCaptureLifecycle
             BridgeState.ui.reportCaptureInFlight = false
             BridgeState.ui.reportCaptureToken = BridgeState.ui.reportCaptureToken + 1
             pendingReportCallback(true, {success = true, reportId = 'old'}, nil)
+            lifecycleAfterStaleCallback = #BridgeState.diagnosticCaptureLifecycle
         ");
 
         Assert.Equal(0, lua.Globals.Get("recoveryCalls").Number);
         Assert.Equal(2, lua.Globals.Get("BridgeState").Table.Get("ui").Table.Get("reportCaptureToken").Number);
+        Assert.Equal(lua.Globals.Get("lifecycleBeforeStaleCallback").Number,
+            lua.Globals.Get("lifecycleAfterStaleCallback").Number);
     }
 
     [Fact]

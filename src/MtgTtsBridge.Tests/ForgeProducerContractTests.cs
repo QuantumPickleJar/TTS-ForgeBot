@@ -99,10 +99,9 @@ public sealed class ForgeProducerContractTests
     [Fact]
     public void TrackedBridgeStateFeed_EmitsReadinessForHumanPriorityMenuBeforeBlockingInput()
     {
-        Assert.Contains("BridgeStateFeed.emitDecisionReadyFromController();", Patch);
-        Assert.Contains("What would you like to do?", Patch);
-        Assert.Contains("emitPriorityDiagnostic", Patch);
-        Assert.Contains("getIntInput(0, uniqueActions)", Patch);
+        var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
+        Assert.Contains("BridgeStateFeed.emitDecisionReadyFromController();", controller);
+        Assert.Contains("emitPriorityDiagnostic", controller);
     }
 
     [Fact]
@@ -120,6 +119,27 @@ public sealed class ForgeProducerContractTests
         Assert.DoesNotContain("BridgeStateFeed.emitDecisionReadyFromController();", entityBody);
         Assert.DoesNotContain("BridgeStateFeed.emitDecisionReadyFromController();", otherCallerBody);
         Assert.Equal(1, CountOccurrences(controller, "BridgeStateFeed.emitDecisionReadyFromController();"));
+    }
+
+    [Fact]
+    public void HumanMulliganProducer_IsForgeNativeAndWaitsForAnExplicitChoice()
+    {
+        var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
+        var mulliganBody = ExtractMethodBody(controller, "public boolean mulliganKeepHand(Player firstPlayer, int cardsToReturn)");
+        var bottomBody = ExtractMethodBody(controller, "public CardCollectionView tuckCardsViaMulligan(CardCollectionView hand, int cardsToReturn)");
+
+        Assert.Contains("[kind=mulligan mulliganStage=keep_or_mulligan", mulliganBody);
+        Assert.Contains("0. Keep", mulliganBody);
+        Assert.Contains("1. Mulligan", mulliganBody);
+        Assert.Contains("int choice = getIntInput(0, 1);", mulliganBody);
+        Assert.Contains("if (choice == 0) return true;", mulliganBody);
+        Assert.Contains("if (choice == 1) return false;", mulliganBody);
+        Assert.DoesNotContain("BridgeStateFeed.emitDecisionReadyFromController();", mulliganBody);
+        Assert.DoesNotContain("MulliganService", mulliganBody.Replace("MulliganService owns the mulligan rule", "", StringComparison.Ordinal));
+
+        Assert.Contains("mulliganStage=bottom_selection sourceZone=hand", bottomBody);
+        Assert.Contains("chooseEntitiesThroughTui", bottomBody);
+        Assert.DoesNotContain("BridgeStateFeed.emitDecisionReadyFromController();", bottomBody);
     }
 
     private static string ExtractPatchedFile(string path)

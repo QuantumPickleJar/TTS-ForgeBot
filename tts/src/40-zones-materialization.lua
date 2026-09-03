@@ -3876,6 +3876,7 @@ end
 -- and all subsequent cards enter that same Deck at its authoritative top.
 function BridgeEnsureNativeGraveyardContainer(seatId)
     local loose = {}
+    local looseInstanceByGuid = {}
     for _, object in ipairs(getAllObjects()) do
         local guid = BridgeSafeObjectGuid(object)
         if BridgeObjectIsUsable(object) and object.tag == "Card" and guid ~= nil
@@ -3883,14 +3884,20 @@ function BridgeEnsureNativeGraveyardContainer(seatId)
             and BridgeState.physicalSeatByGuid[guid] == seatId
             and BridgeState.physicalZoneByGuid[guid] == "graveyard" then
             table.insert(loose, object)
+            looseInstanceByGuid[guid] = BridgeState.physicalInstanceIdByGuid[guid]
         end
     end
     local container = BridgeFindGraveyardContainer(seatId)
     if container ~= nil and container.tag == "Deck" then
         for _, object in ipairs(loose) do
             local guid = BridgeSafeObjectGuid(object)
+            local instanceId = looseInstanceByGuid[guid]
             local ok = pcall(function() container.putObject(object, 0) end)
             if not ok then return false, "could not merge loose graveyard card into native Deck" end
+            if instanceId ~= nil then
+                BridgeRecordContainedCardIdentity(instanceId, BridgeSafeObjectGuid(container), guid,
+                    seatId, "graveyard", BridgeState.cardNameByInstanceId[instanceId])
+            end
             BridgeLog(string.format("[Bridge] graveyard container merge seat=%s deckGuid=%s cardGuid=%s",
                 tostring(seatId), tostring(BridgeSafeObjectGuid(container)), tostring(guid)))
         end
@@ -3900,6 +3907,10 @@ function BridgeEnsureNativeGraveyardContainer(seatId)
     container = loose[1]
     for index = 2, #loose do
         local card = loose[index]
+        local cardGuid = BridgeSafeObjectGuid(card)
+        local cardInstanceId = looseInstanceByGuid[cardGuid]
+        local containerGuidBefore = BridgeSafeObjectGuid(container)
+        local containerInstanceId = looseInstanceByGuid[containerGuidBefore]
         local ok, result = pcall(function() return container.putObject(card, 0) end)
         if not ok then return false, "could not promote graveyard Cards into a native Deck" end
         if result ~= nil and result.tag == "Deck" then container = result end
@@ -3908,6 +3919,15 @@ function BridgeEnsureNativeGraveyardContainer(seatId)
         end
         if container == nil or container.tag ~= "Deck" then
             return false, "TTS did not produce a native graveyard Deck after merging Cards"
+        end
+        local deckGuid = BridgeSafeObjectGuid(container)
+        if containerInstanceId ~= nil then
+            BridgeRecordContainedCardIdentity(containerInstanceId, deckGuid, containerGuidBefore,
+                seatId, "graveyard", BridgeState.cardNameByInstanceId[containerInstanceId])
+        end
+        if cardInstanceId ~= nil then
+            BridgeRecordContainedCardIdentity(cardInstanceId, deckGuid, cardGuid,
+                seatId, "graveyard", BridgeState.cardNameByInstanceId[cardInstanceId])
         end
     end
     local stable = BridgeRecordGraveyardContainerEntries(seatId, container)

@@ -516,8 +516,6 @@ function BridgeAutomaticDecisionBlocked(decision)
     if decision == nil or decision.decisionId == nil or decision.decisionId == "" then return "no-current-decision" end
     if BridgeState.desyncLatched == true then return "desync-latched" end
     if BridgeState.resyncInFlight == true or BridgeState.resyncScheduled == true then return "resync-active" end
-    local ui = BridgeState.ui or {}
-    if ui.reportCaptureInFlight == true then return "diagnostic-capture" end
     local received = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
     local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
     if received ~= applied or #(BridgeState.eventQueue or {}) > 0 then return "event-backpressure" end

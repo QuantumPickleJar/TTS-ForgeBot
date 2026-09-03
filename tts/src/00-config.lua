@@ -701,8 +701,25 @@ function BridgePerformanceTraceSnapshot()
     return result
 end
 
+function BridgeDiagnosticSnapshot(value, active)
+    if type(value) ~= "table" then return value end
+    active = active or {}
+    if active[value] then return "<diagnostic-cycle>" end
+    active[value] = true
+    local copy = {}
+    for key, item in pairs(value) do
+        local copiedKey = type(key) == "table" and tostring(key) or key
+        copy[copiedKey] = BridgeDiagnosticSnapshot(item, active)
+    end
+    active[value] = nil
+    return copy
+end
+
 function BridgePerformanceDiagnosticPayload()
-    local summary = BridgeState.performanceSummary or {}
+    -- Work exclusively on detached diagnostic data. Capturing a report must
+    -- not write back into the live synchronization or presentation state while
+    -- the HTTP request is outstanding.
+    local summary = BridgeDiagnosticSnapshot(BridgeState.performanceSummary or {})
     local metrics = BridgeState.presentationMetrics or {}
     local ui = BridgeState.ui or {}
     local startup = BridgeState.startupTrace or {}
@@ -756,8 +773,8 @@ function BridgePerformanceDiagnosticPayload()
     summary.startupHealthDispatchDurationMs = startup.healthDispatchDurationMs
     return {
         performanceSummary = summary,
-        recentTtsTrace = BridgePerformanceTraceSnapshot(),
-        diagnosticCaptureLifecycle = BridgeState.diagnosticCaptureLifecycle or {},
+        recentTtsTrace = BridgeDiagnosticSnapshot(BridgePerformanceTraceSnapshot()),
+        diagnosticCaptureLifecycle = BridgeDiagnosticSnapshot(BridgeState.diagnosticCaptureLifecycle or {}),
         authoritativeForge = {
             turn = decision and decision.turnNumber or nil,
             phase = decision and decision.phaseName or nil,
@@ -773,7 +790,7 @@ function BridgePerformanceDiagnosticPayload()
             appliedCursor = BridgeState.lastAppliedEventSequence,
             status = BridgeState.statusText
         },
-        resyncLifecycle = BridgeState.resyncLifecycle or {},
+        resyncLifecycle = BridgeDiagnosticSnapshot(BridgeState.resyncLifecycle or {}),
         eventDrainDiagnostics = BridgeEventDrainQueueState()
     }
 end

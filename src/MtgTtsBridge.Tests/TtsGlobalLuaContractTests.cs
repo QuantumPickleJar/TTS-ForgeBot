@@ -3012,7 +3012,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgePollEvents(BridgeState.eventPollGeneration)", recovery);
         Assert.Contains("BridgeState.lastDecision == nil", recovery);
         Assert.Contains("BridgeGetDecision(function(ok, body, err)", recovery);
-        Assert.Contains("BridgeAcceptDecision(body, \"diagnostic_capture_recovery\"", recovery);
+        Assert.Contains("BridgeAcceptDecision(body, \"manual_pump_recovery\"", recovery);
         Assert.Contains("decisionRefreshInFlight", recovery);
         Assert.Contains("choiceTransactions[priorDecisionId]", recovery);
         Assert.DoesNotContain("BridgeState.lastDecision = nil", recovery);

@@ -372,7 +372,7 @@ index 44aee4f4..959cd694 100644
          String version = BuildInfo.getVersionString().toLowerCase();
          if (version.contains("git") || version.contains("snapshot")) {
 diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-index 0d731bb6..63d5443d 100644
+index 0d731bb6..70f4bafb 100644
 --- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 +++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 @@ -4,16 +4,25 @@ import com.google.common.collect.Multimap;
@@ -646,7 +646,7 @@ index 0d731bb6..63d5443d 100644
                              " (" + creature.getNetPower() + "/" + creature.getNetToughness() + ")" + status);
                      }
  
-@@ -1550,37 +1624,306 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1550,37 +1624,339 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          return toDiscard;
      }
  
@@ -676,6 +676,12 @@ index 0d731bb6..63d5443d 100644
 +
 +    private <T extends GameEntity> List<T> chooseEntitiesThroughTui(
 +            String kind, FCollectionView<T> options, int min, int max, String title, boolean ordered) {
++        return chooseEntitiesThroughTui(kind, options, min, max, title, ordered, null);
++    }
++
++    private <T extends GameEntity> List<T> chooseEntitiesThroughTui(
++            String kind, FCollectionView<T> options, int min, int max, String title, boolean ordered,
++            String metadata) {
 +        List<T> candidates = new ArrayList<>();
 +        for (T option : options) candidates.add(option);
 +        List<T> selected = new ArrayList<>();
@@ -687,7 +693,8 @@ index 0d731bb6..63d5443d 100644
 +            System.out.println("\n=== FORGE CHOICE ===");
 +            System.out.println(title == null || title.isBlank() ? "Choose from Forge's legal candidates" : title);
 +            System.out.println("[kind=" + effectiveKind + " min=" + min + " max=" + boundedMax
-+                + " selected=" + selected.size() + " ordered=" + ordered + "]");
++                + " selected=" + selected.size() + " ordered=" + ordered
++                + (metadata == null || metadata.isBlank() ? "" : " " + metadata) + "]");
 +            System.out.println("  0. Done");
 +            for (int i = 0; i < candidates.size(); i++) {
 +                T candidate = candidates.get(i);
@@ -795,14 +802,14 @@ index 0d731bb6..63d5443d 100644
 +                AbilitySub mode = possible.get(i);
 +                System.out.println("  " + (i + 1) + ". " + mode.getDescription()
 +                    + (selected.contains(mode) ? " [SELECTED]" : ""));
-             }
++            }
 +            System.out.print("Enter choice (0-" + possible.size() + "): ");
 +            int choice = getIntInput(0, possible.size());
 +            if (choice == 0) {
 +                if (selected.size() >= min && selected.size() <= num) return selected;
 +                System.out.println("Selection requires " + min + " to " + num + " modes.");
 +                continue;
-+            }
+             }
 +            AbilitySub mode = possible.get(choice - 1);
 +            if (selected.contains(mode) && !allowRepeat) selected.remove(mode);
 +            else if (selected.size() < num) selected.add(mode);
@@ -978,6 +985,32 @@ index 0d731bb6..63d5443d 100644
 +        return getIntInput(0, 1) == 1;
 +    }
 +
++    @Override
++    public boolean mulliganKeepHand(Player firstPlayer, int cardsToReturn) {
++        // MulliganService owns the mulligan rule, redraw, and any later bottom
++        // count. This is solely the native human keep/mulligan decision.
++        while (true) {
++            System.out.println("\n=== FORGE CHOICE ===");
++            System.out.println("Opening hand");
++            System.out.println("[kind=mulligan mulliganStage=keep_or_mulligan min=1 max=1 selected=0 ordered=false]");
++            System.out.println("  0. Keep");
++            System.out.println("  1. Mulligan");
++            int choice = getIntInput(0, 1);
++            if (choice == 0) return true;
++            if (choice == 1) return false;
++        }
++    }
++
++    @Override
++    public CardCollectionView tuckCardsViaMulligan(CardCollectionView hand, int cardsToReturn) {
++        if (cardsToReturn <= 0) return CardCollection.EMPTY;
++        CardCollection result = new CardCollection();
++        result.addAll(chooseEntitiesThroughTui("mulligan", hand, cardsToReturn, cardsToReturn,
++            "Choose cards to put on the bottom of your library", false,
++            "mulliganStage=bottom_selection sourceZone=hand"));
++        return result;
++    }
++
  }
 diff --git a/forge-headless/src/main/java/forge/headless/TUICommand.java b/forge-headless/src/main/java/forge/headless/TUICommand.java
 index 3626ea89..b0e8729c 100644
@@ -1074,6 +1107,50 @@ index 15b7a60f..75acb012 100644
              });
          } else {
              // Normal game start
+diff --git a/forge-headless/src/test/java/forge/headless/TUIInteractiveTest.java b/forge-headless/src/test/java/forge/headless/TUIInteractiveTest.java
+index 5d371355..3afdc8af 100644
+--- a/forge-headless/src/test/java/forge/headless/TUIInteractiveTest.java
++++ b/forge-headless/src/test/java/forge/headless/TUIInteractiveTest.java
+@@ -26,6 +26,8 @@ import static org.junit.Assert.*;
+  */
+ public class TUIInteractiveTest {
+ 
++    private String lastCapturedOutput;
++
+     @BeforeClass
+     public static void setup() {
+         // Setup headless GUI interface FIRST (before FModel.initialize)
+@@ -71,6 +73,22 @@ public class TUIInteractiveTest {
+         }
+     }
+ 
++    @Test
++    public void testOpeningHandRequiresExplicitKeepBeforeTurnOne() {
++        Deck deck = loadTestDeck("monored.dck");
++        assertNotNull("Failed to load test deck", deck);
++
++        StringBuilder input = new StringBuilder("0\n"); // Keep opening hand.
++        for (int i = 0; i < 256; i++) input.append("0\n");
++        GameOutcome outcome = runGameWithScriptedInput(deck, deck, input.toString());
++
++        assertNotNull("Game outcome should not be null", outcome);
++        assertNotNull("TUI output should have been captured", lastCapturedOutput);
++        int mulliganPrompt = lastCapturedOutput.indexOf("mulliganStage=keep_or_mulligan");
++        int firstTurn = lastCapturedOutput.indexOf("+++ Turn:");
++        assertTrue("Forge must ask the human before turn one", mulliganPrompt >= 0 && firstTurn > mulliganPrompt);
++    }
++
+     /**
+      * Build a script that simulates realistic gameplay.
+      * Strategy: Try to play lands and creatures, but mostly pass.
+@@ -187,6 +205,7 @@ public class TUIInteractiveTest {
+ 
+             // Analyze the captured output
+             String output = outputCapture.toString();
++            lastCapturedOutput = output;
+             System.out.println("  Game produced " + output.length() + " bytes of output");
+ 
+             // Check for common issues in output
 diff --git a/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
 new file mode 100644
 index 00000000..7ba3cf74

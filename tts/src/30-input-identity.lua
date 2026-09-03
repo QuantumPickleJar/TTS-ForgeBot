@@ -452,6 +452,12 @@ function BridgeResetSelectionState()
     BridgeUiMarkDirty("selection-reset")
 end
 
+function BridgeInvalidateDecisionPresentation(reason)
+    BridgeState.renderedDecisionPresentationKey = nil
+    BridgeState.renderedDecisionPhysicalGeneration = nil
+    BridgeLog("[Bridge] decision presentation invalidated reason=" .. tostring(reason or "unspecified"))
+end
+
 function BridgeClearPendingIntentControls()
     for _, guid in ipairs(BridgeState.pendingIntentControlGuids or {}) do
         local object = BridgeGetLiveObjectByGuid(guid)
@@ -721,7 +727,8 @@ function BridgeCancelSelection(object, playerColor, altClick)
         return
     end
     BridgeResetSelectionState()
-    if decision ~= nil then BridgeRenderDecision(decision) end
+    BridgeInvalidateDecisionPresentation("local-selection-cancel")
+    if decision ~= nil then BridgeRenderDecision(decision, true) end
 end
 
 function BridgeDecisionPresentationKey(decision)
@@ -1394,7 +1401,8 @@ function onObjectPickUp(playerColor, object)
         local actionId = action.actionId
         if not BridgeToggleSingleSelection(decision, actionId, object.getGUID()) then
             BridgeRollbackPendingIntent()
-            BridgeRenderDecision(decision)
+            BridgeInvalidateDecisionPresentation("selection-toggle-rejected")
+            BridgeRenderDecision(decision, true)
             return
         end
         object.use_hands = BridgeState.pendingIntent.useHands
@@ -1468,7 +1476,8 @@ function onObjectDrop(playerColor, object)
             return
         end
         BridgeRollbackPendingIntent()
-        BridgeRenderDecision(decision)
+        BridgeInvalidateDecisionPresentation("drop-cancelled")
+        BridgeRenderDecision(decision, true)
         BridgeSubmitChoice(decisionId, actionId, "physical_discard_click")
         return
     end
@@ -1479,7 +1488,8 @@ function onObjectDrop(playerColor, object)
         local dz = current.z - intent.position.z
         if dx * dx + dz * dz < 1.0 then
             BridgeRollbackPendingIntent()
-            BridgeRenderDecision(decision)
+            BridgeInvalidateDecisionPresentation("drop-misclick")
+            BridgeRenderDecision(decision, true)
             return
         end
         BridgeState.physicalSeatByGuid[intent.guid] = intent.seatId
