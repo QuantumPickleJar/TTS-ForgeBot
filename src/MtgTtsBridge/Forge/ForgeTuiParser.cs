@@ -95,6 +95,11 @@ public sealed partial class ForgeTuiParser
         {
             var promptLooksLikeFinalInput = ExplicitNumericInputPromptRegex().IsMatch(prompt.Value);
             var trailing = text[(prompt.Index + prompt.Length)..];
+            var hasTrailingPromptInput = ConsumeTrailingPromptInputLength(text, prompt) > 0;
+            var trailingOnlyNumericInput = hasTrailingPromptInput && string.IsNullOrWhiteSpace(trailing[^Math.Min(trailing.Length, 1)..]) == false
+                && !trailing.TrimStart().StartsWith("0.", StringComparison.Ordinal)
+                && !trailing.TrimStart().StartsWith("1.", StringComparison.Ordinal)
+                && !trailing.TrimStart().StartsWith("2.", StringComparison.Ordinal);
             if (trailingMenu.Options.Count == 0
                 && (definition is not null
                     || (!promptLooksLikeFinalInput && string.IsNullOrWhiteSpace(trailing))))
@@ -103,6 +108,12 @@ public sealed partial class ForgeTuiParser
                 // separate stdout chunks. Preserve the current buffer whenever
                 // a supported menu is incomplete; certainty is preferable to
                 // killing a live session on a transient framing boundary.
+                return ForgeTuiParserResult.None;
+            }
+
+            if (hasTrailingPromptInput && !string.IsNullOrWhiteSpace(trailing))
+            {
+                _buffer.Remove(0, prompt.Index + prompt.Length + ConsumeTrailingPromptInputLength(text, prompt));
                 return ForgeTuiParserResult.None;
             }
 

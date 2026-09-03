@@ -875,6 +875,32 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void D4628_SessionReplacementDoesNotWriteTerminalRecoveryForAnOldGenerationFault()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session-b'
+            BridgeState.eventSessionGeneration = 2
+            BridgeState.eventPolling = true
+            fault = {
+                sessionId = 'session-a',
+                sessionGeneration = 1,
+                decisionId = 'forge-tui-old',
+                key = 'stale-old-generation',
+                eventCursor = 9,
+                appliedEventCursor = 10,
+                payloadHash = 'old'
+            }
+            BridgeStopOnDecisionProvenanceLag('old generation after replacement', fault)
+            recovery = BridgeCurrentTerminalRecoveryError()
+            polling = BridgeState.eventPolling
+        ");
+
+        Assert.True(lua.Globals.Get("recovery").IsNil());
+        Assert.True(lua.Globals.Get("polling").Boolean);
+    }
+
+    [Fact]
     public void LifecycleGuardBlocksStartMatchOutsideReadyOrFailedStates()
     {
         var lua = NewQueueProbe();

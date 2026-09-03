@@ -273,6 +273,31 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void D203_DelayedFinalTargetPromptChunk_IsDiscardedBeforeTheNextDecision()
+    {
+        var parser = new ForgeTuiParser();
+
+        var target = parser.Append(
+            "Choose target for Murderous Cut:\n" +
+            "  0. Player 1 (Life: 20)\n" +
+            "Enter choice (0-0): ");
+        Assert.IsType<ForgeTuiDecision>(target.ParsedDecision);
+
+        var trailing = parser.Append("0");
+        Assert.Null(trailing.ParsedDecision);
+        Assert.Null(trailing.ErrorCode);
+        Assert.Null(trailing.UnsupportedPrompt);
+
+        var next = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "Enter choice (0-0): ");
+        var nextDecision = Assert.IsType<ForgeTuiDecision>(next.ParsedDecision);
+        Assert.Equal("main_priority", nextDecision.Decision.Kind);
+        Assert.Equal("0", nextDecision.Inputs[nextDecision.Decision.Actions[0].ActionId]);
+    }
+
+    [Fact]
     public void AlternateTargetHeader_ParsesCardAndPlayerTargets()
     {
         var seats = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

@@ -4436,6 +4436,20 @@ function BridgeStaleDecisionFaultKey(decision, eventCursor, applied)
 end
 
 function BridgeStopOnDecisionProvenanceLag(detail, fault)
+    local faultSessionId = fault and (fault.sessionId or fault.sourceSessionId)
+    if BridgeState.eventSessionId ~= nil and faultSessionId ~= nil and faultSessionId ~= BridgeState.eventSessionId then
+        BridgeLog(string.format(
+            "[Bridge] ignoring stale decision provenance lag session=%s expected=%s generation=%s current=%s",
+            tostring(BridgeState.eventSessionId), tostring(faultSessionId), tostring(fault and fault.sessionGeneration), tostring(BridgeState.eventSessionGeneration)))
+        return
+    end
+    if fault ~= nil and fault.sessionGeneration ~= nil and BridgeState.eventSessionGeneration ~= nil
+        and fault.sessionGeneration ~= BridgeState.eventSessionGeneration then
+        BridgeLog(string.format(
+            "[Bridge] ignoring stale decision provenance lag generation=%s current=%s",
+            tostring(fault.sessionGeneration), tostring(BridgeState.eventSessionGeneration)))
+        return
+    end
     BridgeState.terminalRecoveryError = {
         sessionId = BridgeState.eventSessionId,
         sessionGeneration = BridgeState.eventSessionGeneration,
