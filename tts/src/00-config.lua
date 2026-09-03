@@ -284,8 +284,25 @@ function BridgeCurrentAuthoritativeResult()
     return result
 end
 
+function BridgeCurrentTerminalRecoveryError()
+    local error = BridgeState.terminalRecoveryError
+    if error == nil then return nil end
+    if BridgeState.eventSessionId ~= nil then
+        local expectedSessionId = error.sessionId or error.sourceSessionId
+        if expectedSessionId ~= nil and expectedSessionId ~= BridgeState.eventSessionId then
+            return nil
+        end
+    end
+    if error.sessionGeneration ~= nil and BridgeState.eventSessionGeneration ~= nil
+        and error.sessionGeneration ~= BridgeState.eventSessionGeneration then
+        return nil
+    end
+    return error
+end
+
 function BridgeDiagnosticPresentedResult()
     local result = BridgeCurrentAuthoritativeResult()
+    local terminal = BridgeCurrentTerminalRecoveryError()
     return {
         presented = result ~= nil,
         sourceEventId = result and result.sourceEventId or nil,
@@ -294,7 +311,7 @@ function BridgeDiagnosticPresentedResult()
         outcome = result and result.outcome or nil,
         reason = result and result.reason or nil,
         presentationGeneration = result and result.presentationGeneration or nil,
-        terminalRecoveryError = BridgeState.terminalRecoveryError ~= nil
+        terminalRecoveryError = terminal ~= nil
     }
 end
 
@@ -479,7 +496,7 @@ function BridgeEventDrainQueueState()
         desyncLatched = BridgeState.desyncLatched == true,
         resyncInFlight = BridgeState.resyncInFlight == true,
         bootstrapping = BridgeState.bootstrapping == true,
-        terminalRecoveryError = BridgeState.terminalRecoveryError ~= nil,
+        terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
     resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,
         resyncLastFailureReason = BridgeState.resyncLastFailureReason,

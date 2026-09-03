@@ -856,6 +856,25 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void G2F_CurrentSessionIgnoresPriorSessionTerminalRecovery()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session-b'
+            BridgeState.terminalRecoveryError = {
+                sessionId='session-a',
+                kind='decision_provenance_lag',
+                detail='stale decision from old session'
+            }
+            currentRecovery = BridgeCurrentTerminalRecoveryError()
+            presented = BridgeDiagnosticPresentedResult()
+        ");
+
+        Assert.True(lua.Globals.Get("currentRecovery").IsNil());
+        Assert.False(lua.Globals.Get("presented").Table.Get("terminalRecoveryError").Boolean);
+    }
+
+    [Fact]
     public void LifecycleGuardBlocksStartMatchOutsideReadyOrFailedStates()
     {
         var lua = NewQueueProbe();

@@ -37,7 +37,10 @@ public sealed partial class ForgeTuiParser
     {
         _buffer.Append(StripAnsi(chunk));
         var text = _buffer.ToString();
-        var prompt = InputPromptRegex().Matches(text).Cast<Match>().LastOrDefault();
+        var promptMatches = InputPromptRegex().Matches(text).Cast<Match>().ToList();
+        var prompt = promptMatches
+            .LastOrDefault(match => ExplicitNumericInputPromptRegex().IsMatch(match.Value))
+            ?? promptMatches.LastOrDefault();
 
         if (prompt is null || !prompt.Success)
         {
@@ -92,8 +95,9 @@ public sealed partial class ForgeTuiParser
         {
             var promptLooksLikeFinalInput = ExplicitNumericInputPromptRegex().IsMatch(prompt.Value);
             var trailing = text[(prompt.Index + prompt.Length)..];
-            if (definition is not null
-                || (!promptLooksLikeFinalInput && string.IsNullOrWhiteSpace(trailing)))
+            if (trailingMenu.Options.Count == 0
+                && (definition is not null
+                    || (!promptLooksLikeFinalInput && string.IsNullOrWhiteSpace(trailing))))
             {
                 // Forge frequently streams prompt headers and numbered options in
                 // separate stdout chunks. Preserve the current buffer whenever
@@ -116,6 +120,11 @@ public sealed partial class ForgeTuiParser
         }
 
         var consumedLength = prompt.Index + prompt.Length;
+        var trailingInputLength = ConsumeTrailingPromptInputLength(text, prompt);
+        if (trailingInputLength > 0)
+        {
+            consumedLength += trailingInputLength;
+        }
         if (trailingMenu.ConsumedThrough > consumedLength)
         {
             consumedLength = trailingMenu.ConsumedThrough;
@@ -240,6 +249,17 @@ public sealed partial class ForgeTuiParser
                         CostComponents: paymentCostComponents)
             },
              inputMap));
+    }
+
+    private static int ConsumeTrailingPromptInputLength(string text, Match prompt)
+    {
+        var start = prompt.Index + prompt.Length;
+        if (start >= text.Length) return 0;
+
+        var suffix = text[start..];
+        var match = TrailingPromptInputRegex().Match(suffix);
+        if (!match.Success || match.Index != 0) return 0;
+        return match.Length;
     }
 
     private static TrailingMenuParse ParseTrailingMenuOptions(string text, Match prompt)
@@ -606,7 +626,7 @@ public sealed partial class ForgeTuiParser
 
     private static string StripAnsi(string text) => AnsiEscapeRegex().Replace(text, string.Empty);
 
-    [GeneratedRegex(@"(?im)^(?:.*?(?:Enter|Select|Choose|Pick|Type|Press)[ \t]+(?:an?[ \t]+)?(?:[A-Za-z]+[ \t]+)?(?:choice|selection|option|number|answer|decision|assignment|target)\b.*?(?:\:|\?)|.*?(?:Choose|Select|Pick|Type)[ \t]+(?:one|(?:an?[ \t]+)?(?:option|choice|selection|number|assignment|target))[ \t]*[:\-])[ \t]*\r?$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?im)^(?:.*?(?:Enter|Select|Choose|Pick|Type|Press)[ \t]+(?:an?[ \t]+)?(?:[A-Za-z]+[ \t]+)?(?:choice|selection|option|number|answer|decision|assignment|target)\b.*?(?:\:|\?)(?:[ \t]*(?:\d+|[A-Za-z]+(?:[ \t]+[A-Za-z]+)*))?[ \t]*|.*?(?:Choose|Select|Pick|Type)[ \t]+(?:one|(?:an?[ \t]+)?(?:option|choice|selection|number|assignment|target))[ \t]*[:\-](?:[ \t]*(?:\d+|[A-Za-z]+(?:[ \t]+[A-Za-z]+)*))?[ \t]*)[ \t]*\r?$", RegexOptions.CultureInvariant)]
     private static partial Regex InputPromptRegex();
 
     [GeneratedRegex(@"(?i)\b(?:Enter|Type|Press)\b.*\b(?:choice|selection|option|target|number|answer|decision|assignment)\b|\bSelect\b.*\b(?:option|choice|number)\b", RegexOptions.CultureInvariant)]
@@ -614,6 +634,9 @@ public sealed partial class ForgeTuiParser
 
     [GeneratedRegex(@"(?m)^\s*(?<number>\d+)\s*(?:[.):\-])?\s+(?<label>.+?)\s*\r?$", RegexOptions.CultureInvariant)]
     private static partial Regex MenuOptionRegex();
+
+    [GeneratedRegex(@"^\s*(?:[A-Za-z]|\d+)\s*(?=\r?\n|$)", RegexOptions.CultureInvariant)]
+    private static partial Regex TrailingPromptInputRegex();
 
     // Forge emits this additive machine-readable suffix while constructing
     // numeric choices. Display labels remain presentation-only.

@@ -2507,7 +2507,7 @@ function BridgeUiFlush()
 
     local decision = BridgeState.lastDecision
     local terminal = BridgeCurrentAuthoritativeResult ~= nil and BridgeCurrentAuthoritativeResult() or nil
-    local protocolStopped = BridgeState.terminalRecoveryError ~= nil
+    local protocolStopped = BridgeCurrentTerminalRecoveryError() ~= nil
     local requiresConfirm = decision ~= nil and BridgeDecisionNeedsConfirmation(decision)
     local creatureTypeDecision = decision ~= nil and decision.kind == "creature_type_selection"
     local castPreviewPending = BridgeState.pendingIntent ~= nil

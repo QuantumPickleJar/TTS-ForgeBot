@@ -160,7 +160,7 @@ function BridgeUiFlush()
     ui.dirty = false
     local decision = BridgeState.lastDecision
     local terminal = BridgeCurrentAuthoritativeResult ~= nil and BridgeCurrentAuthoritativeResult() or nil
-    local protocolStopped = BridgeState.terminalRecoveryError ~= nil
+    local protocolStopped = BridgeCurrentTerminalRecoveryError() ~= nil
     local owner = BridgeState.currentTurnSeatId == "forge-player-1" and "YOUR TURN"
         or (BridgeState.currentTurnSeatId and "OPPONENT TURN" or "TURN OWNER UNKNOWN")
     local turn = BridgeTurnLabel() .. " — " .. owner .. " — " .. tostring(BridgeState.currentPhase or "WAITING")
@@ -292,7 +292,7 @@ function BridgeUiFlush()
     local targetCanCancel = decision ~= nil and decision.allowsCancel == true
         and (decision.kind == "target_selection" or decision.kind == "defender_selection"
             or decision.kind == "player_selection")
-    local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil and BridgeState.terminalRecoveryError == nil
+    local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil and BridgeCurrentTerminalRecoveryError() == nil
         and not BridgeDecisionNeedsConfirmation(decision)
         and BridgeState.pendingIntent == nil
     BridgeUiSet("BridgeHudPass", "active", hasPass and "true" or "false")
@@ -435,7 +435,7 @@ function BridgeHudCancel(player, value, id)
 end
 
 function BridgeHudNewMatch(player, value, id)
-    if BridgeCurrentAuthoritativeResult() == nil and BridgeState.terminalRecoveryError == nil then return end
+    if BridgeCurrentAuthoritativeResult() == nil and BridgeCurrentTerminalRecoveryError() == nil then return end
     if BridgeState.resetConfirmationArmed then
         BridgeDoPressConfirmNewMatch(player, false)
     else
@@ -837,6 +837,8 @@ end
 
 function BridgeStopOnDecisionProvenanceLag(detail, fault)
     BridgeState.terminalRecoveryError = {
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
         kind = "decision_provenance_lag",
         detail = tostring(detail or "stale decision did not converge"),
         faultKey = fault and fault.key or nil,
@@ -1009,7 +1011,7 @@ function BridgeRecordLatencyProbeDecisionReady(decision)
 end
 
 function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDecision)
-    if BridgeState.terminalRecoveryError ~= nil then return end
+    if BridgeCurrentTerminalRecoveryError() ~= nil then return end
     if BridgeState.gameEnded ~= nil then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
     if (BridgeState.lastDecision ~= nil and allowCurrentDecision ~= true) or BridgeState.submitting then return end
@@ -1163,7 +1165,7 @@ function BridgeHudClearYieldStops(player, value, id)
 end
 
 function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
-    if BridgeState.terminalRecoveryError ~= nil then return end
+    if BridgeCurrentTerminalRecoveryError() ~= nil then return end
     if BridgeState.gameEnded ~= nil then return end
     if BridgeState.schedulerOwner == "RESYNC" then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
@@ -1221,7 +1223,7 @@ function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
 end
 
 function BridgeStartDecisionPolling(allowCurrentDecision)
-    if BridgeState.terminalRecoveryError ~= nil then return end
+    if BridgeCurrentTerminalRecoveryError() ~= nil then return end
     if BridgeState.gameEnded ~= nil then return end
     if BridgeState.schedulerOwner == "RESYNC" then return end
     BridgeStopDecisionPolling()

@@ -285,8 +285,25 @@ function BridgeCurrentAuthoritativeResult()
     return result
 end
 
+function BridgeCurrentTerminalRecoveryError()
+    local error = BridgeState.terminalRecoveryError
+    if error == nil then return nil end
+    if BridgeState.eventSessionId ~= nil then
+        local expectedSessionId = error.sessionId or error.sourceSessionId
+        if expectedSessionId ~= nil and expectedSessionId ~= BridgeState.eventSessionId then
+            return nil
+        end
+    end
+    if error.sessionGeneration ~= nil and BridgeState.eventSessionGeneration ~= nil
+        and error.sessionGeneration ~= BridgeState.eventSessionGeneration then
+        return nil
+    end
+    return error
+end
+
 function BridgeDiagnosticPresentedResult()
     local result = BridgeCurrentAuthoritativeResult()
+    local terminal = BridgeCurrentTerminalRecoveryError()
     return {
         presented = result ~= nil,
         sourceEventId = result and result.sourceEventId or nil,
@@ -295,7 +312,7 @@ function BridgeDiagnosticPresentedResult()
         outcome = result and result.outcome or nil,
         reason = result and result.reason or nil,
         presentationGeneration = result and result.presentationGeneration or nil,
-        terminalRecoveryError = BridgeState.terminalRecoveryError ~= nil
+        terminalRecoveryError = terminal ~= nil
     }
 end
 
@@ -480,7 +497,7 @@ function BridgeEventDrainQueueState()
         desyncLatched = BridgeState.desyncLatched == true,
         resyncInFlight = BridgeState.resyncInFlight == true,
         bootstrapping = BridgeState.bootstrapping == true,
-        terminalRecoveryError = BridgeState.terminalRecoveryError ~= nil,
+        terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
     resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,
         resyncLastFailureReason = BridgeState.resyncLastFailureReason,
@@ -3743,7 +3760,7 @@ function BridgeUiFlush()
     ui.dirty = false
     local decision = BridgeState.lastDecision
     local terminal = BridgeCurrentAuthoritativeResult ~= nil and BridgeCurrentAuthoritativeResult() or nil
-    local protocolStopped = BridgeState.terminalRecoveryError ~= nil
+    local protocolStopped = BridgeCurrentTerminalRecoveryError() ~= nil
     local owner = BridgeState.currentTurnSeatId == "forge-player-1" and "YOUR TURN"
         or (BridgeState.currentTurnSeatId and "OPPONENT TURN" or "TURN OWNER UNKNOWN")
     local turn = BridgeTurnLabel() .. " — " .. owner .. " — " .. tostring(BridgeState.currentPhase or "WAITING")
@@ -3875,7 +3892,7 @@ function BridgeUiFlush()
     local targetCanCancel = decision ~= nil and decision.allowsCancel == true
         and (decision.kind == "target_selection" or decision.kind == "defender_selection"
             or decision.kind == "player_selection")
-    local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil and BridgeState.terminalRecoveryError == nil
+    local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil and BridgeCurrentTerminalRecoveryError() == nil
         and not BridgeDecisionNeedsConfirmation(decision)
         and BridgeState.pendingIntent == nil
     BridgeUiSet("BridgeHudPass", "active", hasPass and "true" or "false")
@@ -4018,7 +4035,7 @@ function BridgeHudCancel(player, value, id)
 end
 
 function BridgeHudNewMatch(player, value, id)
-    if BridgeCurrentAuthoritativeResult() == nil and BridgeState.terminalRecoveryError == nil then return end
+    if BridgeCurrentAuthoritativeResult() == nil and BridgeCurrentTerminalRecoveryError() == nil then return end
     if BridgeState.resetConfirmationArmed then
         BridgeDoPressConfirmNewMatch(player, false)
     else
@@ -4420,6 +4437,8 @@ end
 
 function BridgeStopOnDecisionProvenanceLag(detail, fault)
     BridgeState.terminalRecoveryError = {
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
         kind = "decision_provenance_lag",
         detail = tostring(detail or "stale decision did not converge"),
         faultKey = fault and fault.key or nil,
@@ -4592,7 +4611,7 @@ function BridgeRecordLatencyProbeDecisionReady(decision)
 end
 
 function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDecision)
-    if BridgeState.terminalRecoveryError ~= nil then return end
+    if BridgeCurrentTerminalRecoveryError() ~= nil then return end
     if BridgeState.gameEnded ~= nil then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
     if (BridgeState.lastDecision ~= nil and allowCurrentDecision ~= true) or BridgeState.submitting then return end
@@ -4746,7 +4765,7 @@ function BridgeHudClearYieldStops(player, value, id)
 end
 
 function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
-    if BridgeState.terminalRecoveryError ~= nil then return end
+    if BridgeCurrentTerminalRecoveryError() ~= nil then return end
     if BridgeState.gameEnded ~= nil then return end
     if BridgeState.schedulerOwner == "RESYNC" then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
@@ -4804,7 +4823,7 @@ function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
 end
 
 function BridgeStartDecisionPolling(allowCurrentDecision)
-    if BridgeState.terminalRecoveryError ~= nil then return end
+    if BridgeCurrentTerminalRecoveryError() ~= nil then return end
     if BridgeState.gameEnded ~= nil then return end
     if BridgeState.schedulerOwner == "RESYNC" then return end
     BridgeStopDecisionPolling()
@@ -6688,9 +6707,10 @@ function BridgeIgnoreStatusClick(object, playerColor, altClick)
 end
 
 function BridgeSetStatus(headline, detail)
-    if BridgeState.terminalRecoveryError ~= nil then
+    local currentRecovery = BridgeCurrentTerminalRecoveryError()
+    if currentRecovery ~= nil then
         headline = "PROTOCOL RECOVERY ERROR"
-        detail = BridgeState.terminalRecoveryError.detail
+        detail = currentRecovery.detail
             or "Forge must publish a replacement decision."
     end
     BridgeState.statusHeadline = headline or BridgeState.statusHeadline
@@ -10108,9 +10128,10 @@ function BridgeScheduleResyncWatchdog(sessionId, token)
 end
 
 function BridgeResyncFromAuthoritativeSnapshot(origin)
-    if BridgeState.terminalRecoveryError ~= nil then
+    local currentRecovery = BridgeCurrentTerminalRecoveryError()
+    if currentRecovery ~= nil then
         BridgeLog("[Bridge] RESYNC_BLOCKED reason=terminal-recovery-error origin=" .. tostring(origin)
-            .. " kind=" .. tostring(BridgeState.terminalRecoveryError.kind))
+            .. " kind=" .. tostring(currentRecovery.kind))
         BridgeSetStatus("SYNCHRONIZATION STOPPED", "Forge must publish a replacement decision before recovery can continue.")
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
         BridgeState.resyncInFlight = false
@@ -16963,7 +16984,7 @@ function BridgeUiFlush()
 
     local decision = BridgeState.lastDecision
     local terminal = BridgeCurrentAuthoritativeResult ~= nil and BridgeCurrentAuthoritativeResult() or nil
-    local protocolStopped = BridgeState.terminalRecoveryError ~= nil
+    local protocolStopped = BridgeCurrentTerminalRecoveryError() ~= nil
     local requiresConfirm = decision ~= nil and BridgeDecisionNeedsConfirmation(decision)
     local creatureTypeDecision = decision ~= nil and decision.kind == "creature_type_selection"
     local castPreviewPending = BridgeState.pendingIntent ~= nil

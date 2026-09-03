@@ -252,6 +252,27 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void TargetMenu_TrailingNumericTerminator_DoesNotLeakIntoNextDecision()
+    {
+        var parser = new ForgeTuiParser();
+        var first = parser.Append(
+            "Choose target for Murderous Cut:\n" +
+            "  0. Player 1 (Life: 20)\n" +
+            "Enter choice (0-0): 0");
+        var decision = Assert.IsType<ForgeTuiDecision>(first.ParsedDecision);
+        Assert.Equal("target_selection", decision.Decision.Kind);
+        Assert.Equal("0", decision.Inputs[decision.Decision.Actions[0].ActionId]);
+
+        var second = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "Enter choice (0-0): ");
+        var nextDecision = Assert.IsType<ForgeTuiDecision>(second.ParsedDecision);
+        Assert.Equal("main_priority", nextDecision.Decision.Kind);
+        Assert.Equal("0", nextDecision.Inputs[nextDecision.Decision.Actions[0].ActionId]);
+    }
+
+    [Fact]
     public void AlternateTargetHeader_ParsesCardAndPlayerTargets()
     {
         var seats = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

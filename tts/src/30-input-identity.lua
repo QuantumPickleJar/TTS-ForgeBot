@@ -2106,7 +2106,7 @@ function BridgeScheduleResyncWatchdog(sessionId, token)
 end
 
 function BridgeResyncFromAuthoritativeSnapshot(origin)
-    if BridgeState.terminalRecoveryError ~= nil then
+    if BridgeCurrentTerminalRecoveryError() ~= nil then
         BridgeLog("[Bridge] RESYNC_BLOCKED reason=terminal-recovery-error origin=" .. tostring(origin)
             .. " kind=" .. tostring(BridgeState.terminalRecoveryError.kind))
         BridgeSetStatus("SYNCHRONIZATION STOPPED", "Forge must publish a replacement decision before recovery can continue.")
