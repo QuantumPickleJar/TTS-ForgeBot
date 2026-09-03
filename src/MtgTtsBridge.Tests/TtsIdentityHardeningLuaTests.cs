@@ -39,6 +39,7 @@ public sealed class TtsIdentityHardeningLuaTests
             BridgeState.physicalSeatByGuid = {}
             BridgeState.physicalZoneByGuid = {}
             BridgeState.canonicalCardNameByGuid = {}
+            BridgeState.eventSessionId = 'session'
             first = BridgeRecordLooseCardIdentity('forge:session:4', 'guid-a', 'forge-player-1', 'battlefield')
             stolenGuid = BridgeRecordLooseCardIdentity('forge:session:4', 'guid-b', 'forge-player-1', 'battlefield')
             stolenCard = BridgeRecordLooseCardIdentity('forge:session:126', 'guid-a', 'forge-player-1', 'battlefield')

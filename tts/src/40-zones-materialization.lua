@@ -1231,6 +1231,13 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         BridgeState.resyncCircuitOpen = false
         BridgeState.resyncSnapshotFingerprint = nil
         BridgeState.resyncSnapshotRepeatCount = 0
+        BridgeState.terminalRecoveryError = nil
+        BridgeState.staleDecisionFault = nil
+        BridgeState.staleDecisionFaultsByKey = {}
+        BridgeState.staleDecisionRetryKey = nil
+        BridgeState.staleDecisionRetryCount = 0
+        BridgeState.staleDecisionRetryStartedAt = nil
+        BridgeState.staleDecisionRetryDeadlineAt = nil
     end
     BridgeState.schedulerOwner = "NORMAL"
     BridgeState.fastForwardSuspendedByResync = false

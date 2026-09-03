@@ -2,8 +2,10 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using MtgTtsBridge.Contracts.Actions;
 using Microsoft.Extensions.Logging.Abstractions;
 using MtgTtsBridge.Contracts.Diagnostics;
+using MtgTtsBridge.Contracts.Events;
 using MtgTtsBridge.Contracts.State;
 using MtgTtsBridge.Diagnostics;
 using MtgTtsBridge.Forge;
@@ -182,6 +184,78 @@ public sealed class DiagnosticsTests
         Assert.Equal("fail", mapping.Status);
         Assert.Contains("duplicateGuids", mapping.Evidence!.Keys);
         Assert.Contains("invalidMappings", mapping.Evidence.Keys);
+    }
+
+    [Fact]
+    public void SelfTests_ClassifyCoherentStaleAuthoritativeDecisionAsProvenanceLag()
+    {
+        var decision = new DecisionDto(
+            "forge-tui-9", "main_priority",
+            [new LegalActionDto("forge-tui-9-choice-0", "pass_priority", "Pass priority", false, null, null)],
+            SeatId: "forge-player-1")
+        {
+            SessionId = "session",
+            EventCursor = 103,
+            ForgeSequence = 11,
+            TurnNumber = 3,
+            ActiveSeatId = "forge-player-1",
+            PrioritySeatId = "forge-player-1",
+            PhaseName = "Main phase, precombat"
+        };
+        var adapter = new AdapterStateDto("session", "awaiting_human_decision", decision, null);
+        var card = new GameCardSnapshotDto(
+            "card-1", 1, "Island", "Island", "graveyard", 0,
+            "forge-player-1", "forge-player-1", false, false, false,
+            new Dictionary<string, int>(), []);
+        var snapshot = new GameSnapshotDto(
+            "session", 12, "Thought Scour resolved",
+            [new GameSeatSnapshotDto("forge-player-1", 1, "Human", 20, 0, new Dictionary<string, int>(), [new GameZoneSnapshotDto("graveyard", [card])])],
+            [], EventCursor: 107, TurnNumber: 3, ActiveSeatId: "forge-player-1", PrioritySeatId: "forge-player-1", Phase: "Main phase, precombat");
+        var batch = new EventBatchDto(0, 1, 107, false, []);
+        var request = new DiagnosticReportRequestDto(
+            SessionId: "session",
+            DecisionId: null,
+            LastAppliedEventSequence: 107,
+            Turn: 3,
+            Phase: "Main phase, precombat",
+            PhysicalMappings: [new DiagnosticPhysicalMappingDto("card-1", "guid-1", "graveyard", IsLive: true, AdvertisedCardInstanceId: "card-1")],
+            EventDrainDiagnostics: new DiagnosticEventDrainDiagnosticsDto(QueueLength: 0, LastReceived: 107, LastApplied: 107));
+
+        var result = new DiagnosticSelfTestRunner().Run(adapter, batch, snapshot, request, new BridgeProcessIdentity());
+
+        var provenance = Assert.Single(result.Checks, check => check.Id == "decision_provenance_current");
+        Assert.Equal("fail", provenance.Status);
+        Assert.Equal("decision_provenance_lag", provenance.Evidence!["classification"]);
+    }
+
+    [Fact]
+    public void SelfTests_FailTerminalRecoveryWhenResyncStillInFlight()
+    {
+        var request = new DiagnosticReportRequestDto(
+            SessionId: "session",
+            LastAppliedEventSequence: 107,
+            Turn: 3,
+            Status: "SYNCHRONIZATION STOPPED",
+            EventDrainDiagnostics: new DiagnosticEventDrainDiagnosticsDto(
+                QueueLength: 0,
+                LastReceived: 107,
+                LastApplied: 107,
+                ResyncInFlight: true,
+                DesyncLatched: false,
+                Bootstrapping: true));
+
+        var result = new DiagnosticSelfTestRunner().Run(
+            new AdapterStateDto("session", "awaiting_human_decision", null, null),
+            new EventBatchDto(0, 1, 107, false, []),
+            new GameSnapshotDto("session", 12, "current", [], [], EventCursor: 107, TurnNumber: 3),
+            request,
+            new BridgeProcessIdentity());
+
+        var invariants = Assert.Single(result.Checks, check => check.Id == "recovery_state_invariants");
+        Assert.Equal("fail", invariants.Status);
+        var failures = Assert.IsType<string[]>(invariants.Evidence!["failures"]);
+        Assert.Contains("ACTIVE_GAME_REENTERED_BOOTSTRAP", failures);
+        Assert.Contains("TERMINAL_RECOVERY_ERROR_WITH_RESYNC_IN_FLIGHT", failures);
     }
 
     [Fact]

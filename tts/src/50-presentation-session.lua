@@ -1767,6 +1767,11 @@ end
 
 function BridgeStopOnDesync(message)
     local diagnostic = tostring(message or "")
+    if string.find(diagnostic, "STALE_DECISION_DID_NOT_CONVERGE", 1, true) ~= nil
+        or string.find(diagnostic, "decision_provenance_lag", 1, true) ~= nil then
+        BridgeStopOnDecisionProvenanceLag(diagnostic, BridgeState.staleDecisionFault)
+        return
+    end
     if BridgeState.resyncInFlight == true then
         BridgeState.desyncFailureCount = (BridgeState.desyncFailureCount or 0) + 1
         BridgeState.desyncLastMessage = diagnostic

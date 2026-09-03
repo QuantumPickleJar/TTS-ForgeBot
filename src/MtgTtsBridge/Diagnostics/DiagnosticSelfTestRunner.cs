@@ -40,7 +40,10 @@ public sealed class DiagnosticSelfTestRunner
             CheckTtsNotAhead(eventBatch, request),
             CheckTtsBehind(eventBatch, request),
             CheckSnapshot(snapshot),
-            CheckCardMappings(snapshot, request)
+            CheckCardMappings(snapshot, request),
+            CheckDecisionProvenanceLag(adapterState, eventBatch, snapshot, request),
+            CheckRecoveryInvariants(eventBatch, snapshot, request),
+            CheckGenerationChurn(adapterState, eventBatch, snapshot, request)
         };
         return new DiagnosticSelfTestResult(checks);
     }
@@ -125,61 +128,26 @@ public sealed class DiagnosticSelfTestRunner
     private static DiagnosticSelfTestCheck CheckCardMappings(GameSnapshotDto? snapshot, DiagnosticReportRequestDto request)
     {
         if (snapshot is null) return Check("snapshot_card_mappings", "info", "unavailable", "No snapshot is available for mapping comparison.");
-        // Cards still contained in an opaque Forge/TTS library Deck do not
-        // have distinct loose TTS embodiments. Requiring their instance IDs
-        // here turns a normal early-turn snapshot into a false mapping alarm.
-        var snapshotCards = snapshot.Seats
-            .SelectMany(seat => seat.Zones)
-            .Where(zone => !string.Equals(zone.Name, "library", StringComparison.OrdinalIgnoreCase))
-            .SelectMany(zone => zone.Cards)
-            .Where(card => !card.IsVirtual
-                && !string.Equals(card.MaterializationPolicy, "virtual", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(card.MaterializationPolicy, "virtual-stack", StringComparison.OrdinalIgnoreCase));
-        var snapshotStackCards = snapshot.Stack
-            .Where(card => !card.IsVirtual
-                && !string.Equals(card.MaterializationPolicy, "virtual", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(card.MaterializationPolicy, "virtual-stack", StringComparison.OrdinalIgnoreCase));
-        var combatCards = snapshot.Combat?.Attacks
-            .SelectMany(item => new[] { item.AttackerCardInstanceId }.Concat(item.BlockerCardInstanceIds))
-            ?? [];
-        var referenced = snapshotCards
-            .Concat(snapshotStackCards)
-            .Select(card => card.CardInstanceId)
-            .Concat(combatCards)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
+        var referenced = ReferencedPhysicalCardInstanceIds(snapshot);
         if (request.PhysicalMappings is not null)
         {
-            var mappings = request.PhysicalMappings;
-            var duplicateInstances = mappings.GroupBy(item => item.CardInstanceId, StringComparer.Ordinal)
-                .Where(group => group.Count() > 1).Select(group => group.Key).ToArray();
-            var duplicateGuids = mappings.GroupBy(item => item.Guid, StringComparer.Ordinal)
-                .Where(group => group.Count() > 1).Select(group => group.Key).ToArray();
-            var invalid = mappings.Where(item => string.IsNullOrWhiteSpace(item.Guid)
-                    || !item.IsLive
-                    || string.IsNullOrWhiteSpace(item.AdvertisedCardInstanceId)
-                    || !string.Equals(item.CardInstanceId, item.AdvertisedCardInstanceId, StringComparison.Ordinal))
-                .Select(item => item.CardInstanceId).Distinct(StringComparer.Ordinal).ToArray();
-            var mappingByInstance = mappings
-                .GroupBy(item => item.CardInstanceId, StringComparer.Ordinal)
-                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
-            var missing = referenced.Where(item => !mappingByInstance.ContainsKey(item)).ToArray();
-            if (duplicateInstances.Length > 0 || duplicateGuids.Length > 0 || invalid.Length > 0 || missing.Length > 0)
+            var audit = AuditPhysicalMappings(referenced, request.PhysicalMappings);
+            if (!audit.IsCoherent)
             {
                 return Check("snapshot_card_mappings", "error", "fail",
                     "Authoritative physical mappings are not live and unique.",
                     new Dictionary<string, object?>
                     {
-                        ["missingCardInstanceIds"] = missing,
-                        ["duplicateCardInstanceIds"] = duplicateInstances,
-                        ["duplicateGuids"] = duplicateGuids,
-                        ["invalidMappings"] = invalid,
+                        ["missingCardInstanceIds"] = audit.Missing,
+                        ["duplicateCardInstanceIds"] = audit.DuplicateInstances,
+                        ["duplicateGuids"] = audit.DuplicateGuids,
+                        ["invalidMappings"] = audit.Invalid,
                         ["referencedCount"] = referenced.Length
                     });
             }
             return Check("snapshot_card_mappings", "info", "pass",
                 "Authoritative physical mappings are live, unique, and identity-consistent.",
-                new Dictionary<string, object?> { ["referencedCount"] = referenced.Length, ["mappingCount"] = mappings.Count });
+                new Dictionary<string, object?> { ["referencedCount"] = referenced.Length, ["mappingCount"] = request.PhysicalMappings.Count });
         }
         if (request.MappedCardInstanceIds is null) return Check("snapshot_card_mappings", "info", "unavailable", "TTS did not supply card instance mapping information.");
         var mapped = request.MappedCardInstanceIds.ToHashSet(StringComparer.Ordinal);
@@ -188,6 +156,190 @@ public sealed class DiagnosticSelfTestRunner
             ? Check("snapshot_card_mappings", "info", "pass", "Snapshot combat card instances are represented in TTS mapping information.", new Dictionary<string, object?> { ["referencedCount"] = referenced.Length })
             : Check("snapshot_card_mappings", "error", "fail", "Authoritative combat card instances are missing from TTS mapping information.", new Dictionary<string, object?> { ["missingCardInstanceIds"] = missingLegacy, ["referencedCount"] = referenced.Length });
     }
+
+    private static DiagnosticSelfTestCheck CheckDecisionProvenanceLag(
+        AdapterStateDto? state,
+        EventBatchDto? batch,
+        GameSnapshotDto? snapshot,
+        DiagnosticReportRequestDto request)
+    {
+        var decision = state?.CurrentDecision;
+        if (decision is null) return Check("decision_provenance_current", "info", "unavailable", "No authoritative current decision is available.");
+        if (request.LastAppliedEventSequence is null) return Check("decision_provenance_current", "info", "unavailable", "TTS did not report its committed cursor.");
+        var decisionCursor = decision.EventCursor;
+        if (decisionCursor is null) return Check("decision_provenance_current", "info", "unavailable", "The authoritative decision has no event cursor.");
+
+        var ttsApplied = request.LastAppliedEventSequence.Value;
+        var bridgeLatest = batch?.LatestSequence;
+        var snapshotCursor = snapshot?.EventCursor;
+        var cursorsAgree = CursorMissingOrEquals(bridgeLatest, ttsApplied)
+            && CursorMissingOrEquals(snapshotCursor, ttsApplied);
+        var noInstalledDecision = string.IsNullOrWhiteSpace(request.DecisionId);
+        var noRepairWork = RequestHasNoRepairWork(request);
+        var mappingsCoherent = snapshot is not null && RequestMappingsCoherent(snapshot, request);
+        if (decisionCursor.Value < ttsApplied && cursorsAgree && noInstalledDecision && noRepairWork && mappingsCoherent)
+        {
+            return Check("decision_provenance_current", "error", "fail",
+                "Forge is still publishing a stale decision while TTS, the event stream, snapshot, and physical mappings are coherent.",
+                new Dictionary<string, object?>
+                {
+                    ["classification"] = "decision_provenance_lag",
+                    ["decisionId"] = decision.DecisionId,
+                    ["decisionEventCursor"] = decision.EventCursor,
+                    ["ttsApplied"] = ttsApplied,
+                    ["bridgeLatest"] = bridgeLatest,
+                    ["snapshotCursor"] = snapshotCursor
+                });
+        }
+
+        return decisionCursor.Value < ttsApplied
+            ? Check("decision_provenance_current", "warning", "warning", "The authoritative decision is behind TTS, but other recovery evidence is not fully coherent.")
+            : Check("decision_provenance_current", "info", "pass", "The authoritative decision cursor is not behind TTS.");
+    }
+
+    private static DiagnosticSelfTestCheck CheckRecoveryInvariants(EventBatchDto? batch, GameSnapshotDto? snapshot, DiagnosticReportRequestDto request)
+    {
+        var drain = request.EventDrainDiagnostics;
+        if (drain is null) return Check("recovery_state_invariants", "info", "unavailable", "TTS did not provide recovery scheduler diagnostics.");
+        var failures = new List<string>();
+        if (drain.Bootstrapping && ((request.Turn ?? snapshot?.TurnNumber ?? 0) > 1 || (request.LastAppliedEventSequence ?? 0) > 0))
+            failures.Add("ACTIVE_GAME_REENTERED_BOOTSTRAP");
+        if (drain.ResyncInFlight && !drain.DesyncLatched && RequestHasNoRepairWork(request)
+            && request.LastAppliedEventSequence.HasValue
+            && CursorMissingOrEquals(batch?.LatestSequence, request.LastAppliedEventSequence.Value)
+            && CursorMissingOrEquals(snapshot?.EventCursor, request.LastAppliedEventSequence.Value))
+            failures.Add("RESYNC_ACTIVE_WITHOUT_LATCH_OR_REPAIR_WORK");
+        if (drain.ResyncInFlight && StatusLooksTerminal(request.Status))
+            failures.Add("TERMINAL_RECOVERY_ERROR_WITH_RESYNC_IN_FLIGHT");
+
+        return failures.Count == 0
+            ? Check("recovery_state_invariants", "info", "pass", "No recovery scheduler invariant failure was detected.")
+            : Check("recovery_state_invariants", "error", "fail", "Recovery scheduler state violates terminal/liveness invariants.",
+                new Dictionary<string, object?> { ["failures"] = failures.ToArray() });
+    }
+
+    private static DiagnosticSelfTestCheck CheckGenerationChurn(
+        AdapterStateDto? state,
+        EventBatchDto? batch,
+        GameSnapshotDto? snapshot,
+        DiagnosticReportRequestDto request)
+    {
+        var lifecycle = request.DiagnosticCaptureLifecycle;
+        if (lifecycle is null || lifecycle.Count < 2)
+            return Check("generation_churn_without_progress", "info", "unavailable", "TTS did not provide enough lifecycle samples.");
+        var first = lifecycle.First();
+        var last = lifecycle.Last();
+        var noAuthoritativeProgress = first.LastAppliedEventSequence == last.LastAppliedEventSequence
+            && first.LastReceivedEventSequence == last.LastReceivedEventSequence
+            && CursorMissingOrEquals(batch?.LatestSequence, last.LastAppliedEventSequence)
+            && CursorMissingOrEquals(snapshot?.EventCursor, last.LastAppliedEventSequence);
+        var presentationChurn = last.PhysicalPresentationGeneration - first.PhysicalPresentationGeneration;
+        var transactionChurn = last.PhysicalTransactionGeneration - first.PhysicalTransactionGeneration;
+        var repeatedRecovery = lifecycle.Count(item => item.ResyncInFlight || !string.IsNullOrWhiteSpace(item.ResyncOrigin)) > 1;
+        if (noAuthoritativeProgress && repeatedRecovery && presentationChurn > 4 && transactionChurn <= 1)
+        {
+            return Check("generation_churn_without_progress", "error", "fail",
+                "Recovery generations changed repeatedly without physical or authoritative progress.",
+                new Dictionary<string, object?>
+                {
+                    ["firstApplied"] = first.LastAppliedEventSequence,
+                    ["lastApplied"] = last.LastAppliedEventSequence,
+                    ["physicalPresentationGenerationDelta"] = presentationChurn,
+                    ["physicalTransactionGenerationDelta"] = transactionChurn,
+                    ["currentDecisionId"] = state?.CurrentDecision?.DecisionId
+                });
+        }
+
+        return Check("generation_churn_without_progress", "info", "pass", "No no-progress generation churn was detected.");
+    }
+
+    private static string[] ReferencedPhysicalCardInstanceIds(GameSnapshotDto snapshot)
+    {
+        // Cards still contained in an opaque Forge/TTS library Deck do not
+        // have distinct loose TTS embodiments. Requiring their instance IDs
+        // here turns a normal early-turn snapshot into a false mapping alarm.
+        var snapshotCards = snapshot.Seats
+            .SelectMany(seat => seat.Zones)
+            .Where(zone => !string.Equals(zone.Name, "library", StringComparison.OrdinalIgnoreCase))
+            .SelectMany(zone => zone.Cards)
+            .Where(IsPhysicalCard);
+        var snapshotStackCards = snapshot.Stack.Where(IsPhysicalCard);
+        var combatCards = snapshot.Combat?.Attacks
+            .SelectMany(item => new[] { item.AttackerCardInstanceId }.Concat(item.BlockerCardInstanceIds))
+            ?? [];
+        return snapshotCards
+            .Concat(snapshotStackCards)
+            .Select(card => card.CardInstanceId)
+            .Concat(combatCards)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static bool IsPhysicalCard(GameCardSnapshotDto card) =>
+        !card.IsVirtual
+        && !string.Equals(card.MaterializationPolicy, "virtual", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(card.MaterializationPolicy, "virtual-stack", StringComparison.OrdinalIgnoreCase);
+
+    private sealed record MappingAudit(string[] Missing, string[] DuplicateInstances, string[] DuplicateGuids, string[] Invalid)
+    {
+        public bool IsCoherent => Missing.Length == 0 && DuplicateInstances.Length == 0 && DuplicateGuids.Length == 0 && Invalid.Length == 0;
+    }
+
+    private static MappingAudit AuditPhysicalMappings(string[] referenced, IReadOnlyList<DiagnosticPhysicalMappingDto> mappings)
+    {
+        var duplicateInstances = mappings.GroupBy(item => item.CardInstanceId, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1).Select(group => group.Key).ToArray();
+        var duplicateGuids = mappings.GroupBy(item => item.Guid, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1).Select(group => group.Key).ToArray();
+        var invalid = mappings.Where(item => string.IsNullOrWhiteSpace(item.Guid)
+                || !item.IsLive
+                || string.IsNullOrWhiteSpace(item.AdvertisedCardInstanceId)
+                || !string.Equals(item.CardInstanceId, item.AdvertisedCardInstanceId, StringComparison.Ordinal))
+            .Select(item => item.CardInstanceId).Distinct(StringComparer.Ordinal).ToArray();
+        var mappingByInstance = mappings
+            .GroupBy(item => item.CardInstanceId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var missing = referenced.Where(item => !mappingByInstance.ContainsKey(item)).ToArray();
+        return new MappingAudit(missing, duplicateInstances, duplicateGuids, invalid);
+    }
+
+    private static bool RequestMappingsCoherent(GameSnapshotDto snapshot, DiagnosticReportRequestDto request)
+    {
+        var referenced = ReferencedPhysicalCardInstanceIds(snapshot);
+        if (request.PhysicalMappings is not null) return AuditPhysicalMappings(referenced, request.PhysicalMappings).IsCoherent;
+        if (request.MappedCardInstanceIds is null) return false;
+        var mapped = request.MappedCardInstanceIds.ToHashSet(StringComparer.Ordinal);
+        return referenced.All(mapped.Contains);
+    }
+
+    private static bool RequestHasNoRepairWork(DiagnosticReportRequestDto request)
+    {
+        var drain = request.EventDrainDiagnostics;
+        if (drain is null) return true;
+        return drain.QueueLength == 0
+            && drain.PhysicalLibraryQueuesIdle
+            && !drain.AnimationRunning
+            && !drain.EventRequestInFlight
+            && !drain.EventPollScheduled
+            && !drain.SnapshotReconcilePending
+            && !drain.SnapshotReconcileInFlight
+            && (drain.PhysicalQueues is null || drain.PhysicalQueues.Values.All(queue =>
+                !queue.LibraryExtractionActive
+                && queue.LibraryExtractionLength == 0
+                && !queue.MulliganInsertionActive
+                && queue.MulliganInsertionLength == 0));
+    }
+
+    private static bool StatusLooksTerminal(string? status)
+    {
+        var value = status ?? string.Empty;
+        return value.Contains("SYNCHRONIZATION STOPPED", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("TERMINAL_RECOVERY_ERROR", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("terminal_recovery_error", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool CursorMissingOrEquals(long? cursor, long? expected) =>
+        cursor is null || expected is null || cursor.Value == expected.Value;
 
     private static DiagnosticSelfTestCheck Check(string id, string severity, string status, string message, Dictionary<string, object?>? evidence = null) =>
         new(id, severity, status, message, evidence);

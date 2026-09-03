@@ -791,6 +791,97 @@ function BridgeStopDecisionPolling()
     BridgeState.decisionPollTimerToken = nil
 end
 
+function BridgeDecisionPayloadHash(decision)
+    local ok, result = pcall(function()
+        local text = tostring(decision and decision.kind or "")
+            .. "\n" .. tostring(decision and decision.prompt or "")
+            .. "\n" .. tostring(decision and decision.seatId or "")
+            .. "\n" .. tostring(decision and decision.turnNumber or "")
+            .. "\n" .. tostring(decision and decision.phaseName or "")
+            .. "\n" .. tostring(decision and decision.forgeSequence or "")
+        for index, action in ipairs(decision and decision.actions or {}) do
+            text = text
+                .. "\n" .. tostring(index)
+                .. ":" .. tostring(action.actionId or "")
+                .. ":" .. tostring(action.type or "")
+                .. ":" .. tostring(action.cardInstanceId or action.sourceCardInstanceId or "")
+                .. ":" .. tostring(action.targetSeatId or "")
+                .. ":" .. tostring(action.requiresSelection == true)
+                .. ":" .. tostring(action.isSelected == true)
+        end
+        local hash = 0
+        for index = 1, #text do
+            hash = (hash + index * string.byte(text, index)) % 4294967296
+        end
+        return string.format("%08x:%d", hash, #text)
+    end)
+    if ok and result ~= nil then
+        return tostring(result)
+    end
+    return "hash-failed:" .. tostring(decision and decision.decisionId or "(missing)")
+end
+
+function BridgeStaleDecisionFaultKey(decision, eventCursor, applied)
+    local parts = {
+        tostring(decision and decision.sessionId or BridgeState.eventSessionId or "(no-session)"),
+        tostring(decision and decision.decisionId or "(missing)"),
+        tostring(eventCursor or 0),
+        tostring(applied or 0),
+        BridgeDecisionPayloadHash(decision)
+    }
+    local key = tostring(parts[1] or "")
+    for index = 2, #parts do key = key .. "|" .. tostring(parts[index] or "") end
+    return key
+end
+
+function BridgeStopOnDecisionProvenanceLag(detail, fault)
+    BridgeState.terminalRecoveryError = {
+        kind = "decision_provenance_lag",
+        detail = tostring(detail or "stale decision did not converge"),
+        faultKey = fault and fault.key or nil,
+        decisionId = fault and fault.decisionId or nil,
+        eventCursor = fault and fault.eventCursor or nil,
+        appliedEventCursor = fault and fault.appliedEventCursor or nil,
+        payloadHash = fault and fault.payloadHash or nil
+    }
+    BridgeState.gameEnded = {
+        terminalRecoveryError = true,
+        reason = "decision_provenance_lag",
+        detail = BridgeState.terminalRecoveryError.detail,
+        winnerSeatIds = {}
+    }
+    BridgeState.desyncLatched = false
+    BridgeState.resyncInFlight = false
+    BridgeState.resyncScheduled = false
+    BridgeState.resyncDeferredRetryScheduled = false
+    BridgeState.resyncWatchdogToken = nil
+    BridgeState.resyncStartedAt = nil
+    BridgeState.resyncOrigin = nil
+    BridgeState.resyncDeferredReason = nil
+    if BridgeState.ui ~= nil then
+        BridgeState.ui.resyncInFlight = false
+        BridgeState.ui.fastForwardActive = false
+        BridgeState.ui.autoAdvanceMode = BridgeState.ui.autoPassEmpty and "AUTO-PASS EMPTY" or "NORMAL"
+    end
+    BridgeSetSchedulerOwner("NORMAL", "decision-provenance-lag")
+    BridgeStopEventPolling("decision-provenance-lag")
+    BridgeStopDecisionPolling()
+    BridgeState.decisionRefreshInFlight = false
+    BridgeState.decisionPollInFlight = false
+    BridgeState.decisionPollScheduled = false
+    BridgeState.submitting = false
+    BridgeState.pendingDecision = nil
+    BridgeState.decisionAwaitingCausallyCurrent = false
+    BridgeState.animationRunning = false
+    BridgeState.eventDrainTransaction = nil
+    BridgeClearHighlights()
+    BridgeResetSelectionState()
+    BridgeHideMainPriorityControls()
+    BridgeSetStatus("SYNCHRONIZATION STOPPED", "Forge must publish a replacement decision. The physical table was left unchanged.")
+    BridgeUiMarkDirty("decision-provenance-lag-terminal")
+    BridgeLog("[Bridge] TERMINAL_RECOVERY_ERROR decision_provenance_lag " .. tostring(detail))
+end
+
 function BridgeDecisionPollNow()
     return os.clock()
 end
@@ -830,31 +921,42 @@ end
 
 function BridgeRecordStaleDecisionConvergence(decision, eventCursor, applied)
     local decisionId = tostring(decision and decision.decisionId or "(missing)")
-    local retryKey = table.concat({
-        decisionId,
-        tostring(decision and decision.kind or "(unknown)"),
-        tostring(eventCursor or 0),
-        tostring(applied or 0),
-        tostring(BridgeState.eventSessionId or "(no-session)"),
-        tostring(BridgeState.decisionPresentationGeneration or 0)
-    }, "|")
+    local payloadHash = BridgeDecisionPayloadHash(decision)
+    local retryKey = BridgeStaleDecisionFaultKey(decision, eventCursor, applied)
+    BridgeState.staleDecisionFaultsByKey = BridgeState.staleDecisionFaultsByKey or {}
+    local fault = BridgeState.staleDecisionFaultsByKey[retryKey]
+    if fault == nil then
+        fault = {
+            key = retryKey,
+            decisionId = decisionId,
+            sessionId = decision and decision.sessionId or BridgeState.eventSessionId,
+            eventCursor = eventCursor,
+            appliedEventCursor = applied,
+            payloadHash = payloadHash,
+            retryCount = 0,
+            startedAt = os.clock(),
+            deadlineAt = os.clock() + BRIDGE_STALE_DECISION_CONVERGENCE_SECONDS
+        }
+        BridgeState.staleDecisionFaultsByKey[retryKey] = fault
+    end
     if BridgeState.staleDecisionRetryKey ~= retryKey then
         BridgeState.staleDecisionRetryKey = retryKey
-        BridgeState.staleDecisionRetryCount = 0
-        BridgeState.staleDecisionRetryStartedAt = os.clock()
-        BridgeState.staleDecisionRetryDeadlineAt = BridgeState.staleDecisionRetryStartedAt + BRIDGE_STALE_DECISION_CONVERGENCE_SECONDS
     end
-    BridgeState.staleDecisionRetryCount = (BridgeState.staleDecisionRetryCount or 0) + 1
+    fault.retryCount = (fault.retryCount or 0) + 1
+    BridgeState.staleDecisionFault = fault
+    BridgeState.staleDecisionRetryCount = fault.retryCount
+    BridgeState.staleDecisionRetryStartedAt = fault.startedAt
+    BridgeState.staleDecisionRetryDeadlineAt = fault.deadlineAt
     BridgeState.decisionAwaitingCausallyCurrent = true
-    BridgeState.lastDecisionPollOutcome = "awaiting_causally_current_decision"
-    if BridgeState.staleDecisionRetryCount > BRIDGE_STALE_DECISION_CONVERGENCE_ATTEMPTS
-        or (BridgeState.staleDecisionRetryDeadlineAt ~= nil and os.clock() > BridgeState.staleDecisionRetryDeadlineAt) then
+    BridgeState.lastDecisionPollOutcome = "decision_provenance_lag"
+    if fault.retryCount > BRIDGE_STALE_DECISION_CONVERGENCE_ATTEMPTS
+        or (fault.deadlineAt ~= nil and os.clock() > fault.deadlineAt) then
         local detail = string.format(
-            "stale decision did not converge decision=%s kind=%s cursor=%s applied=%s retries=%s",
+            "STALE_DECISION_DID_NOT_CONVERGE classification=decision_provenance_lag decision=%s kind=%s cursor=%s applied=%s retries=%s payloadHash=%s",
             decisionId, tostring(decision and decision.kind or "(unknown)"), tostring(eventCursor), tostring(applied),
-            tostring(BridgeState.staleDecisionRetryCount))
+            tostring(fault.retryCount), tostring(payloadHash))
         BridgeLog("[Bridge] " .. detail)
-        BridgeStopOnDesync(detail)
+        BridgeStopOnDecisionProvenanceLag(detail, fault)
         return false
     end
     return true
@@ -905,6 +1007,7 @@ function BridgeRecordLatencyProbeDecisionReady(decision)
 end
 
 function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDecision)
+    if BridgeState.terminalRecoveryError ~= nil then return end
     if BridgeState.gameEnded ~= nil then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
     if (BridgeState.lastDecision ~= nil and allowCurrentDecision ~= true) or BridgeState.submitting then return end
@@ -1058,6 +1161,7 @@ function BridgeHudClearYieldStops(player, value, id)
 end
 
 function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
+    if BridgeState.terminalRecoveryError ~= nil then return end
     if BridgeState.gameEnded ~= nil then return end
     if BridgeState.schedulerOwner == "RESYNC" then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
@@ -1115,6 +1219,7 @@ function BridgePollForNextDecision(generation, attempt, allowCurrentDecision)
 end
 
 function BridgeStartDecisionPolling(allowCurrentDecision)
+    if BridgeState.terminalRecoveryError ~= nil then return end
     if BridgeState.gameEnded ~= nil then return end
     if BridgeState.schedulerOwner == "RESYNC" then return end
     BridgeStopDecisionPolling()
@@ -1348,6 +1453,9 @@ function BridgeLogChoiceAttempt(source, decisionId, actionId, transactionState)
 end
 
 function BridgeRetireChoiceTransactionsForDecision(decisionId)
+    BridgeState.choiceTransactions = BridgeState.choiceTransactions or {}
+    BridgeState.retiredChoiceDecisionIds = BridgeState.retiredChoiceDecisionIds or {}
+    BridgeState.retiredChoiceDecisionOrder = BridgeState.retiredChoiceDecisionOrder or {}
     for existingDecisionId, _ in pairs(BridgeState.choiceTransactions or {}) do
         if existingDecisionId ~= decisionId then
             BridgeState.choiceTransactions[existingDecisionId] = nil
@@ -1817,7 +1925,7 @@ function BridgeShouldIgnoreStaleDecision(decision)
         BridgeLog(string.format(
             "[Bridge] ignoring stale decision %s due to forgeSequence ordering decision=%s applied=%s",
             tostring(decision and decision.decisionId), tostring(decisionForgeSequence), tostring(appliedForgeSequence)))
-        return true, eventCursor, applied
+        return true, eventCursor, applied, "forge_sequence_lag"
     end
     if eventCursor < 1 or eventCursor >= applied then
         if decision ~= nil and (decision.kind == "attacker_selection"
@@ -1836,7 +1944,7 @@ function BridgeShouldIgnoreStaleDecision(decision)
             if not combatPhase then
                 BridgeLog("[Bridge] ignoring combat decision before phase transition decisionPhase="
                     .. tostring(decision.phaseName) .. " cachedPhase=" .. tostring(BridgeState.currentPhase))
-                return true, eventCursor, applied
+                return true, eventCursor, applied, "combat_phase_lag"
             end
         end
         return false, eventCursor, applied
@@ -1855,7 +1963,7 @@ function BridgeShouldIgnoreStaleDecision(decision)
                 or string.find(phase, "DAMAGE", 1, true) ~= nil
             if not combatPhase then
                 BridgeLog("[Bridge] ignoring stale combat decision while phase=" .. tostring(BridgeState.currentPhase))
-                return true, eventCursor, applied
+                return true, eventCursor, applied, "combat_phase_lag"
             end
         end
         -- Other non-priority decisions can legitimately arrive after
@@ -1867,7 +1975,7 @@ function BridgeShouldIgnoreStaleDecision(decision)
     local decisionTurn = tonumber(decision.turnNumber or 0) or 0
     local tableTurn = tonumber(BridgeState.tableTurnCount or 0) or 0
     if decisionTurn > 0 and tableTurn > 0 and decisionTurn < tableTurn then
-        return true, eventCursor, applied
+        return true, eventCursor, applied, "turn_lag"
     end
 
     -- A same-turn priority menu can still be returned by a delayed poll after
@@ -1910,7 +2018,7 @@ function BridgeShouldIgnoreStaleDecision(decision)
                     "[Bridge] ignoring stale main-priority pass-only decision phase=%s authoritativePhase=%s cursor=%s applied=%s",
                     tostring(decision.phaseName), tostring(BridgeState.currentPhase),
                     tostring(eventCursor), tostring(applied)))
-                return true, eventCursor, applied
+                return true, eventCursor, applied, "pass_only_phase_lag"
             end
             BridgeLog(string.format(
                 -- Legacy diagnostic wording: "retaining regenerated Forge action menu".
@@ -3847,9 +3955,9 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
 
     BridgeRetireChoiceTransactionsForDecision(decision.decisionId)
 
-    local ignoreStale, eventCursor, applied = BridgeShouldIgnoreStaleDecision(decision)
+    local ignoreStale, eventCursor, applied, staleReason = BridgeShouldIgnoreStaleDecision(decision)
     if ignoreStale then
-        BridgeRecordDecisionLifecycle(decision, origin, "REJECTED_STALE", "stale-event-cursor")
+        BridgeRecordDecisionLifecycle(decision, origin, "REJECTED_STALE", staleReason or "stale-event-cursor")
         BridgeLog(string.format(
             "[Bridge] ignoring stale decision %s kind=%s (cursor=%s, applied=%s)",
             tostring(decision.decisionId), tostring(decision.kind), tostring(eventCursor), tostring(applied)))

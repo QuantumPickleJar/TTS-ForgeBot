@@ -1618,6 +1618,14 @@ function BridgeRollbackPendingIntent()
 end
 
 function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotCursor, resyncOrigin)
+    if BridgeState.eventSessionId == sessionId
+        and BridgeState.lifecycleState == BRIDGE_LIFECYCLE_ACTIVE
+        and tonumber(BridgeState.lastAppliedEventSequence or 0) > 0
+        and resumeFromSnapshotCursor ~= true then
+        BridgeLog("[Bridge] ACTIVE_GAME_REENTERED_BOOTSTRAP origin=" .. tostring(resyncOrigin))
+        callback(false, "ACTIVE_GAME_REENTERED_BOOTSTRAP")
+        return
+    end
     if BridgeState.bootstrapping then
         -- A previous hand-readiness/bootstrap attempt can leave only its
         -- local ownership flag behind after a callback is abandoned.  A
@@ -2085,6 +2093,17 @@ function BridgeScheduleResyncWatchdog(sessionId, token)
 end
 
 function BridgeResyncFromAuthoritativeSnapshot(origin)
+    if BridgeState.terminalRecoveryError ~= nil then
+        BridgeLog("[Bridge] RESYNC_BLOCKED reason=terminal-recovery-error origin=" .. tostring(origin)
+            .. " kind=" .. tostring(BridgeState.terminalRecoveryError.kind))
+        BridgeSetStatus("SYNCHRONIZATION STOPPED", "Forge must publish a replacement decision before recovery can continue.")
+        if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
+        BridgeState.resyncInFlight = false
+        BridgeState.resyncScheduled = false
+        BridgeState.resyncDeferredRetryScheduled = false
+        BridgeUiMarkDirty("terminal-recovery-resync-blocked")
+        return false
+    end
     if BridgeState.resyncInFlight == true then
         BridgeLog("[Bridge] RESYNC_DEFERRED reason=already-in-flight origin=" .. tostring(origin))
         return false

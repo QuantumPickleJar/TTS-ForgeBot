@@ -608,29 +608,143 @@ public sealed class TtsEventQueueLivelockTests
             BridgeState.lastAppliedEventSequence = 48
             BridgeState.lastReceivedEventSequence = 48
             BridgeState.lastAppliedForgeSequence = 9
+            BridgeState.currentPhase = 'Main phase, precombat'
             BridgeState.choiceTransactions = {}
             BridgeState.retiredChoiceDecisionIds = {}
             BridgeState.lastDecision = nil
             BridgeState.pendingDecision = nil
-            rearmed = 0
             function BridgeClearHighlights() end
             function BridgeHideMainPriorityControls() end
-            function BridgeStartDecisionPolling() rearmed = rearmed + 1 end
-            BridgeAcceptDecision({
+            local staleProbe = {
                 decisionId='forge-tui-5',
                 sessionId='session',
                 kind='main_priority',
                 seatId='forge-player-1',
                 eventCursor=44,
                 forgeSequence=8,
+                phaseName='Draw step',
                 actions={{actionId='pass-5', type='pass_priority'}}
-            }, 'http', 'session', 1)
+            }
+            directIgnore = BridgeShouldIgnoreStaleDecision(staleProbe)
+            BridgeRecordStaleDecisionConvergence(staleProbe, 44, 48)
         ");
 
         var state = lua.Globals.Get("BridgeState").Table;
-        Assert.Equal(1, lua.Globals.Get("rearmed").Number);
         Assert.True(state.Get("lastDecision").IsNil());
         Assert.True(state.Get("pendingDecision").IsNil());
+        Assert.True(lua.Globals.Get("directIgnore").Boolean);
+        Assert.True(state.Get("staleDecisionRetryCount").Number >= 1,
+            $"retryCount={state.Get("staleDecisionRetryCount").ToPrintString()} lastDecision={state.Get("lastDecision").ToPrintString()}");
+    }
+
+    [Fact]
+    public void G6_ThoughtScourMutationCompletionInstallsCursorCurrentDecisionWithoutResync()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.lifecycleState = 'SESSION_ACTIVE'
+            BridgeState.decisionPresentationGeneration = 2
+            BridgeState.lastAppliedEventSequence = 107
+            BridgeState.lastReceivedEventSequence = 107
+            BridgeState.lastAppliedForgeSequence = 12
+            BridgeState.currentPhase = 'Main phase, precombat'
+            BridgeState.currentTurnSeatId = 'forge-player-1'
+            BridgeState.prioritySeatId = 'forge-player-1'
+            BridgeState.physicalPresentationGeneration = 177
+            BridgeState.currentPhysicalPresentationGeneration = 177
+            BridgeState.physicalTransactionGeneration = 2
+            BridgeState.bootstrapping = false
+            BridgeState.choiceTransactions = {}
+            BridgeState.retiredChoiceDecisionIds = {}
+            BridgeState.lastDecision = nil
+            snapshotRequests = 0
+            resyncStarts = 0
+            renderCount = 0
+            function BridgeScheduleSnapshotReconcile(reason, category) snapshotRequests = snapshotRequests + 1 end
+            function BridgeResyncFromAuthoritativeSnapshot(origin) resyncStarts = resyncStarts + 1; return false end
+            function BridgeRenderDecision(decision, force) renderCount = renderCount + 1; BridgeState.renderedDecisionPresentationKey = decision.decisionId end
+            function BridgeDecisionPhysicalMappingsReady(decision) return true, nil end
+            local decision = {
+                decisionId='forge-tui-10', sessionId='session', kind='main_priority',
+                seatId='forge-player-1', activeSeatId='forge-player-1', prioritySeatId='forge-player-1',
+                eventCursor=107, forgeSequence=12, turnNumber=3, phaseName='Main phase, precombat',
+                actions={{actionId='forge-tui-10-choice-0', type='pass_priority'}}
+            }
+            accepted = BridgeAcceptDecision(decision, 'thought-scour-followup', 'session', 2)
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(lua.Globals.Get("accepted").Boolean);
+        Assert.Equal("forge-tui-10", state.Get("lastDecision").Table.Get("decisionId").String);
+        Assert.Equal(1, lua.Globals.Get("renderCount").Number);
+        Assert.Equal(0, lua.Globals.Get("snapshotRequests").Number);
+        Assert.Equal(0, lua.Globals.Get("resyncStarts").Number);
+        Assert.False(state.Get("bootstrapping").Boolean);
+        Assert.Equal(177, state.Get("physicalPresentationGeneration").Number);
+        Assert.Equal(2, state.Get("physicalTransactionGeneration").Number);
+    }
+
+    [Fact]
+    public void G7_ManualResyncAndResumeCannotResetStaleDecisionBudget()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.lifecycleState = 'SESSION_ACTIVE'
+            BridgeState.decisionPresentationGeneration = 2
+            BridgeState.lastAppliedEventSequence = 107
+            BridgeState.lastReceivedEventSequence = 107
+            BridgeState.lastAppliedForgeSequence = 12
+            BridgeState.currentPhase = 'Main phase, precombat'
+            BridgeState.currentTurnSeatId = 'forge-player-1'
+            BridgeState.prioritySeatId = 'forge-player-1'
+            BridgeState.physicalPresentationGeneration = 177
+            BridgeState.currentPhysicalPresentationGeneration = 177
+            BridgeState.physicalTransactionGeneration = 2
+            BridgeState.bootstrapping = false
+            BridgeState.choiceTransactions = {}
+            BridgeState.retiredChoiceDecisionIds = {}
+            BridgeState.ui = {resyncInFlight=false, fastForwardActive=false, autoPassEmpty=false}
+            stopEventCount = 0
+            stopDecisionCount = 0
+            pollsScheduled = 0
+            function BridgeStopEventPolling(reason) stopEventCount = stopEventCount + 1; BridgeState.eventPolling = false end
+            function BridgeStopDecisionPolling() stopDecisionCount = stopDecisionCount + 1; BridgeState.decisionPollGeneration = BridgeState.decisionPollGeneration + 1; BridgeState.decisionPollScheduled = false end
+            function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDecision) pollsScheduled = pollsScheduled + 1 end
+            function BridgeRenderDecision(decision, force) rendered = true end
+            function BridgeDecisionPhysicalMappingsReady(decision) return true, nil end
+            function BridgeStartEventPolling(sessionId, skipExisting) eventStarted = true end
+            function BridgeResumeChoiceProtocol(reason) end
+            function BridgeSetSetupBusy(value, detail) BridgeState.setupBusy = value end
+            local stale = {
+                decisionId='forge-tui-9', sessionId='session', kind='main_priority',
+                seatId='forge-player-1', activeSeatId='forge-player-1', prioritySeatId='forge-player-1',
+                eventCursor=103, forgeSequence=11, turnNumber=3, phaseName='Main phase, precombat',
+                actions={{actionId='forge-tui-9-choice-0', type='pass_priority'}}
+            }
+            for i = 1, BRIDGE_STALE_DECISION_CONVERGENCE_ATTEMPTS + 1 do
+                BridgeRecordStaleDecisionConvergence(stale, 103, 107)
+            end
+            keyAfterFailure = BridgeState.staleDecisionRetryKey
+            retriesAfterFailure = BridgeState.staleDecisionRetryCount
+            terminalAfterFailure = BridgeState.terminalRecoveryError ~= nil
+            resyncBlocked = BridgeResyncFromAuthoritativeSnapshot('hud')
+            BridgeDoPressResume(nil, false)
+            keyAfterResume = BridgeState.staleDecisionRetryKey
+            retriesAfterResume = BridgeState.staleDecisionRetryCount
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(lua.Globals.Get("terminalAfterFailure").Boolean);
+        Assert.True(lua.Globals.Get("resyncBlocked").IsNil() || !lua.Globals.Get("resyncBlocked").Boolean);
+        Assert.Equal(lua.Globals.Get("keyAfterFailure").String, lua.Globals.Get("keyAfterResume").String);
+        Assert.Equal(lua.Globals.Get("retriesAfterFailure").Number, lua.Globals.Get("retriesAfterResume").Number);
+        Assert.False(state.Get("resyncInFlight").Boolean);
+        Assert.False(state.Get("ui").Table.Get("resyncInFlight").Boolean);
+        Assert.Equal("decision_provenance_lag", state.Get("terminalRecoveryError").Table.Get("kind").String);
+        Assert.Equal(177, state.Get("physicalPresentationGeneration").Number);
+        Assert.Equal(2, state.Get("physicalTransactionGeneration").Number);
     }
 
     [Fact]
