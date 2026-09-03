@@ -91,6 +91,30 @@ public sealed class BridgeApiTests
     }
 
     [Fact]
+    public async Task ConstructedDeckInventory_AcceptsValidCardCountsAndSessionStillStarts()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var decks = await client.PostAsJsonAsync("/api/v1/decks", new DeckLoadRequestDto(
+        [
+            new DeckSeatLoadDto("forge-player-1", [new DeckCardLoadDto("Island", 30), new DeckCardLoadDto("Opt", 30)]),
+            new DeckSeatLoadDto("forge-player-2", [new DeckCardLoadDto("Mountain", 30), new DeckCardLoadDto("Shock", 30)]),
+        ])
+        {
+            Format = "constructed",
+            FormatProvenance = "bridge-api-test"
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, decks.StatusCode);
+
+        var sessionId = await StartSessionAsync(client);
+        Assert.False(string.IsNullOrWhiteSpace(sessionId));
+        var decision = await GetDecisionAsync(client);
+        Assert.Equal("decision-1-main", decision.DecisionId);
+    }
+
+    [Fact]
     public async Task InitialDecision_IsDeterministic()
     {
         using var factory = new TestWebApplicationFactory();

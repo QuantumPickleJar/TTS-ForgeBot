@@ -161,7 +161,7 @@ public sealed class ForgeStructuredOutputParser
             return new ForgeDecisionReadyMarker(
                 marker.SessionId,
                 marker.DecisionId,
-                marker.StructuredSnapshotSequence,
+                marker.SnapshotSequence ?? marker.StructuredSnapshotSequence,
                 marker.MutationGeneration,
                 marker.DecisionGeneration);
         }
@@ -215,6 +215,7 @@ public sealed record ForgeDecisionReadyFrame(
     string Type,
     string SessionId,
     string? DecisionId,
+    long? SnapshotSequence,
     long? StructuredSnapshotSequence,
     long? MutationGeneration,
     long? DecisionGeneration);

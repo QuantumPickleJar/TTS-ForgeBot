@@ -87,8 +87,10 @@ public sealed class ForgeTuiAdapterTests
         SetPrivateField(adapter, "_latestObservedPhaseName", "Untap step");
 
         var stage = typeof(ForgeTuiAdapter).GetMethod("StageDecisionCandidate", BindingFlags.Instance | BindingFlags.NonPublic);
+        var applyReady = typeof(ForgeTuiAdapter).GetMethod("ApplyDecisionReadyMarker", BindingFlags.Instance | BindingFlags.NonPublic);
         var publish = typeof(ForgeTuiAdapter).GetMethod("TryPublishPendingDecision", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(stage);
+        Assert.NotNull(applyReady);
         Assert.NotNull(publish);
 
         var candidate = new ForgeTuiDecision(
@@ -102,6 +104,7 @@ public sealed class ForgeTuiAdapterTests
             });
 
         stage!.Invoke(adapter, [candidate, false]);
+        applyReady!.Invoke(adapter, [new ForgeDecisionReadyMarker("session-f", "forge-tui-1", 1, 1, 1)]);
         publish!.Invoke(adapter, ["first-turn-limited"]);
         var state = await adapter.GetStateAsync(CancellationToken.None);
 
@@ -110,6 +113,77 @@ public sealed class ForgeTuiAdapterTests
         Assert.Equal(1, decision.TurnNumber);
         Assert.Equal(1, decision.EventCursor);
         Assert.Equal(1, decision.ForgeSequence);
+    }
+
+    [Fact]
+    public async Task G3_ReadinessMarkerBeforeCandidatePublishesAfterCandidateArrives()
+    {
+        await using var adapter = WatermarkAdapter("session-before", 7, 3);
+        var stage = PrivateMethod("StageDecisionCandidate");
+        var applyReady = PrivateMethod("ApplyDecisionReadyMarker");
+        var publish = PrivateMethod("TryPublishPendingDecision");
+
+        applyReady.Invoke(adapter, [new ForgeDecisionReadyMarker("session-before", "forge-tui-1", 3, 7, 1)]);
+        stage.Invoke(adapter, [PassCandidate("forge-tui-1"), false]);
+        publish.Invoke(adapter, ["marker-before-candidate"]);
+
+        var state = await adapter.GetStateAsync(CancellationToken.None);
+        Assert.Equal("forge-tui-1", state.CurrentDecision?.DecisionId);
+        Assert.Equal(7, state.CurrentDecision?.EventCursor);
+        Assert.Equal(3, state.CurrentDecision?.ForgeSequence);
+    }
+
+    [Fact]
+    public async Task G3_CandidateBeforeReadinessMarkerPublishesAfterMarkerArrives()
+    {
+        await using var adapter = WatermarkAdapter("session-after", 9, 4);
+        var stage = PrivateMethod("StageDecisionCandidate");
+        var applyReady = PrivateMethod("ApplyDecisionReadyMarker");
+        var publish = PrivateMethod("TryPublishPendingDecision");
+
+        stage.Invoke(adapter, [PassCandidate("forge-tui-2"), false]);
+        publish.Invoke(adapter, ["before-marker"]);
+        Assert.Null((await adapter.GetStateAsync(CancellationToken.None)).CurrentDecision);
+
+        applyReady.Invoke(adapter, [new ForgeDecisionReadyMarker("session-after", "forge-tui-2", 4, 9, 1)]);
+        publish.Invoke(adapter, ["candidate-before-marker"]);
+
+        var state = await adapter.GetStateAsync(CancellationToken.None);
+        Assert.Equal("forge-tui-2", state.CurrentDecision?.DecisionId);
+    }
+
+    [Fact]
+    public async Task G3_WrongSessionOrWrongDecisionMarkerCannotPublishCandidate()
+    {
+        await using var adapter = WatermarkAdapter("session-current", 11, 5);
+        var stage = PrivateMethod("StageDecisionCandidate");
+        var applyReady = PrivateMethod("ApplyDecisionReadyMarker");
+        var publish = PrivateMethod("TryPublishPendingDecision");
+
+        stage.Invoke(adapter, [PassCandidate("forge-tui-a"), false]);
+        applyReady.Invoke(adapter, [new ForgeDecisionReadyMarker("old-session", "forge-tui-a", 5, 11, 1)]);
+        applyReady.Invoke(adapter, [new ForgeDecisionReadyMarker("session-current", "forge-tui-b", 5, 11, 2)]);
+        publish.Invoke(adapter, ["bad-marker"]);
+
+        Assert.Null((await adapter.GetStateAsync(CancellationToken.None)).CurrentDecision);
+    }
+
+    [Fact]
+    public async Task G3_DuplicateIdenticalReadinessMarkerIsHarmless()
+    {
+        await using var adapter = WatermarkAdapter("session-dup", 13, 6);
+        var stage = PrivateMethod("StageDecisionCandidate");
+        var applyReady = PrivateMethod("ApplyDecisionReadyMarker");
+        var publish = PrivateMethod("TryPublishPendingDecision");
+
+        stage.Invoke(adapter, [PassCandidate("forge-tui-dup"), false]);
+        var marker = new ForgeDecisionReadyMarker("session-dup", "forge-tui-dup", 6, 13, 1);
+        applyReady.Invoke(adapter, [marker]);
+        applyReady.Invoke(adapter, [marker]);
+        publish.Invoke(adapter, ["duplicate-marker"]);
+
+        var state = await adapter.GetStateAsync(CancellationToken.None);
+        Assert.Equal("forge-tui-dup", state.CurrentDecision?.DecisionId);
     }
 
     [Fact]
@@ -140,6 +214,52 @@ public sealed class ForgeTuiAdapterTests
         Assert.NotNull(field);
         field!.SetValue(target, value);
     }
+
+    private static Task WriteForgeScriptAsync(string path, string content)
+    {
+        var marker = "echo @@FORGE_BRIDGE_DECISION_READY@@{\"version\":1,\"type\":\"decision_ready\",\"sessionId\":\"%FORGEBOT_BRIDGE_SESSION_ID%\",\"snapshotSequence\":0}";
+        var withMarkers = content.Contains("@@FORGE_BRIDGE_DECISION_READY@@", StringComparison.Ordinal)
+            ? content
+            : content.Replace("<nul set /p \"=Enter choice", marker + Environment.NewLine + "<nul set /p \"=Enter choice", StringComparison.Ordinal);
+        return File.WriteAllTextAsync(path, withMarkers);
+    }
+
+    private static MethodInfo PrivateMethod(string name)
+    {
+        var method = typeof(ForgeTuiAdapter).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return method!;
+    }
+
+    private static ForgeTuiAdapter WatermarkAdapter(string sessionId, long cursor, long forgeSequence)
+    {
+        var adapter = new ForgeTuiAdapter(
+            Options.Create(new ForgeTuiOptions { Executable = "unused", Arguments = "noop", WorkingDirectory = Environment.CurrentDirectory }),
+            NullLogger<ForgeTuiAdapter>.Instance);
+        SetPrivateField(adapter, "_sessionId", sessionId);
+        SetPrivateField(adapter, "_state", "awaiting_forge");
+        SetPrivateField(adapter, "_latestEventSequence", cursor);
+        SetPrivateField(adapter, "_latestCommittedMutationCursor", cursor);
+        SetPrivateField(adapter, "_latestDecisionEligibleCursor", cursor);
+        SetPrivateField(adapter, "_latestCommittedMutationForgeSequence", forgeSequence);
+        SetPrivateField(adapter, "_latestObservedForgeSequence", forgeSequence);
+        SetPrivateField(adapter, "_latestObservedTurnNumber", 1);
+        SetPrivateField(adapter, "_latestObservedActiveSeatId", "forge-player-1");
+        SetPrivateField(adapter, "_latestObservedPrioritySeatId", "forge-player-1");
+        SetPrivateField(adapter, "_latestObservedPhaseName", "Main phase, precombat");
+        return adapter;
+    }
+
+    private static ForgeTuiDecision PassCandidate(string decisionId) =>
+        new(
+            new DecisionDto(
+                decisionId,
+                "main_priority",
+                [new LegalActionDto($"{decisionId}-choice-0", "pass_priority", "Pass priority", false, null, null)]),
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [$"{decisionId}-choice-0"] = "0"
+            });
 
     [Fact]
     public async Task RenderArguments_IncludeConfiguredDeckFormatMetadataWhenRequested()
@@ -178,7 +298,7 @@ public sealed class ForgeTuiAdapterTests
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
         if (!File.Exists(command)) return;
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-diagnostics-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo [TUI-INHERITED] kind=choose_color turn=2 phase=Main
             echo [TUI-DIAG priority] turn=2 phase=Main active=Player 1 priority=Player 1 isActivePlayersTurn=true hasPriority=true totalActions=1 uniqueActions=1
@@ -227,7 +347,7 @@ public sealed class ForgeTuiAdapterTests
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
         if (!File.Exists(command)) return;
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-priority-semantics-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo [TUI-DIAG priority] turn=4 phase=Main 1 active=AI-monored priority=Player 1 isActivePlayersTurn=false hasPriority=true totalActions=1 uniqueActions=1
             echo What would you like to do?
@@ -273,7 +393,7 @@ public sealed class ForgeTuiAdapterTests
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
         if (!File.Exists(command)) return;
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-raw-phase-events-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo @@FORGE_BRIDGE_STATE@@{"version":1,"type":"snapshot","sequence":1,"reason":"baseline","players":[],"stack":[]}
             echo +++ Turn: Turn 3 (Player 1)
@@ -313,7 +433,7 @@ public sealed class ForgeTuiAdapterTests
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
         if (!File.Exists(command)) return;
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-structured-main-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo @@FORGE_BRIDGE_STATE@@{"version":1,"type":"snapshot","sequence":1,"reason":"main","turnNumber":1,"activeSeatId":"forge-player-1","prioritySeatId":"forge-player-1","phase":"Main phase, precombat","players":[],"stack":[]}
             echo What would you like to do?
@@ -355,7 +475,7 @@ public sealed class ForgeTuiAdapterTests
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
         if (!File.Exists(command)) return;
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-rich-phase-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo [TUI-DIAG priority] turn=1 phase=Main phase, precombat active=Player 1 priority=Player 1 isActivePlayersTurn=true hasPriority=true totalActions=0 uniqueActions=0
             echo +++ Phase: Player 1's Main phase, precombat
@@ -468,7 +588,7 @@ public sealed class ForgeTuiAdapterTests
     public async Task ExecutableNameOnPath_IsAcceptedForForgeLaunch()
     {
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-path-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo What would you like to do?
             echo   0. Pass priority (do nothing)
@@ -504,7 +624,7 @@ public sealed class ForgeTuiAdapterTests
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
         if (!File.Exists(command)) return;
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-optional-trigger-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo === FORGE CHOICE ===
             echo Use optional trigger from Soul Warden?
@@ -580,7 +700,7 @@ public sealed class ForgeTuiAdapterTests
         if (!File.Exists(command)) return;
 
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-adapter-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo What would you like to do?
             echo   0. Pass priority (do nothing)
@@ -639,7 +759,7 @@ public sealed class ForgeTuiAdapterTests
 
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-collection-{Guid.NewGuid():N}.cmd");
         var inputLog = Path.Combine(Path.GetTempPath(), $"forge-tui-collection-{Guid.NewGuid():N}.log");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo === FORGE CHOICE ===
             echo Choose cards to discard
@@ -710,7 +830,7 @@ public sealed class ForgeTuiAdapterTests
 
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-discard-two-{Guid.NewGuid():N}.cmd");
         var inputLog = Path.Combine(Path.GetTempPath(), $"forge-tui-discard-two-{Guid.NewGuid():N}.log");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo === FORGE CHOICE ===
             echo Choose cards to discard
@@ -807,7 +927,7 @@ public sealed class ForgeTuiAdapterTests
 
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-mulligan-bottom-{Guid.NewGuid():N}.cmd");
         var inputLog = Path.Combine(Path.GetTempPath(), $"forge-tui-mulligan-bottom-{Guid.NewGuid():N}.log");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo === FORGE CHOICE ===
             echo Choose cards to put on the bottom of your library
@@ -883,7 +1003,7 @@ public sealed class ForgeTuiAdapterTests
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
         if (!File.Exists(command)) return;
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-crew-selection-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             :initial
             echo === FORGE CHOICE ===
@@ -985,7 +1105,7 @@ public sealed class ForgeTuiAdapterTests
 
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-idempotent-{Guid.NewGuid():N}.cmd");
         var inputLog = Path.Combine(Path.GetTempPath(), $"forge-tui-idempotent-{Guid.NewGuid():N}.log");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo What would you like to do?
             echo   0. Pass priority (do nothing)
@@ -1053,7 +1173,7 @@ public sealed class ForgeTuiAdapterTests
 
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-stale-session-{Guid.NewGuid():N}.cmd");
         var inputLog = Path.Combine(Path.GetTempPath(), $"forge-tui-stale-session-{Guid.NewGuid():N}.log");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo What would you like to do?
             echo   0. Pass priority (do nothing)
@@ -1104,7 +1224,7 @@ public sealed class ForgeTuiAdapterTests
         if (!File.Exists(command)) return;
 
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-start-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo === Forge Text UI Mode ===
             echo Initializing Forge
@@ -1156,7 +1276,7 @@ public sealed class ForgeTuiAdapterTests
         if (!File.Exists(command)) return;
 
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-reset-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo What would you like to do?
             echo   0. Pass priority (do nothing)
@@ -1198,7 +1318,7 @@ public sealed class ForgeTuiAdapterTests
         if (!File.Exists(command)) return;
 
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-unsupported-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo An unfamiliar blocking controller prompt
             <nul set /p "=Enter choice (0-1): "
@@ -1239,7 +1359,7 @@ public sealed class ForgeTuiAdapterTests
         if (!File.Exists(command)) return;
 
         var script = Path.Combine(Path.GetTempPath(), $"forge-tui-events-{Guid.NewGuid():N}.cmd");
-        await File.WriteAllTextAsync(script, """
+        await WriteForgeScriptAsync(script, """
             @echo off
             echo +++ Land: AI-monored played Mountain (128)
             echo +++ Mana: Mountain (128) - {T}: Add {R}.
@@ -1293,6 +1413,7 @@ public sealed class ForgeTuiAdapterTests
             .Concat([
                 "echo What would you like to do?",
                 "echo   0. Pass priority (do nothing)",
+                "echo @@FORGE_BRIDGE_DECISION_READY@@{\"version\":1,\"type\":\"decision_ready\",\"sessionId\":\"%FORGEBOT_BRIDGE_SESSION_ID%\",\"snapshotSequence\":0}",
                 "<nul set /p \"=Enter choice (0-0): \"",
                 "set /p choice=",
             ]);

@@ -49,6 +49,17 @@ try {
     }
 
     [System.IO.File]::WriteAllText($jar, 'jar-A')
+    $crlfSource = 'patched-source' + [Environment]::NewLine + 'line-two' + [Environment]::NewLine
+    [System.IO.File]::WriteAllText($source, $crlfSource)
+    $crlfHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash
+    $normalizedHash = (Get-FileHash -InputStream ([System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($crlfSource.Replace("`r`n", "`n").Replace("`r", "`n")))) -Algorithm SHA256).Hash
+    if ($crlfHash -eq $sourceHash) {
+        throw 'CRLF fixture unexpectedly matched the LF hash.'
+    }
+    if ($normalizedHash -ne $sourceHash) {
+        throw 'Normalized CRLF source does not match the canonical patch hash.'
+    }
+    [System.IO.File]::WriteAllText($source, $crlfSource)
     $before = (Get-Item -LiteralPath $source).LastWriteTimeUtc
     Start-Sleep -Milliseconds 1100
     $rewritten = Set-ForgeExpectedSourceIfChanged $source ([System.Text.Encoding]::UTF8.GetBytes('patched-source')) $sourceHash

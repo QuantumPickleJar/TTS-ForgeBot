@@ -275,6 +275,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             initialDecision = NewDecisionWaiter();
         }
 
+        startInfo.Environment["FORGEBOT_BRIDGE_SESSION_ID"] = _sessionId;
+
         process.Exited += (_, _) => _ = HandleProcessExitAsync(process, processGeneration, process.ExitCode);
         _logger.LogInformation("FORGE_PROCESS_LAUNCH_BEGIN sessionId={SessionId} executable={Executable}", _sessionId, _options.Executable);
         try
@@ -711,6 +713,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             structuredFrameInProgress,
             null,
             null);
+            ApplyPendingDecisionReadyMarker();
     }
 
     private void ApplyDecisionReadyMarker(ForgeDecisionReadyMarker marker)

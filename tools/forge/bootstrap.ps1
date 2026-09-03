@@ -68,6 +68,15 @@ function Get-ForgePatchResultBlobs([string]$patchPath) {
     return $result
 }
 
+function Get-NormalizedTextHash([string]$path) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+    $normalized = $text.Replace("`r`n", "`n").Replace("`r", "`n")
+    $normalizedBytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
+    return (Get-FileHash -InputStream ([System.IO.MemoryStream]::new($normalizedBytes)) -Algorithm SHA256).Hash
+}
+
 function Get-ForgeExpectedSources([string]$forgePath, [string]$upstreamCommit, [string]$patchPath) {
     $worktree = Join-Path ([System.IO.Path]::GetTempPath()) ('forge-patch-check-' + [guid]::NewGuid())
     New-Item -ItemType Directory -Force -Path $worktree | Out-Null
@@ -85,9 +94,14 @@ function Get-ForgeExpectedSources([string]$forgePath, [string]$upstreamCommit, [
             if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
                 throw "Current bridge patch did not produce expected source: $relative"
             }
+            $rawBytes = [System.IO.File]::ReadAllBytes($source)
+            $text = [System.Text.Encoding]::UTF8.GetString($rawBytes)
+            $normalized = $text.Replace("`r`n", "`n").Replace("`r", "`n")
+            $normalizedBytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
             $expected[$relative] = [ordered]@{
-                sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash
-                bytes = [System.IO.File]::ReadAllBytes($source)
+                sha256 = (Get-FileHash -InputStream ([System.IO.MemoryStream]::new($rawBytes)) -Algorithm SHA256).Hash
+                normalizedSha256 = (Get-FileHash -InputStream ([System.IO.MemoryStream]::new($normalizedBytes)) -Algorithm SHA256).Hash
+                bytes = $rawBytes
             }
         }
         return $expected
@@ -160,29 +174,24 @@ try {
     foreach ($relative in $expectedSources.Keys) {
         $target = Join-Path $forgeDirectory $relative
         $expectedHash = $expectedSources[$relative].sha256
+        $expectedNormalizedHash = $expectedSources[$relative].normalizedSha256
         $currentHash = if (Test-Path -LiteralPath $target -PathType Leaf) { (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash } else { $null }
+        $currentNormalizedHash = if (Test-Path -LiteralPath $target -PathType Leaf) { Get-NormalizedTextHash $target } else { $null }
         $currentIsBase = $false
         if ($currentHash -ne $null) {
             & git diff --quiet $commit -- $relative
             $currentIsBase = $LASTEXITCODE -eq 0
         }
-        if ($currentHash -ne $expectedHash -and -not $currentIsBase) {
+        if ($currentNormalizedHash -ne $expectedNormalizedHash -and -not $currentIsBase) {
             $previousHash = if ($previousStamp -and $previousStamp.patchedSourceSha256) {
                 $property = $previousStamp.patchedSourceSha256.PSObject.Properties[$relative]
                 if ($property) { $property.Value } else { $null }
             } else { $null }
-            # Git's blob identity is the patch's declared post-image and is
-            # newline-normalization independent. This matters for a bridge
-            # source already patched in .deps/forge: its raw SHA-256 can vary
-            # with checkout line endings even though its content is exactly
-            # the current patch result. A matching post-image is safe to
-            # preserve; a different blob remains a protected local edit.
-            $currentBlob = if (Test-Path -LiteralPath $target -PathType Leaf) {
-                (& git hash-object -- $relative).Trim()
-            } else { $null }
-            $isCurrentPatchResult = $patchResultBlobs.ContainsKey($relative) `
-                -and $currentBlob -eq $patchResultBlobs[$relative]
-            if ($currentHash -ne $previousHash -and -not $isCurrentPatchResult) {
+            # Text files can legitimately differ in raw byte order on Windows
+            # (CRLF vs LF) without representing a different Forge patch result.
+            # Compare the normalized text content before treating a patch-touched
+            # file as a foreign local edit.
+            if ($currentHash -ne $previousHash -and $currentHash -ne $expectedHash) {
                 throw "Forge patch-touched file has unrelated local edits; refusing to overwrite: $relative"
             }
         }

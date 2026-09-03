@@ -1,3 +1,12 @@
+function Get-NormalizedTextHash([string]$path) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+    $normalized = $text.Replace("`r`n", "`n").Replace("`r", "`n")
+    $normalizedBytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
+    return (Get-FileHash -InputStream ([System.IO.MemoryStream]::new($normalizedBytes)) -Algorithm SHA256).Hash
+}
+
 function Test-ForgeBuildFastPath([string]$forgePath, [string]$upstreamCommit, [string]$ref, [string]$patchPath) {
     $stampPath = Join-Path $forgePath 'forge-headless\target\forge-headless-bridge-build.json'
     if (-not (Test-Path -LiteralPath $stampPath -PathType Leaf)) { return $false }
@@ -17,8 +26,11 @@ function Test-ForgeBuildFastPath([string]$forgePath, [string]$upstreamCommit, [s
     if ($sourceProperties.Count -eq 0) { return $false }
     foreach ($sourceProperty in $sourceProperties) {
         $sourcePath = Join-Path $forgePath $sourceProperty.Name
-        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf) `
-            -or (Get-FileHash -Algorithm SHA256 -LiteralPath $sourcePath).Hash -ne [string]$sourceProperty.Value) {
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { return $false }
+        $expectedHash = [string]$sourceProperty.Value
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourcePath).Hash
+        $actualNormalizedHash = Get-NormalizedTextHash $sourcePath
+        if ($actualHash -ne $expectedHash -and $actualNormalizedHash -ne $expectedHash) {
             return $false
         }
     }
@@ -35,7 +47,10 @@ function Set-ForgeExpectedSourceIfChanged([string]$target, [byte[]]$expectedByte
     $currentHash = if (Test-Path -LiteralPath $target -PathType Leaf) {
         (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash
     } else { $null }
-    if ($currentHash -eq $expectedHash) { return $false }
+    $currentNormalizedHash = if (Test-Path -LiteralPath $target -PathType Leaf) {
+        Get-NormalizedTextHash $target
+    } else { $null }
+    if ($currentHash -eq $expectedHash -or $currentNormalizedHash -eq $expectedHash) { return $false }
     New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
     [System.IO.File]::WriteAllBytes($target, $expectedBytes)
     return $true

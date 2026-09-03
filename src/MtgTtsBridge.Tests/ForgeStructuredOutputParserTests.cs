@@ -91,6 +91,35 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void DecisionReadyFrame_ParsesSnapshotSequenceSchemaAndRemovesFrame()
+    {
+        var parser = new ForgeStructuredOutputParser();
+
+        var output = parser.Append("prompt"
+            + ForgeStructuredOutputParser.DecisionReadySentinel
+            + """{"version":1,"type":"decision_ready","sessionId":"session-a","snapshotSequence":8,"mutationGeneration":54,"decisionGeneration":2}"""
+            + "\n");
+
+        Assert.Equal("prompt", output.TuiText);
+        var marker = Assert.Single(output.DecisionReadyMarkers!);
+        Assert.Equal("session-a", marker.SessionId);
+        Assert.Equal(8, marker.StructuredSnapshotSequence);
+        Assert.Equal(54, marker.MutationGeneration);
+        Assert.Equal(2, marker.DecisionGeneration);
+    }
+
+    [Fact]
+    public void MalformedDecisionReadyFrame_FailsVisibly()
+    {
+        var parser = new ForgeStructuredOutputParser();
+
+        Assert.Throws<ForgeStructuredFrameException>(() =>
+            parser.Append(ForgeStructuredOutputParser.DecisionReadySentinel
+                + """{"version":1,"type":"decision_ready","snapshotSequence":8}"""
+                + "\n"));
+    }
+
+    [Fact]
     public void TuiTextBeforeAndAfterStructuredFrames_IsPreservedInOrder()
     {
         var parser = new ForgeStructuredOutputParser();

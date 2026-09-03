@@ -546,6 +546,9 @@ index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710
 +        }
 +    }
 +    static final String SENTINEL = "@@FORGE_BRIDGE_STATE@@";
++    static final String DECISION_READY_SENTINEL = "@@FORGE_BRIDGE_DECISION_READY@@";
++    private static final String BRIDGE_SESSION_ID = System.getenv("FORGEBOT_BRIDGE_SESSION_ID");
++    private static final AtomicReference<BridgeStateFeed> activeFeed = new AtomicReference<>();
 +    private static final List<ZoneType> PLAYER_ZONES = List.of(
 +            ZoneType.Library,
 +            ZoneType.Hand,
@@ -561,6 +564,7 @@ index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710
 +    private final AtomicReference<String> latestReason = new AtomicReference<>("initial");
 +    private final AtomicBoolean terminalSnapshotEmitted = new AtomicBoolean();
 +    private long sequence;
++    private long decisionGeneration;
 +
 +    BridgeStateFeed(final Game game) {
 +        this.game = game;
@@ -568,6 +572,12 @@ index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710
 +        for (Player player : game.getPlayers()) {
 +            seats.put(player, "forge-player-" + index++);
 +        }
++        activeFeed.set(this);
++    }
++
++    static void emitDecisionReadyFromController() {
++        final BridgeStateFeed feed = activeFeed.get();
++        if (feed != null) feed.emitDecisionReady();
 +    }
 +
 +    @Subscribe
@@ -709,6 +719,39 @@ index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710
 +        }
 +        trace("snapshot sequence=" + sequence + " generation=" + generation + " reason=" + reason
 +                + " battlefield=" + battlefieldSummary());
++    }
++
++    private synchronized void emitDecisionReady() {
++        if (BRIDGE_SESSION_ID == null || BRIDGE_SESSION_ID.isBlank()) {
++            trace("decision_ready skipped: FORGEBOT_BRIDGE_SESSION_ID is not set");
++            return;
++        }
++        for (int attempt = 0; attempt < 40; attempt++) {
++            final long before = mutationGeneration.get();
++            emitWhenStable();
++            if (!snapshotScheduled.get() && mutationGeneration.get() == before) break;
++            try {
++                Thread.sleep(10);
++            } catch (InterruptedException exception) {
++                Thread.currentThread().interrupt();
++                return;
++            }
++        }
++
++        final StringBuilder json = new StringBuilder(256);
++        json.append('{');
++        property(json, "version", 1).append(',');
++        property(json, "type", "decision_ready").append(',');
++        property(json, "sessionId", BRIDGE_SESSION_ID).append(',');
++        property(json, "decisionGeneration", ++decisionGeneration).append(',');
++        property(json, "mutationGeneration", mutationGeneration.get()).append(',');
++        property(json, "snapshotSequence", sequence);
++        json.append('}');
++        synchronized (System.out) {
++            System.out.println(DECISION_READY_SENTINEL + json);
++            System.out.flush();
++        }
++        trace("decision_ready snapshotSequence=" + sequence + " mutationGeneration=" + mutationGeneration.get());
 +    }
 +
 +    private void appendStackObject(final StringBuilder json, final SpellAbilityStackInstance item,
@@ -2023,6 +2066,7 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..006a742909581af966cb6ed3c89c5089
 +                    + (selected.contains(candidate) ? " [SELECTED]" : "")
 +                    + bridgeEntityMetadata(candidate));
 +            }
++            BridgeStateFeed.emitDecisionReadyFromController();
 +            int choice = getIntInput(0, candidates.size());
 +            if (choice == 0) {
 +                if (selected.size() >= min && selected.size() <= boundedMax) {
@@ -2199,6 +2243,7 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..006a742909581af966cb6ed3c89c5089
 +            System.out.println("[kind=mulligan mulliganStage=keep_or_mulligan min=1 max=1 selected=0 ordered=false]");
 +            System.out.println("  0. Keep");
 +            System.out.println("  1. Mulligan");
++            BridgeStateFeed.emitDecisionReadyFromController();
 +            int choice = getIntInput(0, 1);
 +            if (choice == 0) return true;
 +            if (choice == 1) return false;

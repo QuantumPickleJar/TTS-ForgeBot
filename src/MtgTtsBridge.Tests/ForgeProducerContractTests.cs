@@ -63,6 +63,18 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void TrackedBridgeStateFeed_EmitsExplicitDecisionReadinessWatermark()
+    {
+        Assert.Contains("@@FORGE_BRIDGE_DECISION_READY@@", Patch);
+        Assert.Contains("FORGEBOT_BRIDGE_SESSION_ID", Patch);
+        Assert.Contains("emitDecisionReadyFromController", Patch);
+        Assert.Contains("\"decision_ready\"", Patch);
+        Assert.Contains("\"snapshotSequence\"", Patch);
+        Assert.Contains("\"mutationGeneration\"", Patch);
+        Assert.Contains("System.out.flush()", Patch);
+    }
+
+    [Fact]
     public void TrackedBridgeStateFeed_UsesOnlyTheCompleteCombatSnapshotForBlockers()
     {
         Assert.Contains("GameEventBlockersDeclared", Patch);
