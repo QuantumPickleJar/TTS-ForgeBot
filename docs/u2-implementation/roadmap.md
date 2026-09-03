@@ -43,31 +43,16 @@ R701 — §701 Actions + Special Game Operations
         │
         ▼
 PW1 — Exotic Planeswalker Systems
-        ↓
-MP0 — Multi-Seat Bot Simulation
         │
-        ├─ 3–4 independent Forge seats
-        ├─ bot-vs-bot games
-        ├─ 1-human + N-bot games
-        ├─ opponent-set semantics
-        ├─ APNAP / priority / turn order
-        ├─ multiplayer combat
-        ├─ cross-seat control
-        └─ deterministic multiplayer regression
-        ↓
+        ▼
 CMD — Commander
         │
-        └─ initially certify using MP0 bots
-        ↓
-MP1 — Human Multiplayer
-        ├─ private information presentation
-        ├─ human decision routing
-        ├─ TTS seat/color mapping
-        ├─ controlled-human turns
-        ├─ reconnect/recovery
-        └─ multi-human UX
-        ↓
-PW2 — Full Planeswalker Certification        │
+        ▼
+MP — Multiplayer
+        │
+        ▼
+PW2 — Full Planeswalker Certification
+        │
         ▼
 SUP — Supplemental Product Coverage
         │
@@ -218,6 +203,401 @@ TTS only:
 No Lua logic should need to infer whether a creature may attack or block or what objects are legal defenders.
 
 ---
+# TTS-ForgeBot Development Roadmap — Revised Ordering
+
+```text
+FOUNDATIONAL WORK
+M2C / F2C / U0-U3
+        │
+        ▼
+H0 — Runtime Hardening & Build-Loop Cleanup          ← CURRENT
+ │
+ └─ H0-S — Stack Causality / Response Presentation
+        │
+        ▼
+U4 — Extended Combat Relationship Graph
+        │
+        ▼
+U4.5 — Composite / Merged Permanent Graph
+        │
+        ▼
+U5 — Generalized Designations / Persistent State
+        │
+        ▼
+PW0 — Planeswalker Systems Foundation
+ ├─ PW0.5 — Generic Chosen Values
+ └─ PW0.75 — Emblems
+        │
+        ▼
+R702 — §702 Keyword Ability Sweep
+        │
+        ▼
+R701 — §701 Actions + Special Game Operations
+        │
+        ▼
+PW1 — Exotic Planeswalker Systems
+        │
+        ▼
+MP0 — Multi-Seat Bot Simulation
+        │
+        ▼
+CMD — Commander
+        │
+        ▼
+MP1 — Human Multiplayer
+        │
+        ▼
+PW2 — Full Planeswalker Certification
+        │
+        ▼
+SUP — Supplemental Product Coverage
+        │
+        ▼
+UNF — Unfinity / Acorn / Intentionally Weird Rules
+        │
+        ▼
+COMPLETENESS / RELEASE HARDENING
+```
+
+---
+
+# H0-S — Stack Causality / Response Presentation
+
+**SUBTRACK OF H0 — REQUIRED FOR H0 EXIT**
+
+Physical table state must make the cause of an authoritative game transition visible before presenting its consequence.
+
+For a spell:
+
+```text
+cast
+  ↓
+physical card enters STACK / CASTING area
+  ↓
+Forge publishes logical stack object + targets
+  ↓
+TTS presents source and targets
+  ↓
+players receive ordinary Forge priority
+  ↓
+Forge resolves/counters the object
+  ↓
+resulting zone/state changes are embodied
+```
+
+Example:
+
+```text
+AI casts Lightning Strike
+        ↓
+Lightning Strike remains physically in stack area
+        ↓
+CHAT: AI casts Lightning Strike → Stitcher's Supplier
+        ↓
+Stitcher's Supplier receives target presentation
+        ↓
+Player may respond
+        ↓
+Forge resolves Lightning Strike
+        ↓
+only now:
+  Stitcher's Supplier → graveyard
+  Lightning Strike    → graveyard
+```
+
+## Structured stack targets
+
+Targets should evolve beyond display-name-only values into authoritative identities such as:
+
+```text
+stack target
+ ├─ kind: CARD
+ │   └─ cardInstanceId
+ ├─ kind: PLAYER
+ │   └─ seatId
+ └─ kind: STACK_OBJECT
+     └─ stackObjectId
+```
+
+This enables:
+
+```text
+Counterspell
+    targets
+Lightning Strike stack object
+```
+
+without TTS inferring spell legality.
+
+Triggered and activated abilities remain logical stack objects and do not require fake physical cards.
+
+## H0 additional exit requirements
+
+11. A spell remains visibly associated with the stack while Forge says it is on the stack.
+
+12. Public targets are presented before resolution-induced physical changes occur.
+
+13. Counterspell/response windows arise from Forge priority, never artificial animation delays.
+
+14. Diagnostic/chat presentation can explain the immediate cause of destructive zone changes without TTS interpreting card text.
+
+---
+
+# U4.5 — Composite / Merged Permanent Graph
+
+**PREREQUISITES: H0 + U4**
+
+Forge already understands merged permanents. ForgeBot must expose and physically present that authoritative topology without recreating Mutate rules in Lua.
+
+This milestone generalizes the relationship/provenance foundation into:
+
+```text
+logical permanent
+      │
+      ├── component 0 — TOP
+      │      card identity
+      │
+      ├── component 1
+      │      card identity
+      │
+      └── component N
+             card identity
+```
+
+The logical permanent's identity is distinct from the identity of whichever physical card currently appears on top.
+
+## U4.5-A — Authoritative Component Contract
+
+Forge/Bridge should expose, where applicable:
+
+```text
+logicalPermanentId
+component count
+ordered component identities
+top component identity
+component owners
+component physical/materialization identity
+merged/composite kind
+```
+
+Effective characteristics remain supplied independently by Forge's existing current-characteristics contract.
+
+TTS must never calculate:
+
+```text
+power
+toughness
+name
+types
+color
+mana value
+abilities
+```
+
+from the component cards.
+
+Forge already knows the resulting characteristics.
+
+The component graph exists to answer:
+
+```text
+What physical cards constitute this one permanent?
+Which physical card goes on top?
+How must they separate when the permanent changes zones?
+```
+
+## U4.5-B — Mutate
+
+Primary black-border canary: **Mutate**
+
+Required flow:
+
+```text
+mutating creature spell on stack
+        ↓
+Forge validates target
+        ↓
+Forge asks TOP / BOTTOM
+        ↓
+Bridge receives authoritative merged topology
+        ↓
+TTS constructs one physical composite permanent
+```
+
+Physical presentation should visibly preserve its component cards without turning them into a TTS Deck.
+
+Example:
+
+```text
+Gemrazer
+──────────────
+Supplier
+```
+
+represents **one selectable permanent**, not two creatures.
+
+The top card is presentation of the authoritative top component.
+
+Counters, attachments, targeting, attack/block selection, tapped state, damage presentation, etc. belong to the logical permanent rather than independently to each component.
+
+## U4.5-C — Stable Logical Identity
+
+Critical torture test:
+
+```text
+Supplier #17 exists
+        ↓
+Gemrazer #42 mutates on TOP
+        ↓
+logical battlefield object remains #17
+top physical component becomes #42
+current characteristics become Gemrazer-derived
+        ↓
+another creature #63 mutates underneath
+        ↓
+logical object is still #17
+```
+
+No subsystem may assume:
+
+```text
+logical permanent identity == top physical card identity
+```
+
+## U4.5-D — Zone Changes
+
+When a composite permanent leaves the battlefield, Forge determines the resulting zones of its components.
+
+TTS follows those authoritative transitions.
+
+Example:
+
+```text
+3-card mutated creature dies
+        ↓
+logical merged permanent disappears
+        ↓
+component A → graveyard
+component B → graveyard
+component C → graveyard
+```
+
+Those cards then become ordinary independent cards in the graveyard and may enter the existing native searchable graveyard Deck.
+
+Replacement effects, commander replacement choices, exile, bounce, and unusual component outcomes remain Forge-owned.
+
+## U4.5-E — Snapshot / Resync
+
+Snapshot reconstruction must recover:
+
+```text
+one logical permanent
+three physical components
+correct component order
+correct top component
+exactly once
+```
+
+without producing three battlefield permanents.
+
+A resync may destroy and rebuild the physical presentation without changing Forge's merged relationship.
+
+## U4.5-F — Interaction With Combat
+
+U4 combat should consume the logical permanent.
+
+A three-card mutated creature produces:
+
+```text
+ONE attacker
+ONE blocker
+ONE targetable permanent
+```
+
+not three choices.
+
+The combat graph references the logical permanent identity.
+
+## U4.5-G — Copy and Characteristic Canaries
+
+Certification should include:
+
+* mutate on top;
+* mutate underneath;
+* mutate a creature already mutated;
+* top component changes;
+* triggered "whenever this creature mutates" abilities;
+* counters and Equipment survive mutation;
+* tapped/summoning-state continuity;
+* merged creature dies;
+* merged creature is bounced/exiled;
+* copy of a merged permanent;
+* transform/face-down interactions supported by Forge;
+* snapshot/resync during an active merged permanent.
+
+## Exit Gate — U4.5
+
+ForgeBot can represent an arbitrary Forge-supported composite permanent as:
+
+```text
+one authoritative logical game object
++
+N ordered physical component cards
+```
+
+without deriving its rules characteristics or legality in Lua.
+
+---
+
+# R702 — Comprehensive §702 Keyword Ability Sweep
+
+Mutate is no longer permitted to discover a missing architecture during this phase.
+
+By R702, Mutate should be a **certification consumer of U4.5**.
+
+The Mutate sweep verifies:
+
+```text
+alternative mutate cost
+targeting
+top/bottom choice
+merged topology
+mutate triggers
+stack interaction
+zone departure
+snapshot/resync
+```
+
+against the generic systems already established.
+
+Any remaining Mutate issue discovered here is classified as:
+
+1. Forge engine deficiency;
+2. generic bridge-contract deficiency;
+3. TTS presentation deficiency;
+
+rather than solved with card-specific or Mutate-specific Lua rules.
+
+---
+
+# UNF — Future Composite Consumers
+
+U4.5 should deliberately avoid Mutate-specific naming in its core data model.
+
+Later supplemental/Unfinity systems may reuse the same component graph for mechanics such as:
+
+```text
+Host / Augment
+other Forge-supported merged permanents
+future composite game pieces
+```
+
+Their rules remain independently Forge-owned.
+
+U4.5 provides only the generic physical/logical composition language.
+
+----
+
 
 # U5 — Generalized Designations / Persistent State Presentation
 
