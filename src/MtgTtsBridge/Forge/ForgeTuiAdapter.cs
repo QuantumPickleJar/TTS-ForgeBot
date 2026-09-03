@@ -42,6 +42,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private DecisionDto? _currentDecision;
     private IReadOnlyDictionary<string, string>? _currentInputs;
     private PendingDecisionCandidate? _pendingDecision;
+    private ForgeDecisionReadyMarker? _pendingDecisionReadyMarker;
     private string _sessionId = "session-not-started";
     private string _state = "not_started";
     private string? _diagnosticCode;
@@ -598,7 +599,17 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     if (result.ParsedDecision is not null)
                     {
                         StageDecisionCandidate(result.ParsedDecision, output.FrameInProgress);
-                        TryPublishPendingDecision("parsed-decision");
+                        // Text parsing is provisional. A Forge-side readiness
+                        // marker is the only publication boundary.
+                        ApplyPendingDecisionReadyMarker();
+                        _logger.LogInformation(
+                            "DECISION_CANDIDATE_PARSED decision={DecisionId} cursor={Cursor}; waiting for Forge readiness marker",
+                            result.ParsedDecision.Decision.DecisionId,
+                            _latestEventSequence);
+                        _logger.LogInformation(
+                            "DECISION_WAITING_FOR_WATERMARK decision={DecisionId}",
+                            result.ParsedDecision.Decision.DecisionId);
+                        TryPublishPendingDecision("validated-watermark");
                     }
                 }
                 var stopForParserFailure = false;
@@ -704,8 +715,15 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
     private void ApplyDecisionReadyMarker(ForgeDecisionReadyMarker marker)
     {
-        if (_pendingDecision is null) return;
         if (!string.Equals(marker.SessionId, _sessionId, StringComparison.Ordinal)) return;
+        _pendingDecisionReadyMarker = marker;
+        ApplyPendingDecisionReadyMarker();
+    }
+
+    private void ApplyPendingDecisionReadyMarker()
+    {
+        if (_pendingDecision is null || _pendingDecisionReadyMarker is null) return;
+        var marker = _pendingDecisionReadyMarker;
         var pendingDecisionId = _pendingDecision.Value.Decision.DecisionId;
         if (!string.IsNullOrWhiteSpace(marker.DecisionId)
             && !string.Equals(marker.DecisionId, pendingDecisionId, StringComparison.Ordinal)) return;
@@ -715,10 +733,14 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             RequiredMutationGeneration = marker.MutationGeneration,
             WaitingForFrameCompletion = false,
         };
+        _pendingDecisionReadyMarker = null;
     }
 
     private bool PendingDecisionEligible(PendingDecisionCandidate candidate)
     {
+        // There is deliberately no timing or stream-silence fallback here.
+        // Forge must explicitly declare that all causal state has settled.
+        if (candidate.RequiredReadySequence is null) return false;
         if (candidate.WaitingForFrameCompletion) return false;
 
         if (candidate.RequiredReadySequence is not null)
@@ -841,6 +863,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         _state = "awaiting_human_decision";
         _pendingDecision = null;
         RecordDecisionPresented(_currentDecision.DecisionId);
+        _logger.LogInformation(
+            "DECISION_VALIDATED decision={DecisionId} cursor={Cursor} forgeSequence={ForgeSequence}",
+            _currentDecision.DecisionId,
+            _currentDecision.EventCursor,
+            _currentDecision.ForgeSequence);
         _logger.LogInformation(
             "DECISION_PRESENTED session={SessionId} decision={DecisionId} state={State} reason={Reason} observedCursor={ObservedCursor} committedCursor={CommittedCursor} eligibleCursor={EligibleCursor} forgeSequence={ForgeSequence}",
             _sessionId,

@@ -3106,6 +3106,11 @@ function BridgeIgnoreStatusClick(object, playerColor, altClick)
 end
 
 function BridgeSetStatus(headline, detail)
+    if BridgeState.terminalRecoveryError ~= nil then
+        headline = "PROTOCOL RECOVERY ERROR"
+        detail = BridgeState.terminalRecoveryError.detail
+            or "Forge must publish a replacement decision."
+    end
     BridgeState.statusHeadline = headline or BridgeState.statusHeadline
     BridgeState.statusDetail = detail or ""
     BridgeRefreshStatusPanel()

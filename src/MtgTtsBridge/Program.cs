@@ -207,6 +207,23 @@ app.MapGet("/api/v1/decision", async (IForgeAdapter adapter, DiagnosticTelemetry
 			DecisionId: null));
 	}
 
+	var eligibleCursor = state.Diagnostic?.LatestDecisionEligibleCursor;
+	var decisionCursor = state.CurrentDecision.EventCursor;
+	if (eligibleCursor is not null && decisionCursor is not null && decisionCursor < eligibleCursor)
+	{
+		telemetry.RecordProtocol("bridge_to_tts", "/api/v1/decision", 409, state.SessionId, state.CurrentDecision.DecisionId,
+			payload: new { code = "decision_not_ready", decisionCursor, eligibleCursor });
+		return Results.Json(new
+		{
+			code = "DECISION_NOT_READY",
+			message = "The current decision is behind the authoritative decision watermark.",
+			decisionId = state.CurrentDecision.DecisionId,
+			decisionCursor,
+			eligibleCursor,
+			pending = true
+		}, statusCode: StatusCodes.Status409Conflict);
+	}
+
 	telemetry.RecordProtocol("bridge_to_tts", "/api/v1/decision", 200, state.SessionId, state.CurrentDecision.DecisionId, payload: state.CurrentDecision);
 	return Results.Ok(state.CurrentDecision);
 });

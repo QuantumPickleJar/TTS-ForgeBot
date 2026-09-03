@@ -45,6 +45,7 @@ public sealed class DiagnosticSelfTestRunner
             CheckDecisionProvenanceLag(adapterState, eventBatch, snapshot, request),
             CheckResultPresentationInvariants(adapterState, request),
             CheckRecoveryInvariants(eventBatch, snapshot, request),
+            CheckTerminalStatusHonesty(request),
             CheckGenerationChurn(adapterState, eventBatch, snapshot, request)
         };
         return new DiagnosticSelfTestResult(checks);
@@ -279,6 +280,19 @@ public sealed class DiagnosticSelfTestRunner
         }
 
         return Check("result_presentation_invariants", "info", "pass", "Presented match result has authoritative source metadata.");
+    }
+
+    private static DiagnosticSelfTestCheck CheckTerminalStatusHonesty(DiagnosticReportRequestDto request)
+    {
+        var terminal = request.EventDrainDiagnostics?.TerminalRecoveryError == true;
+        if (!terminal) return Check("terminal_status_honesty", "info", "unavailable", "TTS did not report terminal recovery state.");
+        if (string.Equals(request.Status, "MATCH ACTIVE", StringComparison.OrdinalIgnoreCase))
+        {
+            return Check("terminal_status_honesty", "error", "fail",
+                "TTS reports MATCH ACTIVE while terminal recovery error is set.",
+                new Dictionary<string, object?> { ["failure"] = "MATCH_ACTIVE_WITH_TERMINAL_RECOVERY_ERROR", ["status"] = request.Status });
+        }
+        return Check("terminal_status_honesty", "info", "pass", "Terminal recovery is not presented as an active match.", new Dictionary<string, object?> { ["status"] = request.Status });
     }
 
     private static DiagnosticSelfTestCheck CheckGenerationChurn(

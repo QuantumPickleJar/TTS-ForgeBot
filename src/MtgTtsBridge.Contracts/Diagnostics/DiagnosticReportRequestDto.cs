@@ -60,6 +60,7 @@ public sealed record DiagnosticEventDrainDiagnosticsDto(
     bool DesyncLatched = false,
     bool ResyncInFlight = false,
     bool Bootstrapping = false,
+    bool TerminalRecoveryError = false,
     IReadOnlyDictionary<string, DiagnosticPhysicalQueueStateDto>? PhysicalQueues = null);
 
 public sealed record DiagnosticPhysicalQueueStateDto(

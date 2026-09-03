@@ -479,6 +479,7 @@ function BridgeEventDrainQueueState()
         desyncLatched = BridgeState.desyncLatched == true,
         resyncInFlight = BridgeState.resyncInFlight == true,
         bootstrapping = BridgeState.bootstrapping == true,
+        terminalRecoveryError = BridgeState.terminalRecoveryError ~= nil,
     resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,
         resyncLastFailureReason = BridgeState.resyncLastFailureReason,

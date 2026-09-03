@@ -480,6 +480,7 @@ function BridgeEventDrainQueueState()
         desyncLatched = BridgeState.desyncLatched == true,
         resyncInFlight = BridgeState.resyncInFlight == true,
         bootstrapping = BridgeState.bootstrapping == true,
+        terminalRecoveryError = BridgeState.terminalRecoveryError ~= nil,
     resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,
         resyncLastFailureReason = BridgeState.resyncLastFailureReason,
@@ -6472,6 +6473,11 @@ function BridgeIgnoreStatusClick(object, playerColor, altClick)
 end
 
 function BridgeSetStatus(headline, detail)
+    if BridgeState.terminalRecoveryError ~= nil then
+        headline = "PROTOCOL RECOVERY ERROR"
+        detail = BridgeState.terminalRecoveryError.detail
+            or "Forge must publish a replacement decision."
+    end
     BridgeState.statusHeadline = headline or BridgeState.statusHeadline
     BridgeState.statusDetail = detail or ""
     BridgeRefreshStatusPanel()
