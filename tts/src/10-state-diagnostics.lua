@@ -1123,9 +1123,23 @@ function BridgeProcessLibraryExtractionQueue(seatId)
     end
     local started, startError = pcall(function() job(function(...)
         if not current() then
+            -- A stale callback arrived after generation/session changed. The
+            -- transaction has been superseded; retire this seat's state so the
+            -- stale work item cannot remain queued after we return. Do not call
+            -- complete() because it will not own the transaction and will take
+            -- the early-return path, leaving the queue stranded.
+            if BridgeState.libraryExtractionTransactionBySeatId[seatId] == transaction then
+                BridgeState.libraryExtractionTransactionBySeatId[seatId] = nil
+            end
+            BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
+            local currentQueue = BridgeState.libraryExtractionQueueBySeatId[seatId]
+            if type(currentQueue) == "table" then
+                for index = #currentQueue, 1, -1 do
+                    if currentQueue[index] == item then table.remove(currentQueue, index) end
+                end
+            end
             BridgeLog("[Bridge] ignored stale library extraction completion seat=" .. tostring(seatId)
-                .. " generation=" .. tostring(transactionGeneration))
-            complete("stale-callback")
+                .. " generation=" .. tostring(transactionGeneration) .. " current=" .. tostring(BridgeState.physicalTransactionGeneration or 0))
             return
         end
         complete(...)
@@ -1133,6 +1147,20 @@ function BridgeProcessLibraryExtractionQueue(seatId)
     if not started then
         complete("start-error")
         BridgeStopOnDesync("library extraction transaction failed to start: " .. tostring(startError))
+        return
+    end
+    
+    -- Stale item cleanup: After the job has run, if the generation/session changed,
+    -- the transaction may no longer own this seat. Clean up any stranded queue items.
+    if not current() then
+        if BridgeState.libraryExtractionTransactionBySeatId[seatId] == transaction then
+            BridgeState.libraryExtractionTransactionBySeatId[seatId] = nil
+        end
+        BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
+        -- Clear the entire queue since a stale extraction cannot be finished
+        BridgeState.libraryExtractionQueueBySeatId[seatId] = {}
+        BridgeLog("[Bridge] post-job stale cleanup seat=" .. tostring(seatId) 
+            .. " generation=" .. tostring(transactionGeneration) .. " current=" .. tostring(BridgeState.physicalTransactionGeneration or 0))
     end
 end
 

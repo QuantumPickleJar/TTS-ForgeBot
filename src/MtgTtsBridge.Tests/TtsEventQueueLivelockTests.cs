@@ -229,6 +229,40 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void StaleLibraryExtractionCallbackCleansUpQueueOwnershipWhenTheGenerationChanges()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.physicalTransactionGeneration = 7
+            BridgeState.libraryExtractionQueueBySeatId['forge-player-1'] = {
+                {
+                    cardInstanceId = 'forge-object:17',
+                    expectedCardName = 'Island',
+                    run = function(complete)
+                        local tx = BridgeState.libraryExtractionTransactionBySeatId['forge-player-1']
+                        BridgeState.physicalTransactionGeneration = 8
+                        if tx ~= nil then
+                            tx.generation = 8
+                        end
+                        complete('stale-callback')
+                    end
+                }
+            }
+            BridgeState.libraryExtractionActiveBySeatId['forge-player-1'] = nil
+            BridgeState.libraryExtractionTransactionBySeatId['forge-player-1'] = nil
+            BridgeProcessLibraryExtractionQueue('forge-player-1')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        var queue = state.Get("libraryExtractionQueueBySeatId").Table.Get("forge-player-1");
+        var active = state.Get("libraryExtractionActiveBySeatId").Table.Get("forge-player-1");
+        Assert.NotNull(queue);
+        Assert.Equal(0, queue.Table.Length);
+        Assert.True(active == null || active.IsNil());
+    }
+
+    [Fact]
     public void StalledAutomaticResyncReleasesItsLocalLatchAndInvalidatesBootstrap()
     {
         var lua = NewQueueProbe();
