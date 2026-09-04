@@ -718,6 +718,45 @@ function BridgePerformanceTraceSnapshot()
     return result
 end
 
+-- P10: Recovery state invariants check
+-- Detect impossible states: recovery needed but no owner, or recovery orphaned
+function BridgeComputeRecoveryStateInvariants()
+    local result = {
+        status = "PASS",
+        violations = {},
+        desyncLatched = BridgeState.desyncLatched,
+        resyncInFlight = BridgeState.sessionRecoveryInFlight,
+        eventPolling = BridgeState.eventPolling,
+        eventQueueLength = BridgeState.eventQueue and #(BridgeState.eventQueue) or 0,
+        eventCursor = BridgeState.lastAppliedEventSequence,
+        handReadinessRecoveryAttempts = BridgeState.handReadinessRecoveryAttempts or 0
+    }
+    
+    -- P10: ORPHANED_PHYSICAL_RECOVERY
+    -- Recovery is needed (desyncLatched=true) but no active recovery (resyncInFlight=false)
+    -- AND there is pending event work (eventQueueLength > 0)
+    if result.desyncLatched and not result.resyncInFlight and result.eventQueueLength > 0 then
+        table.insert(result.violations, "ORPHANED_PHYSICAL_RECOVERY: desyncLatched=true but no recovery owner, with " .. result.eventQueueLength .. " events queued")
+        result.status = "CRITICAL"
+    end
+    
+    -- P10: STRANDED_EVENT_BACKLOG
+    -- Events are queued but neither applied nor being processed
+    if result.eventQueueLength > 0 and not result.eventPolling and not result.resyncInFlight then
+        table.insert(result.violations, "STRANDED_EVENT_BACKLOG: " .. result.eventQueueLength .. " events queued but no consumer")
+        result.status = "CRITICAL"
+    end
+    
+    -- P10: RECOVERY_DEFERRED_WITHOUT_OWNER
+    -- Recovery was attempted but exited early without taking ownership
+    if BridgeState.resyncDeferredRetryScheduled and not result.resyncInFlight then
+        table.insert(result.violations, "RECOVERY_DEFERRED_WITHOUT_OWNER: recovery scheduled but no active owner")
+        result.status = "CRITICAL"
+    end
+    
+    return result
+end
+
 function BridgeDiagnosticSnapshot(value, active)
     if type(value) ~= "table" then return value end
     active = active or {}
@@ -808,7 +847,8 @@ function BridgePerformanceDiagnosticPayload()
             status = BridgeState.statusText
         },
         resyncLifecycle = BridgeDiagnosticSnapshot(BridgeState.resyncLifecycle or {}),
-        eventDrainDiagnostics = BridgeEventDrainQueueState()
+        eventDrainDiagnostics = BridgeEventDrainQueueState(),
+        recoveryStateInvariants = BridgeComputeRecoveryStateInvariants()
     }
 end
 

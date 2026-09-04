@@ -1,4 +1,4 @@
-using MtgTtsBridge.Forge;
+﻿using MtgTtsBridge.Forge;
 
 namespace MtgTtsBridge.Tests;
 
@@ -298,6 +298,43 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void Bug2ad6_ThoughtScourDelayedTerminatorInSeparateChunk_ParserEmitsDecisionBeforeTerminator()
+    {
+        // Regression test for Issue 2ad6: Thought Scour target selection with delayed "Enter choice (0-1):" in separate chunk.
+        // The parser itself should correctly emit the decision even when the numeric terminator arrives separately.
+        // The adapter layer (ForgeTuiAdapter) is responsible for consuming the delayed terminator via CanClaimDelayedTerminator.
+        //
+        // Timeline from forge-stdout.log at 12:30:58:
+        // - Chunk 1: "Choose target for Thought Scour:\n  0. AI (Life: 20)\nEnter choice (0-0): " (forge-tui-5)
+        // - Chunk 2: "Enter choice (0-1):" (72Âµs later, orphaned due to chunk boundary)
+        //
+        // Expected: Parser emits target_selection decision from Chunk 1. Delayed prompt is handled by adapter.
+
+        var parser = new ForgeTuiParser();
+
+        // Simulate the actual Chunk 1 from the bug report.
+        var target = parser.Append(
+            "Choose target for Thought Scour:\n" +
+            "  0. AI (Life: 20)\n" +
+            "Enter choice (0-0): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(target.ParsedDecision);
+        Assert.Equal("target_selection", decision.Decision.Kind);
+        Assert.NotEmpty(decision.Decision.Actions);
+
+        // The "Enter choice (0-1):" terminator arrives in a separate chunk.
+        // At the parser level, this looks like an incomplete/trailing "Enter choice" with just range.
+        // The parser doesn't know it's a delayed terminator; the adapter must claim it.
+        var delayed = parser.Append("Enter choice (0-1): ");
+
+        // Parser should emit UnsupportedPrompt for the orphaned "Enter choice (0-1):"
+        // (because the numeric menu was already presented with Chunk 1).
+        Assert.Null(delayed.ParsedDecision);
+        Assert.NotNull(delayed.UnsupportedPrompt);
+        Assert.Equal("unsupported_numeric_prompt", delayed.UnsupportedPrompt.Code);
+    }
+
+    [Fact]
     public void AlternateTargetHeader_ParsesCardAndPlayerTargets()
     {
         var seats = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -342,7 +379,7 @@ public sealed class ForgeTuiParserTests
         Assert.Null(first.ErrorCode);
         Assert.Null(first.UnsupportedPrompt);
 
-        var second = parser.Append("  0) Emberheart Challenger — Prowess trigger\n  1) Hired Claw — Prowess trigger\nSelect an option: ");
+        var second = parser.Append("  0) Emberheart Challenger â€” Prowess trigger\n  1) Hired Claw â€” Prowess trigger\nSelect an option: ");
         var decision = Assert.IsType<ForgeTuiDecision>(second.ParsedDecision);
         Assert.Equal("generic_numeric_selection", decision.Decision.Kind);
         Assert.Equal(2, decision.Decision.Actions.Count);
@@ -745,7 +782,7 @@ public sealed class ForgeTuiParserTests
             "=== YOUR TURN ===\n" +
             "What would you like to do?\n" +
             "  0. Pass priority (do nothing)\n" +
-            "  1. Faithless Looting — cast this from somewhere [id=91] [bridge sourceZone=graveyard actionKind=cast_spell abilityKind=spell castMode=flashback costKind=alternative]\n" +
+            "  1. Faithless Looting â€” cast this from somewhere [id=91] [bridge sourceZone=graveyard actionKind=cast_spell abilityKind=spell castMode=flashback costKind=alternative]\n" +
             "Enter choice (0-1): ");
 
         var action = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions[1];
@@ -984,7 +1021,7 @@ public sealed class ForgeTuiParserTests
             "=== YOUR TURN ===\n" +
             "What would you like to do?\n" +
             "  0. Pass priority (do nothing)\n" +
-            "  1. Stitcher's Supplier — return this card [id=77] [bridge sourceZone=graveyard actionKind=activate_ability abilityKind=unearth castMode=normal costKind=printed]\n" +
+            "  1. Stitcher's Supplier â€” return this card [id=77] [bridge sourceZone=graveyard actionKind=activate_ability abilityKind=unearth castMode=normal costKind=printed]\n" +
             "Enter choice (0-1): ");
 
         var action = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision.Actions[1];

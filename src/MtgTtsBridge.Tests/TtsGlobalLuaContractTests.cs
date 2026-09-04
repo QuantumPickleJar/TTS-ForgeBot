@@ -1175,6 +1175,49 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void GraveyardObjectShapeInvariant_Regression3038_AssertContractAfterEveryOperation()
+    {
+        // P2/P7: Regression test for 3038 - graveyard object-shape must be verified after every operation
+        // This catches corruption where :30 and :10 are missing despite being in Forge graveyard
+        
+        // Object-shape assertion must be called after loose card moves
+        Assert.Contains("BridgeAssertGraveyardObjectShape(event.seatId, \"after-loose-card\")", Script);
+        
+        // Object-shape assertion must be called after container merge
+        Assert.Contains("BridgeAssertGraveyardObjectShape(event.seatId, \"after-merge\")", Script);
+        
+        // Object-shape assertion must be called after native container formation
+        Assert.Contains("BridgeAssertGraveyardObjectShape(seatId, \"after-container-formation\")", Script);
+        
+        // The function must exist and validate contract
+        Assert.Contains("function BridgeAssertGraveyardObjectShape(seatId, context)", Script);
+        Assert.Contains("TWO_OR_MORE_LOOSE_CARDS", Script);
+        Assert.Contains("MULTIPLE_DECKS", Script);
+        Assert.Contains("LOOSE_CARD_WITH_DECK", Script);
+        Assert.Contains("UNMAPPED_CONTAINED_CARDS", Script);
+        
+        // Violations must trigger desync stop
+        Assert.Contains("BridgeStopOnDesync", Script);
+        Assert.Contains("CRITICAL graveyard object-shape violation", Script);
+    }
+
+    [Fact]
+    public void RecoveryStateInvariant_Regression3038_DetectsOrphanedDesync()
+    {
+        // P10: Regression test for 3038 - detect impossible recovery state
+        // (desyncLatched but no recovery owner with events queued)
+        
+        var diagnosticPayload = Script.IndexOf("recoveryStateInvariants = BridgeComputeRecoveryStateInvariants()", StringComparison.Ordinal);
+        Assert.True(diagnosticPayload >= 0, "Recovery state invariants must be computed in diagnostic payload");
+        
+        Assert.Contains("function BridgeComputeRecoveryStateInvariants()", Script);
+        Assert.Contains("ORPHANED_PHYSICAL_RECOVERY", Script);
+        Assert.Contains("STRANDED_EVENT_BACKLOG", Script);
+        Assert.Contains("RECOVERY_DEFERRED_WITHOUT_OWNER", Script);
+        Assert.Contains("desyncLatched and not result.resyncInFlight and result.eventQueueLength > 0", Script);
+    }
+
+    [Fact]
     public void KeywordLayout_UsesNativeEncoderValueAndCachesAbovePreference()
     {
         Assert.Contains("function BridgeEnsureKeywordIconLayout(object, encoder)", Script);

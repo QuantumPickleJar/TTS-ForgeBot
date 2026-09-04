@@ -719,6 +719,45 @@ function BridgePerformanceTraceSnapshot()
     return result
 end
 
+-- P10: Recovery state invariants check
+-- Detect impossible states: recovery needed but no owner, or recovery orphaned
+function BridgeComputeRecoveryStateInvariants()
+    local result = {
+        status = "PASS",
+        violations = {},
+        desyncLatched = BridgeState.desyncLatched,
+        resyncInFlight = BridgeState.sessionRecoveryInFlight,
+        eventPolling = BridgeState.eventPolling,
+        eventQueueLength = BridgeState.eventQueue and #(BridgeState.eventQueue) or 0,
+        eventCursor = BridgeState.lastAppliedEventSequence,
+        handReadinessRecoveryAttempts = BridgeState.handReadinessRecoveryAttempts or 0
+    }
+    
+    -- P10: ORPHANED_PHYSICAL_RECOVERY
+    -- Recovery is needed (desyncLatched=true) but no active recovery (resyncInFlight=false)
+    -- AND there is pending event work (eventQueueLength > 0)
+    if result.desyncLatched and not result.resyncInFlight and result.eventQueueLength > 0 then
+        table.insert(result.violations, "ORPHANED_PHYSICAL_RECOVERY: desyncLatched=true but no recovery owner, with " .. result.eventQueueLength .. " events queued")
+        result.status = "CRITICAL"
+    end
+    
+    -- P10: STRANDED_EVENT_BACKLOG
+    -- Events are queued but neither applied nor being processed
+    if result.eventQueueLength > 0 and not result.eventPolling and not result.resyncInFlight then
+        table.insert(result.violations, "STRANDED_EVENT_BACKLOG: " .. result.eventQueueLength .. " events queued but no consumer")
+        result.status = "CRITICAL"
+    end
+    
+    -- P10: RECOVERY_DEFERRED_WITHOUT_OWNER
+    -- Recovery was attempted but exited early without taking ownership
+    if BridgeState.resyncDeferredRetryScheduled and not result.resyncInFlight then
+        table.insert(result.violations, "RECOVERY_DEFERRED_WITHOUT_OWNER: recovery scheduled but no active owner")
+        result.status = "CRITICAL"
+    end
+    
+    return result
+end
+
 function BridgeDiagnosticSnapshot(value, active)
     if type(value) ~= "table" then return value end
     active = active or {}
@@ -809,7 +848,8 @@ function BridgePerformanceDiagnosticPayload()
             status = BridgeState.statusText
         },
         resyncLifecycle = BridgeDiagnosticSnapshot(BridgeState.resyncLifecycle or {}),
-        eventDrainDiagnostics = BridgeEventDrainQueueState()
+        eventDrainDiagnostics = BridgeEventDrainQueueState(),
+        recoveryStateInvariants = BridgeComputeRecoveryStateInvariants()
     }
 end
 
@@ -6749,10 +6789,9 @@ function BridgeIgnoreStatusClick(object, playerColor, altClick)
 end
 
 function BridgeSetStatus(headline, detail)
-    local currentRecovery = BridgeCurrentTerminalRecoveryError()
-    if currentRecovery ~= nil then
+    if BridgeState.terminalRecoveryError ~= nil then
         headline = "PROTOCOL RECOVERY ERROR"
-        detail = currentRecovery.detail
+        detail = BridgeState.terminalRecoveryError.detail
             or "Forge must publish a replacement decision."
     end
     BridgeState.statusHeadline = headline or BridgeState.statusHeadline
@@ -10170,10 +10209,9 @@ function BridgeScheduleResyncWatchdog(sessionId, token)
 end
 
 function BridgeResyncFromAuthoritativeSnapshot(origin)
-    local currentRecovery = BridgeCurrentTerminalRecoveryError()
-    if currentRecovery ~= nil then
+    if BridgeCurrentTerminalRecoveryError() ~= nil then
         BridgeLog("[Bridge] RESYNC_BLOCKED reason=terminal-recovery-error origin=" .. tostring(origin)
-            .. " kind=" .. tostring(currentRecovery.kind))
+            .. " kind=" .. tostring(BridgeState.terminalRecoveryError.kind))
         BridgeSetStatus("SYNCHRONIZATION STOPPED", "Forge must publish a replacement decision before recovery can continue.")
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
         BridgeState.resyncInFlight = false
@@ -11397,8 +11435,8 @@ function BridgeShowResourceCounter(counter, position, seat)
     if counter == nil or position == nil then return end
     pcall(function() counter.setInvisibleTo({}) end)
     -- Mana counters must face the same direction as the life counter they are
-    -- positioned relative to. Match the life counter orientation: 180° when
-    -- player is on far side (tableSideZ < 0), 0° when on near side.
+    -- positioned relative to. Match the life counter orientation: 180Â° when
+    -- player is on far side (tableSideZ < 0), 0Â° when on near side.
     if seat ~= nil then
         pcall(function() counter.setRotation({0, seat.tableSideZ < 0 and 180 or 0, 0}) end)
     end
@@ -12580,7 +12618,7 @@ function BridgeApplyAuthoritativeEvent(event)
         local bannerColor = outcome == "draw" and {0.95, 0.78, 0.15}
             or (humanWon and {0.2, 0.9, 0.3}
                 or (outcome == "defeat" and {0.95, 0.3, 0.3} or {0.9, 0.9, 0.9}))
-        broadcastToAll("[Bridge] " .. label .. " — game over", bannerColor)
+        broadcastToAll("[Bridge] " .. label .. " â€” game over", bannerColor)
         BridgeLog("[Bridge] GAME_ENDED winners=" .. table.concat(BridgeState.gameEnded.winnerSeatIds, ",")
             .. " losers=" .. table.concat(BridgeState.gameEnded.loserSeatIds, ",")
             .. " reason=" .. tostring(event.gameEndReason)
@@ -13127,7 +13165,7 @@ function BridgeApplyAuthoritativeEvent(event)
                 end
                 return false, 0, "card_moved from exile: could not locate physical card in any zone"
             end
-            
+
             local object, resolveError = BridgeResolvePhysicalCard(event, sourceZone)
             if object == nil then return false, 0, resolveError end
             local moved, moveError = BridgeMoveToGraveyard(event, object)
@@ -13208,7 +13246,7 @@ function BridgeApplyAuthoritativeEvent(event)
             BridgeScheduleSnapshotReconcile("semantic land source already changed " .. tostring(event.cardInstanceId))
             return true, 0.1
         end
-        
+
         -- If it's a deck object (from library), draw the top card
         if object.tag == "Deck" then
             local drawn = object.takeObject({
@@ -13228,7 +13266,7 @@ function BridgeApplyAuthoritativeEvent(event)
             end, 2)
             return true, 1.25
         end
-        
+
         local moved, moveError = BridgeMoveToBattlefield(event, object, "land")
         if not moved then return false, 0, moveError end
         return true, 1.25
@@ -14372,22 +14410,130 @@ function BridgeFindGraveyardContainer(seatId, excludeGuid)
     return fallback
 end
 
-function BridgeRecordGraveyardContainerEntries(seatId, deck)
+-- Diagnostic utility: Count entries in a Lua table
+function BridgeTableSize(t)
+    if t == nil then return 0 end
+    local count = 0
+    for _ in pairs(t) do count = count + 1 end
+    return count
+end
+
+-- Object-shape assertion: Validate graveyard container invariants.
+-- Returns (success: bool, errorDescription: string or nil).
+-- Violations checked:
+--   - TWO_OR_MORE_LOOSE_CARDS: >= 2 loose Cards (critical C11D regression)
+--   - MULTIPLE_DECKS: >= 2 Deck objects
+--   - LOOSE_CARD_WITH_DECK: >= 1 loose Card AND >= 1 Deck (mixed state)
+--   - UNMAPPED_CONTAINED_CARDS: Deck contains Cards not in identity mapping
+function BridgeAssertGraveyardObjectShape(seatId, context)
+    if seatId == nil then return true, nil end
+    context = context or "unnamed"
+
+    local looseCards = 0
+    local deckObjects = 0
+    local deckGuids = {}
+
+    for _, object in ipairs(getAllObjects()) do
+        local guid = BridgeSafeObjectGuid(object)
+        if BridgeObjectIsUsable(object) and guid ~= nil
+            and not BridgeIsPresentationOnlyObject(object)
+            and BridgeState.physicalSeatByGuid[guid] == seatId
+            and BridgeState.physicalZoneByGuid[guid] == "graveyard" then
+
+            if object.tag == "Card" then
+                looseCards = looseCards + 1
+            elseif object.tag == "Deck" then
+                deckObjects = deckObjects + 1
+                table.insert(deckGuids, guid)
+            end
+        end
+    end
+
+    -- Check for critical violations
+    if looseCards >= 2 then
+        return false, string.format("[%s] TWO_OR_MORE_LOOSE_CARDS: seatId=%s found %d loose Cards (invariant: 0 or 1)",
+            context, tostring(seatId), looseCards)
+    end
+    if deckObjects >= 2 then
+        return false, string.format("[%s] MULTIPLE_DECKS: seatId=%s found %d Deck objects (invariant: 0 or 1)",
+            context, tostring(seatId), deckObjects)
+    end
+    if looseCards >= 1 and deckObjects >= 1 then
+        return false, string.format("[%s] LOOSE_CARD_WITH_DECK: seatId=%s has both loose Card and Deck (mixed state)",
+            context, tostring(seatId))
+    end
+
+    -- Check for unmapped contained Cards in Deck
+    for _, deckGuid in ipairs(deckGuids) do
+        local deck = getObjectFromGUID(deckGuid)
+        if BridgeObjectIsUsable(deck) and deck.tag == "Deck" then
+            local entries = BridgeLibraryEntries(deck)
+            if entries ~= nil then
+                for _, entry in ipairs(entries) do
+                    local cardGuid = entry and (entry.guid or entry.GUID) or nil
+                    if cardGuid ~= nil and BridgeState.physicalContainedInstanceIdByGuid[cardGuid] == nil
+                        and BridgeState.physicalInstanceIdByGuid[cardGuid] == nil then
+                        return false, string.format("[%s] UNMAPPED_CONTAINED_CARDS: seatId=%s deckGuid=%s contains unmapped cardGuid=%s",
+                            context, tostring(seatId), tostring(deckGuid), tostring(cardGuid))
+                    end
+                end
+            end
+        end
+    end
+
+    return true, nil
+end
+
+-- P0.1: Enhanced entry recording with name-matching for newly-added cards.
+-- After putObject() merge completes, TTS assigns new contained GUIDs.
+-- Cards already in the container are found by existing GUID; the newly-added
+-- card's loose GUID is now invalid and must be matched by name.
+function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
     if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then return false end
     local entries = BridgeLibraryEntries(deck)
     if entries == nil then return false end
     local deckGuid = BridgeSafeObjectGuid(deck)
     local recorded = 0
+
+    -- expectedInstances: table of {instanceId, cardName} pairs, or nil for no expected instances
+    local expectedByName = {}
+    local expectedByIndex = {}
+    if expectedInstances ~= nil then
+        for _, pair in ipairs(expectedInstances) do
+            local instanceId = pair[1]
+            local cardName = pair[2]
+            if cardName ~= nil then
+                table.insert(expectedByName, {instanceId = instanceId, cardName = cardName, matched = false})
+            end
+            table.insert(expectedByIndex, instanceId)
+        end
+    end
+
     for _, entry in ipairs(entries) do
         local cardGuid = entry and (entry.guid or entry.GUID) or nil
+        local entryName = entry and (entry.nickname or entry.name) or nil
         local instanceId = cardGuid and (BridgeState.physicalContainedInstanceIdByGuid[cardGuid]
             or BridgeState.physicalInstanceIdByGuid[cardGuid]) or nil
+
+        -- Pass 1: Try to match by existing GUID first (cards already in container before merge)
         if instanceId ~= nil then
-            local cardName = BridgeState.cardNameByInstanceId[instanceId]
-                or (entry.nickname or entry.name)
+            local cardName = BridgeState.cardNameByInstanceId[instanceId] or entryName
             if BridgeRecordContainedCardIdentity(instanceId, deckGuid, cardGuid,
                 seatId, "graveyard", cardName) then
                 recorded = recorded + 1
+            end
+        -- Pass 2: Try name-matching for newly-added cards (whose loose GUIDs are now invalid)
+        -- Greedy: match each entry to first unmatched expected card with matching name
+        else
+            for _, expectedEntry in ipairs(expectedByName) do
+                if not expectedEntry.matched and BridgeCardNameMatches(entryName, expectedEntry.cardName) then
+                    if BridgeRecordContainedCardIdentity(expectedEntry.instanceId, deckGuid, cardGuid,
+                        seatId, "graveyard", expectedEntry.cardName) then
+                        recorded = recorded + 1
+                        expectedEntry.matched = true
+                        break
+                    end
+                end
             end
         end
     end
@@ -14400,6 +14546,8 @@ end
 function BridgeEnsureNativeGraveyardContainer(seatId)
     local loose = {}
     local looseInstanceByGuid = {}
+    local allExpectedInstances = {}
+
     for _, object in ipairs(getAllObjects()) do
         local guid = BridgeSafeObjectGuid(object)
         if BridgeObjectIsUsable(object) and object.tag == "Card" and guid ~= nil
@@ -14408,8 +14556,12 @@ function BridgeEnsureNativeGraveyardContainer(seatId)
             and BridgeState.physicalZoneByGuid[guid] == "graveyard" then
             table.insert(loose, object)
             looseInstanceByGuid[guid] = BridgeState.physicalInstanceIdByGuid[guid]
+            local instanceId = looseInstanceByGuid[guid]
+            local cardName = BridgeState.cardNameByInstanceId[instanceId]
+            table.insert(allExpectedInstances, {instanceId, cardName})
         end
     end
+
     local container = BridgeFindGraveyardContainer(seatId)
     if container ~= nil and container.tag == "Deck" then
         for _, object in ipairs(loose) do
@@ -14424,9 +14576,10 @@ function BridgeEnsureNativeGraveyardContainer(seatId)
             BridgeLog(string.format("[Bridge] graveyard container merge seat=%s deckGuid=%s cardGuid=%s",
                 tostring(seatId), tostring(BridgeSafeObjectGuid(container)), tostring(guid)))
         end
-        return BridgeRecordGraveyardContainerEntries(seatId, container), nil
+        return BridgeRecordGraveyardContainerEntries(seatId, container, allExpectedInstances), nil
     end
     if #loose < 2 then return true, nil end
+
     container = loose[1]
     for index = 2, #loose do
         local card = loose[index]
@@ -14453,7 +14606,17 @@ function BridgeEnsureNativeGraveyardContainer(seatId)
                 seatId, "graveyard", BridgeState.cardNameByInstanceId[cardInstanceId])
         end
     end
-    local stable = BridgeRecordGraveyardContainerEntries(seatId, container)
+
+    -- Full reconciliation after all merges complete: pass all expected instances atomically
+    local stable = BridgeRecordGraveyardContainerEntries(seatId, container, allExpectedInstances)
+    if stable then
+        -- P2: Assert object-shape contract after container formation
+        local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(seatId, "after-container-formation")
+        if not shapeOk then
+            BridgeLog("[Bridge] CRITICAL graveyard object-shape violation after formation: " .. tostring(shapeReason))
+            return false, shapeReason
+        end
+    end
     return stable, stable and nil or "native graveyard Deck inventory did not preserve exact identities"
 end
 
@@ -14482,10 +14645,20 @@ function BridgeMoveToGraveyard(event, object)
     local existing = BridgeFindGraveyardContainer(event.seatId, guid)
     if existing == nil then
         BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "graveyard")
+        -- P2: Assert object-shape contract for single loose card
+        local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(event.seatId, "after-loose-card")
+        if not shapeOk then
+            BridgeLog("[Bridge] CRITICAL graveyard object-shape violation for loose card: " .. tostring(shapeReason))
+            BridgeStopOnDesync("graveyard object-shape contract violation: " .. tostring(shapeReason))
+            return false, shapeReason
+        end
         return true, nil
     end
+
     local existingGuid = BridgeSafeObjectGuid(existing)
     local existingInstanceId = existingGuid and BridgeState.physicalInstanceIdByGuid[existingGuid] or nil
+    local existingCardName = existingInstanceId and BridgeState.cardNameByInstanceId[existingInstanceId] or nil
+
     local target = existing
     local ok, result = pcall(function() return target.putObject(object, 0) end)
     if not ok then return false, "could not add card to native graveyard container: " .. tostring(result) end
@@ -14496,14 +14669,29 @@ function BridgeMoveToGraveyard(event, object)
     if target == nil or target.tag ~= "Deck" then
         return false, "TTS did not produce a native graveyard Deck for two cards"
     end
-    if existingInstanceId ~= nil then
-        BridgeRecordContainedCardIdentity(existingInstanceId, BridgeSafeObjectGuid(target), existingGuid,
-            event.seatId, "graveyard", BridgeState.cardNameByInstanceId[existingInstanceId])
+
+    -- Multi-card reconciliation: pass BOTH the existing and incoming cards' identities atomically.
+    -- After putObject() completes, TTS has assigned new contained GUIDs to both.
+    -- Collect all expected instances (existing + incoming) and reconcile all identities in one operation.
+    local expectedInstances = {}
+    if existingInstanceId ~= nil and existingCardName ~= nil then
+        table.insert(expectedInstances, {existingInstanceId, existingCardName})
     end
-    BridgeRecordContainedCardIdentity(event.cardInstanceId, BridgeSafeObjectGuid(target), guid,
-        event.seatId, "graveyard", event.cardName)
-    if not BridgeRecordGraveyardContainerEntries(event.seatId, target) then
-        return false, "native graveyard Deck did not expose every contained card identity"
+    if event.cardInstanceId ~= nil and event.cardName ~= nil then
+        table.insert(expectedInstances, {event.cardInstanceId, event.cardName})
+    end
+
+    if not BridgeRecordGraveyardContainerEntries(event.seatId, target,
+        (#expectedInstances > 0 and expectedInstances or nil)) then
+        return false, "native graveyard Deck merge failed to establish all contained identities"
+    end
+
+    -- P2: Assert object-shape contract after merge completes
+    local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(event.seatId, "after-merge")
+    if not shapeOk then
+        BridgeLog("[Bridge] CRITICAL graveyard object-shape violation after merge: " .. tostring(shapeReason))
+        BridgeStopOnDesync("graveyard object-shape contract violation: " .. tostring(shapeReason))
+        return false, shapeReason
     end
     return true, nil
 end

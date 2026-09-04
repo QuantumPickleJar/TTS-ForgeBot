@@ -69,9 +69,17 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private long _latestDecisionEligibleCursor;
     private long? _latestCommittedMutationForgeSequence;
     private bool _firstForgeOutputLogged;
+    // Track the most-recently-presented decision to claim delayed terminators during grace period.
+    private string? _lastPresentedDecisionId;
+    private string? _lastPresentedDecisionKind;
+    private DateTimeOffset _lastPresentedAtUtc = DateTimeOffset.MinValue;
 
     private const int EventHistoryLimit = 512;
     private const int DecisionHistoryLimit = 128;
+    // Grace period (milliseconds) to associate orphaned numeric prompts with the most-recently-presented decision.
+    // Forge may stream decision headers and terminators in separate stdout chunks; this window allows claiming
+    // delayed terminators without requiring the parser to know about decision boundaries.
+    private const int DelayedTerminatorGracePeriodMs = 250;
 
     public ForgeTuiAdapter(IOptions<ForgeTuiOptions> options, ILogger<ForgeTuiAdapter> logger, DiagnosticTelemetryBuffer? telemetry = null)
     {
@@ -269,6 +277,9 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _diagnosticCode = null;
             _diagnosticMessage = null;
             _diagnosticContext = null;
+            _lastPresentedDecisionId = null;
+            _lastPresentedDecisionKind = null;
+            _lastPresentedAtUtc = DateTimeOffset.MinValue;
             _process = process;
             _processCancellation = cancellation;
             processGeneration = ++_processGeneration;
@@ -630,11 +641,25 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                     }
                     if (result.UnsupportedPrompt is not null)
                     {
-                        _logger.LogWarning(
-                            "Forge TUI unsupported prompt {Code}; context={Context}",
-                            result.UnsupportedPrompt.Code,
-                            result.UnsupportedPrompt.Context);
-                        SetUnsupportedPrompt(result.UnsupportedPrompt);
+                        // Check if this is a delayed terminator that can be claimed by the most-recently-presented decision.
+                        if (CanClaimDelayedTerminator(result.UnsupportedPrompt))
+                        {
+                            _logger.LogDebug(
+                                "Consumed delayed terminator for {DecisionId} kind={Kind} prompt={Prompt}",
+                                _lastPresentedDecisionId,
+                                _lastPresentedDecisionKind,
+                                result.UnsupportedPrompt.Context);
+                            // Silent consumption: do not change state, do not call SetUnsupportedPrompt.
+                            // The decision remains active and awaiting human response.
+                        }
+                        else
+                        {
+                            _logger.LogWarning(
+                                "Forge TUI unsupported prompt {Code}; context={Context}",
+                                result.UnsupportedPrompt.Code,
+                                result.UnsupportedPrompt.Context);
+                            SetUnsupportedPrompt(result.UnsupportedPrompt);
+                        }
                     }
                     if (result.ErrorCode is not null)
                     {
@@ -866,6 +891,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         _state = "awaiting_human_decision";
         _pendingDecision = null;
         RecordDecisionPresented(_currentDecision.DecisionId);
+        // Track this decision for delayed terminator claiming during grace period.
+        _lastPresentedDecisionId = published.DecisionId;
+        _lastPresentedDecisionKind = published.Kind;
+        _lastPresentedAtUtc = DateTimeOffset.UtcNow;
         _logger.LogInformation(
             "DECISION_VALIDATED decision={DecisionId} cursor={Cursor} forgeSequence={ForgeSequence}",
             _currentDecision.DecisionId,
@@ -928,6 +957,80 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             currentDecisionId ?? "(none)",
             _state,
             BridgeProcessIdentity.InstanceId);
+    }
+
+    /// <summary>
+    /// Attempts to claim an orphaned numeric prompt as a delayed terminator for the most-recently-presented decision.
+    /// Returns true if the prompt matches the expected terminator pattern for that decision kind and is within
+    /// the grace period, allowing the adapter to silently consume the prompt without transitioning to unsupported_decision.
+    /// </summary>
+    private bool CanClaimDelayedTerminator(ForgeTuiUnsupportedPrompt unsupportedPrompt)
+    {
+        // Only attempt to claim unsupported_numeric_prompt errors (not genuine unsupported interactions).
+        if (!string.Equals(unsupportedPrompt.Code, "unsupported_numeric_prompt", StringComparison.Ordinal))
+            return false;
+
+        // No decision has been presented yet.
+        if (string.IsNullOrWhiteSpace(_lastPresentedDecisionId) || string.IsNullOrWhiteSpace(_lastPresentedDecisionKind))
+            return false;
+
+        // Only claim if within grace period.
+        var elapsed = DateTimeOffset.UtcNow - _lastPresentedAtUtc;
+        if (elapsed.TotalMilliseconds > DelayedTerminatorGracePeriodMs)
+            return false;
+
+        // Only claim if the prompt matches the expected terminator pattern for this decision kind.
+        return IsExpectedTerminatorForKind(_lastPresentedDecisionKind, unsupportedPrompt.Context);
+    }
+
+    /// <summary>
+    /// Determines whether a numeric prompt is an expected terminator (e.g., delayed presentation of the choice menu header)
+    /// for a given decision kind. This allows distinguishing genuine delayed terminators from unrelated unsupported prompts.
+    /// </summary>
+    private static bool IsExpectedTerminatorForKind(string decisionKind, string promptContext)
+    {
+        // Normalize the prompt context for pattern matching.
+        var normalizedContext = promptContext.Trim();
+
+        // Target selection, defender selection, and player selection expect numeric choice menus.
+        // Pattern: "Enter choice (X-Y):" where X and Y are digit ranges.
+        if (decisionKind is "target_selection" or "defender_selection" or "player_selection" or "generic_numeric_selection")
+        {
+            return Regex.IsMatch(normalizedContext, @"Enter choice \(\d+-\d+\):", RegexOptions.IgnoreCase);
+        }
+
+        // Attacker and blocker selection expect similar numeric choice menus.
+        if (decisionKind is "attacker_selection" or "blocker_selection")
+        {
+            return Regex.IsMatch(normalizedContext, @"Enter choice \(\d+-\d+\):", RegexOptions.IgnoreCase);
+        }
+
+        // Card selection (discard, sacrifice, etc.) expects numeric choice menus.
+        if (decisionKind is "card_selection" or "sacrifice" or "discard" or "search_selection")
+        {
+            return Regex.IsMatch(normalizedContext, @"Enter choice \(\d+-\d+\):", RegexOptions.IgnoreCase);
+        }
+
+        // Mulligan choice expects a simple binary menu: "Enter choice (0-1):"
+        if (decisionKind is "mulligan")
+        {
+            return Regex.IsMatch(normalizedContext, @"Enter choice \(\d+-\d+\):", RegexOptions.IgnoreCase);
+        }
+
+        // Entity selection (player choice) expects numeric choice menus.
+        if (decisionKind is "entity_selection")
+        {
+            return Regex.IsMatch(normalizedContext, @"Enter choice \(\d+-\d+\):", RegexOptions.IgnoreCase);
+        }
+
+        // Cost selection (payment choices) expects numeric choice menus.
+        if (decisionKind is "cost_selection")
+        {
+            return Regex.IsMatch(normalizedContext, @"Enter choice \(\d+-\d+\):", RegexOptions.IgnoreCase);
+        }
+
+        // Unknown or unsupported decision kind; do not claim the terminator.
+        return false;
     }
 
     private void SetUnsupportedPrompt(ForgeTuiUnsupportedPrompt prompt)
