@@ -244,6 +244,8 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
         eventDrainBlockReason = BridgeEventDrainBlockReason(),
         resyncInFlight = BridgeState.resyncInFlight == true,
+        coreResyncInFlight = BridgeState.resyncInFlight == true,
+        uiResyncInFlight = ui.resyncInFlight == true,
         resyncScheduled = BridgeState.resyncScheduled == true,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncStartedAt = BridgeState.resyncStartedAt,

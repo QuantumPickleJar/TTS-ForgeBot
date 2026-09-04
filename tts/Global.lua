@@ -245,6 +245,8 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
         eventDrainBlockReason = BridgeEventDrainBlockReason(),
         resyncInFlight = BridgeState.resyncInFlight == true,
+        coreResyncInFlight = BridgeState.resyncInFlight == true,
+        uiResyncInFlight = ui.resyncInFlight == true,
         resyncScheduled = BridgeState.resyncScheduled == true,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncStartedAt = BridgeState.resyncStartedAt,
@@ -14162,11 +14164,25 @@ function BridgeApplyStructuredCardMove(event)
                     local moved, moveError = BridgeMoveToGraveyard(event, taken)
                     if not moved then
                         BridgeStopOnDesync(libraryDrawError(moveError))
+                        -- Do not retire the physical extraction as success.
+                        -- The card has no proven final graveyard embodiment;
+                        -- leaving the transaction owned lets recovery inspect
+                        -- and repair the exact failed settlement.
+                        return
                     end
                     -- Preserve event order in visible presentation: a mill
                     -- must settle in the graveyard before the next queued
                     -- library extraction (including its following draw).
-                    BridgeWaitTime(complete, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)
+                    BridgeWaitTime(function()
+                        local settled, settleError = BridgeVerifyFinalPhysicalRepresentation(
+                            event.cardInstanceId, event.seatId, event.destinationZone)
+                        if not settled then
+                            BridgeState.resyncLastBlockingPredicate = "missing-public-instance:" .. tostring(event.cardInstanceId)
+                            BridgeStopOnDesync(libraryDrawError(settleError))
+                            return
+                        end
+                        complete()
+                    end, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)
                 end)
         end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
         return true, nil
@@ -14770,6 +14786,27 @@ function BridgeMoveToGraveyard(event, object)
         return false, shapeReason
     end
     return true, nil
+end
+
+-- A physical extraction is not complete merely because TTS accepted a move.
+-- Native Deck merges can invalidate the loose GUID, so verify the final
+-- instance/container mapping after settlement before retiring the worker.
+function BridgeVerifyFinalPhysicalRepresentation(instanceId, seatId, zoneName)
+    if instanceId == nil then return false, "missing physical instance id" end
+    local guid = BridgeState.physicalByInstanceId[instanceId]
+    if guid ~= nil and BridgeState.physicalZoneByGuid[guid] == zoneName then
+        local object = BridgeGetLiveObjectByGuid(guid)
+        if object ~= nil and BridgeObjectIsUsable(object) then return true, nil end
+    end
+    local containerGuid = BridgeState.physicalContainerByInstanceId[instanceId]
+    if containerGuid ~= nil
+        and BridgeState.physicalZoneByGuid[containerGuid] == zoneName then
+        local container = BridgeGetLiveObjectByGuid(containerGuid)
+        if container ~= nil and BridgeObjectIsUsable(container) and container.tag == "Deck" then
+            return true, nil
+        end
+    end
+    return false, "missing final physical representation for " .. tostring(instanceId)
 end
 
 function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
@@ -17125,9 +17162,13 @@ end
 function BridgeHudResyncFromForge(player, value, id)
     local ui = BridgeState.ui
     if ui == nil then
-        BridgeLog("[Bridge] RESYNC_CLICK ignored reason=ui-unavailable")
+        BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=ui-unavailable")
         return
     end
+    BridgeLog(string.format("[Bridge] RESYNC_CLICK_RECEIVED coreResyncInFlight=%s uiResyncInFlight=%s desyncLatched=%s schedulerOwner=%s session=%s generation=%s",
+        tostring(BridgeState.resyncInFlight == true), tostring(ui.resyncInFlight == true),
+        tostring(BridgeState.desyncLatched == true), tostring(BridgeState.schedulerOwner),
+        tostring(BridgeState.eventSessionId), tostring(BridgeState.eventSessionGeneration)))
     local queueState = BridgeEventDrainQueueState()
     BridgeLog(string.format(
         "[Bridge] RESYNC_CLICK session=%s resyncInFlight=%s physicalQueuesIdle=%s eventQueueHead=%s eventQueueLength=%s desyncLatched=%s bootstrapping=%s runtimeEpoch=%s",
@@ -17135,8 +17176,8 @@ function BridgeHudResyncFromForge(player, value, id)
         tostring(queueState.physicalLibraryQueuesIdle), tostring(queueState.headSequence),
         tostring(queueState.queueLength), tostring(queueState.desyncLatched),
         tostring(queueState.bootstrapping), tostring(BRIDGE_RUNTIME_EPOCH_LOCAL)))
-    if ui.resyncInFlight == true then
-        BridgeLog("[Bridge] RESYNC_DEFERRED reason=ui-latched")
+    if BridgeState.resyncInFlight == true then
+        BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=core-resync-in-flight")
         return
     end
     local started = BridgeResyncFromAuthoritativeSnapshot("hud")
@@ -17271,7 +17312,7 @@ function BridgeUiFlush()
     -- Keep recovery available after BridgeStopOnDesync.  The handler gives a
     -- diagnostic error if no Forge session exists; hiding it here made the
     -- recovery control disappear exactly when a library mismatch needed it.
-    BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not ui.resyncInFlight and "true" or "false")
+    BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not BridgeState.resyncInFlight and "true" or "false")
     BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
     -- Some TTS clients render Dropdown as a non-interactive checkbox. The
     -- adjacent previous/current buttons use ordinary Button callbacks and are

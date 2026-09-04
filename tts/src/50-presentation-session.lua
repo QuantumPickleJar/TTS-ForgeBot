@@ -2342,9 +2342,13 @@ end
 function BridgeHudResyncFromForge(player, value, id)
     local ui = BridgeState.ui
     if ui == nil then
-        BridgeLog("[Bridge] RESYNC_CLICK ignored reason=ui-unavailable")
+        BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=ui-unavailable")
         return
     end
+    BridgeLog(string.format("[Bridge] RESYNC_CLICK_RECEIVED coreResyncInFlight=%s uiResyncInFlight=%s desyncLatched=%s schedulerOwner=%s session=%s generation=%s",
+        tostring(BridgeState.resyncInFlight == true), tostring(ui.resyncInFlight == true),
+        tostring(BridgeState.desyncLatched == true), tostring(BridgeState.schedulerOwner),
+        tostring(BridgeState.eventSessionId), tostring(BridgeState.eventSessionGeneration)))
     local queueState = BridgeEventDrainQueueState()
     BridgeLog(string.format(
         "[Bridge] RESYNC_CLICK session=%s resyncInFlight=%s physicalQueuesIdle=%s eventQueueHead=%s eventQueueLength=%s desyncLatched=%s bootstrapping=%s runtimeEpoch=%s",
@@ -2352,8 +2356,8 @@ function BridgeHudResyncFromForge(player, value, id)
         tostring(queueState.physicalLibraryQueuesIdle), tostring(queueState.headSequence),
         tostring(queueState.queueLength), tostring(queueState.desyncLatched),
         tostring(queueState.bootstrapping), tostring(BRIDGE_RUNTIME_EPOCH_LOCAL)))
-    if ui.resyncInFlight == true then
-        BridgeLog("[Bridge] RESYNC_DEFERRED reason=ui-latched")
+    if BridgeState.resyncInFlight == true then
+        BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=core-resync-in-flight")
         return
     end
     local started = BridgeResyncFromAuthoritativeSnapshot("hud")
@@ -2488,7 +2492,7 @@ function BridgeUiFlush()
     -- Keep recovery available after BridgeStopOnDesync.  The handler gives a
     -- diagnostic error if no Forge session exists; hiding it here made the
     -- recovery control disappear exactly when a library mismatch needed it.
-    BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not ui.resyncInFlight and "true" or "false")
+    BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not BridgeState.resyncInFlight and "true" or "false")
     BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
     -- Some TTS clients render Dropdown as a non-interactive checkbox. The
     -- adjacent previous/current buttons use ordinary Button callbacks and are

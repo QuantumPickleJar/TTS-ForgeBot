@@ -3525,11 +3525,25 @@ function BridgeApplyStructuredCardMove(event)
                     local moved, moveError = BridgeMoveToGraveyard(event, taken)
                     if not moved then
                         BridgeStopOnDesync(libraryDrawError(moveError))
+                        -- Do not retire the physical extraction as success.
+                        -- The card has no proven final graveyard embodiment;
+                        -- leaving the transaction owned lets recovery inspect
+                        -- and repair the exact failed settlement.
+                        return
                     end
                     -- Preserve event order in visible presentation: a mill
                     -- must settle in the graveyard before the next queued
                     -- library extraction (including its following draw).
-                    BridgeWaitTime(complete, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)
+                    BridgeWaitTime(function()
+                        local settled, settleError = BridgeVerifyFinalPhysicalRepresentation(
+                            event.cardInstanceId, event.seatId, event.destinationZone)
+                        if not settled then
+                            BridgeState.resyncLastBlockingPredicate = "missing-public-instance:" .. tostring(event.cardInstanceId)
+                            BridgeStopOnDesync(libraryDrawError(settleError))
+                            return
+                        end
+                        complete()
+                    end, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)
                 end)
         end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
         return true, nil
@@ -4133,6 +4147,27 @@ function BridgeMoveToGraveyard(event, object)
         return false, shapeReason
     end
     return true, nil
+end
+
+-- A physical extraction is not complete merely because TTS accepted a move.
+-- Native Deck merges can invalidate the loose GUID, so verify the final
+-- instance/container mapping after settlement before retiring the worker.
+function BridgeVerifyFinalPhysicalRepresentation(instanceId, seatId, zoneName)
+    if instanceId == nil then return false, "missing physical instance id" end
+    local guid = BridgeState.physicalByInstanceId[instanceId]
+    if guid ~= nil and BridgeState.physicalZoneByGuid[guid] == zoneName then
+        local object = BridgeGetLiveObjectByGuid(guid)
+        if object ~= nil and BridgeObjectIsUsable(object) then return true, nil end
+    end
+    local containerGuid = BridgeState.physicalContainerByInstanceId[instanceId]
+    if containerGuid ~= nil
+        and BridgeState.physicalZoneByGuid[containerGuid] == zoneName then
+        local container = BridgeGetLiveObjectByGuid(containerGuid)
+        if container ~= nil and BridgeObjectIsUsable(container) and container.tag == "Deck" then
+            return true, nil
+        end
+    end
+    return false, "missing final physical representation for " .. tostring(instanceId)
 end
 
 function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
