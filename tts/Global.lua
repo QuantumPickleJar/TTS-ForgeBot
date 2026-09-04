@@ -3070,7 +3070,7 @@ function BridgeProcessMulliganBottomQueue(seatId)
     if BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true then return end
     local queue = BridgeState.mulliganBottomQueueBySeatId[seatId]
     local item = queue and queue[1] or nil
-    if item == nil then BridgeLog("[Bridge] extraction-return-empty"); return end
+    if item == nil then return end
     local transactionQueue = queue
     BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] = true
 
@@ -3156,10 +3156,10 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         tostring(BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true),
         tostring(#(BridgeState.mulliganBottomQueueBySeatId[seatId] or {})),
         tostring(#(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}))))
-    if BridgeState.libraryExtractionActiveBySeatId[seatId] == true then BridgeLog("[Bridge] extraction-return-active"); return end
+    if BridgeState.libraryExtractionActiveBySeatId[seatId] == true then return end
     if BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
         or #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {}) > 0 then
-        BridgeLog("[Bridge] extraction-return-mulligan"); return
+        return
     end
     local queue = BridgeState.libraryExtractionQueueBySeatId[seatId]
     local item = queue and queue[1] or nil

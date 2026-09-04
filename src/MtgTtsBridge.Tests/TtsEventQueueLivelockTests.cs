@@ -232,33 +232,80 @@ public sealed class TtsEventQueueLivelockTests
     public void StaleLibraryExtractionCallbackCleansUpQueueOwnershipWhenTheGenerationChanges()
     {
         var lua = NewQueueProbe();
+        
+        // Capture logs
+        lua.DoString(@"
+            _captured_logs = {}
+            function log(message)
+                table.insert(_captured_logs, message)
+            end
+        ");
+        
         lua.DoString(@"
             BridgeState.eventSessionId = 'session'
             BridgeState.physicalTransactionGeneration = 7
-            BridgeState.libraryExtractionQueueBySeatId['forge-player-1'] = {
-                {
-                    cardInstanceId = 'forge-object:17',
-                    expectedCardName = 'Island',
-                    run = function(complete)
-                        local tx = BridgeState.libraryExtractionTransactionBySeatId['forge-player-1']
-                        BridgeState.physicalTransactionGeneration = 8
-                        if tx ~= nil then
-                            tx.generation = 8
-                        end
-                        complete('stale-callback')
-                    end
-                }
-            }
+            BridgeState.libraryExtractionQueueBySeatId['forge-player-1'] = {}
             BridgeState.libraryExtractionActiveBySeatId['forge-player-1'] = nil
             BridgeState.libraryExtractionTransactionBySeatId['forge-player-1'] = nil
+        ");
+        
+        // Create the queue item in Lua with a callback function
+        lua.DoString(@"
+            local queue = BridgeState.libraryExtractionQueueBySeatId['forge-player-1']
+            queue.run = function(complete)
+                local tx = BridgeState.libraryExtractionTransactionBySeatId['forge-player-1']
+                BridgeState.physicalTransactionGeneration = 8
+                if tx ~= nil then
+                    tx.generation = 8
+                end
+                complete('stale-callback')
+            end
+            queue.cardInstanceId = 'forge-object:17'
+            queue.expectedCardName = 'Island'
+            
+            -- Manually add to queue using key=1 instead of table.insert
+            BridgeState.libraryExtractionQueueBySeatId['forge-player-1'][1] = {
+                cardInstanceId = 'forge-object:17',
+                expectedCardName = 'Island',
+                run = function(complete)
+                    local tx = BridgeState.libraryExtractionTransactionBySeatId['forge-player-1']
+                    BridgeState.physicalTransactionGeneration = 8
+                    if tx ~= nil then
+                        tx.generation = 8
+                    end
+                    complete('stale-callback')
+                end
+            }
+            
             BridgeProcessLibraryExtractionQueue('forge-player-1')
         ");
+
+        // Extract captured logs
+        var capturedLogs = lua.Globals.Get("_captured_logs").Table;
+        var logLines = new System.Collections.Generic.List<string>();
+        if (capturedLogs != null)
+        {
+            foreach (var kvp in capturedLogs.Pairs)
+            {
+                if (kvp.Value.Type == DataType.String)
+                {
+                    logLines.Add(kvp.Value.String);
+                }
+            }
+        }
 
         var state = lua.Globals.Get("BridgeState").Table;
         var queue = state.Get("libraryExtractionQueueBySeatId").Table.Get("forge-player-1");
         var active = state.Get("libraryExtractionActiveBySeatId").Table.Get("forge-player-1");
         Assert.NotNull(queue);
-        Assert.Equal(0, queue.Table.Length);
+        
+        // If queue is not empty, include logs in the error
+        if (queue.Table.Length != 0)
+        {
+            var logText = string.Join("\n", logLines);
+            Assert.Fail($"Queue should be empty. Queue length: {queue.Table.Length}. Captured {logLines.Count} logs.\n\nCAPTURED LOGS:\n{logText}");
+        }
+        
         Assert.True(active == null || active.IsNil());
     }
 
