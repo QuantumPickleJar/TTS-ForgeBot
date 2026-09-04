@@ -1113,6 +1113,7 @@ BridgeState = {
     },
     currentPhysicalPresentationGeneration = 0,
     physicalTransactionGeneration = 0,
+    physicalReadinessDependency = nil,
     renderedDecisionPresentationKey = nil,
     renderedDecisionPhysicalGeneration = nil,
     physicalByInstanceId = {},
@@ -1738,6 +1739,47 @@ function BridgeAdvancePhysicalTransactionGeneration(reason)
         BridgeState.lastPhysicalTransactionInvalidationReason = tostring(reason)
     end
     return BridgeState.physicalTransactionGeneration
+end
+
+-- A deferred hand decision is owned by the physical transaction that is
+-- preventing readiness.  The transaction's terminal callback is the only
+-- normal wake-up; timers are diagnostics, not a continuation mechanism.
+function BridgeRegisterPhysicalReadinessDependency(decision, reason, detail, seatId)
+    if decision == nil then return false end
+    local transaction = seatId and BridgeState.libraryExtractionTransactionBySeatId
+        and BridgeState.libraryExtractionTransactionBySeatId[seatId] or nil
+    local generation = transaction and transaction.generation
+        or (BridgeState.physicalTransactionGeneration or 0)
+    BridgeState.physicalReadinessDependency = {
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
+        physicalTransactionGeneration = generation,
+        readinessToken = tostring(decision.decisionId) .. ":" .. tostring(generation),
+        decisionId = decision.decisionId,
+        seatId = seatId,
+        reason = reason,
+        detail = detail,
+        awakened = false
+    }
+    return true
+end
+
+function BridgeWakePhysicalReadinessDependency(generation, reason)
+    local dependency = BridgeState.physicalReadinessDependency
+    if dependency == nil or dependency.awakened then return false end
+    if dependency.sessionId ~= BridgeState.eventSessionId
+        or dependency.sessionGeneration ~= BridgeState.eventSessionGeneration
+        or dependency.physicalTransactionGeneration ~= generation then
+        return false
+    end
+    dependency.awakened = true
+    BridgeState.physicalReadinessDependency = nil
+    BridgeLog(string.format("[Bridge] PHYSICAL_READINESS_WAKE token=%s reason=%s",
+        tostring(dependency.readinessToken), tostring(reason)))
+    if BridgeTryPresentPendingDecision ~= nil and BridgeState.pendingDecision ~= nil then
+        BridgeTryPresentPendingDecision("physical-transaction-terminal")
+    end
+    return true
 end
 
 function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)

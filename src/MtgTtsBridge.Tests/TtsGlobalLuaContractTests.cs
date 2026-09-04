@@ -8,6 +8,17 @@ public sealed class TtsGlobalLuaContractTests
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.lua"));
 
     [Fact]
+    public void HandReadiness_UsesOwnedPhysicalTransactionDependencyAndTerminalWake()
+    {
+        Assert.Contains("function BridgeRegisterPhysicalReadinessDependency", Script);
+        Assert.Contains("sessionGeneration = BridgeState.eventSessionGeneration", Script);
+        Assert.Contains("physicalTransactionGeneration = generation", Script);
+        Assert.Contains("function BridgeWakePhysicalReadinessDependency", Script);
+        Assert.Contains("BridgeWakePhysicalReadinessDependency(transactionGeneration, \"library-extraction-terminal\")", Script);
+        Assert.Contains("readinessToken", Script);
+    }
+
+    [Fact]
     public void EventPolling_IsSingleFlightAndRetriesTransientFailures()
     {
         Assert.Contains("eventPollGeneration", Script);

@@ -2079,6 +2079,8 @@ function BridgeShouldDeferDecision(decision)
     end
     local busy, busySeatId = globalPhysicalQueueBusy()
     if busy then
+        BridgeRegisterPhysicalReadinessDependency(decision, "physical_transition_pending_global",
+            "seat=" .. tostring(busySeatId), busySeatId)
         return true, tonumber(decision and decision.eventCursor or 0) or 0,
             tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
             "physical_transition_pending_global",
@@ -2118,6 +2120,8 @@ function BridgeShouldDeferDecision(decision)
                 if instanceId == nil or guid == nil
                     or BridgeState.physicalInstanceIdByGuid[guid] ~= instanceId
                     or handGuids[guid] ~= true then
+                    BridgeRegisterPhysicalReadinessDependency(decision, "hand_action_readiness",
+                        "instance=" .. tostring(instanceId), decision.seatId)
                     return true, tonumber(decision.eventCursor or 0) or 0,
                         tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
                         "hand_action_readiness",
@@ -2136,6 +2140,8 @@ function BridgeShouldDeferDecision(decision)
         local extractionQueue = BridgeState.libraryExtractionQueueBySeatId[decision.seatId]
         if BridgeState.libraryExtractionActiveBySeatId[decision.seatId] == true
             or (extractionQueue ~= nil and #extractionQueue > 0) then
+            BridgeRegisterPhysicalReadinessDependency(decision, "hand_action_readiness",
+                "library-extraction-pending", decision.seatId)
             return true, tonumber(decision.eventCursor or 0) or 0,
                 tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
         end

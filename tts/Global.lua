@@ -1114,6 +1114,7 @@ BridgeState = {
     },
     currentPhysicalPresentationGeneration = 0,
     physicalTransactionGeneration = 0,
+    physicalReadinessDependency = nil,
     renderedDecisionPresentationKey = nil,
     renderedDecisionPhysicalGeneration = nil,
     physicalByInstanceId = {},
@@ -1739,6 +1740,47 @@ function BridgeAdvancePhysicalTransactionGeneration(reason)
         BridgeState.lastPhysicalTransactionInvalidationReason = tostring(reason)
     end
     return BridgeState.physicalTransactionGeneration
+end
+
+-- A deferred hand decision is owned by the physical transaction that is
+-- preventing readiness.  The transaction's terminal callback is the only
+-- normal wake-up; timers are diagnostics, not a continuation mechanism.
+function BridgeRegisterPhysicalReadinessDependency(decision, reason, detail, seatId)
+    if decision == nil then return false end
+    local transaction = seatId and BridgeState.libraryExtractionTransactionBySeatId
+        and BridgeState.libraryExtractionTransactionBySeatId[seatId] or nil
+    local generation = transaction and transaction.generation
+        or (BridgeState.physicalTransactionGeneration or 0)
+    BridgeState.physicalReadinessDependency = {
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
+        physicalTransactionGeneration = generation,
+        readinessToken = tostring(decision.decisionId) .. ":" .. tostring(generation),
+        decisionId = decision.decisionId,
+        seatId = seatId,
+        reason = reason,
+        detail = detail,
+        awakened = false
+    }
+    return true
+end
+
+function BridgeWakePhysicalReadinessDependency(generation, reason)
+    local dependency = BridgeState.physicalReadinessDependency
+    if dependency == nil or dependency.awakened then return false end
+    if dependency.sessionId ~= BridgeState.eventSessionId
+        or dependency.sessionGeneration ~= BridgeState.eventSessionGeneration
+        or dependency.physicalTransactionGeneration ~= generation then
+        return false
+    end
+    dependency.awakened = true
+    BridgeState.physicalReadinessDependency = nil
+    BridgeLog(string.format("[Bridge] PHYSICAL_READINESS_WAKE token=%s reason=%s",
+        tostring(dependency.readinessToken), tostring(reason)))
+    if BridgeTryPresentPendingDecision ~= nil and BridgeState.pendingDecision ~= nil then
+        BridgeTryPresentPendingDecision("physical-transaction-terminal")
+    end
+    return true
 end
 
 function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
@@ -3028,7 +3070,8 @@ function BridgeProcessMulliganBottomQueue(seatId)
     if BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true then return end
     local queue = BridgeState.mulliganBottomQueueBySeatId[seatId]
     local item = queue and queue[1] or nil
-    if item == nil then return end
+    if item == nil then BridgeLog("[Bridge] extraction-return-empty"); return end
+    local transactionQueue = queue
     BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] = true
 
     local transactionSessionId = BridgeState.eventSessionId
@@ -3113,10 +3156,10 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         tostring(BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true),
         tostring(#(BridgeState.mulliganBottomQueueBySeatId[seatId] or {})),
         tostring(#(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}))))
-    if BridgeState.libraryExtractionActiveBySeatId[seatId] == true then return end
+    if BridgeState.libraryExtractionActiveBySeatId[seatId] == true then BridgeLog("[Bridge] extraction-return-active"); return end
     if BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
         or #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {}) > 0 then
-        return
+        BridgeLog("[Bridge] extraction-return-mulligan"); return
     end
     local queue = BridgeState.libraryExtractionQueueBySeatId[seatId]
     local item = queue and queue[1] or nil
@@ -3146,8 +3189,21 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         local ownsTransaction = BridgeState.libraryExtractionTransactionBySeatId[seatId] == transaction
         local wasCurrent = current()
         if ownsTransaction then
-            local currentQueue = BridgeState.libraryExtractionQueueBySeatId[seatId]
-            if currentQueue ~= nil and currentQueue[1] == item then table.remove(currentQueue, 1) end
+            local currentQueue = transactionQueue
+            -- Ownership is the authoritative identity check.  The callback
+            -- may have replaced the queue table while advancing the physical
+            -- generation, so do not leave the owned head stranded merely
+            -- because table identity no longer compares equal.
+            if type(currentQueue) == "table" and not wasCurrent then
+                for index = #currentQueue, 1, -1 do
+                    if currentQueue[index] == item then table.remove(currentQueue, index) end
+                end
+            elseif currentQueue ~= nil and currentQueue[1] == item then
+                table.remove(currentQueue, 1)
+            end
+            if not wasCurrent and BridgeState.libraryExtractionTransactionBySeatId[seatId] == transaction then
+                BridgeState.libraryExtractionQueueBySeatId[seatId] = currentQueue or {}
+            end
             BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
             BridgeState.libraryExtractionTransactionBySeatId[seatId] = nil
         end
@@ -3173,6 +3229,7 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         local _, nextLibrary = pcall(function() return BridgeFindLibraryDeckForSeat(seatId) end)
         BridgeLogLibraryExtraction(seatId, "NEXT", transactionGeneration, nil, nextLibrary)
         BridgeProcessLibraryExtractionQueue(seatId)
+        BridgeWakePhysicalReadinessDependency(transactionGeneration, "library-extraction-terminal")
         BridgeTryPresentPendingDecision("library-extraction-complete")
         if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
             BridgeRenderDecision(BridgeState.lastDecision)
@@ -3190,7 +3247,7 @@ function BridgeProcessLibraryExtractionQueue(seatId)
                 BridgeState.libraryExtractionTransactionBySeatId[seatId] = nil
             end
             BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
-            local currentQueue = BridgeState.libraryExtractionQueueBySeatId[seatId]
+            local currentQueue = transactionQueue
             if type(currentQueue) == "table" then
                 for index = #currentQueue, 1, -1 do
                     if currentQueue[index] == item then table.remove(currentQueue, index) end
@@ -3211,12 +3268,25 @@ function BridgeProcessLibraryExtractionQueue(seatId)
     -- Stale item cleanup: After the job has run, if the generation/session changed,
     -- the transaction may no longer own this seat. Clean up any stranded queue items.
     if not current() then
-        if BridgeState.libraryExtractionTransactionBySeatId[seatId] == transaction then
+        local stillOwnsStaleTransaction = BridgeState.libraryExtractionTransactionBySeatId[seatId] == transaction
+        if stillOwnsStaleTransaction then
             BridgeState.libraryExtractionTransactionBySeatId[seatId] = nil
+            -- The stale owner is allowed to retire its own queue wholesale
+            -- only when the ownership map still proves that no newer worker
+            -- has taken over this seat.
+            BridgeState.libraryExtractionQueueBySeatId[seatId] = {}
         end
         BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
-        -- Clear the entire queue since a stale extraction cannot be finished
-        BridgeState.libraryExtractionQueueBySeatId[seatId] = {}
+            -- Retire only this transaction's item. A newer generation may
+            -- already own the same seat; clearing the whole queue would erase
+            -- that work and strand its readiness dependency.
+            local currentQueue = transactionQueue
+        if type(currentQueue) == "table" then
+            for index = #currentQueue, 1, -1 do
+                local queued = currentQueue[index]
+                if queued == item then table.remove(currentQueue, index) end
+            end
+        end
         BridgeLog("[Bridge] post-job stale cleanup seat=" .. tostring(seatId) 
             .. " generation=" .. tostring(transactionGeneration) .. " current=" .. tostring(BridgeState.physicalTransactionGeneration or 0))
     end
@@ -5747,6 +5817,8 @@ function BridgeShouldDeferDecision(decision)
     end
     local busy, busySeatId = globalPhysicalQueueBusy()
     if busy then
+        BridgeRegisterPhysicalReadinessDependency(decision, "physical_transition_pending_global",
+            "seat=" .. tostring(busySeatId), busySeatId)
         return true, tonumber(decision and decision.eventCursor or 0) or 0,
             tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
             "physical_transition_pending_global",
@@ -5786,6 +5858,8 @@ function BridgeShouldDeferDecision(decision)
                 if instanceId == nil or guid == nil
                     or BridgeState.physicalInstanceIdByGuid[guid] ~= instanceId
                     or handGuids[guid] ~= true then
+                    BridgeRegisterPhysicalReadinessDependency(decision, "hand_action_readiness",
+                        "instance=" .. tostring(instanceId), decision.seatId)
                     return true, tonumber(decision.eventCursor or 0) or 0,
                         tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
                         "hand_action_readiness",
@@ -5804,6 +5878,8 @@ function BridgeShouldDeferDecision(decision)
         local extractionQueue = BridgeState.libraryExtractionQueueBySeatId[decision.seatId]
         if BridgeState.libraryExtractionActiveBySeatId[decision.seatId] == true
             or (extractionQueue ~= nil and #extractionQueue > 0) then
+            BridgeRegisterPhysicalReadinessDependency(decision, "hand_action_readiness",
+                "library-extraction-pending", decision.seatId)
             return true, tonumber(decision.eventCursor or 0) or 0,
                 tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
         end
