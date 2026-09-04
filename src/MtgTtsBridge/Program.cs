@@ -241,6 +241,28 @@ app.MapPost("/api/v1/diagnostics/report", async (DiagnosticReportRequestDto requ
 	return Results.Ok(new DiagnosticReportResponseDto(true, result.ReportId, result.ReportPath!, result.Message));
 });
 
+// Bridge-owned emergency capture. This endpoint intentionally requires no
+// TTS-supplied payload or callback, so an external watchdog can capture a ZIP
+// when TTS is frozen. The service remains loopback-only by default.
+app.MapPost("/api/v1/diagnostics/capture", async (DiagnosticReportCollector collector, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
+{
+	var request = new DiagnosticReportRequestDto(
+		Summary: "Bridge-requested emergency capture; TTS may be frozen.",
+		Category: "TTS freeze / emergency",
+		ClientRevision: "bridge-emergency-capture");
+	telemetry.RecordProtocol("external_to_bridge", "/api/v1/diagnostics/capture", payload: request);
+	var result = await collector.CaptureAsync(request, cancellationToken);
+	if (!result.Success)
+	{
+		telemetry.RecordProtocol("bridge_to_external", "/api/v1/diagnostics/capture", 500, payload: result.Message);
+		return Results.Json(new DiagnosticReportFailureDto("diagnostic_capture_failed", result.Message, result.ReportId),
+			statusCode: StatusCodes.Status500InternalServerError);
+	}
+	telemetry.RecordProtocol("bridge_to_external", "/api/v1/diagnostics/capture", 200,
+		payload: new { result.ReportId, result.ReportPath });
+	return Results.Ok(new DiagnosticReportResponseDto(true, result.ReportId, result.ReportPath!, result.Message));
+});
+
 app.MapGet("/api/v1/events", async (long? after, IForgeAdapter adapter, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
 {
 	var afterSequence = after ?? 0;

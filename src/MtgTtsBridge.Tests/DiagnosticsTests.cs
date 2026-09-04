@@ -398,6 +398,21 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public async Task EmergencyCaptureEndpoint_CreatesZipWithoutTtsPayload()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+        var response = await client.PostAsync("/api/v1/diagnostics/capture", content: null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<DiagnosticReportResponseDto>();
+        Assert.NotNull(body);
+        Assert.True(body!.Success);
+        Assert.EndsWith(".zip", body.ReportPath, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(body.ReportPath));
+    }
+
+    [Fact]
     public async Task DiagnosticCapture_DoesNotBlockDecisionEventOrChoiceRequests()
     {
         using var factory = new TestWebApplicationFactory();
