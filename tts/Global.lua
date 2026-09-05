@@ -12847,6 +12847,9 @@ function BridgeProcessEventQueue()
             BridgeAbortEventMutationTransaction(tx,
                 "physical-readiness-probe-failed: " .. tostring(queuesIdle))
             return
+            BridgeAbortEventMutationTransaction(tx,
+                "physical-readiness-probe-failed: " .. tostring(queuesIdle))
+            return
         end
         if queuesIdle then
             BridgeCommitEventMutationTransaction(tx)
