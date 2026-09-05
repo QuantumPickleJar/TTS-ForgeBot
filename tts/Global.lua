@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 7ccd856fdd8e75f55db92b061bf0b2315771bb88ad796c392267929e649fcd6e
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "7ccd856fdd8e75f55db92b061bf0b2315771bb88ad796c392267929e649fcd6e"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 87605fb3e21a9ed359411fd095edaedb051483377e416d11dea22f8cda8f6460
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "87605fb3e21a9ed359411fd095edaedb051483377e416d11dea22f8cda8f6460"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -12839,11 +12839,9 @@ function BridgeProcessEventQueue()
         BridgeState.mulliganBottomInsertionActiveBySeatId = BridgeState.mulliganBottomInsertionActiveBySeatId or {}
         local queueProbeOk, queuesIdle = pcall(BridgePhysicalLibraryQueuesIdle)
         if not queueProbeOk then
-            -- A hot-reload may carry an incomplete legacy cache table. It has
-            -- no authority over Forge identity; log it and let the exact
-            -- transaction commit path establish the next complete baseline.
-            BridgeLog("[Bridge] physical queue readiness cache unavailable token=" .. tostring(tx.token))
-            queuesIdle = true
+            BridgeAbortEventMutationTransaction(tx,
+                "physical-readiness-probe-failed: " .. tostring(queuesIdle))
+            return
         end
         if queuesIdle then
             BridgeCommitEventMutationTransaction(tx)

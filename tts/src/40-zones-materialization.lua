@@ -2092,11 +2092,9 @@ function BridgeProcessEventQueue()
         BridgeState.mulliganBottomInsertionActiveBySeatId = BridgeState.mulliganBottomInsertionActiveBySeatId or {}
         local queueProbeOk, queuesIdle = pcall(BridgePhysicalLibraryQueuesIdle)
         if not queueProbeOk then
-            -- A hot-reload may carry an incomplete legacy cache table. It has
-            -- no authority over Forge identity; log it and let the exact
-            -- transaction commit path establish the next complete baseline.
-            BridgeLog("[Bridge] physical queue readiness cache unavailable token=" .. tostring(tx.token))
-            queuesIdle = true
+            BridgeAbortEventMutationTransaction(tx,
+                "physical-readiness-probe-failed: " .. tostring(queuesIdle))
+            return
         end
         if queuesIdle then
             BridgeCommitEventMutationTransaction(tx)

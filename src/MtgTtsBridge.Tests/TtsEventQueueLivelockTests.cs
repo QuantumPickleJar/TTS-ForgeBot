@@ -1153,6 +1153,10 @@ public sealed class TtsEventQueueLivelockTests
             function BridgeScheduleSnapshotReconcile(reason, category) end
             function BridgeStopOnDesync(reason) desyncReason = reason end
             function BridgeWaitTime(callback, delay) end
+            -- This fixture tests cursor/scheduler semantics, not the native
+            -- TTS extraction workers.  Model their required readiness result
+            -- explicitly instead of relying on the unrelated table harness.
+            function BridgePhysicalLibraryQueuesIdle() return true end
             BridgeState.eventPolling = true
             BridgeState.eventPollGeneration = 4
             BridgeState.eventSessionId = 'session'
