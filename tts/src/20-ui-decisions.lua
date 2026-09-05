@@ -1516,6 +1516,14 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         BridgeLog("[Bridge] choice submission blocked: protocol is paused; source=" .. tostring(source))
         return
     end
+    -- CRITICAL: Prevent stale choices from reaching Forge while TTS is desynchronized.
+    -- A desync latch means the physical state is known-bad; choice POST would advance
+    -- Forge past recovery's ability to repair it.
+    if BridgeState.desyncLatched == true then
+        BridgeLog("[Bridge] CHOICE_POST_BLOCKED reason=desync-latched decision=" .. tostring(decisionId)
+            .. " source=" .. tostring(source))
+        return
+    end
     if source == nil or source == "" then
         BridgeLog("[Bridge] CHOICE_POST_BLOCKED reason=missing_source")
         return

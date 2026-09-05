@@ -2169,6 +2169,19 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
                 BridgeLog("[Bridge] RESYNC_DEFERRED reason=physical-library-queue-timeout origin=" .. tostring(origin)
                     .. "; stopping automatic progression for manual recovery")
                 BridgeStopOnDesync("automatic authoritative resync blocked by physical library queue")
+                -- After timeout, monitor for when physical queue becomes idle so manual
+                -- recovery can take ownership without requiring another operator gesture.
+                if not BridgeState.queueTimeoutMonitorScheduled then
+                    BridgeState.queueTimeoutMonitorScheduled = true
+                    BridgeWaitFrames(function()
+                        BridgeState.queueTimeoutMonitorScheduled = false
+                        if BridgeState.desyncLatched == true and BridgeState.resyncInFlight ~= true
+                            and BridgePhysicalLibraryQueuesIdle() then
+                            BridgeLog("[Bridge] RESYNC_QUEUE_IDLE_AFTER_TIMEOUT manual recovery now available")
+                            BridgeEnsureDesyncRecovery("queue-idle-after-timeout")
+                        end
+                    end, 1)
+                end
                 return false
             end
             BridgeState.resyncDeferredReason = "physical-library-queue"

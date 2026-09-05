@@ -5288,6 +5288,14 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         BridgeLog("[Bridge] choice submission blocked: protocol is paused; source=" .. tostring(source))
         return
     end
+    -- CRITICAL: Prevent stale choices from reaching Forge while TTS is desynchronized.
+    -- A desync latch means the physical state is known-bad; choice POST would advance
+    -- Forge past recovery's ability to repair it.
+    if BridgeState.desyncLatched == true then
+        BridgeLog("[Bridge] CHOICE_POST_BLOCKED reason=desync-latched decision=" .. tostring(decisionId)
+            .. " source=" .. tostring(source))
+        return
+    end
     if source == nil or source == "" then
         BridgeLog("[Bridge] CHOICE_POST_BLOCKED reason=missing_source")
         return
@@ -10398,6 +10406,19 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
                 BridgeLog("[Bridge] RESYNC_DEFERRED reason=physical-library-queue-timeout origin=" .. tostring(origin)
                     .. "; stopping automatic progression for manual recovery")
                 BridgeStopOnDesync("automatic authoritative resync blocked by physical library queue")
+                -- After timeout, monitor for when physical queue becomes idle so manual
+                -- recovery can take ownership without requiring another operator gesture.
+                if not BridgeState.queueTimeoutMonitorScheduled then
+                    BridgeState.queueTimeoutMonitorScheduled = true
+                    BridgeWaitFrames(function()
+                        BridgeState.queueTimeoutMonitorScheduled = false
+                        if BridgeState.desyncLatched == true and BridgeState.resyncInFlight ~= true
+                            and BridgePhysicalLibraryQueuesIdle() then
+                            BridgeLog("[Bridge] RESYNC_QUEUE_IDLE_AFTER_TIMEOUT manual recovery now available")
+                            BridgeEnsureDesyncRecovery("queue-idle-after-timeout")
+                        end
+                    end, 1)
+                end
                 return false
             end
             BridgeState.resyncDeferredReason = "physical-library-queue"
@@ -14145,7 +14166,48 @@ function BridgeApplyStructuredCardMove(event)
                 BridgeRecordLooseCardIdentity(event.cardInstanceId, drawnGuid, event.seatId, event.destinationZone)
                 drawn.use_hands = true
                 BridgeSetPhysicalFaceDown(drawn, seat, event.faceDown == true)
-                BridgeWaitFrames(complete, 1)
+                -- CRITICAL: Verify card actually enters player's hand before completing.
+                -- Library→hand is asynchronous in TTS; setPositionSmooth is not terminal.
+                -- Bounded retry (5 frames) to allow hand settlement.
+                local verifyRetryCount = 0
+                local maxRetries = 5
+                local function verifyHandMembership()
+                    verifyRetryCount = verifyRetryCount + 1
+                    local handObjects, handError = BridgeTryGetSeatHandObjects(event.seatId)
+                    if handObjects == nil then
+                        if verifyRetryCount < maxRetries then
+                            BridgeWaitFrames(verifyHandMembership, 1)
+                            return
+                        end
+                        BridgeStopOnDesync(libraryDrawError("cannot verify hand membership: " .. tostring(handError)))
+                        complete()
+                        return
+                    end
+                    -- Check if the exact drawn card GUID is in the player's hand
+                    local found = false
+                    for _, handObject in ipairs(handObjects) do
+                        if BridgeSafeObjectGuid(handObject) == drawnGuid then
+                            found = true
+                            break
+                        end
+                    end
+                    if found then
+                        -- Card is verified in hand; transaction is complete
+                        complete()
+                        return
+                    end
+                    if verifyRetryCount < maxRetries then
+                        -- Retry bounded times for TTS hand settlement
+                        BridgeWaitFrames(verifyHandMembership, 1)
+                        return
+                    end
+                    -- Card never reached the hand despite extraction completion
+                    BridgeStopOnDesync(libraryDrawError(
+                        "extracted card never entered player hand; cardInstanceId=" .. tostring(event.cardInstanceId)
+                        .. " drawnGuid=" .. tostring(drawnGuid)))
+                    complete()
+                end
+                verifyHandMembership()
             end)
         end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))

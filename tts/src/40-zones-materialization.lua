@@ -3447,7 +3447,48 @@ function BridgeApplyStructuredCardMove(event)
                 BridgeRecordLooseCardIdentity(event.cardInstanceId, drawnGuid, event.seatId, event.destinationZone)
                 drawn.use_hands = true
                 BridgeSetPhysicalFaceDown(drawn, seat, event.faceDown == true)
-                BridgeWaitFrames(complete, 1)
+                -- CRITICAL: Verify card actually enters player's hand before completing.
+                -- Library→hand is asynchronous in TTS; setPositionSmooth is not terminal.
+                -- Bounded retry (5 frames) to allow hand settlement.
+                local verifyRetryCount = 0
+                local maxRetries = 5
+                local function verifyHandMembership()
+                    verifyRetryCount = verifyRetryCount + 1
+                    local handObjects, handError = BridgeTryGetSeatHandObjects(event.seatId)
+                    if handObjects == nil then
+                        if verifyRetryCount < maxRetries then
+                            BridgeWaitFrames(verifyHandMembership, 1)
+                            return
+                        end
+                        BridgeStopOnDesync(libraryDrawError("cannot verify hand membership: " .. tostring(handError)))
+                        complete()
+                        return
+                    end
+                    -- Check if the exact drawn card GUID is in the player's hand
+                    local found = false
+                    for _, handObject in ipairs(handObjects) do
+                        if BridgeSafeObjectGuid(handObject) == drawnGuid then
+                            found = true
+                            break
+                        end
+                    end
+                    if found then
+                        -- Card is verified in hand; transaction is complete
+                        complete()
+                        return
+                    end
+                    if verifyRetryCount < maxRetries then
+                        -- Retry bounded times for TTS hand settlement
+                        BridgeWaitFrames(verifyHandMembership, 1)
+                        return
+                    end
+                    -- Card never reached the hand despite extraction completion
+                    BridgeStopOnDesync(libraryDrawError(
+                        "extracted card never entered player hand; cardInstanceId=" .. tostring(event.cardInstanceId)
+                        .. " drawnGuid=" .. tostring(drawnGuid)))
+                    complete()
+                end
+                verifyHandMembership()
             end)
         end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
