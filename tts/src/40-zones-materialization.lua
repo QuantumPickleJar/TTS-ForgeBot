@@ -1964,8 +1964,8 @@ function BridgeBuildEventMutationTransaction(queue)
         local index = 2
         while queue[index] ~= nil
             and BridgeNormalizeForgeSequence(queue[index].forgeSequence) == forgeSequence do
-            table.insert(events, queue[index])
             eventCount = eventCount + 1
+            table.insert(events, queue[index])
             lastEvent = queue[index]
             index = index + 1
         end
@@ -2012,10 +2012,21 @@ end
 function BridgeCommitEventMutationTransaction(tx)
     if not BridgeEventMutationIsCurrent(tx) then return false end
     tx.state = "COMMITTING"
-    for index, event in ipairs(tx.events) do
-        if tx.queue[index] ~= event then
-            BridgeAbortEventMutationTransaction(tx, "queue ownership changed before commit")
-            return false
+    local queueHead = tx.queue[1]
+    local expectedFirst = tonumber(tx.firstEventSequence or 0) or 0
+    if queueHead == nil or (tonumber(queueHead.sequence or 0) or 0) ~= expectedFirst then
+        BridgeAbortEventMutationTransaction(tx, "queue ownership changed before commit")
+        return false
+    end
+    if tx.eventCount > 1 then
+        local expectedSequence = expectedFirst
+        for index = 1, tx.eventCount do
+            local queued = tx.queue[index]
+            expectedSequence = expectedFirst + (index - 1)
+            if queued == nil or (tonumber(queued.sequence or 0) or 0) ~= expectedSequence then
+                BridgeAbortEventMutationTransaction(tx, "queue ownership changed before commit")
+                return false
+            end
         end
     end
     local old = BridgeState.lastAppliedEventSequence

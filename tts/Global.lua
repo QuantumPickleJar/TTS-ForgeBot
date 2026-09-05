@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 9b79a18c451ca6c0d966a9ef46b07d8da202d72436fee454b0c3420be0fe23b5
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "9b79a18c451ca6c0d966a9ef46b07d8da202d72436fee454b0c3420be0fe23b5"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 874f44d2d7c4af8b9e9f79be434f84dee7c44d0e9a0a2c1503e0de1294de1031
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "874f44d2d7c4af8b9e9f79be434f84dee7c44d0e9a0a2c1503e0de1294de1031"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -446,6 +446,12 @@ end
 function BridgeEventDrainBlockReason()
     local queue = BridgeState.eventQueue or {}
     if #queue == 0 then return "queue_empty" end
+    if BridgeState.animationRunning == true and BridgeState.eventDrainTransaction == nil then
+        -- A lost continuation can leave animationRunning latched without an
+        -- owning transaction. Clear the stale flag so the queue head can run.
+        BridgeState.animationRunning = false
+        BridgeLog("[Bridge] EVENT_DRAIN_HEAL cleared stale animation fence with no transaction")
+    end
     if BridgeState.animationRunning == true then return "animationRunning" end
     if BridgeState.eventPolling ~= true then return "eventPolling_disabled" end
     if BridgeState.desyncLatched == true then return "desyncLatched" end
@@ -579,6 +585,27 @@ function BridgeObserveEventDrainBlocked(reason)
             if currentHead ~= nil and currentHead.sequence == sequence
                 and current.lastAppliedEventSequence == BridgeState.lastAppliedEventSequence
                 and currentReason ~= "queue_empty" then
+                if currentReason == "animationRunning" then
+                    local tx = BridgeState.eventDrainTransaction
+                    if tx ~= nil and BridgeEventMutationIsCurrent ~= nil
+                        and BridgeCommitEventMutationTransaction ~= nil then
+                        local txCurrentOk, txIsCurrent = pcall(BridgeEventMutationIsCurrent, tx)
+                        local queueProbeOk, queuesIdle = pcall(BridgePhysicalLibraryQueuesIdle)
+                        if txCurrentOk and txIsCurrent and queueProbeOk and queuesIdle then
+                            local commitOk, commitResult = pcall(BridgeCommitEventMutationTransaction, tx)
+                            if commitOk and commitResult then
+                                BridgeLog(string.format(
+                                    "[Bridge] EVENT_DRAIN_WATCHDOG_RECOVERY committed token=%s head=%s",
+                                    tostring(tx.token), tostring(sequence)))
+                                return
+                            end
+                            if not commitOk then
+                                BridgeLog("[Bridge] EVENT_DRAIN_WATCHDOG_RECOVERY commit failed: "
+                                    .. tostring(commitResult))
+                            end
+                        end
+                    end
+                end
                 local observed = BridgeEventDrainQueueState()
                 if currentReason == "none" then
                     -- The fence may have cleared between the blocked pump and
@@ -12711,8 +12738,8 @@ function BridgeBuildEventMutationTransaction(queue)
         local index = 2
         while queue[index] ~= nil
             and BridgeNormalizeForgeSequence(queue[index].forgeSequence) == forgeSequence do
-            table.insert(events, queue[index])
             eventCount = eventCount + 1
+            table.insert(events, queue[index])
             lastEvent = queue[index]
             index = index + 1
         end
@@ -12759,10 +12786,21 @@ end
 function BridgeCommitEventMutationTransaction(tx)
     if not BridgeEventMutationIsCurrent(tx) then return false end
     tx.state = "COMMITTING"
-    for index, event in ipairs(tx.events) do
-        if tx.queue[index] ~= event then
-            BridgeAbortEventMutationTransaction(tx, "queue ownership changed before commit")
-            return false
+    local queueHead = tx.queue[1]
+    local expectedFirst = tonumber(tx.firstEventSequence or 0) or 0
+    if queueHead == nil or (tonumber(queueHead.sequence or 0) or 0) ~= expectedFirst then
+        BridgeAbortEventMutationTransaction(tx, "queue ownership changed before commit")
+        return false
+    end
+    if tx.eventCount > 1 then
+        local expectedSequence = expectedFirst
+        for index = 1, tx.eventCount do
+            local queued = tx.queue[index]
+            expectedSequence = expectedFirst + (index - 1)
+            if queued == nil or (tonumber(queued.sequence or 0) or 0) ~= expectedSequence then
+                BridgeAbortEventMutationTransaction(tx, "queue ownership changed before commit")
+                return false
+            end
         end
     end
     local old = BridgeState.lastAppliedEventSequence
@@ -12844,9 +12882,6 @@ function BridgeProcessEventQueue()
         BridgeState.mulliganBottomInsertionActiveBySeatId = BridgeState.mulliganBottomInsertionActiveBySeatId or {}
         local queueProbeOk, queuesIdle = pcall(BridgePhysicalLibraryQueuesIdle)
         if not queueProbeOk then
-            BridgeAbortEventMutationTransaction(tx,
-                "physical-readiness-probe-failed: " .. tostring(queuesIdle))
-            return
             BridgeAbortEventMutationTransaction(tx,
                 "physical-readiness-probe-failed: " .. tostring(queuesIdle))
             return

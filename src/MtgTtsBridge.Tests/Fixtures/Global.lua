@@ -1,3 +1,5 @@
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 874f44d2d7c4af8b9e9f79be434f84dee7c44d0e9a0a2c1503e0de1294de1031
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "874f44d2d7c4af8b9e9f79be434f84dee7c44d0e9a0a2c1503e0de1294de1031"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -444,6 +446,12 @@ end
 function BridgeEventDrainBlockReason()
     local queue = BridgeState.eventQueue or {}
     if #queue == 0 then return "queue_empty" end
+    if BridgeState.animationRunning == true and BridgeState.eventDrainTransaction == nil then
+        -- A lost continuation can leave animationRunning latched without an
+        -- owning transaction. Clear the stale flag so the queue head can run.
+        BridgeState.animationRunning = false
+        BridgeLog("[Bridge] EVENT_DRAIN_HEAL cleared stale animation fence with no transaction")
+    end
     if BridgeState.animationRunning == true then return "animationRunning" end
     if BridgeState.eventPolling ~= true then return "eventPolling_disabled" end
     if BridgeState.desyncLatched == true then return "desyncLatched" end
@@ -577,6 +585,27 @@ function BridgeObserveEventDrainBlocked(reason)
             if currentHead ~= nil and currentHead.sequence == sequence
                 and current.lastAppliedEventSequence == BridgeState.lastAppliedEventSequence
                 and currentReason ~= "queue_empty" then
+                if currentReason == "animationRunning" then
+                    local tx = BridgeState.eventDrainTransaction
+                    if tx ~= nil and BridgeEventMutationIsCurrent ~= nil
+                        and BridgeCommitEventMutationTransaction ~= nil then
+                        local txCurrentOk, txIsCurrent = pcall(BridgeEventMutationIsCurrent, tx)
+                        local queueProbeOk, queuesIdle = pcall(BridgePhysicalLibraryQueuesIdle)
+                        if txCurrentOk and txIsCurrent and queueProbeOk and queuesIdle then
+                            local commitOk, commitResult = pcall(BridgeCommitEventMutationTransaction, tx)
+                            if commitOk and commitResult then
+                                BridgeLog(string.format(
+                                    "[Bridge] EVENT_DRAIN_WATCHDOG_RECOVERY committed token=%s head=%s",
+                                    tostring(tx.token), tostring(sequence)))
+                                return
+                            end
+                            if not commitOk then
+                                BridgeLog("[Bridge] EVENT_DRAIN_WATCHDOG_RECOVERY commit failed: "
+                                    .. tostring(commitResult))
+                            end
+                        end
+                    end
+                end
                 local observed = BridgeEventDrainQueueState()
                 if currentReason == "none" then
                     -- The fence may have cleared between the blocked pump and
@@ -1097,6 +1126,9 @@ BridgeState = {
     skipExistingEventsOnAttach = false,
     eventQueue = {},
     animationRunning = false,
+    -- H0 single owner for presentation/recovery.  Compatibility flags remain
+    -- below, but no mutation transaction is allowed to exist outside this.
+    presentationState = "RUNNING",
     eventCommitWatchdog = {
         eventSequence = nil,
         successfulApplyAttemptsWithoutCommit = 0,
@@ -1126,6 +1158,9 @@ BridgeState = {
     -- duplicate printed names never become an identity source.
     physicalContainerByInstanceId = {},
     physicalContainedInstanceIdByGuid = {},
+    -- Native Deck contained GUIDs are ephemeral TTS implementation details.
+    -- Forge instance identity in a deck-like zone is this ordered ledger.
+    zoneLedgerBySeatAndZone = {},
     cardNameByInstanceId = {},
     canonicalCardNameByGuid = {},
     encoderIdentityLoggedGuids = {},
@@ -3560,6 +3595,8 @@ function onLoad()
     -- TTS file read and Lua compilation happen before this function executes;
     -- this first marker deliberately measures only observable runtime startup.
     local startupToken = BridgeStartupStageBegin("onLoad_enter")
+    BridgeLog("[Bridge] TTS_RUNTIME_PROVENANCE revision=" .. tostring(BRIDGE_SCRIPT_REVISION)
+        .. " generatedGlobalLuaSha256=" .. tostring(BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 or "unavailable"))
     BridgeOnLoad()
     BridgeState.startupTrace.observableDurationMs = BridgeStartupStageEnd(
         startupToken, "BridgeOnLoad_return")
@@ -10376,6 +10413,19 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     -- stable physical order.
     local explicit = BridgeIsExplicitResyncOrigin(origin)
     if explicit then BridgeState.resyncCircuitOpen = false end
+    -- H0 recovery owns replacement, not the failed worker.  Abort and fence
+    -- once before looking at queue readiness; repeated HUD clicks return via
+    -- resyncInFlight above and therefore cannot churn generations.
+    local explicitPhysicalRetired = false
+    if explicit then
+        local active = BridgeState.eventDrainTransaction
+        if active ~= nil then active.state = "ABORTED" end
+        BridgeRetireLocalPhysicalTransactions("explicit-authoritative-resync")
+        BridgeState.presentationState = "RECOVERING"
+        explicitPhysicalRetired = true
+        BridgeLog("[Bridge] RESYNC_ABORT_REBASE origin=" .. tostring(origin)
+            .. " oldTransaction=" .. tostring(active and active.token))
+    end
     if not BridgePhysicalLibraryQueuesIdle() then
         local now = BridgeResyncClockNow()
         -- A failed final-embodiment predicate means the current worker is no
@@ -10386,7 +10436,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             BridgeLog("[Bridge] RESYNC_FORCE_LOCAL_RETIRE origin=" .. tostring(origin)
                 .. " reason=failed-final-embodiment predicate="
                 .. tostring(BridgeState.resyncLastBlockingPredicate))
-            BridgeRetireLocalPhysicalTransactions("manual-resync-failed-embodiment")
+            -- Already retired above; this is diagnostic only.
         elseif explicit and (BridgeState.manualResyncGraceUntil or 0) <= 0 then
             BridgeState.manualResyncGraceUntil = now + BRIDGE_RESYNC_PHYSICAL_QUEUE_GRACE_SECONDS
         end
@@ -10395,7 +10445,9 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         elseif explicit and now >= (BridgeState.manualResyncGraceUntil or 0) then
             BridgeLog("[Bridge] RESYNC_FORCE_LOCAL_RETIRE origin=" .. tostring(origin)
                 .. " reason=physical-library-queue-timeout")
-            BridgeRetireLocalPhysicalTransactions("manual-resync-force")
+            -- H0 already called BridgeRetireLocalPhysicalTransactions("manual-resync-force")
+            -- before this readiness check. Do not call it again: one RESYNC
+            -- owns exactly one generation advance.
         else
             if not explicit and (BridgeState.resyncDeferredSince or 0) <= 0 then
                 BridgeState.resyncDeferredSince = now
@@ -10436,7 +10488,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     BridgeState.resyncDeferredSince = nil
     BridgeState.resyncDeferredRetryScheduled = false
     BridgeState.resyncScheduled = false
-    if explicit then
+    if explicit and not explicitPhysicalRetired then
         -- Invalidate delayed local callbacks even when the physical queues
         -- happened to look idle.  An event-drain continuation or other frame
         -- callback from the pre-resync presentation must not run against the
@@ -10454,6 +10506,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     -- resync starts a new presentation generation; failures from that old
     -- generation must not remain latched against the recovery attempt.
     BridgeState.desyncLatched = false
+    BridgeState.presentationState = "RECOVERING"
     BridgeState.desyncLastMessage = nil
     BridgeState.resyncPresentationState = {
         currentTurnSeatId = BridgeState.currentTurnSeatId,
@@ -10529,6 +10582,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             BridgeRestoreResyncMappingTransaction("bootstrap-failed:" .. tostring(err))
             BridgeRestoreResyncCheckpoint("bootstrap-failed")
             BridgeState.desyncLatched = true
+            BridgeState.presentationState = "DESYNCED"
             BridgeSetSchedulerOwner("NORMAL", "resync-failed")
             BridgeStopOnDesync("authoritative resync failed: " .. tostring(err))
             BridgeUiMarkDirty("resync-failed")
@@ -10542,6 +10596,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeSetSchedulerOwner("NORMAL", "resync-commit")
         BridgeStartEventPolling(sessionId, false)
         BridgeState.desyncLatched = false
+        BridgeState.presentationState = "RUNNING"
         BridgeState.desyncFailureCount = 0
         BridgeState.desyncLastMessage = nil
         BridgeSetStatus("RESYNCING FROM FORGE", "Checkpoint committed; reattaching the current Forge decision...")
@@ -12429,7 +12484,10 @@ function BridgeEventsShareForgeMutationGroup(leftEvent, rightEvent)
     return leftSequence == rightSequence, leftSequence
 end
 
-function BridgeProcessEventQueue()
+-- Retained only as a forensic reference for the pre-H0 per-event drain.  The
+-- active coordinator below owns a contiguous Forge mutation as one physical
+-- presentation transaction.
+function BridgeProcessEventQueueLegacy()
     local queue = BridgeState.eventQueue or {}
     if #queue == 0 then
         BridgeState.eventDrainWatchdog = {
@@ -12632,6 +12690,209 @@ function BridgeProcessEventQueue()
             BridgeStopOnDesync("event post-commit failed: " .. tostring(postCommitError))
         end
     end
+end
+
+function BridgeZoneLedger(seatId, zoneName)
+    BridgeState.zoneLedgerBySeatAndZone = BridgeState.zoneLedgerBySeatAndZone or {}
+    BridgeState.zoneLedgerBySeatAndZone[seatId] = BridgeState.zoneLedgerBySeatAndZone[seatId] or {}
+    local ledger = BridgeState.zoneLedgerBySeatAndZone[seatId][zoneName]
+    if ledger == nil then
+        ledger = {}
+        BridgeState.zoneLedgerBySeatAndZone[seatId][zoneName] = ledger
+    end
+    return ledger
+end
+
+function BridgeApplyCommittedZoneLedger(events)
+    for _, event in ipairs(events or {}) do
+        local instanceId = event.cardInstanceId
+        if instanceId ~= nil and event.seatId ~= nil and event.sourceZone ~= event.destinationZone then
+            if event.sourceZone ~= nil then
+                local source = BridgeZoneLedger(event.seatId, event.sourceZone)
+                for index = #source, 1, -1 do
+                    if source[index] == instanceId then table.remove(source, index) end
+                end
+            end
+            if event.destinationZone ~= nil then
+                local destination = BridgeZoneLedger(event.seatId, event.destinationZone)
+                local found = false
+                for _, known in ipairs(destination) do if known == instanceId then found = true; break end end
+                if not found then table.insert(destination, instanceId) end
+            end
+        end
+    end
+end
+
+-- H0: a Forge sequence is a mutation boundary, not a post-commit hint.
+-- Queue ownership remains with this object until every event in the contiguous
+-- group has finished its physical work.  In particular, lastApplied is never
+-- advanced between two events sharing forgeSequence.
+function BridgeBuildEventMutationTransaction(queue)
+    local first = queue and queue[1] or nil
+    if first == nil then return nil end
+    local forgeSequence = BridgeNormalizeForgeSequence(first.forgeSequence)
+    local events = {first}
+    local eventCount = 1
+    local lastEvent = first
+    if forgeSequence ~= nil then
+        local index = 2
+        while queue[index] ~= nil
+            and BridgeNormalizeForgeSequence(queue[index].forgeSequence) == forgeSequence do
+            eventCount = eventCount + 1
+            table.insert(events, queue[index])
+            lastEvent = queue[index]
+            index = index + 1
+        end
+    end
+    return {
+        sessionId = BridgeState.eventSessionId,
+        eventSessionGeneration = BridgeState.eventSessionGeneration or 0,
+        physicalTransactionGeneration = BridgeState.physicalTransactionGeneration or 0,
+        forgeSequence = forgeSequence,
+        firstEventSequence = first.sequence,
+        eventCount = eventCount,
+        lastEventSequence = lastEvent.sequence,
+        events = events,
+        state = "PREPARING",
+        queue = queue,
+        token = tostring(BridgeState.eventSessionId) .. ":" .. tostring(BridgeState.eventSessionGeneration)
+            .. ":" .. tostring(BridgeState.physicalTransactionGeneration or 0) .. ":" .. tostring(first.sequence),
+        startedAt = os.clock()
+    }
+end
+
+function BridgeEventMutationIsCurrent(tx)
+    return tx ~= nil and BridgeState.eventDrainTransaction == tx
+        and tx.state ~= "ABORTED"
+        and tx.sessionId == BridgeState.eventSessionId
+        and tx.eventSessionGeneration == (BridgeState.eventSessionGeneration or 0)
+        and tx.physicalTransactionGeneration == (BridgeState.physicalTransactionGeneration or 0)
+        and BridgeState.eventQueue == tx.queue
+end
+
+function BridgeAbortEventMutationTransaction(tx, reason)
+    if tx == nil or tx.state == "ABORTED" then return end
+    tx.state = "ABORTED"
+    if BridgeState.eventDrainTransaction == tx then BridgeState.eventDrainTransaction = nil end
+    BridgeState.animationRunning = false
+    BridgeState.presentationState = "DESYNCED"
+    BridgeLog("[Bridge] EVENT_MUTATION_ABORT token=" .. tostring(tx.token) .. " first="
+        .. tostring(tx.firstEventSequence) .. " last=" .. tostring(tx.lastEventSequence)
+        .. " reason=" .. tostring(reason))
+    BridgeStopOnDesync("event mutation " .. tostring(tx.firstEventSequence) .. "-"
+        .. tostring(tx.lastEventSequence) .. " aborted: " .. tostring(reason))
+end
+
+function BridgeCommitEventMutationTransaction(tx)
+    if not BridgeEventMutationIsCurrent(tx) then return false end
+    tx.state = "COMMITTING"
+    local queueHead = tx.queue[1]
+    local expectedFirst = tonumber(tx.firstEventSequence or 0) or 0
+    if queueHead == nil or (tonumber(queueHead.sequence or 0) or 0) ~= expectedFirst then
+        BridgeAbortEventMutationTransaction(tx, "queue ownership changed before commit")
+        return false
+    end
+    if tx.eventCount > 1 then
+        local expectedSequence = expectedFirst
+        for index = 1, tx.eventCount do
+            local queued = tx.queue[index]
+            expectedSequence = expectedFirst + (index - 1)
+            if queued == nil or (tonumber(queued.sequence or 0) or 0) ~= expectedSequence then
+                BridgeAbortEventMutationTransaction(tx, "queue ownership changed before commit")
+                return false
+            end
+        end
+    end
+    local old = BridgeState.lastAppliedEventSequence
+    for _ = 1, tx.eventCount do table.remove(tx.queue, 1) end
+    BridgeApplyCommittedZoneLedger(tx.events)
+    BridgeState.lastAppliedEventSequence = tx.lastEventSequence
+    BridgeState.lastConsumedEventSequence = tx.lastEventSequence
+    BridgeState.lastStateProjectedEventSequence = tx.lastEventSequence
+    BridgeState.lastPhysicalPresentationEventSequence = tx.lastEventSequence
+    if tx.forgeSequence ~= nil then
+        BridgeState.lastAppliedForgeSequence = math.max(tonumber(BridgeState.lastAppliedForgeSequence or 0) or 0, tx.forgeSequence)
+    end
+    tx.state = "COMMITTED"
+    BridgeState.eventDrainTransaction = nil
+    BridgeState.animationRunning = false
+    BridgeState.presentationState = "RUNNING"
+    BridgeResetEventCommitWatchdog()
+    BridgeLog("[Bridge] EVENT_TX_COMMIT transaction=" .. tostring(tx.token) .. " oldLastApplied="
+        .. tostring(old) .. " newLastApplied=" .. tostring(tx.lastEventSequence)
+        .. " count=" .. tostring(tx.eventCount))
+    BridgeTryPresentPendingDecision("mutation-committed")
+    -- Preserve one turn of the event loop between mutations.  Besides keeping
+    -- animations readable, this prevents synchronous MoonSharp test clocks
+    -- from recursively draining an arbitrary queued history in one call.
+    BridgeWaitTime(function()
+        if BridgeState.eventDrainTransaction == nil and BridgeState.desyncLatched ~= true then
+            BridgeProcessEventQueue()
+        end
+    end, 0.01)
+    return true
+end
+
+function BridgeProcessEventQueue()
+    local queue = BridgeState.eventQueue or {}
+    if #queue == 0 then
+        BridgeTryApplyDeferredSnapshotReconcile("event-drain")
+        BridgeTryStartPendingSnapshotReconcile("event-drain")
+        return
+    end
+    if BridgeState.eventDrainTransaction ~= nil then return end
+    local blockReason = BridgeEventDrainBlockReason()
+    if blockReason ~= "none" then BridgeObserveEventDrainBlocked(blockReason); return end
+    local expected = (tonumber(BridgeState.lastAppliedEventSequence or 0) or 0) + 1
+    if queue[1].sequence ~= expected then
+        BridgeStopOnDesync("event application gap: expected " .. tostring(expected) .. " but queued " .. tostring(queue[1].sequence))
+        return
+    end
+    local tx = BridgeBuildEventMutationTransaction(queue)
+    BridgeState.eventDrainTransaction = tx
+    BridgeState.animationRunning = true
+    BridgeState.presentationState = "TX_PREPARING"
+    BridgeLog("[Bridge] EVENT_TX_BEGIN transaction=" .. tostring(tx.token) .. " forgeSequence="
+        .. tostring(tx.forgeSequence) .. " first=" .. tostring(tx.firstEventSequence)
+        .. " last=" .. tostring(tx.lastEventSequence) .. " count=" .. tostring(tx.eventCount))
+    for _, event in ipairs(tx.events) do
+        local ok, applied, _, err = pcall(BridgeApplyAuthoritativeEvent, event)
+        if not ok or not applied then
+            BridgeAbortEventMutationTransaction(tx, err or applied or "apply failed")
+            return
+        end
+    end
+    -- Async library extraction/Deck settlement callbacks are fenced by the
+    -- transaction generation they captured.  Commit only after they have
+    -- drained; an aborted transaction can never satisfy this predicate.
+    local function awaitPhysicalSettlement()
+        if not BridgeEventMutationIsCurrent(tx) then return end
+        if BridgeState.desyncLatched == true then
+            BridgeAbortEventMutationTransaction(tx, "physical presentation desynchronized")
+            return
+        end
+        -- Tests and hot-reloaded tables can predate these queue maps. They are
+        -- presentation caches, never transaction identity, so initialize the
+        -- empty form before asking the shared readiness predicate.
+        BridgeState.libraryBatchBySeatId = BridgeState.libraryBatchBySeatId or {}
+        BridgeState.libraryExtractionQueueBySeatId = BridgeState.libraryExtractionQueueBySeatId or {}
+        BridgeState.libraryExtractionActiveBySeatId = BridgeState.libraryExtractionActiveBySeatId or {}
+        BridgeState.graveyardExtractionActiveBySeatId = BridgeState.graveyardExtractionActiveBySeatId or {}
+        BridgeState.mulliganBottomQueueBySeatId = BridgeState.mulliganBottomQueueBySeatId or {}
+        BridgeState.mulliganBottomInsertionActiveBySeatId = BridgeState.mulliganBottomInsertionActiveBySeatId or {}
+        local queueProbeOk, queuesIdle = pcall(BridgePhysicalLibraryQueuesIdle)
+        if not queueProbeOk then
+            BridgeAbortEventMutationTransaction(tx,
+                "physical-readiness-probe-failed: " .. tostring(queuesIdle))
+            return
+        end
+        if queuesIdle then
+            BridgeCommitEventMutationTransaction(tx)
+            return
+        end
+        BridgeWaitFrames(awaitPhysicalSettlement, 1)
+    end
+    awaitPhysicalSettlement()
 end
 
 -- Decisions are fetched from Forge independently of the animation queue.

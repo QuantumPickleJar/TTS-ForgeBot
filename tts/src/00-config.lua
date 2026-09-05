@@ -443,6 +443,12 @@ end
 function BridgeEventDrainBlockReason()
     local queue = BridgeState.eventQueue or {}
     if #queue == 0 then return "queue_empty" end
+    if BridgeState.animationRunning == true and BridgeState.eventDrainTransaction == nil then
+        -- A lost continuation can leave animationRunning latched without an
+        -- owning transaction. Clear the stale flag so the queue head can run.
+        BridgeState.animationRunning = false
+        BridgeLog("[Bridge] EVENT_DRAIN_HEAL cleared stale animation fence with no transaction")
+    end
     if BridgeState.animationRunning == true then return "animationRunning" end
     if BridgeState.eventPolling ~= true then return "eventPolling_disabled" end
     if BridgeState.desyncLatched == true then return "desyncLatched" end
@@ -576,6 +582,27 @@ function BridgeObserveEventDrainBlocked(reason)
             if currentHead ~= nil and currentHead.sequence == sequence
                 and current.lastAppliedEventSequence == BridgeState.lastAppliedEventSequence
                 and currentReason ~= "queue_empty" then
+                if currentReason == "animationRunning" then
+                    local tx = BridgeState.eventDrainTransaction
+                    if tx ~= nil and BridgeEventMutationIsCurrent ~= nil
+                        and BridgeCommitEventMutationTransaction ~= nil then
+                        local txCurrentOk, txIsCurrent = pcall(BridgeEventMutationIsCurrent, tx)
+                        local queueProbeOk, queuesIdle = pcall(BridgePhysicalLibraryQueuesIdle)
+                        if txCurrentOk and txIsCurrent and queueProbeOk and queuesIdle then
+                            local commitOk, commitResult = pcall(BridgeCommitEventMutationTransaction, tx)
+                            if commitOk and commitResult then
+                                BridgeLog(string.format(
+                                    "[Bridge] EVENT_DRAIN_WATCHDOG_RECOVERY committed token=%s head=%s",
+                                    tostring(tx.token), tostring(sequence)))
+                                return
+                            end
+                            if not commitOk then
+                                BridgeLog("[Bridge] EVENT_DRAIN_WATCHDOG_RECOVERY commit failed: "
+                                    .. tostring(commitResult))
+                            end
+                        end
+                    end
+                end
                 local observed = BridgeEventDrainQueueState()
                 if currentReason == "none" then
                     -- The fence may have cleared between the blocked pump and
