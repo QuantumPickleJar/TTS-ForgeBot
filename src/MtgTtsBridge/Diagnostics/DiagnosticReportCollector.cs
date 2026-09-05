@@ -229,6 +229,7 @@ public sealed class DiagnosticReportCollector
         var recentEvents = FitJsonLines(events?.Events ?? [], entryBudget, ref dropped);
         var choices = FitJsonLines(telemetry.Choices, entryBudget, ref dropped);
         var requests = FitJsonLines(telemetry.Protocol, entryBudget, ref dropped);
+        var breadcrumbs = FitJsonLines(telemetry.TtsBreadcrumbs, entryBudget, ref dropped);
         var bridgeLog = FitText(FormatBridgeLogs(telemetry.BridgeLogs), entryBudget, ref dropped);
         var forgeStdout = FitText(FormatForgeOutput(telemetry.ForgeOutput, "forge_stdout") ?? string.Empty, entryBudget, ref dropped);
         var forgeStderr = FitText(FormatForgeOutput(telemetry.ForgeOutput, "forge_stderr") ?? string.Empty, entryBudget, ref dropped);
@@ -272,6 +273,8 @@ public sealed class DiagnosticReportCollector
                 WriteJsonLinesBytes(archive, "protocol/recent-events.jsonl", recentEvents);
                 WriteJsonLinesBytes(archive, "protocol/recent-choices.jsonl", choices);
                 WriteJsonLinesBytes(archive, "protocol/recent-requests.jsonl", requests);
+                WriteJsonLinesBytes(archive, "diagnostics/tts-execution-breadcrumbs.jsonl", breadcrumbs);
+                DiagnosticBundleWriter.WriteJsonEntry(archive, "state/tts-execution-watchdog.json", telemetry.Watchdog);
                 DiagnosticBundleWriter.WriteTextEntry(archive, "logs/recent-bridge.log", bridgeLog);
                 DiagnosticBundleWriter.WriteTextEntry(archive, "logs/recent-forge-stdout.log", forgeStdout);
                 DiagnosticBundleWriter.WriteTextEntry(archive, "logs/recent-forge-stderr.log", forgeStderr);
@@ -293,7 +296,8 @@ public sealed class DiagnosticReportCollector
         "report.json", "report.txt", "perf/summary.json", "perf/tts-trace.jsonl", "diagnostics/capture-lifecycle.jsonl", "perf/process-samples.jsonl",
         "state/bridge-health.json", "state/current-decision.json", "protocol/recent-events.jsonl",
         "protocol/recent-choices.jsonl", "protocol/recent-requests.jsonl", "logs/recent-bridge.log",
-        "logs/recent-forge-stdout.log", "logs/recent-forge-stderr.log"
+        "logs/recent-forge-stdout.log", "logs/recent-forge-stderr.log",
+        "diagnostics/tts-execution-breadcrumbs.jsonl", "state/tts-execution-watchdog.json"
     ];
 
     private static bool IsPerformanceCapture(string? category) =>

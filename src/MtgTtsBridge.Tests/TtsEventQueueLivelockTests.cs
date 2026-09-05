@@ -1040,6 +1040,60 @@ public sealed class TtsEventQueueLivelockTests
         Assert.True(lua.Globals.Get("collapsedContainer").IsNil());
     }
 
+    [Fact]
+    public void FinalPhysicalRepresentationAcceptsExactContainedDeckIdentity()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            local deck = {tag='Deck', getGUID=function() return 'grave-deck' end,
+                getObjects=function() return {{guid='contained-1', index=1}} end}
+            local card = {tag='Card', getGUID=function() return 'contained-1' end}
+            function getObjectFromGUID(guid)
+                if guid == 'grave-deck' then return deck end
+                if guid == 'contained-1' then return card end
+                return nil
+            end
+            BridgeState.eventSessionId = 'session'
+            BridgeRecordContainedCardIdentity('forge-object:1', 'grave-deck', 'contained-1', 'forge-player-1', 'graveyard', 'Plains')
+            verified, verifyError = BridgeVerifyFinalPhysicalRepresentation('forge-object:1', 'forge-player-1', 'graveyard')
+        ");
+
+        Assert.True(lua.Globals.Get("verified").Boolean, lua.Globals.Get("verifyError").ToPrintString());
+    }
+
+    [Fact]
+    public void FinalPhysicalRepresentationRejectsStaleContainedDeckMapping()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            local deck = {tag='Deck', getGUID=function() return 'grave-deck' end,
+                getObjects=function() return {{guid='different-card', index=1}} end}
+            function getObjectFromGUID(guid) if guid == 'grave-deck' then return deck end return nil end
+            BridgeState.eventSessionId = 'session'
+            BridgeRecordContainedCardIdentity('forge-object:1', 'grave-deck', 'contained-1', 'forge-player-1', 'graveyard', 'Plains')
+            verified, verifyError = BridgeVerifyFinalPhysicalRepresentation('forge-object:1', 'forge-player-1', 'graveyard')
+        ");
+
+        Assert.False(lua.Globals.Get("verified").Boolean);
+        Assert.Contains("contained card GUID is absent", lua.Globals.Get("verifyError").String);
+    }
+
+    [Fact]
+    public void FinalPhysicalRepresentationRequiresExactLooseCardZoneAndSeat()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            local card = {tag='Card', getGUID=function() return 'physical-1' end}
+            function getObjectFromGUID(guid) if guid == 'physical-1' then return card end return nil end
+            BridgeState.eventSessionId = 'session'
+            BridgeRecordLooseCardIdentity('forge-object:1', 'physical-1', 'forge-player-1', 'hand')
+            verified, verifyError = BridgeVerifyFinalPhysicalRepresentation('forge-object:1', 'forge-player-1', 'graveyard')
+        ");
+
+        Assert.False(lua.Globals.Get("verified").Boolean);
+        Assert.Contains("missing final physical representation", lua.Globals.Get("verifyError").String);
+    }
+
     private static Script NewQueueProbe()
     {
         var lua = new Script();

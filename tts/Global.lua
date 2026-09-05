@@ -2479,6 +2479,25 @@ function BridgeFindNamedObject(name)
     return nil
 end
 
+function BridgeTtsExecutionBreadcrumb(stage, operation, event, operationId)
+    local payload = {
+        clientRuntimeId = BRIDGE_CLIENT_RUNTIME_ID,
+        sessionId = BridgeState.eventSessionId,
+        eventSessionGeneration = BridgeState.eventSessionGeneration,
+        presentationGeneration = BridgeState.decisionPresentationGeneration,
+        eventSequence = event and event.sequence or nil,
+        eventKind = event and event.kind or nil,
+        stage = tostring(stage), operation = tostring(operation), operationId = operationId,
+        cardInstanceId = event and event.cardInstanceId or nil,
+        sourceZone = event and event.sourceZone or nil,
+        destinationZone = event and event.destinationZone or nil,
+        luaTimestamp = os.clock()
+    }
+    pcall(function()
+        BridgeHttp.requestJson("POST", "/api/v1/diagnostics/tts-breadcrumb", payload, function() end)
+    end)
+end
+
 function BridgeHttp.requestJson(method, path, payload, callback)
     local url = BRIDGE_BASE_URL .. path
     local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
@@ -4040,7 +4059,7 @@ function BridgeUiFlush()
     local targetCanCancel = decision ~= nil and decision.allowsCancel == true
         and (decision.kind == "target_selection" or decision.kind == "defender_selection"
             or decision.kind == "player_selection")
-    local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil and BridgeState.terminalRecoveryError == nil
+    local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil
         and BridgeCurrentTerminalRecoveryError() == nil
         and not BridgeDecisionNeedsConfirmation(decision)
         and BridgeState.pendingIntent == nil
@@ -10346,10 +10365,21 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     if explicit then BridgeState.resyncCircuitOpen = false end
     if not BridgePhysicalLibraryQueuesIdle() then
         local now = BridgeResyncClockNow()
-        if explicit and (BridgeState.manualResyncGraceUntil or 0) <= 0 then
+        -- A failed final-embodiment predicate means the current worker is no
+        -- longer a legitimate readiness fence. Manual FULL_RECOVERY must take
+        -- ownership immediately; waiting for that worker would make the
+        -- recovery control depend on the object it is meant to repair.
+        if explicit and BridgeState.resyncLastBlockingPredicate ~= nil then
+            BridgeLog("[Bridge] RESYNC_FORCE_LOCAL_RETIRE origin=" .. tostring(origin)
+                .. " reason=failed-final-embodiment predicate="
+                .. tostring(BridgeState.resyncLastBlockingPredicate))
+            BridgeRetireLocalPhysicalTransactions("manual-resync-failed-embodiment")
+        elseif explicit and (BridgeState.manualResyncGraceUntil or 0) <= 0 then
             BridgeState.manualResyncGraceUntil = now + BRIDGE_RESYNC_PHYSICAL_QUEUE_GRACE_SECONDS
         end
-        if explicit and now >= (BridgeState.manualResyncGraceUntil or 0) then
+        if BridgePhysicalLibraryQueuesIdle() then
+            -- The failed worker was retired above; continue into FULL_RECOVERY.
+        elseif explicit and now >= (BridgeState.manualResyncGraceUntil or 0) then
             BridgeLog("[Bridge] RESYNC_FORCE_LOCAL_RETIRE origin=" .. tostring(origin)
                 .. " reason=physical-library-queue-timeout")
             BridgeRetireLocalPhysicalTransactions("manual-resync-force")
@@ -12432,6 +12462,7 @@ function BridgeProcessEventQueue()
         logged = false,
         scheduled = false
     }
+    BridgeTtsExecutionBreadcrumb("EVENT_ENTER", "authoritative_event", event, "event:" .. tostring(event.sequence))
     BridgeLog(string.format(
         "[Bridge] EVENT_TX_BEGIN eventSequence=%s eventKind=%s session=%s sessionGeneration=%s pollGeneration=%s eventPolling=%s queueHead=%s received=%s applied=%s",
         tostring(event.sequence), tostring(event.kind), tostring(processingSessionId),
@@ -12454,6 +12485,7 @@ function BridgeProcessEventQueue()
         tostring(BridgeState.eventPollGeneration), tostring(BridgeState.eventPolling),
         tostring(BridgeState.eventQueue ~= nil and BridgeState.eventQueue[1] ~= nil
             and BridgeState.eventQueue[1].sequence or nil)))
+    BridgeTtsExecutionBreadcrumb("EVENT_EXIT", "authoritative_event", event, "event:" .. tostring(event.sequence))
     if not applied then
         BridgeState.animationRunning = false
         BridgeState.eventDrainTransaction = nil
@@ -13109,6 +13141,7 @@ function BridgeApplyAuthoritativeEvent(event)
     end
 
     if event.kind == "tap_changed" then
+        BridgeTtsExecutionBreadcrumb("TAP_CHANGED_ENTER", "tap_changed", event, "event:" .. tostring(event.sequence))
         local object, resolveError = BridgeResolveMappedInstance(event)
         if object == nil then
             BridgeLog("[Bridge] tap update deferred to snapshot reconcile: " .. tostring(resolveError))
@@ -13123,6 +13156,7 @@ function BridgeApplyAuthoritativeEvent(event)
             return true, 0.1
         end
         BridgeSetPhysicalTapped(object, event.tapped == true)
+        BridgeTtsExecutionBreadcrumb("TAP_CHANGED_EXIT", "tap_changed", event, "event:" .. tostring(event.sequence))
         return true, 0.5
     end
 
@@ -13890,6 +13924,8 @@ function BridgePreparePhysicalCardForPublicZoneMove(object, destinationZone)
 end
 
 function BridgeApplyStructuredCardMove(event)
+    BridgeTtsExecutionBreadcrumb("STRUCTURED_CARD_MOVE_ENTER", "structured_card_move", event,
+        "event:" .. tostring(event and event.sequence or "unknown"))
     if event.cardInstanceId == nil then return false, "structured zone change has no cardInstanceId" end
     BridgeBeginLibraryBatch(event)
     local seat = BRIDGE_SEATS[event.seatId]
@@ -14073,6 +14109,7 @@ function BridgeApplyStructuredCardMove(event)
         local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
         local transactionSessionId = BridgeState.eventSessionId
         local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
+        BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_ENTER", "library_extraction", event, "event:" .. tostring(event.sequence))
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
             if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
             local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
@@ -14106,6 +14143,7 @@ function BridgeApplyStructuredCardMove(event)
                 BridgeWaitFrames(complete, 1)
             end)
         end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
+        BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
         return true, nil
     end
 
@@ -14118,6 +14156,7 @@ function BridgeApplyStructuredCardMove(event)
         local staging = libraryZone.getPosition()
         local transactionSessionId = BridgeState.eventSessionId
         local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
+        BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_ENTER", "library_extraction", event, "event:" .. tostring(event.sequence))
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
             if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
             local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
@@ -14146,6 +14185,7 @@ function BridgeApplyStructuredCardMove(event)
                     BridgeWaitFrames(complete, 1)
                 end)
         end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
+        BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
         return true, nil
     end
 
@@ -14163,6 +14203,7 @@ function BridgeApplyStructuredCardMove(event)
         local staging = libraryZone.getPosition()
         local transactionSessionId = BridgeState.eventSessionId
         local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
+        BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_ENTER", "library_extraction", event, "event:" .. tostring(event.sequence))
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
             if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
             local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
@@ -14197,10 +14238,13 @@ function BridgeApplyStructuredCardMove(event)
                     -- Preserve event order in visible presentation: a mill
                     -- must settle in the graveyard before the next queued
                     -- library extraction (including its following draw).
-                    -- Legacy contract marker: BridgeWaitTime(complete, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)
                     BridgeWaitTime(function()
+                        BridgeTtsExecutionBreadcrumb("FINAL_REPRESENTATION_VERIFY_ENTER", "final_physical_representation", event,
+                            "event:" .. tostring(event.sequence))
                         local settled, settleError = BridgeVerifyFinalPhysicalRepresentation(
                             event.cardInstanceId, event.seatId, event.destinationZone)
+                        BridgeTtsExecutionBreadcrumb("FINAL_REPRESENTATION_VERIFY_RETURNED", "final_physical_representation", event,
+                            "event:" .. tostring(event.sequence))
                         if not settled then
                             BridgeState.resyncLastBlockingPredicate = "missing-public-instance:" .. tostring(event.cardInstanceId)
                             BridgeStopOnDesync(libraryDrawError(settleError))
@@ -14210,6 +14254,7 @@ function BridgeApplyStructuredCardMove(event)
                     end, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)
                 end)
         end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
+        BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
         return true, nil
     end
 
@@ -14601,10 +14646,11 @@ function BridgeAssertGraveyardObjectShape(seatId, context)
     return true, nil
 end
 
--- P0.1: Enhanced entry recording with name-matching for newly-added cards.
--- After putObject() merge completes, TTS assigns new contained GUIDs.
--- Cards already in the container are found by existing GUID; the newly-added
--- card's loose GUID is now invalid and must be matched by name.
+    -- After putObject() merge completes, TTS may assign a new contained GUID to
+    -- the incoming card. Existing contained GUIDs are authoritative when they
+    -- are still present; any remaining entry is assigned only from the exact
+    -- authoritative instance set supplied by the serialized move. Printed
+    -- names are deliberately not used to identify a Forge instance.
 function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
     if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then return false end
     local entries = BridgeLibraryEntries(deck)
@@ -14613,15 +14659,11 @@ function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
     local recorded = 0
 
     -- expectedInstances: table of {instanceId, cardName} pairs, or nil for no expected instances
-    local expectedByName = {}
     local expectedByIndex = {}
+    local matchedInstances = {}
     if expectedInstances ~= nil then
         for _, pair in ipairs(expectedInstances) do
             local instanceId = pair[1]
-            local cardName = pair[2]
-            if cardName ~= nil then
-                table.insert(expectedByName, {instanceId = instanceId, cardName = cardName, matched = false})
-            end
             table.insert(expectedByIndex, instanceId)
         end
     end
@@ -14638,18 +14680,22 @@ function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
             if BridgeRecordContainedCardIdentity(instanceId, deckGuid, cardGuid,
                 seatId, "graveyard", cardName) then
                 recorded = recorded + 1
+                matchedInstances[instanceId] = true
             end
-        -- Pass 2: Try name-matching for newly-added cards (whose loose GUIDs are now invalid)
-        -- Greedy: match each entry to first unmatched expected card with matching name
         else
-            for _, expectedEntry in ipairs(expectedByName) do
-                if not expectedEntry.matched and BridgeCardNameMatches(entryName, expectedEntry.cardName) then
-                    if BridgeRecordContainedCardIdentity(expectedEntry.instanceId, deckGuid, cardGuid,
-                        seatId, "graveyard", expectedEntry.cardName) then
+            -- The serialized operation supplies the exact identities involved.
+            -- Remove identities already recovered by contained GUID, then bind
+            -- the remaining native entries in their stable Deck order. This is
+            -- safe for duplicate printed names because names never participate.
+            for _, expectedInstanceId in ipairs(expectedByIndex) do
+                if not matchedInstances[expectedInstanceId] then
+                    local expectedCardName = BridgeState.cardNameByInstanceId[expectedInstanceId]
+                    if BridgeRecordContainedCardIdentity(expectedInstanceId, deckGuid, cardGuid,
+                        seatId, "graveyard", expectedCardName) then
                         recorded = recorded + 1
-                        expectedEntry.matched = true
-                        break
+                        matchedInstances[expectedInstanceId] = true
                     end
+                    break
                 end
             end
         end
@@ -14777,7 +14823,11 @@ function BridgeMoveToGraveyard(event, object)
     local existingCardName = existingInstanceId and BridgeState.cardNameByInstanceId[existingInstanceId] or nil
 
     local target = existing
+    BridgeTtsExecutionBreadcrumb("GRAVEYARD_PUT_OBJECT_ENTER", "graveyard_materialization", event,
+        "event:" .. tostring(event.sequence))
     local ok, result = pcall(function() return target.putObject(object, 0) end)
+    BridgeTtsExecutionBreadcrumb("GRAVEYARD_PUT_OBJECT_RETURNED", "graveyard_materialization", event,
+        "event:" .. tostring(event.sequence))
     if not ok then return false, "could not add card to native graveyard container: " .. tostring(result) end
     if result ~= nil and result.tag == "Deck" then target = result end
     if target == nil or target.tag ~= "Deck" then
@@ -14819,19 +14869,40 @@ end
 function BridgeVerifyFinalPhysicalRepresentation(instanceId, seatId, zoneName)
     if instanceId == nil then return false, "missing physical instance id" end
     local guid = BridgeState.physicalByInstanceId[instanceId]
-    if guid ~= nil and BridgeState.physicalZoneByGuid[guid] == zoneName then
+    if guid ~= nil
+        and BridgeState.physicalSeatByGuid[guid] == seatId
+        and BridgeState.physicalZoneByGuid[guid] == zoneName
+        and BridgeState.physicalInstanceIdByGuid[guid] == instanceId then
         local object = BridgeGetLiveObjectByGuid(guid)
-        if object ~= nil and BridgeObjectIsUsable(object) then return true, nil end
-    end
-    local containerGuid = BridgeState.physicalContainerByInstanceId[instanceId]
-    if containerGuid ~= nil
-        and BridgeState.physicalZoneByGuid[containerGuid] == zoneName then
-        local container = BridgeGetLiveObjectByGuid(containerGuid)
-        if container ~= nil and BridgeObjectIsUsable(container) and container.tag == "Deck" then
+        if object ~= nil and object.tag == "Card" and BridgeObjectIsUsable(object) then
             return true, nil
         end
     end
-    return false, "missing final physical representation for " .. tostring(instanceId)
+    local mapping = BridgeState.physicalContainerByInstanceId[instanceId]
+    if mapping == nil then
+        return false, "missing final physical representation for " .. tostring(instanceId)
+    end
+    if mapping.seatId ~= seatId then
+        return false, "contained final representation belongs to another seat"
+    end
+    if mapping.zoneName ~= zoneName then
+        return false, "contained final representation is in " .. tostring(mapping.zoneName)
+    end
+    local container, entry, containmentError = BridgeFindContainedCardEntry(instanceId, zoneName)
+    if container == nil then
+        return false, "contained final representation is invalid: " .. tostring(containmentError)
+    end
+    if container.tag ~= "Deck" or not BridgeObjectIsUsable(container) then
+        return false, "contained final representation is not a usable native Deck"
+    end
+    if BridgeState.physicalContainedInstanceIdByGuid[mapping.cardGuid] ~= instanceId then
+        return false, "contained final representation has no exact inverse identity"
+    end
+    if BridgeState.physicalSeatByGuid[mapping.cardGuid] ~= seatId
+        or BridgeState.physicalZoneByGuid[mapping.cardGuid] ~= zoneName then
+        return false, "contained final representation has incorrect seat or zone"
+    end
+    return true, nil
 end
 
 function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
@@ -15007,18 +15078,23 @@ function BridgeTakeTopCardFromLibrary(deck, expectedName, position, smooth, call
         return
     end
 
+    BridgeTtsExecutionBreadcrumb("TAKE_OBJECT_DISPATCH_ENTER", "library_take_object", nil)
     deck.takeObject({
         index = top.index,
         position = position,
         smooth = smooth,
         callback_function = function(taken)
+            BridgeTtsExecutionBreadcrumb("TAKE_OBJECT_CALLBACK_ENTER", "library_take_object", nil)
             if not BridgeObjectIsUsable(taken) then
                 finish(nil, "physical library returned an unusable top card object")
+                BridgeTtsExecutionBreadcrumb("TAKE_OBJECT_CALLBACK_EXIT", "library_take_object", nil)
                 return
             end
             finish(taken, nil)
+            BridgeTtsExecutionBreadcrumb("TAKE_OBJECT_CALLBACK_EXIT", "library_take_object", nil)
         end
     })
+    BridgeTtsExecutionBreadcrumb("TAKE_OBJECT_DISPATCH_RETURNED", "library_take_object", nil)
 end
 
 function BridgeTakeNamedCardFromDeck(deck, expectedName, position, smooth, callback)
@@ -17337,7 +17413,6 @@ function BridgeUiFlush()
     -- Keep recovery available after BridgeStopOnDesync.  The handler gives a
     -- diagnostic error if no Forge session exists; hiding it here made the
     -- recovery control disappear exactly when a library mismatch needed it.
-    -- Legacy contract marker: BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not ui.resyncInFlight
     BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not BridgeState.resyncInFlight and "true" or "false")
     BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
     -- Some TTS clients render Dropdown as a non-interactive checkbox. The

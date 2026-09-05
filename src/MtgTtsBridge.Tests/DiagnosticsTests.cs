@@ -38,6 +38,37 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public void TtsExecutionWatchdog_FiresOnceForUnmatchedEnterAndNotForCompletedOperation()
+    {
+        var watchdog = new TtsExecutionWatchdog(TimeSpan.FromSeconds(2));
+        var entered = new TtsExecutionBreadcrumb("runtime", "session", 1, 2, 60, "tap_changed",
+            "ENTER", "tap_changed", "event:60", null, null, null, 0, DateTimeOffset.UtcNow);
+        watchdog.Record(entered, entered.ReceivedAtUtc, out _);
+        Assert.False(watchdog.Evaluate(entered.ReceivedAtUtc.AddSeconds(1), out _));
+        Assert.True(watchdog.Evaluate(entered.ReceivedAtUtc.AddSeconds(3), out var stalled));
+        Assert.Equal("tap_changed", stalled.OpenOperation);
+        Assert.False(watchdog.Evaluate(entered.ReceivedAtUtc.AddSeconds(4), out _));
+
+        var exit = entered with { Stage = "EXIT" };
+        watchdog.Record(exit, entered.ReceivedAtUtc.AddSeconds(4), out var completed);
+        Assert.Null(completed.OpenOperation);
+    }
+
+    [Fact]
+    public void TtsExecutionBreadcrumbRing_IsBoundedAndPreservesIdentity()
+    {
+        var telemetry = new DiagnosticTelemetryBuffer();
+        for (var i = 0; i < DiagnosticTelemetryBuffer.TtsBreadcrumbCapacity + 10; i++)
+            telemetry.RecordTtsBreadcrumb(new("runtime", "session", 1, 2, i, "event", "ENTER", "op", i.ToString(), null, null, null, null, DateTimeOffset.UtcNow));
+
+        var snapshot = telemetry.Capture();
+        Assert.Equal(DiagnosticTelemetryBuffer.TtsBreadcrumbCapacity, snapshot.TtsBreadcrumbs.Count);
+        Assert.Equal("runtime", snapshot.TtsBreadcrumbs[0].ClientRuntimeId);
+        Assert.Equal("session", snapshot.TtsBreadcrumbs[0].SessionId);
+        Assert.Equal(DiagnosticTelemetryBuffer.TtsBreadcrumbCapacity + 9, snapshot.TtsBreadcrumbs[^1].EventSequence);
+    }
+
+    [Fact]
     public async Task Collector_CreatesValidBundleWithMetadataAndMissingOptionalFiles()
     {
         var root = CreateTempDirectory();

@@ -292,7 +292,7 @@ function BridgeUiFlush()
     local targetCanCancel = decision ~= nil and decision.allowsCancel == true
         and (decision.kind == "target_selection" or decision.kind == "defender_selection"
             or decision.kind == "player_selection")
-    local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil and BridgeState.terminalRecoveryError == nil
+    local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil
         and BridgeCurrentTerminalRecoveryError() == nil
         and not BridgeDecisionNeedsConfirmation(decision)
         and BridgeState.pendingIntent == nil

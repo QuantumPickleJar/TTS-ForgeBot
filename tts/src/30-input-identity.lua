@@ -2141,10 +2141,21 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     if explicit then BridgeState.resyncCircuitOpen = false end
     if not BridgePhysicalLibraryQueuesIdle() then
         local now = BridgeResyncClockNow()
-        if explicit and (BridgeState.manualResyncGraceUntil or 0) <= 0 then
+        -- A failed final-embodiment predicate means the current worker is no
+        -- longer a legitimate readiness fence. Manual FULL_RECOVERY must take
+        -- ownership immediately; waiting for that worker would make the
+        -- recovery control depend on the object it is meant to repair.
+        if explicit and BridgeState.resyncLastBlockingPredicate ~= nil then
+            BridgeLog("[Bridge] RESYNC_FORCE_LOCAL_RETIRE origin=" .. tostring(origin)
+                .. " reason=failed-final-embodiment predicate="
+                .. tostring(BridgeState.resyncLastBlockingPredicate))
+            BridgeRetireLocalPhysicalTransactions("manual-resync-failed-embodiment")
+        elseif explicit and (BridgeState.manualResyncGraceUntil or 0) <= 0 then
             BridgeState.manualResyncGraceUntil = now + BRIDGE_RESYNC_PHYSICAL_QUEUE_GRACE_SECONDS
         end
-        if explicit and now >= (BridgeState.manualResyncGraceUntil or 0) then
+        if BridgePhysicalLibraryQueuesIdle() then
+            -- The failed worker was retired above; continue into FULL_RECOVERY.
+        elseif explicit and now >= (BridgeState.manualResyncGraceUntil or 0) then
             BridgeLog("[Bridge] RESYNC_FORCE_LOCAL_RETIRE origin=" .. tostring(origin)
                 .. " reason=physical-library-queue-timeout")
             BridgeRetireLocalPhysicalTransactions("manual-resync-force")

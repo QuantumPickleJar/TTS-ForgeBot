@@ -162,18 +162,23 @@ function BridgeTakeTopCardFromLibrary(deck, expectedName, position, smooth, call
         return
     end
 
+    BridgeTtsExecutionBreadcrumb("TAKE_OBJECT_DISPATCH_ENTER", "library_take_object", nil)
     deck.takeObject({
         index = top.index,
         position = position,
         smooth = smooth,
         callback_function = function(taken)
+            BridgeTtsExecutionBreadcrumb("TAKE_OBJECT_CALLBACK_ENTER", "library_take_object", nil)
             if not BridgeObjectIsUsable(taken) then
                 finish(nil, "physical library returned an unusable top card object")
+                BridgeTtsExecutionBreadcrumb("TAKE_OBJECT_CALLBACK_EXIT", "library_take_object", nil)
                 return
             end
             finish(taken, nil)
+            BridgeTtsExecutionBreadcrumb("TAKE_OBJECT_CALLBACK_EXIT", "library_take_object", nil)
         end
     })
+    BridgeTtsExecutionBreadcrumb("TAKE_OBJECT_DISPATCH_RETURNED", "library_take_object", nil)
 end
 
 function BridgeTakeNamedCardFromDeck(deck, expectedName, position, smooth, callback)
@@ -2492,7 +2497,6 @@ function BridgeUiFlush()
     -- Keep recovery available after BridgeStopOnDesync.  The handler gives a
     -- diagnostic error if no Forge session exists; hiding it here made the
     -- recovery control disappear exactly when a library mismatch needed it.
-    -- Legacy contract marker: BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not ui.resyncInFlight
     BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not BridgeState.resyncInFlight and "true" or "false")
     BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
     -- Some TTS clients render Dropdown as a non-interactive checkbox. The

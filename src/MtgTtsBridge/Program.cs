@@ -21,6 +21,7 @@ builder.Services.AddSingleton<DiagnosticSelfTestRunner>();
 builder.Services.AddSingleton<DiagnosticBundleWriter>();
 builder.Services.AddSingleton<ProcessSampler>();
 builder.Services.AddSingleton<DiagnosticReportCollector>();
+builder.Services.AddHostedService<TtsExecutionWatchdogService>();
 builder.Logging.AddProvider(new DiagnosticLoggerProvider(diagnosticTelemetry));
 
 var listenUrl = builder.Configuration["Bridge:ListenUrl"] ?? "http://127.0.0.1:43110";
@@ -261,6 +262,17 @@ app.MapPost("/api/v1/diagnostics/capture", async (DiagnosticReportCollector coll
 	telemetry.RecordProtocol("bridge_to_external", "/api/v1/diagnostics/capture", 200,
 		payload: new { result.ReportId, result.ReportPath });
 	return Results.Ok(new DiagnosticReportResponseDto(true, result.ReportId, result.ReportPath!, result.Message));
+});
+
+app.MapPost("/api/v1/diagnostics/tts-breadcrumb", (TtsExecutionBreadcrumbRequest request, DiagnosticTelemetryBuffer telemetry) =>
+{
+	if (string.IsNullOrWhiteSpace(request.ClientRuntimeId) || string.IsNullOrWhiteSpace(request.Stage)
+		|| string.IsNullOrWhiteSpace(request.Operation)) return Results.BadRequest();
+	telemetry.RecordTtsBreadcrumb(new TtsExecutionBreadcrumb(
+		request.ClientRuntimeId, request.SessionId, request.EventSessionGeneration, request.PresentationGeneration,
+		request.EventSequence, request.EventKind, request.Stage, request.Operation, request.OperationId,
+		request.CardInstanceId, request.SourceZone, request.DestinationZone, request.LuaTimestamp, DateTimeOffset.UtcNow));
+	return Results.NoContent();
 });
 
 app.MapGet("/api/v1/events", async (long? after, IForgeAdapter adapter, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>

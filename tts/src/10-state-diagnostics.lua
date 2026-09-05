@@ -369,6 +369,25 @@ function BridgeFindNamedObject(name)
     return nil
 end
 
+function BridgeTtsExecutionBreadcrumb(stage, operation, event, operationId)
+    local payload = {
+        clientRuntimeId = BRIDGE_CLIENT_RUNTIME_ID,
+        sessionId = BridgeState.eventSessionId,
+        eventSessionGeneration = BridgeState.eventSessionGeneration,
+        presentationGeneration = BridgeState.decisionPresentationGeneration,
+        eventSequence = event and event.sequence or nil,
+        eventKind = event and event.kind or nil,
+        stage = tostring(stage), operation = tostring(operation), operationId = operationId,
+        cardInstanceId = event and event.cardInstanceId or nil,
+        sourceZone = event and event.sourceZone or nil,
+        destinationZone = event and event.destinationZone or nil,
+        luaTimestamp = os.clock()
+    }
+    pcall(function()
+        BridgeHttp.requestJson("POST", "/api/v1/diagnostics/tts-breadcrumb", payload, function() end)
+    end)
+end
+
 function BridgeHttp.requestJson(method, path, payload, callback)
     local url = BRIDGE_BASE_URL .. path
     local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL

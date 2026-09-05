@@ -1950,7 +1950,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeQueueLibraryExtraction(event.seatId", moveBody);
         Assert.Contains("BridgeTakeTopCardFromLibrary(liveDeck, expectedName", moveBody);
         Assert.Contains("BridgeMoveToGraveyard(event, taken)", moveBody);
-        Assert.Contains("BridgeWaitTime(complete, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)", moveBody);
+        Assert.Contains("BridgeWaitTime(function()", moveBody);
+        Assert.Contains("BridgeVerifyFinalPhysicalRepresentation(", moveBody);
         Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"graveyard\"", moveBody);
         Assert.DoesNotContain("resolved object is a deck for non-library->hand move", moveBody);
         Assert.Contains("BridgeRecoverFromLibraryOrderMismatch(takeError)", moveBody);
@@ -2623,7 +2624,7 @@ public sealed class TtsGlobalLuaContractTests
     public void ResyncControl_RemainsAvailableWhenSessionIsStopped()
     {
         Assert.Contains("BridgeStopOnDesync", Script);
-        Assert.Contains("BridgeUiSet(\"BridgeHudResyncFromForge\", \"active\", devEnabled and not ui.resyncInFlight", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudResyncFromForge\", \"active\", devEnabled and not BridgeState.resyncInFlight", Script);
         Assert.Contains("if sessionId == nil then", Script);
         Assert.Contains("cannot resync before Forge has started a session", Script);
     }
@@ -2721,7 +2722,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void YieldTurn_IsVisibleWithoutHumanDecisionAndRemainsTurnScoped()
     {
-        Assert.Contains("local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil and BridgeState.terminalRecoveryError == nil", Script);
+        Assert.Contains("local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil", Script);
         Assert.Contains("(hasYield or yieldPolicyAvailable)", Script);
         Assert.Contains("yieldPolicyTurnNumber = tonumber(BridgeState.tableTurnCount or 0)", Script);
         Assert.Contains("BridgeArmYieldPolicy(activeSeat, decision == nil and \"no-human-decision\"", Script);
@@ -3421,5 +3422,20 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeCheckDiagnosticCapturePurity(capturePurityBefore", body);
         Assert.DoesNotContain("lastDecision = nil", body);
         Assert.DoesNotContain("BridgeSubmit", body);
+    }
+
+    [Fact]
+    public void TtsExecutionBreadcrumbsSurroundEventAndHighRiskPhysicalBoundaries()
+    {
+        Assert.Contains("/api/v1/diagnostics/tts-breadcrumb", Script);
+        Assert.Contains("BridgeTtsExecutionBreadcrumb(\"EVENT_ENTER\"", Script);
+        Assert.Contains("BridgeTtsExecutionBreadcrumb(\"EVENT_EXIT\"", Script);
+        Assert.Contains("TAKE_OBJECT_DISPATCH_ENTER", Script);
+        Assert.Contains("TAKE_OBJECT_DISPATCH_RETURNED", Script);
+        Assert.Contains("TAKE_OBJECT_CALLBACK_ENTER", Script);
+        Assert.Contains("TAP_CHANGED_ENTER", Script);
+        Assert.Contains("TAP_CHANGED_EXIT", Script);
+        Assert.Contains("GRAVEYARD_PUT_OBJECT_ENTER", Script);
+        Assert.Contains("FINAL_REPRESENTATION_VERIFY_ENTER", Script);
     }
 }
