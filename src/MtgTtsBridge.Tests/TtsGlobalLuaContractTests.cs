@@ -2830,7 +2830,12 @@ public sealed class TtsGlobalLuaContractTests
             expected.Append("-- END GENERATED SOURCE: ").Append(name).AppendLine();
         }
 
-        Assert.Equal(expected.ToString(), File.ReadAllText(Path.Combine(repositoryRoot, "tts", "Global.lua")));
+        var source = expected.ToString();
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(source))).ToLowerInvariant();
+        Assert.Equal("-- GENERATED GLOBAL.LUA SOURCE SHA256: " + hash + Environment.NewLine
+            + "BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = \"" + hash + "\"" + Environment.NewLine + source,
+            File.ReadAllText(Path.Combine(repositoryRoot, "tts", "Global.lua")));
     }
 
     private static string FindRepositoryRoot()

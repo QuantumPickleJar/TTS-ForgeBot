@@ -1096,6 +1096,9 @@ BridgeState = {
     skipExistingEventsOnAttach = false,
     eventQueue = {},
     animationRunning = false,
+    -- H0 single owner for presentation/recovery.  Compatibility flags remain
+    -- below, but no mutation transaction is allowed to exist outside this.
+    presentationState = "RUNNING",
     eventCommitWatchdog = {
         eventSequence = nil,
         successfulApplyAttemptsWithoutCommit = 0,
@@ -1125,6 +1128,9 @@ BridgeState = {
     -- duplicate printed names never become an identity source.
     physicalContainerByInstanceId = {},
     physicalContainedInstanceIdByGuid = {},
+    -- Native Deck contained GUIDs are ephemeral TTS implementation details.
+    -- Forge instance identity in a deck-like zone is this ordered ledger.
+    zoneLedgerBySeatAndZone = {},
     cardNameByInstanceId = {},
     canonicalCardNameByGuid = {},
     encoderIdentityLoggedGuids = {},

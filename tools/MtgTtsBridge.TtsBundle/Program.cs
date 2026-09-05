@@ -1,4 +1,5 @@
 using System.Text;
+using System.Security.Cryptography;
 
 var root = FindRepositoryRoot();
 var sourceDirectory = Path.Combine(root, "tts", "src");
@@ -21,7 +22,10 @@ foreach (var part in parts)
         .AppendLine();
 }
 
-var generated = builder.ToString();
+var source = builder.ToString();
+var sourceHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source))).ToLowerInvariant();
+var generated = "-- GENERATED GLOBAL.LUA SOURCE SHA256: " + sourceHash + Environment.NewLine
+    + "BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = \"" + sourceHash + "\"" + Environment.NewLine + source;
 if (args.Contains("--check", StringComparer.Ordinal))
 {
     var current = File.Exists(outputPath) ? File.ReadAllText(outputPath) : string.Empty;

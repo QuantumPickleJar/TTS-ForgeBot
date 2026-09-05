@@ -1450,6 +1450,8 @@ function onLoad()
     -- TTS file read and Lua compilation happen before this function executes;
     -- this first marker deliberately measures only observable runtime startup.
     local startupToken = BridgeStartupStageBegin("onLoad_enter")
+    BridgeLog("[Bridge] TTS_RUNTIME_PROVENANCE revision=" .. tostring(BRIDGE_SCRIPT_REVISION)
+        .. " generatedGlobalLuaSha256=" .. tostring(BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 or "unavailable"))
     BridgeOnLoad()
     BridgeState.startupTrace.observableDurationMs = BridgeStartupStageEnd(
         startupToken, "BridgeOnLoad_return")

@@ -2139,6 +2139,19 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     -- stable physical order.
     local explicit = BridgeIsExplicitResyncOrigin(origin)
     if explicit then BridgeState.resyncCircuitOpen = false end
+    -- H0 recovery owns replacement, not the failed worker.  Abort and fence
+    -- once before looking at queue readiness; repeated HUD clicks return via
+    -- resyncInFlight above and therefore cannot churn generations.
+    local explicitPhysicalRetired = false
+    if explicit then
+        local active = BridgeState.eventDrainTransaction
+        if active ~= nil then active.state = "ABORTED" end
+        BridgeRetireLocalPhysicalTransactions("explicit-authoritative-resync")
+        BridgeState.presentationState = "RECOVERING"
+        explicitPhysicalRetired = true
+        BridgeLog("[Bridge] RESYNC_ABORT_REBASE origin=" .. tostring(origin)
+            .. " oldTransaction=" .. tostring(active and active.token))
+    end
     if not BridgePhysicalLibraryQueuesIdle() then
         local now = BridgeResyncClockNow()
         -- A failed final-embodiment predicate means the current worker is no
@@ -2149,7 +2162,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             BridgeLog("[Bridge] RESYNC_FORCE_LOCAL_RETIRE origin=" .. tostring(origin)
                 .. " reason=failed-final-embodiment predicate="
                 .. tostring(BridgeState.resyncLastBlockingPredicate))
-            BridgeRetireLocalPhysicalTransactions("manual-resync-failed-embodiment")
+            -- Already retired above; this is diagnostic only.
         elseif explicit and (BridgeState.manualResyncGraceUntil or 0) <= 0 then
             BridgeState.manualResyncGraceUntil = now + BRIDGE_RESYNC_PHYSICAL_QUEUE_GRACE_SECONDS
         end
@@ -2158,7 +2171,9 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         elseif explicit and now >= (BridgeState.manualResyncGraceUntil or 0) then
             BridgeLog("[Bridge] RESYNC_FORCE_LOCAL_RETIRE origin=" .. tostring(origin)
                 .. " reason=physical-library-queue-timeout")
-            BridgeRetireLocalPhysicalTransactions("manual-resync-force")
+            -- H0 already called BridgeRetireLocalPhysicalTransactions("manual-resync-force")
+            -- before this readiness check. Do not call it again: one RESYNC
+            -- owns exactly one generation advance.
         else
             if not explicit and (BridgeState.resyncDeferredSince or 0) <= 0 then
                 BridgeState.resyncDeferredSince = now
@@ -2199,7 +2214,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     BridgeState.resyncDeferredSince = nil
     BridgeState.resyncDeferredRetryScheduled = false
     BridgeState.resyncScheduled = false
-    if explicit then
+    if explicit and not explicitPhysicalRetired then
         -- Invalidate delayed local callbacks even when the physical queues
         -- happened to look idle.  An event-drain continuation or other frame
         -- callback from the pre-resync presentation must not run against the
@@ -2217,6 +2232,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     -- resync starts a new presentation generation; failures from that old
     -- generation must not remain latched against the recovery attempt.
     BridgeState.desyncLatched = false
+    BridgeState.presentationState = "RECOVERING"
     BridgeState.desyncLastMessage = nil
     BridgeState.resyncPresentationState = {
         currentTurnSeatId = BridgeState.currentTurnSeatId,
@@ -2292,6 +2308,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             BridgeRestoreResyncMappingTransaction("bootstrap-failed:" .. tostring(err))
             BridgeRestoreResyncCheckpoint("bootstrap-failed")
             BridgeState.desyncLatched = true
+            BridgeState.presentationState = "DESYNCED"
             BridgeSetSchedulerOwner("NORMAL", "resync-failed")
             BridgeStopOnDesync("authoritative resync failed: " .. tostring(err))
             BridgeUiMarkDirty("resync-failed")
@@ -2305,6 +2322,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeSetSchedulerOwner("NORMAL", "resync-commit")
         BridgeStartEventPolling(sessionId, false)
         BridgeState.desyncLatched = false
+        BridgeState.presentationState = "RUNNING"
         BridgeState.desyncFailureCount = 0
         BridgeState.desyncLastMessage = nil
         BridgeSetStatus("RESYNCING FROM FORGE", "Checkpoint committed; reattaching the current Forge decision...")

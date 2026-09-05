@@ -47,6 +47,8 @@ else
 }
 
 var app = builder.Build();
+app.Logger.LogInformation("BRIDGE_RUNTIME_PROVENANCE gitSha={GitSha} dirty={Dirty} buildIdentity={BuildIdentity}",
+	BridgeProcessIdentity.Revision, BridgeProcessIdentity.IsDirty, BridgeProcessIdentity.BuildIdentity);
 var processSampler = app.Services.GetRequiredService<ProcessSampler>();
 processSampler.Start();
 app.Lifetime.ApplicationStopping.Register(processSampler.Dispose);
