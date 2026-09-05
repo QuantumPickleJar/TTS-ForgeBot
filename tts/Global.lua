@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 874f44d2d7c4af8b9e9f79be434f84dee7c44d0e9a0a2c1503e0de1294de1031
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "874f44d2d7c4af8b9e9f79be434f84dee7c44d0e9a0a2c1503e0de1294de1031"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 4405fb444e2cee49b93755bc88cb0baf9ca7cf00c6e07177cb944e5a726ef0ef
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "4405fb444e2cee49b93755bc88cb0baf9ca7cf00c6e07177cb944e5a726ef0ef"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -6001,8 +6001,17 @@ function BridgeShouldDeferDecision(decision)
     local applied = math.max(
         tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
         tonumber(BridgeState.lastStateProjectedEventSequence or 0) or 0)
+    local observed = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
     if eventCursor <= 0 then return false, eventCursor, applied end
-    return eventCursor > applied, eventCursor, applied
+    -- A decision can be published one event ahead of TTS's local apply cursor
+    -- while Forge has already observed and validated that exact cursor. Do not
+    -- hold the choice behind a stale local apply fence in that case; the bridge
+    -- can still present the already-validated menu safely. Only defer when the
+    -- decision is genuinely newer than the observed event stream.
+    if eventCursor > applied and eventCursor > observed then
+        return true, eventCursor, applied
+    end
+    return false, eventCursor, applied
 end
 
 function BridgeScheduleOpeningHandReadinessRetry()

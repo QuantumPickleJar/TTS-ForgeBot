@@ -1047,6 +1047,30 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void DecisionIsNotDeferredWhenItsCursorIsAlreadyObservedEvenIfOneEventIsStillUnapplied()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.lastAppliedEventSequence = 86
+            BridgeState.lastReceivedEventSequence = 87
+            BridgeState.eventQueue = {}
+            defer, cursor, applied, reason = BridgeShouldDeferDecision({
+                decisionId='forge-tui-87',
+                kind='main_priority',
+                seatId='forge-player-1',
+                eventCursor=87,
+                forgeSequence=14,
+                actions={{actionId='land-87', type='play_land', isPresentationAuthorized=true}}
+            })
+        ");
+
+        Assert.False(lua.Globals.Get("defer").Boolean);
+        Assert.Equal(87, lua.Globals.Get("cursor").Number);
+        Assert.Equal(86, lua.Globals.Get("applied").Number);
+        Assert.True(lua.Globals.Get("reason").IsNil() || string.IsNullOrWhiteSpace(lua.Globals.Get("reason").String));
+    }
+
+    [Fact]
     public void DecisionIsDeferredWhenQueuedEventsShareItsForgeMutationSequence()
     {
         var lua = NewQueueProbe();
