@@ -436,6 +436,33 @@ function BridgeAutomaticPassBackpressured()
     return true
 end
 
+function BridgeRetireInvalidEventDrainOwnership(origin)
+    local tx = BridgeState.eventDrainTransaction
+    if tx == nil then
+        if BridgeState.animationRunning == true then
+            BridgeState.animationRunning = false
+            BridgeLog(string.format("[Bridge] EVENT_DRAIN_HEAL cleared orphan animation fence origin=%s",
+                tostring(origin)))
+            return true
+        end
+        return false
+    end
+    if BridgeEventMutationIsCurrent == nil then
+        return false
+    end
+    local ok, current = pcall(BridgeEventMutationIsCurrent, tx)
+    if ok and current == true then
+        return false
+    end
+    BridgeState.eventDrainTransaction = nil
+    BridgeState.animationRunning = false
+    BridgeLog(string.format(
+        "[Bridge] EVENT_DRAIN_HEAL cleared stale transaction ownership origin=%s token=%s session=%s sessionGeneration=%s physicalGeneration=%s state=%s current=%s",
+        tostring(origin), tostring(tx.token), tostring(tx.sessionId), tostring(tx.eventSessionGeneration),
+        tostring(tx.physicalTransactionGeneration), tostring(tx.state), tostring((ok and current) or "probe-failed")))
+    return true
+end
+
 -- Return the actual fence preventing the queue head from starting.  This is
 -- deliberately kept separate from the event cursor: a non-empty queue with a
 -- stagnant cursor is only useful diagnostically when the scheduler says why
@@ -443,12 +470,7 @@ end
 function BridgeEventDrainBlockReason()
     local queue = BridgeState.eventQueue or {}
     if #queue == 0 then return "queue_empty" end
-    if BridgeState.animationRunning == true and BridgeState.eventDrainTransaction == nil then
-        -- A lost continuation can leave animationRunning latched without an
-        -- owning transaction. Clear the stale flag so the queue head can run.
-        BridgeState.animationRunning = false
-        BridgeLog("[Bridge] EVENT_DRAIN_HEAL cleared stale animation fence with no transaction")
-    end
+    BridgeRetireInvalidEventDrainOwnership("block-reason")
     if BridgeState.animationRunning == true then return "animationRunning" end
     if BridgeState.eventPolling ~= true then return "eventPolling_disabled" end
     if BridgeState.desyncLatched == true then return "desyncLatched" end

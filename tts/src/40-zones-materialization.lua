@@ -2066,6 +2066,7 @@ function BridgeProcessEventQueue()
         BridgeTryStartPendingSnapshotReconcile("event-drain")
         return
     end
+    BridgeRetireInvalidEventDrainOwnership("queue-entry")
     if BridgeState.eventDrainTransaction ~= nil then return end
     local blockReason = BridgeEventDrainBlockReason()
     if blockReason ~= "none" then BridgeObserveEventDrainBlocked(blockReason); return end

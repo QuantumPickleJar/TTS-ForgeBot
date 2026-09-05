@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 4405fb444e2cee49b93755bc88cb0baf9ca7cf00c6e07177cb944e5a726ef0ef
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "4405fb444e2cee49b93755bc88cb0baf9ca7cf00c6e07177cb944e5a726ef0ef"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: e8ea49069a3efb32b09fc666d86d55e623efd85a1c8f54893f6c59f89a6682ab
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "e8ea49069a3efb32b09fc666d86d55e623efd85a1c8f54893f6c59f89a6682ab"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -439,6 +439,33 @@ function BridgeAutomaticPassBackpressured()
     return true
 end
 
+function BridgeRetireInvalidEventDrainOwnership(origin)
+    local tx = BridgeState.eventDrainTransaction
+    if tx == nil then
+        if BridgeState.animationRunning == true then
+            BridgeState.animationRunning = false
+            BridgeLog(string.format("[Bridge] EVENT_DRAIN_HEAL cleared orphan animation fence origin=%s",
+                tostring(origin)))
+            return true
+        end
+        return false
+    end
+    if BridgeEventMutationIsCurrent == nil then
+        return false
+    end
+    local ok, current = pcall(BridgeEventMutationIsCurrent, tx)
+    if ok and current == true then
+        return false
+    end
+    BridgeState.eventDrainTransaction = nil
+    BridgeState.animationRunning = false
+    BridgeLog(string.format(
+        "[Bridge] EVENT_DRAIN_HEAL cleared stale transaction ownership origin=%s token=%s session=%s sessionGeneration=%s physicalGeneration=%s state=%s current=%s",
+        tostring(origin), tostring(tx.token), tostring(tx.sessionId), tostring(tx.eventSessionGeneration),
+        tostring(tx.physicalTransactionGeneration), tostring(tx.state), tostring((ok and current) or "probe-failed")))
+    return true
+end
+
 -- Return the actual fence preventing the queue head from starting.  This is
 -- deliberately kept separate from the event cursor: a non-empty queue with a
 -- stagnant cursor is only useful diagnostically when the scheduler says why
@@ -446,12 +473,7 @@ end
 function BridgeEventDrainBlockReason()
     local queue = BridgeState.eventQueue or {}
     if #queue == 0 then return "queue_empty" end
-    if BridgeState.animationRunning == true and BridgeState.eventDrainTransaction == nil then
-        -- A lost continuation can leave animationRunning latched without an
-        -- owning transaction. Clear the stale flag so the queue head can run.
-        BridgeState.animationRunning = false
-        BridgeLog("[Bridge] EVENT_DRAIN_HEAL cleared stale animation fence with no transaction")
-    end
+    BridgeRetireInvalidEventDrainOwnership("block-reason")
     if BridgeState.animationRunning == true then return "animationRunning" end
     if BridgeState.eventPolling ~= true then return "eventPolling_disabled" end
     if BridgeState.desyncLatched == true then return "desyncLatched" end
@@ -6003,12 +6025,11 @@ function BridgeShouldDeferDecision(decision)
         tonumber(BridgeState.lastStateProjectedEventSequence or 0) or 0)
     local observed = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
     if eventCursor <= 0 then return false, eventCursor, applied end
-    -- A decision can be published one event ahead of TTS's local apply cursor
-    -- while Forge has already observed and validated that exact cursor. Do not
-    -- hold the choice behind a stale local apply fence in that case; the bridge
-    -- can still present the already-validated menu safely. Only defer when the
-    -- decision is genuinely newer than the observed event stream.
-    if eventCursor > applied and eventCursor > observed then
+    -- H0 invariant: a command that depends on event N cannot be presented until
+    -- the physical transaction that committed N has actually landed in TTS.
+    -- lastReceived is only a Forge observation marker; it is not a physical
+    -- embodiment guarantee and must never substitute for lastApplied.
+    if eventCursor > applied then
         return true, eventCursor, applied
     end
     return false, eventCursor, applied
@@ -12849,6 +12870,7 @@ function BridgeProcessEventQueue()
         BridgeTryStartPendingSnapshotReconcile("event-drain")
         return
     end
+    BridgeRetireInvalidEventDrainOwnership("queue-entry")
     if BridgeState.eventDrainTransaction ~= nil then return end
     local blockReason = BridgeEventDrainBlockReason()
     if blockReason ~= "none" then BridgeObserveEventDrainBlocked(blockReason); return end

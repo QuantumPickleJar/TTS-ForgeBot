@@ -2194,12 +2194,11 @@ function BridgeShouldDeferDecision(decision)
         tonumber(BridgeState.lastStateProjectedEventSequence or 0) or 0)
     local observed = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
     if eventCursor <= 0 then return false, eventCursor, applied end
-    -- A decision can be published one event ahead of TTS's local apply cursor
-    -- while Forge has already observed and validated that exact cursor. Do not
-    -- hold the choice behind a stale local apply fence in that case; the bridge
-    -- can still present the already-validated menu safely. Only defer when the
-    -- decision is genuinely newer than the observed event stream.
-    if eventCursor > applied and eventCursor > observed then
+    -- H0 invariant: a command that depends on event N cannot be presented until
+    -- the physical transaction that committed N has actually landed in TTS.
+    -- lastReceived is only a Forge observation marker; it is not a physical
+    -- embodiment guarantee and must never substitute for lastApplied.
+    if eventCursor > applied then
         return true, eventCursor, applied
     end
     return false, eventCursor, applied
