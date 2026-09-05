@@ -11,7 +11,7 @@ public sealed class TtsEventQueueLivelockTests
     public void SuccessfulEventCommitsOnceWhenPollingGenerationChangesDuringApply()
     {
         var lua = NewQueueProbe();
-        lua.DoString(@"
+        ExecuteProbe(lua, "SuccessfulEventCommitsOnceWhenPollingGenerationChangesDuringApply.probe.lua", @"
             BridgeState.eventQueue = {}
             table.insert(BridgeState.eventQueue, {sequence=9, kind='card_moved', seatId='forge-player-2', destinationZone='library', cardInstanceId='forge-object:9'})
             table.insert(BridgeState.eventQueue, {sequence=8, kind='card_moved', seatId='forge-player-2', sourceZone=nil, destinationZone='library', containsHiddenIdentity=true, cardInstanceId='forge-object:8'})
@@ -32,7 +32,7 @@ public sealed class TtsEventQueueLivelockTests
     public void SessionReplacementAbandonsTheOldQueueWithoutCommittingItsEvent()
     {
         var lua = NewQueueProbe();
-        lua.DoString(@"
+        ExecuteProbe(lua, "SessionReplacementAbandonsTheOldQueueWithoutCommittingItsEvent.probe.lua", @"
             BridgeState.eventQueue = {}
             table.insert(BridgeState.eventQueue, {sequence=9, kind='phase_changed', seatId='forge-player-1'})
             table.insert(BridgeState.eventQueue, {sequence=8, kind='card_moved', seatId='forge-player-2', destinationZone='library', cardInstanceId='forge-object:8'})
@@ -57,7 +57,7 @@ public sealed class TtsEventQueueLivelockTests
     public void SuccessfulEventCommitsWhenPollingStopsWithinTheSameSession()
     {
         var lua = NewQueueProbe();
-        lua.DoString(@"
+        ExecuteProbe(lua, "SuccessfulEventCommitsWhenPollingStopsWithinTheSameSession.probe.lua", @"
             BridgeState.eventQueue = {}
             table.insert(BridgeState.eventQueue, {sequence=9, kind='phase_changed', seatId='forge-player-1'})
             table.insert(BridgeState.eventQueue, {sequence=8, kind='card_moved', seatId='forge-player-2', destinationZone='library', cardInstanceId='forge-object:8'})
@@ -1124,7 +1124,7 @@ public sealed class TtsEventQueueLivelockTests
     private static Script NewQueueProbe()
     {
         var lua = new Script();
-        lua.DoString(@"
+        ExecuteProbe(lua, "NewQueueProbe.bootstrap.lua", @"
             function log(message) end
             function broadcastToAll(message, color) end
             function printToAll(message, color) end
@@ -1143,8 +1143,8 @@ public sealed class TtsEventQueueLivelockTests
                 return result
             end
         ");
-        lua.DoString(Script);
-        lua.DoString(@"
+        ExecuteProbe(lua, "Global.lua", Script);
+        ExecuteProbe(lua, "NewQueueProbe.setup.lua", @"
             function BridgeTryApplyDeferredSnapshotReconcile(reason) end
             function BridgeTryStartPendingSnapshotReconcile(reason) end
             function BridgeTryPresentPendingDecision(reason) end
@@ -1153,6 +1153,10 @@ public sealed class TtsEventQueueLivelockTests
             function BridgeScheduleSnapshotReconcile(reason, category) end
             function BridgeStopOnDesync(reason) desyncReason = reason end
             function BridgeWaitTime(callback, delay) end
+            -- This fixture tests cursor/scheduler semantics, not the native
+            -- TTS extraction workers.  Model their required readiness result
+            -- explicitly instead of relying on the unrelated table harness.
+            function BridgePhysicalLibraryQueuesIdle() return true end
             BridgeState.eventPolling = true
             BridgeState.eventPollGeneration = 4
             BridgeState.eventSessionId = 'session'
@@ -1169,5 +1173,18 @@ public sealed class TtsEventQueueLivelockTests
             BridgeState.mulliganBottomInsertionActiveBySeatId = {}
         ");
         return lua;
+    }
+
+    private static void ExecuteProbe(Script lua, string sourceName, string source)
+    {
+        try
+        {
+            lua.DoString(source, null, sourceName);
+        }
+        catch (ScriptRuntimeException exception)
+        {
+            var marker = lua.Globals.Get("queueProbeMarker");
+            throw new Xunit.Sdk.XunitException($"Lua failure in {sourceName}; marker={marker.ToPrintString()}:{Environment.NewLine}{exception.DecoratedMessage}");
+        }
     }
 }

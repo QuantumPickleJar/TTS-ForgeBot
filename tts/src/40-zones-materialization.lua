@@ -1958,11 +1958,15 @@ function BridgeBuildEventMutationTransaction(queue)
     if first == nil then return nil end
     local forgeSequence = BridgeNormalizeForgeSequence(first.forgeSequence)
     local events = {first}
+    local eventCount = 1
+    local lastEvent = first
     if forgeSequence ~= nil then
         local index = 2
         while queue[index] ~= nil
             and BridgeNormalizeForgeSequence(queue[index].forgeSequence) == forgeSequence do
             table.insert(events, queue[index])
+            eventCount = eventCount + 1
+            lastEvent = queue[index]
             index = index + 1
         end
     end
@@ -1972,7 +1976,8 @@ function BridgeBuildEventMutationTransaction(queue)
         physicalTransactionGeneration = BridgeState.physicalTransactionGeneration or 0,
         forgeSequence = forgeSequence,
         firstEventSequence = first.sequence,
-        lastEventSequence = events[#events].sequence,
+        eventCount = eventCount,
+        lastEventSequence = lastEvent.sequence,
         events = events,
         state = "PREPARING",
         queue = queue,
@@ -2014,7 +2019,7 @@ function BridgeCommitEventMutationTransaction(tx)
         end
     end
     local old = BridgeState.lastAppliedEventSequence
-    for _ = 1, #tx.events do table.remove(tx.queue, 1) end
+    for _ = 1, tx.eventCount do table.remove(tx.queue, 1) end
     BridgeApplyCommittedZoneLedger(tx.events)
     BridgeState.lastAppliedEventSequence = tx.lastEventSequence
     BridgeState.lastConsumedEventSequence = tx.lastEventSequence
@@ -2030,7 +2035,7 @@ function BridgeCommitEventMutationTransaction(tx)
     BridgeResetEventCommitWatchdog()
     BridgeLog("[Bridge] EVENT_TX_COMMIT transaction=" .. tostring(tx.token) .. " oldLastApplied="
         .. tostring(old) .. " newLastApplied=" .. tostring(tx.lastEventSequence)
-        .. " count=" .. tostring(#tx.events))
+        .. " count=" .. tostring(tx.eventCount))
     BridgeTryPresentPendingDecision("mutation-committed")
     -- Preserve one turn of the event loop between mutations.  Besides keeping
     -- animations readable, this prevents synchronous MoonSharp test clocks
@@ -2064,7 +2069,7 @@ function BridgeProcessEventQueue()
     BridgeState.presentationState = "TX_PREPARING"
     BridgeLog("[Bridge] EVENT_TX_BEGIN transaction=" .. tostring(tx.token) .. " forgeSequence="
         .. tostring(tx.forgeSequence) .. " first=" .. tostring(tx.firstEventSequence)
-        .. " last=" .. tostring(tx.lastEventSequence) .. " count=" .. tostring(#tx.events))
+        .. " last=" .. tostring(tx.lastEventSequence) .. " count=" .. tostring(tx.eventCount))
     for _, event in ipairs(tx.events) do
         local ok, applied, _, err = pcall(BridgeApplyAuthoritativeEvent, event)
         if not ok or not applied then
@@ -2092,11 +2097,9 @@ function BridgeProcessEventQueue()
         BridgeState.mulliganBottomInsertionActiveBySeatId = BridgeState.mulliganBottomInsertionActiveBySeatId or {}
         local queueProbeOk, queuesIdle = pcall(BridgePhysicalLibraryQueuesIdle)
         if not queueProbeOk then
-            -- A hot-reload may carry an incomplete legacy cache table. It has
-            -- no authority over Forge identity; log it and let the exact
-            -- transaction commit path establish the next complete baseline.
-            BridgeLog("[Bridge] physical queue readiness cache unavailable token=" .. tostring(tx.token))
-            queuesIdle = true
+            BridgeAbortEventMutationTransaction(tx,
+                "physical-readiness-probe-failed: " .. tostring(queuesIdle))
+            return
         end
         if queuesIdle then
             BridgeCommitEventMutationTransaction(tx)
