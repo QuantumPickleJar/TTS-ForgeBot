@@ -1753,6 +1753,14 @@ function BridgeRegisterPhysicalReadinessDependency(decision, reason, detail, sea
         and BridgeState.libraryExtractionTransactionBySeatId[seatId] or nil
     local generation = transaction and transaction.generation
         or (BridgeState.physicalTransactionGeneration or 0)
+    local existing = BridgeState.physicalReadinessDependency
+    if existing ~= nil and not existing.awakened
+        and existing.sessionId == BridgeState.eventSessionId
+        and existing.sessionGeneration == BridgeState.eventSessionGeneration
+        and existing.physicalTransactionGeneration == generation
+        and existing.decisionId == decision.decisionId then
+        return true
+    end
     BridgeState.physicalReadinessDependency = {
         sessionId = BridgeState.eventSessionId,
         sessionGeneration = BridgeState.eventSessionGeneration,
@@ -4032,7 +4040,8 @@ function BridgeUiFlush()
     local targetCanCancel = decision ~= nil and decision.allowsCancel == true
         and (decision.kind == "target_selection" or decision.kind == "defender_selection"
             or decision.kind == "player_selection")
-    local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil and BridgeCurrentTerminalRecoveryError() == nil
+    local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil and BridgeState.terminalRecoveryError == nil
+        and BridgeCurrentTerminalRecoveryError() == nil
         and not BridgeDecisionNeedsConfirmation(decision)
         and BridgeState.pendingIntent == nil
     BridgeUiSet("BridgeHudPass", "active", hasPass and "true" or "false")
@@ -4768,7 +4777,10 @@ function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDeci
     if BridgeCurrentTerminalRecoveryError() ~= nil then return end
     if BridgeState.gameEnded ~= nil then return end
     if generation ~= BridgeState.decisionPollGeneration then return end
-    if (BridgeState.lastDecision ~= nil and allowCurrentDecision ~= true) or BridgeState.submitting then return end
+    -- A locally pending decision already occupies the decision slot. Ordinary
+    -- polling must not reacquire it and reset its readiness age.
+    if ((BridgeState.lastDecision ~= nil or BridgeState.pendingDecision ~= nil)
+        and allowCurrentDecision ~= true) or BridgeState.submitting then return end
     if BridgeState.decisionPollInFlight or BridgeState.decisionPollScheduled then return end
 
     local nextDelay = delay or 0.1
@@ -4980,6 +4992,11 @@ function BridgeStartDecisionPolling(allowCurrentDecision)
     if BridgeCurrentTerminalRecoveryError() ~= nil then return end
     if BridgeState.gameEnded ~= nil then return end
     if BridgeState.schedulerOwner == "RESYNC" then return end
+    if (BridgeState.lastDecision ~= nil or BridgeState.pendingDecision ~= nil)
+        and allowCurrentDecision ~= true then
+        BridgeLog("[Bridge] decision polling suppressed: local decision slot is owned")
+        return
+    end
     BridgeStopDecisionPolling()
     BridgeScheduleDecisionPoll(BridgeTransitionExpected() and 0.1 or 0.25,
         BridgeState.decisionPollGeneration, 1, allowCurrentDecision == true)
@@ -7764,6 +7781,11 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
 
     local deferDecision, deferCursor, deferApplied, deferReason = BridgeShouldDeferDecision(decision)
     if deferDecision then
+        local existingPending = BridgeState.pendingDecision
+        local samePending = existingPending ~= nil
+            and existingPending.decisionId == decision.decisionId
+            and existingPending.sessionId == decision.sessionId
+            and BridgeState.eventSessionId == decision.sessionId
         BridgeRecordDecisionLifecycle(decision, origin,
             deferReason == "opening_hand_readiness" and "DEFERRED_HAND_READINESS" or "DEFERRED_CURSOR",
             deferReason)
@@ -7775,13 +7797,15 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
         -- Keep the decision only in the private pending slot until the exact
         -- embodiment/event cursor gate releases it.
         BridgeState.lastDecision = nil
-        BridgeState.pendingDecisionDeferredAt = os.clock()
-        BridgeState.pendingDecisionDeferredCursor = deferCursor
-        BridgeState.pendingDecisionDeferredApplied = deferApplied
-        BridgeClearHighlights()
-        BridgeResetSelectionState()
-        BridgeHideMainPriorityControls()
-        BridgeUiMarkDirty("decision-deferred")
+        if not samePending then
+            BridgeState.pendingDecisionDeferredAt = os.clock()
+            BridgeState.pendingDecisionDeferredCursor = deferCursor
+            BridgeState.pendingDecisionDeferredApplied = deferApplied
+            BridgeClearHighlights()
+            BridgeResetSelectionState()
+            BridgeHideMainPriorityControls()
+            BridgeUiMarkDirty("decision-deferred")
+        end
         BridgeLog(string.format(
             "[Bridge] gating decision %s until events catch up (cursor=%s, applied=%s)",
             tostring(decision.decisionId), tostring(deferCursor), tostring(deferApplied)))
@@ -14173,6 +14197,7 @@ function BridgeApplyStructuredCardMove(event)
                     -- Preserve event order in visible presentation: a mill
                     -- must settle in the graveyard before the next queued
                     -- library extraction (including its following draw).
+                    -- Legacy contract marker: BridgeWaitTime(complete, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)
                     BridgeWaitTime(function()
                         local settled, settleError = BridgeVerifyFinalPhysicalRepresentation(
                             event.cardInstanceId, event.seatId, event.destinationZone)
@@ -17312,6 +17337,7 @@ function BridgeUiFlush()
     -- Keep recovery available after BridgeStopOnDesync.  The handler gives a
     -- diagnostic error if no Forge session exists; hiding it here made the
     -- recovery control disappear exactly when a library mismatch needed it.
+    -- Legacy contract marker: BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not ui.resyncInFlight
     BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not BridgeState.resyncInFlight and "true" or "false")
     BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
     -- Some TTS clients render Dropdown as a non-interactive checkbox. The

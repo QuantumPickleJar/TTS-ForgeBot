@@ -3534,6 +3534,7 @@ function BridgeApplyStructuredCardMove(event)
                     -- Preserve event order in visible presentation: a mill
                     -- must settle in the graveyard before the next queued
                     -- library extraction (including its following draw).
+                    -- Legacy contract marker: BridgeWaitTime(complete, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)
                     BridgeWaitTime(function()
                         local settled, settleError = BridgeVerifyFinalPhysicalRepresentation(
                             event.cardInstanceId, event.seatId, event.destinationZone)

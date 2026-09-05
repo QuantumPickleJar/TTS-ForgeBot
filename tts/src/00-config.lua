@@ -1752,6 +1752,14 @@ function BridgeRegisterPhysicalReadinessDependency(decision, reason, detail, sea
         and BridgeState.libraryExtractionTransactionBySeatId[seatId] or nil
     local generation = transaction and transaction.generation
         or (BridgeState.physicalTransactionGeneration or 0)
+    local existing = BridgeState.physicalReadinessDependency
+    if existing ~= nil and not existing.awakened
+        and existing.sessionId == BridgeState.eventSessionId
+        and existing.sessionGeneration == BridgeState.eventSessionGeneration
+        and existing.physicalTransactionGeneration == generation
+        and existing.decisionId == decision.decisionId then
+        return true
+    end
     BridgeState.physicalReadinessDependency = {
         sessionId = BridgeState.eventSessionId,
         sessionGeneration = BridgeState.eventSessionGeneration,
