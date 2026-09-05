@@ -310,6 +310,33 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void CurrentLibraryExtractionCompletionRemovesItsItemBeforeReleasingTheWorker()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.physicalTransactionGeneration = 7
+            BridgeState.libraryExtractionQueueBySeatId['forge-player-1'] = {}
+            BridgeState.libraryExtractionActiveBySeatId['forge-player-1'] = nil
+            BridgeState.libraryExtractionTransactionBySeatId['forge-player-1'] = nil
+            BridgeWakePhysicalReadinessDependency = function() end
+            BridgeFindLibraryDeckForSeat = function() return nil end
+            BridgeLogLibraryExtraction = function() end
+            local item = {cardInstanceId='forge-object:18', expectedCardName='Island',
+                run=function(complete) complete('success') end}
+            BridgeState.libraryExtractionQueueBySeatId['forge-player-1'][1] = item
+            BridgeProcessLibraryExtractionQueue('forge-player-1')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(0, state.Get("libraryExtractionQueueBySeatId").Table
+            .Get("forge-player-1").Table.Length);
+        Assert.True(state.Get("libraryExtractionActiveBySeatId").Table
+            .Get("forge-player-1").IsNil());
+        Assert.True(state.Get("libraryExtractionTransactionBySeatId").Table
+            .Get("forge-player-1").IsNil());
+    }
+
+    [Fact]
     public void StalledAutomaticResyncReleasesItsLocalLatchAndInvalidatesBootstrap()
     {
         var lua = NewQueueProbe();

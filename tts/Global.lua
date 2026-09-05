@@ -3193,6 +3193,11 @@ function BridgeProcessLibraryExtractionQueue(seatId)
     local queue = BridgeState.libraryExtractionQueueBySeatId[seatId]
     local item = queue and queue[1] or nil
     if item == nil then return end
+    -- Keep the exact queue table owned by this dispatch.  Completion may run
+    -- after the seat-level map has been replaced, so it must retire this
+    -- transaction's item from the captured queue rather than consulting an
+    -- unrelated/newer queue (or an accidental global).
+    local transactionQueue = queue
     local job = type(item) == "table" and item.run or item
     BridgeState.libraryExtractionActiveBySeatId[seatId] = true
     local transactionSessionId = BridgeState.eventSessionId
@@ -3208,6 +3213,22 @@ function BridgeProcessLibraryExtractionQueue(seatId)
     local _, dispatchLibrary = pcall(function() return BridgeFindLibraryDeckForSeat(seatId) end)
     BridgeLogLibraryExtraction(seatId, "DISPATCH", transactionGeneration, item, dispatchLibrary)
     local finished = false
+    local function removeOwnedItem()
+        if type(transactionQueue) ~= "table" then return end
+        if transactionQueue[1] ~= item then return end
+        -- Keep this removal primitive total under MoonSharp and TTS:
+        -- table.remove can partially mutate a sparse callback queue before
+        -- raising, which strands the active flag on the error path.  The
+        -- worker always owns the captured head, so shift numeric keys until
+        -- the first absent successor instead of relying on # for a sparse
+        -- callback queue.
+        local index = 1
+        while transactionQueue[index + 1] ~= nil do
+            transactionQueue[index] = transactionQueue[index + 1]
+            index = index + 1
+        end
+        transactionQueue[index] = nil
+    end
     local function current()
         return transactionSessionId == BridgeState.eventSessionId
             and transactionGeneration == (BridgeState.physicalTransactionGeneration or 0)
@@ -3223,13 +3244,7 @@ function BridgeProcessLibraryExtractionQueue(seatId)
             -- may have replaced the queue table while advancing the physical
             -- generation, so do not leave the owned head stranded merely
             -- because table identity no longer compares equal.
-            if type(currentQueue) == "table" and not wasCurrent then
-                for index = #currentQueue, 1, -1 do
-                    if currentQueue[index] == item then table.remove(currentQueue, index) end
-                end
-            elseif currentQueue ~= nil and currentQueue[1] == item then
-                table.remove(currentQueue, 1)
-            end
+            removeOwnedItem()
             if not wasCurrent and BridgeState.libraryExtractionTransactionBySeatId[seatId] == transaction then
                 BridgeState.libraryExtractionQueueBySeatId[seatId] = currentQueue or {}
             end
@@ -3272,16 +3287,12 @@ function BridgeProcessLibraryExtractionQueue(seatId)
             -- stale work item cannot remain queued after we return. Do not call
             -- complete() because it will not own the transaction and will take
             -- the early-return path, leaving the queue stranded.
-            if BridgeState.libraryExtractionTransactionBySeatId[seatId] == transaction then
+            local ownsTransaction = BridgeState.libraryExtractionTransactionBySeatId[seatId] == transaction
+            if ownsTransaction then
                 BridgeState.libraryExtractionTransactionBySeatId[seatId] = nil
+                BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
             end
-            BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
-            local currentQueue = transactionQueue
-            if type(currentQueue) == "table" then
-                for index = #currentQueue, 1, -1 do
-                    if currentQueue[index] == item then table.remove(currentQueue, index) end
-                end
-            end
+            removeOwnedItem()
             BridgeLog("[Bridge] ignored stale library extraction completion seat=" .. tostring(seatId)
                 .. " generation=" .. tostring(transactionGeneration) .. " current=" .. tostring(BridgeState.physicalTransactionGeneration or 0))
             return
@@ -3304,18 +3315,12 @@ function BridgeProcessLibraryExtractionQueue(seatId)
             -- only when the ownership map still proves that no newer worker
             -- has taken over this seat.
             BridgeState.libraryExtractionQueueBySeatId[seatId] = {}
+            BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
         end
-        BridgeState.libraryExtractionActiveBySeatId[seatId] = nil
             -- Retire only this transaction's item. A newer generation may
             -- already own the same seat; clearing the whole queue would erase
             -- that work and strand its readiness dependency.
-            local currentQueue = transactionQueue
-        if type(currentQueue) == "table" then
-            for index = #currentQueue, 1, -1 do
-                local queued = currentQueue[index]
-                if queued == item then table.remove(currentQueue, index) end
-            end
-        end
+        removeOwnedItem()
         BridgeLog("[Bridge] post-job stale cleanup seat=" .. tostring(seatId) 
             .. " generation=" .. tostring(transactionGeneration) .. " current=" .. tostring(BridgeState.physicalTransactionGeneration or 0))
     end
