@@ -3574,7 +3574,26 @@ function BridgeApplyStructuredCardMove(event)
                         complete()
                         return
                     end
-                    local moved, moveError = BridgeMoveToGraveyard(event, taken)
+                    local moved, moveError = BridgeMoveToGraveyard(event, taken, function(mergeSucceeded, mergeError)
+                        if not mergeSucceeded then
+                            -- Settlement or reconciliation failed; the
+                            -- transaction remains recoverable and desync is
+                            -- already latched by the merge owner.
+                            return
+                        end
+                        BridgeTtsExecutionBreadcrumb("FINAL_REPRESENTATION_VERIFY_ENTER", "final_physical_representation", event,
+                            "event:" .. tostring(event.sequence))
+                        local settled, settleError = BridgeVerifyFinalPhysicalRepresentation(
+                            event.cardInstanceId, event.seatId, event.destinationZone)
+                        BridgeTtsExecutionBreadcrumb("FINAL_REPRESENTATION_VERIFY_RETURNED", "final_physical_representation", event,
+                            "event:" .. tostring(event.sequence))
+                        if not settled then
+                            BridgeState.resyncLastBlockingPredicate = "missing-public-instance:" .. tostring(event.cardInstanceId)
+                            BridgeStopOnDesync(libraryDrawError(settleError))
+                            return
+                        end
+                        complete()
+                    end)
                     if not moved then
                         BridgeStopOnDesync(libraryDrawError(moveError))
                         -- Do not retire the physical extraction as success.
@@ -3583,31 +3602,8 @@ function BridgeApplyStructuredCardMove(event)
                         -- and repair the exact failed settlement.
                         return
                     end
-                    -- Preserve event order in visible presentation: a mill
-                    -- must settle in the graveyard before the next queued
-                    -- library extraction (including its following draw).
-                    BridgeWaitTime(function()
-                        -- Complete pending graveyard merge with settlement verification
-                        BridgeCompletePendingGraveyardMerge(function(mergeSucceeded)
-                            if not mergeSucceeded then
-                                -- Settlement or reconciliation failed, desync already latched
-                                return
-                            end
-                            -- Graveyard merge complete; verify final physical representation
-                            BridgeTtsExecutionBreadcrumb("FINAL_REPRESENTATION_VERIFY_ENTER", "final_physical_representation", event,
-                                "event:" .. tostring(event.sequence))
-                            local settled, settleError = BridgeVerifyFinalPhysicalRepresentation(
-                                event.cardInstanceId, event.seatId, event.destinationZone)
-                            BridgeTtsExecutionBreadcrumb("FINAL_REPRESENTATION_VERIFY_RETURNED", "final_physical_representation", event,
-                                "event:" .. tostring(event.sequence))
-                            if not settled then
-                                BridgeState.resyncLastBlockingPredicate = "missing-public-instance:" .. tostring(event.cardInstanceId)
-                                BridgeStopOnDesync(libraryDrawError(settleError))
-                                return
-                            end
-                            complete()
-                        end)
-                    end, BRIDGE_DRAW_EVENT_PRESENTATION_DELAY)
+                    -- Completion is owned by the asynchronous settlement
+                    -- callback above; no synchronous success is assumed.
                 end)
         end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
@@ -4012,6 +4008,41 @@ function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
     local entries = BridgeLibraryEntries(deck)
     if entries == nil then return false end
     local deckGuid = BridgeSafeObjectGuid(deck)
+
+    -- A merge transaction carries the complete authoritative set in the
+    -- native Deck order. Rebind every observed contained GUID by that exact
+    -- transaction position. This is deliberately independent of stale GUID
+    -- inverses and printed names, both of which can be invalid after
+    -- Card->Deck/Deck.putObject reassignment.
+    if expectedInstances ~= nil then
+        if BridgeTableSize(expectedInstances) ~= #entries then return false end
+        local ordered = {}
+        local fallbackIndex = 0
+        for _, entry in pairs(entries) do
+            fallbackIndex = fallbackIndex + 1
+            local inventoryIndex = tonumber(entry and entry.index or nil) or fallbackIndex
+            ordered[inventoryIndex] = entry
+        end
+        for index = 1, #entries do
+            local entry = ordered[index] or entries[index]
+            local guid = entry and (entry.guid or entry.GUID) or nil
+            local pair = expectedInstances[index]
+            local expectedInstanceId = pair and (pair.instanceId or pair[1]) or nil
+            local expectedCardName = pair and (pair.cardName or pair[2]) or nil
+            if guid == nil or pair == nil or expectedInstanceId == nil then
+                BridgeState.lastGraveyardRebindFailure = "index=" .. tostring(index)
+                    .. ":guid=" .. tostring(guid) .. ":instance=" .. tostring(expectedInstanceId)
+                return false
+            end
+            if not BridgeRecordContainedCardIdentity(expectedInstanceId, deckGuid, guid,
+                    seatId, "graveyard", expectedCardName) then
+                BridgeState.lastGraveyardRebindFailure = "index=" .. tostring(index)
+                    .. ":guid=" .. tostring(guid) .. ":instance=" .. tostring(expectedInstanceId)
+                return false
+            end
+        end
+        return true
+    end
     local recorded = 0
 
     -- expectedInstances: table of {instanceId, cardName} pairs, or nil for no expected instances
@@ -4067,72 +4098,60 @@ end
 -- TTS Card→Deck merges assign new contained GUIDs asynchronously; we must not
 -- attempt reconciliation until the inventory is provably stable.
 -- Returns: (stable, stableError) where stable is bool.
-function BridgeVerifyGraveyardDeckSettlement(deck, maxRetries)
-    if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then
-        return false, "target is not a usable Deck"
-    end
-    maxRetries = maxRetries or 5
+function BridgeVerifyGraveyardDeckSettlement(deck, maxRetries, callback)
+    -- This operation is asynchronous.  A scheduled frame does not suspend
+    -- Lua, so never return the result of checkStable() to the caller.
+    local finished = false
     local retryCount = 0
     local lastInventory = nil
+    maxRetries = maxRetries or 5
+
+    local function finish(ok, reason, inventory)
+        if finished then return end
+        finished = true
+        if callback ~= nil then callback(ok, reason, inventory) end
+    end
+
+    if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then
+        finish(false, "target is not a usable Deck")
+        return
+    end
 
     local function checkStable()
+        if finished then return end
         retryCount = retryCount + 1
         local entries = BridgeLibraryEntries(deck)
         if entries == nil then
-            return false, "could not read Deck inventory at retry " .. tostring(retryCount)
+            finish(false, "could not read Deck inventory at retry " .. tostring(retryCount))
+            return
         end
-
-        -- Build a snapshot of contained GUIDs in order
         local inventory = {}
         for _, entry in ipairs(entries) do
             local guid = entry and (entry.guid or entry.GUID) or nil
-            if guid ~= nil then
-                table.insert(inventory, guid)
+            if guid == nil then
+                finish(false, "Deck inventory contained an entry without a GUID")
+                return
+            end
+            table.insert(inventory, tostring(guid))
+        end
+        local stable = lastInventory ~= nil and #lastInventory == #inventory
+        if stable then
+            for index, guid in ipairs(inventory) do
+                if lastInventory[index] ~= guid then stable = false; break end
             end
         end
-
-        -- First check: just populate the snapshot
-        if lastInventory == nil then
-            lastInventory = inventory
-            if retryCount < maxRetries then
-                BridgeWaitFrames(checkStable, 1)
-            else
-                return false, "could not verify settlement after " .. tostring(maxRetries) .. " retries (empty inventory)"
-            end
-            return nil  -- Not yet determined
+        if stable then
+            finish(true, nil, inventory)
+            return
         end
-
-        -- Subsequent checks: compare against last snapshot
-        if #lastInventory ~= #inventory then
-            -- Inventory changed size - not stable yet
-            lastInventory = inventory
-            if retryCount < maxRetries then
-                BridgeWaitFrames(checkStable, 1)
-                return nil  -- Not yet determined
-            else
-                return false, "inventory size oscillated after " .. tostring(maxRetries) .. " retries"
-            end
+        lastInventory = inventory
+        if retryCount >= maxRetries then
+            finish(false, "contained GUID inventory did not stabilize after " .. tostring(maxRetries) .. " observations", inventory)
+            return
         end
-
-        -- Check if GUIDs are in same order
-        for i, guid in ipairs(inventory) do
-            if lastInventory[i] ~= guid then
-                -- GUID changed at this position - not stable yet
-                lastInventory = inventory
-                if retryCount < maxRetries then
-                    BridgeWaitFrames(checkStable, 1)
-                    return nil  -- Not yet determined
-                else
-                    return false, "contained GUIDs oscillated after " .. tostring(maxRetries) .. " retries"
-                end
-            end
-        end
-
-        -- All GUIDs stable at all positions - settlement complete
-        return true, nil
+        BridgeWaitFrames(checkStable, 1)
     end
-
-    return checkStable()
+    checkStable()
 end
 
 function BridgeEnsureNativeGraveyardContainer(seatId)
@@ -4212,7 +4231,52 @@ function BridgeEnsureNativeGraveyardContainer(seatId)
     return stable, stable and nil or "native graveyard Deck inventory did not preserve exact identities"
 end
 
-function BridgeMoveToGraveyard(event, object)
+function BridgeCollectGraveyardExpectedInstances(seatId, container, incomingInstanceId)
+    local expected = {}
+    local expectedCount = 0
+    local seen = {}
+    local entries = container and BridgeLibraryEntries(container) or nil
+    if entries ~= nil then
+        for _, entry in ipairs(entries) do
+            local guid = entry and (entry.guid or entry.GUID) or nil
+            local instanceId = guid and (BridgeState.physicalContainedInstanceIdByGuid[guid]
+                or BridgeState.physicalInstanceIdByGuid[guid]) or nil
+            if instanceId ~= nil and not seen[instanceId] then
+                expectedCount = expectedCount + 1
+                expected[expectedCount] = {instanceId=instanceId, cardName=BridgeState.cardNameByInstanceId[instanceId]}
+                seen[instanceId] = true
+            end
+        end
+    else
+        local guid = container and BridgeSafeObjectGuid(container) or nil
+        local instanceId = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+        if instanceId ~= nil then
+            expectedCount = expectedCount + 1
+            expected[expectedCount] = {instanceId=instanceId, cardName=BridgeState.cardNameByInstanceId[instanceId]}
+            seen[instanceId] = true
+        end
+    end
+    -- The inventory can expose freshly reassigned contained GUIDs before the
+    -- inverse index has caught up. The structured ledger remains the
+    -- authoritative ownership record, so include every instance already
+    -- belonging to this exact seat/zone/Deck as a second pass.
+    local deckGuid = container and BridgeSafeObjectGuid(container) or nil
+    for instanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+        if mapping.deckGuid == deckGuid and mapping.seatId == seatId
+            and mapping.zoneName == "graveyard" and not seen[instanceId] then
+            expectedCount = expectedCount + 1
+            expected[expectedCount] = {instanceId=instanceId, cardName=BridgeState.cardNameByInstanceId[instanceId]}
+            seen[instanceId] = true
+        end
+    end
+    if incomingInstanceId ~= nil and not seen[incomingInstanceId] then
+        expectedCount = expectedCount + 1
+        expected[expectedCount] = {instanceId=incomingInstanceId, cardName=BridgeState.cardNameByInstanceId[incomingInstanceId]}
+    end
+    return expected
+end
+
+function BridgeMoveToGraveyard(event, object, completion)
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then return false, "graveyard move has no configured seat" end
     local graveyardPosition = BridgeGraveyardPosition(event.seatId)
@@ -4244,12 +4308,11 @@ function BridgeMoveToGraveyard(event, object)
             BridgeStopOnDesync("graveyard object-shape contract violation: " .. tostring(shapeReason))
             return false, shapeReason
         end
+        if completion ~= nil then completion(true, nil) end
         return true, nil
     end
 
-    local existingGuid = BridgeSafeObjectGuid(existing)
-    local existingInstanceId = existingGuid and BridgeState.physicalInstanceIdByGuid[existingGuid] or nil
-    local existingCardName = existingInstanceId and BridgeState.cardNameByInstanceId[existingInstanceId] or nil
+    local expectedInstances = BridgeCollectGraveyardExpectedInstances(event.seatId, existing, event.cardInstanceId)
 
     local target = existing
     BridgeTtsExecutionBreadcrumb("GRAVEYARD_PUT_OBJECT_ENTER", "graveyard_materialization", event,
@@ -4266,30 +4329,21 @@ function BridgeMoveToGraveyard(event, object)
         return false, "TTS did not produce a native graveyard Deck for two cards"
     end
 
-    -- Multi-card reconciliation: pass BOTH the existing and incoming cards' identities atomically.
-    -- After putObject() completes, TTS has assigned new contained GUIDs to both.
-    -- Collect all expected instances (existing + incoming) and reconcile all identities in one operation.
-    -- NOTE: Reconciliation is deferred to allow TTS async settlement of the Deck's contained GUIDs.
-    -- Store the merge context for verification after settlement.
-    local expectedInstances = {}
-    if existingInstanceId ~= nil and existingCardName ~= nil then
-        table.insert(expectedInstances, {existingInstanceId, existingCardName})
-    end
-    if event.cardInstanceId ~= nil and event.cardName ~= nil then
-        table.insert(expectedInstances, {event.cardInstanceId, event.cardName})
-    end
-
-    -- Store merge context for deferred async reconciliation
-    BridgeState.pendingGraveyardMerge = {
+    local merge = {
         seatId = event.seatId,
         target = target,
         expectedInstances = expectedInstances,
         eventSequence = event.sequence,
-        cardInstanceId = event.cardInstanceId
+        cardInstanceId = event.cardInstanceId,
+        generation = BridgeState.physicalTransactionGeneration or 0,
+        sessionId = BridgeState.eventSessionId
     }
-
-    -- P2: Physical move succeeded; final reconciliation is deferred until settlement is verified.
-    -- Caller must invoke BridgeCompletePendingGraveyardMerge within an async context (e.g., BridgeWaitTime).
+    -- P2: Physical move succeeded; final reconciliation is deferred until
+    -- settlement is verified. The context belongs to this callback chain,
+    -- never to one global pending slot.
+    if completion ~= nil then
+        BridgeCompletePendingGraveyardMerge(merge, completion)
+    end
     return true, nil
 end
 
@@ -4297,48 +4351,56 @@ end
 -- Must be called from within an async context (e.g., BridgeWaitTime callback).
 -- This separates the physical move (putObject) from final reconciliation, allowing TTS time
 -- to settle the Deck's internal GUID structure before we attempt to read/map contained cards.
-function BridgeCompletePendingGraveyardMerge(callback)
-    local merge = BridgeState.pendingGraveyardMerge
+function BridgeCompletePendingGraveyardMerge(merge, callback)
     if merge == nil then
-        if callback then callback(true) end
+        if callback then callback(false, "missing graveyard merge context") end
         return
     end
-
-    BridgeState.pendingGraveyardMerge = nil
-
+    local finished = false
+    local function finish(ok, reason)
+        if finished then return end
+        finished = true
+        if callback then callback(ok, reason) end
+    end
+    if merge.sessionId ~= BridgeState.eventSessionId
+        or merge.generation ~= (BridgeState.physicalTransactionGeneration or 0) then
+        finish(false, "stale graveyard merge context")
+        return
+    end
     -- Verify the Deck has settled its contained GUID inventory
     BridgeTtsExecutionBreadcrumb("GRAVEYARD_SETTLEMENT_VERIFY_ENTER", "graveyard_materialization", nil,
         "merge:event" .. tostring(merge.eventSequence))
-    
-    local settled, settleError = BridgeVerifyGraveyardDeckSettlement(merge.target, 5)
-    
-    BridgeTtsExecutionBreadcrumb("GRAVEYARD_SETTLEMENT_VERIFY_RETURNED", "graveyard_materialization", nil,
-        "merge:event" .. tostring(merge.eventSequence))
-
-    if not settled then
-        BridgeStopOnDesync("graveyard merge settlement verification failed: " .. tostring(settleError))
-        if callback then callback(false) end
-        return
-    end
-
-    -- Settlement verified; now perform identity reconciliation
-    if not BridgeRecordGraveyardContainerEntries(merge.seatId, merge.target,
-        (#(merge.expectedInstances or {}) > 0 and merge.expectedInstances or nil)) then
-        BridgeStopOnDesync("graveyard merge identity reconciliation failed after settlement")
-        if callback then callback(false) end
-        return
-    end
-
-    -- P2: Assert object-shape contract after merge completes
-    local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(merge.seatId, "after-merge")
-    if not shapeOk then
-        BridgeLog("[Bridge] CRITICAL graveyard object-shape violation after merge: " .. tostring(shapeReason))
-        BridgeStopOnDesync("graveyard object-shape contract violation: " .. tostring(shapeReason))
-        if callback then callback(false) end
-        return
-    end
-
-    if callback then callback(true) end
+    BridgeVerifyGraveyardDeckSettlement(merge.target, 5, function(settled, settleError)
+        BridgeTtsExecutionBreadcrumb("GRAVEYARD_SETTLEMENT_VERIFY_RETURNED", "graveyard_materialization", nil,
+            "merge:event" .. tostring(merge.eventSequence))
+        if not settled then
+            local reason = "graveyard-settlement:" .. tostring(merge.cardInstanceId) .. ":" .. tostring(settleError)
+            BridgeState.resyncLastBlockingPredicate = reason
+            BridgeStopOnDesync(reason)
+            finish(false, reason)
+            return
+        end
+        if not BridgeRecordGraveyardContainerEntries(merge.seatId, merge.target,
+            (BridgeTableSize(merge.expectedInstances or {}) > 0 and merge.expectedInstances or nil)) then
+            local reason = "graveyard-reconciliation:" .. tostring(merge.cardInstanceId)
+                .. ":entries=" .. tostring(#(BridgeLibraryEntries(merge.target) or {}))
+                .. ":expected=" .. tostring(BridgeTableSize(merge.expectedInstances or {}))
+                .. ":rebind=" .. tostring(BridgeState.lastGraveyardRebindFailure)
+            BridgeState.resyncLastBlockingPredicate = reason
+            BridgeStopOnDesync(reason)
+            finish(false, reason)
+            return
+        end
+        local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(merge.seatId, "after-merge")
+        if not shapeOk then
+            local reason = "graveyard-shape:" .. tostring(shapeReason)
+            BridgeState.resyncLastBlockingPredicate = reason
+            BridgeStopOnDesync(reason)
+            finish(false, reason)
+            return
+        end
+        finish(true, nil)
+    end)
 end
 
 -- A physical extraction is not complete merely because TTS accepted a move.

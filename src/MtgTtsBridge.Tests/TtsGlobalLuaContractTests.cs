@@ -1192,10 +1192,10 @@ public sealed class TtsGlobalLuaContractTests
         // This catches corruption where :30 and :10 are missing despite being in Forge graveyard
         
         // Object-shape assertion must be called after loose card moves
-        Assert.Contains("BridgeAssertGraveyardObjectShape(event.seatId, \"after-loose-card\")", Script);
+        Assert.Contains("BridgeAssertGraveyardObjectShape(event.seatId, \"after-loose-card\"", Script);
         
         // Object-shape assertion must be called after container merge
-        Assert.Contains("BridgeAssertGraveyardObjectShape(event.seatId, \"after-merge\")", Script);
+        Assert.Contains("BridgeAssertGraveyardObjectShape(merge.seatId, \"after-merge\")", Script);
         
         // Object-shape assertion must be called after native container formation
         Assert.Contains("BridgeAssertGraveyardObjectShape(seatId, \"after-container-formation\")", Script);
@@ -1949,8 +1949,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function moveFromLibraryDeckToGraveyard(deck)", moveBody);
         Assert.Contains("BridgeQueueLibraryExtraction(event.seatId", moveBody);
         Assert.Contains("BridgeTakeTopCardFromLibrary(liveDeck, expectedName", moveBody);
-        Assert.Contains("BridgeMoveToGraveyard(event, taken)", moveBody);
-        Assert.Contains("BridgeWaitTime(function()", moveBody);
+        Assert.Contains("BridgeMoveToGraveyard(event, taken, function", moveBody);
+        Assert.DoesNotContain("BridgeCompletePendingGraveyardMerge(function", moveBody);
         Assert.Contains("BridgeVerifyFinalPhysicalRepresentation(", moveBody);
         Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"graveyard\"", moveBody);
         Assert.DoesNotContain("resolved object is a deck for non-library->hand move", moveBody);
@@ -2853,7 +2853,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void DevHud_ReportResultIsVisibleAndUsesStableCallbacks()
     {
-        Assert.Contains("CAPTURED • ", Script);
+        Assert.Contains("requestUi.reportStatus = \"CAPTURED", Script);
         Assert.Contains("diagnostic report failed", Script);
         Assert.Contains("BridgeState.ui.reportStatus", Script);
         Assert.Contains("BridgeHudReportStatus", File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml")));

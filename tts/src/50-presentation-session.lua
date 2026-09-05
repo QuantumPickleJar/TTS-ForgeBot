@@ -2306,21 +2306,6 @@ function BridgeHudSubmitReport(category, summary)
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_HANDED_OFF", captureToken, "bridge-request")
         BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
             finish(ok, body, err, "callback", "DIAG_CAPTURE_CALLBACK")
-            return
-            --[[ legacy inline completion retained only as a source-compatible
-                 comment while all completion is routed through finish above. ]]
-            ui.reportCaptureInFlight = false
-            if ok and body ~= nil and body.success == true then
-                local reportId = tostring(body.reportId or "unknown")
-                local reportPath = tostring(body.reportPath or "BugReports")
-                ui.reportStatus = "CAPTURED • " .. reportId .. "\n" .. reportPath
-                BridgeLog("[Bridge] diagnostic report captured id=" .. reportId .. " path=" .. reportPath)
-            else
-                local detail = BridgeHttpFailureDetail(body, err or "capture failed")
-                ui.reportStatus = "ERROR • " .. detail
-                BridgeLog("[Bridge] diagnostic report failed: " .. detail)
-            end
-            BridgeUiMarkDirty("report-capture-result")
         end)
     end)
     if not requestOk then
