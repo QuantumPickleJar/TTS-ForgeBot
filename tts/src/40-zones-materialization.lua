@@ -1929,8 +1929,28 @@ function BridgeZoneLedger(seatId, zoneName)
     return ledger
 end
 
-function BridgeApplyCommittedZoneLedger(events)
-    for _, event in ipairs(events or {}) do
+-- A library batch may remain logically open until the grouped event queue is
+-- retired. That bookkeeping must not block the transaction that retires the
+-- queue: only outstanding physical workers are a readiness fence here.
+function BridgePhysicalMutationOperationsIdle()
+    for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+        if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
+            or #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}) > 0
+            or BridgeState.graveyardExtractionActiveBySeatId[seatId] == true
+            or BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
+            or #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {}) > 0 then
+            return false
+        end
+    end
+    return true
+end
+
+function BridgeApplyCommittedZoneLedger(events, eventCount)
+    local count = tonumber(eventCount)
+    if count == nil then count = # (events or {}) end
+    for index = 1, count do
+        local event = events[index]
+        if event == nil then break end
         local instanceId = event.cardInstanceId
         if instanceId ~= nil and event.seatId ~= nil and event.sourceZone ~= event.destinationZone then
             if event.sourceZone ~= nil then
@@ -1942,8 +1962,15 @@ function BridgeApplyCommittedZoneLedger(events)
             if event.destinationZone ~= nil then
                 local destination = BridgeZoneLedger(event.seatId, event.destinationZone)
                 local found = false
-                for _, known in ipairs(destination) do if known == instanceId then found = true; break end end
-                if not found then table.insert(destination, instanceId) end
+                local destinationCount = 0
+                for key, known in pairs(destination) do
+                    local numericKey = tonumber(key)
+                    if numericKey ~= nil then
+                        if numericKey > destinationCount then destinationCount = numericKey end
+                        if known == instanceId then found = true end
+                    end
+                end
+                if not found then destination[destinationCount + 1] = instanceId end
             end
         end
     end
@@ -1960,7 +1987,9 @@ end
 function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
     tx.graveyardMutationBatchesBySeatId = {}
     local candidates = {}
-    for _, event in ipairs(tx.events or {}) do
+    for index = 1, (tonumber(tx.eventCount) or 0) do
+        local event = tx.events[index]
+        if event == nil then break end
         if tostring(event and event.kind or "") == "card_moved"
             and tostring(event.sourceZone or "") == "library"
             and tostring(event.destinationZone or "") == "graveyard"
@@ -2085,7 +2114,7 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         startIndex = 2
     end
 
-    for index = startIndex, #stagedMoves do
+    for index = startIndex, (tonumber(batch.stagedCount) or 0) do
         local staged = stagedMoves[index]
         if staged == nil or not BridgeObjectIsUsable(staged.object) then
             BridgeAbortAtomicGraveyardMutation(tx, batch,
@@ -2212,8 +2241,11 @@ function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, comple
         physicalTransactionGeneration = tx.physicalTransactionGeneration
     }
     batch.stagedBySequence[sequenceKey] = staged
-    table.insert(batch.stagedPhysicalMoves, staged)
     batch.stagedCount = (batch.stagedCount or 0) + 1
+    -- Keep the staged move array explicitly indexed; this is also the
+    -- representation used by the MoonSharp test harness and avoids native
+    -- table.insert interop changing the visible array length.
+    batch.stagedPhysicalMoves[batch.stagedCount] = staged
     batch.state = "STAGING"
     BridgeLog(string.format(
         "[Bridge] MUTATION_STAGE_EXTRACTED token=%s forgeSequence=%s range=%s..%s seat=%s sequence=%s cardInstanceId=%s staged=%s/%s generation=%s",
@@ -2236,7 +2268,10 @@ function BridgeBuildEventMutationTransaction(queue)
     local first = queue and queue[1] or nil
     if first == nil then return nil end
     local forgeSequence = BridgeNormalizeForgeSequence(first.forgeSequence)
-    local events = {first}
+    -- Assign the first entry explicitly.  Some MoonSharp/native table
+    -- interop paths do not expose constructor array slots consistently.
+    local events = {}
+    events[1] = first
     local eventCount = 1
     local lastEvent = first
     if forgeSequence ~= nil then
@@ -2244,7 +2279,7 @@ function BridgeBuildEventMutationTransaction(queue)
         while queue[index] ~= nil
             and BridgeNormalizeForgeSequence(queue[index].forgeSequence) == forgeSequence do
             eventCount = eventCount + 1
-            table.insert(events, queue[index])
+            events[eventCount] = queue[index]
             lastEvent = queue[index]
             index = index + 1
         end
@@ -2315,7 +2350,7 @@ function BridgeCommitEventMutationTransaction(tx)
     end
     local old = BridgeState.lastAppliedEventSequence
     for _ = 1, tx.eventCount do table.remove(tx.queue, 1) end
-    BridgeApplyCommittedZoneLedger(tx.events)
+    BridgeApplyCommittedZoneLedger(tx.events, tx.eventCount)
     BridgeState.lastAppliedEventSequence = tx.lastEventSequence
     BridgeState.lastConsumedEventSequence = tx.lastEventSequence
     BridgeState.lastStateProjectedEventSequence = tx.lastEventSequence
@@ -2378,7 +2413,12 @@ function BridgeProcessEventQueue()
             tostring(tx.lastEventSequence), tostring(seatId),
             BridgeMutationJoinInstanceIds(batch.incomingInstanceIds), tostring(tx.physicalTransactionGeneration)))
     end
-    for _, event in ipairs(tx.events) do
+    for index = 1, (tonumber(tx.eventCount) or 0) do
+        local event = tx.events[index]
+        if event == nil then
+            BridgeAbortEventMutationTransaction(tx, "transaction event array missing index " .. tostring(index))
+            return
+        end
         local ok, applied, _, err = pcall(BridgeApplyAuthoritativeEvent, event)
         if not ok or not applied then
             BridgeAbortEventMutationTransaction(tx, err or applied or "apply failed")
@@ -2403,7 +2443,7 @@ function BridgeProcessEventQueue()
         BridgeState.graveyardExtractionActiveBySeatId = BridgeState.graveyardExtractionActiveBySeatId or {}
         BridgeState.mulliganBottomQueueBySeatId = BridgeState.mulliganBottomQueueBySeatId or {}
         BridgeState.mulliganBottomInsertionActiveBySeatId = BridgeState.mulliganBottomInsertionActiveBySeatId or {}
-        local queueProbeOk, queuesIdle = pcall(BridgePhysicalLibraryQueuesIdle)
+        local queueProbeOk, queuesIdle = pcall(BridgePhysicalMutationOperationsIdle)
         if not queueProbeOk then
             BridgeAbortEventMutationTransaction(tx,
                 "physical-readiness-probe-failed: " .. tostring(queuesIdle))
