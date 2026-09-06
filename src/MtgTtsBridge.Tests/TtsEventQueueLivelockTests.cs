@@ -439,31 +439,72 @@ public sealed class TtsEventQueueLivelockTests
             directBlockReason = tostring(BridgeEventDrainBlockReason())
             BridgeProcessEventQueue()
             BridgeRecordEventDrainStall(BridgeEventDrainQueueState())
+            drainTokenAfter = BridgeState.eventDrainTransaction and BridgeState.eventDrainTransaction.token or nil
         ");
 
         Assert.Equal("animationRunning", lua.Globals.Get("directBlockReason").String);
         Assert.Equal(0, lua.Globals.Get("applyCount").Number);
         Assert.Equal(7, lua.Globals.Get("BridgeState").Table.Get("lastAppliedEventSequence").Number);
+        Assert.Equal("probe-tx", lua.Globals.Get("drainTokenAfter").String);
         Assert.Equal("animationRunning", lua.Globals.Get("BridgeState").Table.Get("eventDrainWatchdog").Table.Get("lastBlockReason").ToPrintString());
         Assert.Contains("EVENT_DRAIN_STALLED", lua.Globals.Get("lastLog").String);
     }
 
     [Fact]
-    public void StaleAnimationFenceWithoutTransactionClearsAndUnblocksQueueDrain()
+    public void InvalidEventDrainOwnershipRetiresOrphanAndStaleOwnersAndAllowsDrain()
     {
         var lua = NewQueueProbe();
-        ExecuteProbe(lua, "StaleAnimationFenceWithoutTransactionSelfHealsAndCommitsTheHeadEvent.probe.lua", @"
+        lua.DoString(@"
             BridgeState.eventQueue = {}
+            table.insert(BridgeState.eventQueue, {sequence=0, kind='mental_note', summary='probe-head-shape'})
             table.insert(BridgeState.eventQueue, {sequence=8, kind='card_moved', seatId='forge-player-2', sourceZone='hand', destinationZone='library', containsHiddenIdentity=true, cardInstanceId='forge-object:8'})
             BridgeState.animationRunning = true
             BridgeState.eventDrainTransaction = nil
-            blockReason = BridgeEventDrainBlockReason()
+            applyCount = 0
+            function BridgeApplyAuthoritativeEvent(event)
+                applyCount = applyCount + 1
+                return true, 0
+            end
+            function BridgeWaitTime(callback, delay) end
+
+            orphanBlockReason = BridgeEventDrainBlockReason()
+            orphanProcessOk, orphanProcessErr = pcall(BridgeProcessEventQueue)
+            orphanApplied = BridgeState.lastAppliedEventSequence
+            orphanAnimationAfter = BridgeState.animationRunning
+
+            BridgeState.eventQueue = {}
+            table.insert(BridgeState.eventQueue, {sequence=0, kind='mental_note', summary='probe-head-shape'})
+            table.insert(BridgeState.eventQueue, {sequence=9, kind='phase_changed', seatId='forge-player-1', phase='Main phase, precombat'})
+            BridgeState.animationRunning = true
+            BridgeState.eventDrainTransaction = {
+                token = 'stale-tx',
+                state = 'PREPARING',
+                sessionId = 'stale-session',
+                eventSessionGeneration = BridgeState.eventSessionGeneration,
+                physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
+                queue = BridgeState.eventQueue
+            }
+            staleBlockReason = BridgeEventDrainBlockReason()
+            staleProcessOk, staleProcessErr = pcall(BridgeProcessEventQueue)
+            staleApplied = BridgeState.lastAppliedEventSequence
+            staleAnimationAfter = BridgeState.animationRunning
+            staleOwnerAfter = BridgeState.eventDrainTransaction
         ");
 
-        var state = lua.Globals.Get("BridgeState").Table;
-        Assert.Equal("none", lua.Globals.Get("blockReason").String);
-        Assert.False(state.Get("animationRunning").Boolean);
-        Assert.Equal(1, state.Get("eventQueue").Table.Length);
+        Assert.True(lua.Globals.Get("orphanProcessOk").Boolean,
+            lua.Globals.Get("orphanProcessErr").ToPrintString());
+        Assert.Equal("none", lua.Globals.Get("orphanBlockReason").String);
+        Assert.Equal(8, lua.Globals.Get("orphanApplied").Number);
+        Assert.False(lua.Globals.Get("orphanAnimationAfter").Boolean);
+
+        Assert.True(lua.Globals.Get("staleProcessOk").Boolean,
+            lua.Globals.Get("staleProcessErr").ToPrintString());
+        Assert.Equal("none", lua.Globals.Get("staleBlockReason").String);
+        Assert.Equal(9, lua.Globals.Get("staleApplied").Number);
+        Assert.False(lua.Globals.Get("staleAnimationAfter").Boolean);
+        Assert.True(lua.Globals.Get("staleOwnerAfter").IsNil());
+        Assert.Equal(2, lua.Globals.Get("applyCount").Number);
+        Assert.True(lua.Globals.Get("desyncReason").IsNil() || string.IsNullOrWhiteSpace(lua.Globals.Get("desyncReason").String));
     }
 
     [Fact]
@@ -1047,27 +1088,111 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
-    public void DecisionIsNotDeferredWhenItsCursorIsAlreadyObservedEvenIfOneEventIsStillUnapplied()
+    public void DecisionIsDeferredUntilItsCursorIsPhysicallyAppliedEvenWhenAlreadyObserved()
     {
         var lua = NewQueueProbe();
         lua.DoString(@"
-            BridgeState.lastAppliedEventSequence = 86
-            BridgeState.lastReceivedEventSequence = 87
+            BridgeState.lastAppliedEventSequence = 75
+            BridgeState.lastStateProjectedEventSequence = 75
+            BridgeState.lastReceivedEventSequence = 77
+            BridgeState.animationRunning = true
+            BridgeState.eventDrainTransaction = nil
             BridgeState.eventQueue = {}
-            defer, cursor, applied, reason = BridgeShouldDeferDecision({
-                decisionId='forge-tui-87',
+            table.insert(BridgeState.eventQueue, {sequence=0, kind='mental_note', summary='probe-head-shape'})
+            table.insert(BridgeState.eventQueue, {sequence=76, kind='draw', seatId='forge-player-1', sourceZone='library', destinationZone='hand', cardInstanceId='draw-76'})
+            table.insert(BridgeState.eventQueue, {sequence=77, kind='phase_changed', seatId='forge-player-1', phase='Main phase, precombat'})
+            BridgeState.libraryExtractionActiveBySeatId = {}
+            BridgeState.libraryExtractionQueueBySeatId = {}
+            BridgeState.mulliganBottomInsertionActiveBySeatId = {}
+            BridgeState.mulliganBottomQueueBySeatId = {}
+            BridgeState.graveyardExtractionActiveBySeatId = {}
+
+            appliedDraw = false
+            appliedPhase = false
+            appliedCount = 0
+            appliedSequenceFirst = nil
+            appliedSequenceSecond = nil
+            function BridgeApplyAuthoritativeEvent(event)
+                appliedCount = appliedCount + 1
+                if event.sequence == 76 then appliedDraw = true end
+                if event.sequence == 77 then appliedPhase = true end
+                if appliedCount == 1 then appliedSequenceFirst = event.sequence end
+                if appliedCount == 2 then appliedSequenceSecond = event.sequence end
+                return true, 0
+            end
+            function BridgePhysicalLibraryQueuesIdle() return true end
+            function BridgeWaitFrames(callback, frames) callback() end
+            function BridgeWaitTime(callback, delay) end
+
+            local decision = {
+                decisionId='forge-tui-77',
                 kind='main_priority',
                 seatId='forge-player-1',
-                eventCursor=87,
+                eventCursor=77,
                 forgeSequence=14,
-                actions={{actionId='land-87', type='play_land', isPresentationAuthorized=true}}
-            })
+                actions={{actionId='pass-77', type='pass_priority'}}
+            }
+
+            deferA, cursorA, appliedA = BridgeShouldDeferDecision(decision)
+
+            decisionPresented = nil
+            presentableCount = 0
+            function ProbeDecisionPresentation(deferValue)
+                if not deferValue and decisionPresented ~= decision.decisionId then
+                    decisionPresented = decision.decisionId
+                    presentableCount = presentableCount + 1
+                end
+            end
+
+            ProbeDecisionPresentation(deferA)
+            queueHeadBeforeA = BridgeState.eventQueue[1] and BridgeState.eventQueue[1].sequence or nil
+            expectedBeforeA = (tonumber(BridgeState.lastAppliedEventSequence or 0) or 0) + 1
+            blockBeforeA = BridgeEventDrainBlockReason()
+            processAOk, processAErr = pcall(BridgeProcessEventQueue)
+            appliedAfter76 = BridgeState.lastAppliedEventSequence
+            queueHeadAfterA = BridgeState.eventQueue[1] and BridgeState.eventQueue[1].sequence or nil
+            blockAfterA = BridgeEventDrainBlockReason()
+            deferB, cursorB, appliedB = BridgeShouldDeferDecision(decision)
+            ProbeDecisionPresentation(deferB)
+
+            expectedBeforeB = (tonumber(BridgeState.lastAppliedEventSequence or 0) or 0) + 1
+            blockBeforeB = BridgeEventDrainBlockReason()
+            processBOk, processBErr = pcall(BridgeProcessEventQueue)
+            appliedAfter77 = BridgeState.lastAppliedEventSequence
+            deferC, cursorC, appliedC = BridgeShouldDeferDecision(decision)
+            ProbeDecisionPresentation(deferC)
+
+            deferCRepeat = select(1, BridgeShouldDeferDecision(decision))
+            ProbeDecisionPresentation(deferCRepeat)
         ");
 
-        Assert.False(lua.Globals.Get("defer").Boolean);
-        Assert.Equal(87, lua.Globals.Get("cursor").Number);
-        Assert.Equal(86, lua.Globals.Get("applied").Number);
-        Assert.True(lua.Globals.Get("reason").IsNil() || string.IsNullOrWhiteSpace(lua.Globals.Get("reason").String));
+        Assert.True(lua.Globals.Get("deferA").Boolean);
+        Assert.Equal(77, lua.Globals.Get("cursorA").Number);
+        Assert.Equal(75, lua.Globals.Get("appliedA").Number);
+
+        Assert.True(lua.Globals.Get("processAOk").Boolean,
+            $"processAErr={lua.Globals.Get("processAErr").ToPrintString()} headBefore={lua.Globals.Get("queueHeadBeforeA").ToPrintString()} expectedBefore={lua.Globals.Get("expectedBeforeA").ToPrintString()} blockBefore={lua.Globals.Get("blockBeforeA").ToPrintString()} blockAfter={lua.Globals.Get("blockAfterA").ToPrintString()} desync={lua.Globals.Get("desyncReason").ToPrintString()}");
+        Assert.True(lua.Globals.Get("processBOk").Boolean,
+            $"processBErr={lua.Globals.Get("processBErr").ToPrintString()} headBefore={lua.Globals.Get("queueHeadAfterA").ToPrintString()} expectedBefore={lua.Globals.Get("expectedBeforeB").ToPrintString()} blockBefore={lua.Globals.Get("blockBeforeB").ToPrintString()} desync={lua.Globals.Get("desyncReason").ToPrintString()}");
+
+        Assert.True(lua.Globals.Get("deferB").Boolean);
+        Assert.Equal(77, lua.Globals.Get("cursorB").Number);
+        Assert.Equal(76, lua.Globals.Get("appliedB").Number);
+
+        Assert.False(lua.Globals.Get("deferC").Boolean);
+        Assert.Equal(77, lua.Globals.Get("cursorC").Number);
+        Assert.Equal(77, lua.Globals.Get("appliedC").Number);
+        Assert.False(lua.Globals.Get("deferCRepeat").Boolean);
+
+        Assert.Equal(76, lua.Globals.Get("appliedAfter76").Number);
+        Assert.Equal(77, lua.Globals.Get("appliedAfter77").Number);
+        Assert.True(lua.Globals.Get("appliedDraw").Boolean);
+        Assert.True(lua.Globals.Get("appliedPhase").Boolean);
+        Assert.Equal(2, lua.Globals.Get("appliedCount").Number);
+        Assert.Equal(76, lua.Globals.Get("appliedSequenceFirst").Number);
+        Assert.Equal(77, lua.Globals.Get("appliedSequenceSecond").Number);
+        Assert.Equal(1, lua.Globals.Get("presentableCount").Number);
+        Assert.True(lua.Globals.Get("desyncReason").IsNil() || string.IsNullOrWhiteSpace(lua.Globals.Get("desyncReason").String));
     }
 
     [Fact]

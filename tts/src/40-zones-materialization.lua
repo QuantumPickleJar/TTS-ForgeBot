@@ -1949,6 +1949,285 @@ function BridgeApplyCommittedZoneLedger(events)
     end
 end
 
+function BridgeMutationJoinInstanceIds(instanceIds)
+    local parts = {}
+    for index, instanceId in ipairs(instanceIds or {}) do
+        parts[index] = tostring(instanceId)
+    end
+    return table.concat(parts, ",")
+end
+
+function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
+    tx.graveyardMutationBatchesBySeatId = {}
+    local candidates = {}
+    for _, event in ipairs(tx.events or {}) do
+        if tostring(event and event.kind or "") == "card_moved"
+            and tostring(event.sourceZone or "") == "library"
+            and tostring(event.destinationZone or "") == "graveyard"
+            and event.seatId ~= nil then
+            local seatId = event.seatId
+            local batch = candidates[seatId]
+            if batch == nil then
+                batch = {
+                    seatId = seatId,
+                    requiredCount = 0,
+                    incomingInstanceIds = {},
+                    eventSequences = {},
+                    eventSequenceSet = {},
+                    stagedPhysicalMoves = {},
+                    stagedBySequence = {},
+                    stagedCount = 0,
+                    state = "PENDING_STAGE",
+                    generation = tx.physicalTransactionGeneration,
+                    sessionId = tx.sessionId,
+                    eventSessionGeneration = tx.eventSessionGeneration,
+                    token = tx.token
+                }
+                candidates[seatId] = batch
+            end
+            batch.requiredCount = batch.requiredCount + 1
+            batch.eventSequences[batch.requiredCount] = tonumber(event.sequence or 0) or 0
+            batch.eventSequenceSet[tostring(event.sequence or "")] = true
+            batch.incomingInstanceIds[batch.requiredCount] = event.cardInstanceId
+        end
+    end
+
+    for seatId, batch in pairs(candidates) do
+        if batch.requiredCount >= 2 then
+            local committed = BridgeZoneLedger(seatId, "graveyard")
+            local stagedLedger = {}
+            for _, instanceId in ipairs(committed or {}) do
+                table.insert(stagedLedger, instanceId)
+            end
+            for _, instanceId in ipairs(batch.incomingInstanceIds) do
+                table.insert(stagedLedger, instanceId)
+            end
+            batch.stagedGraveyardLedger = stagedLedger
+            batch.expectedInstances = {}
+            for index, instanceId in ipairs(stagedLedger) do
+                batch.expectedInstances[index] = {
+                    instanceId = instanceId,
+                    cardName = BridgeState.cardNameByInstanceId[instanceId]
+                }
+            end
+            tx.graveyardMutationBatchesBySeatId[seatId] = batch
+        end
+    end
+end
+
+function BridgeMutationBatchForLibraryToGraveyardEvent(event)
+    local tx = BridgeState.eventDrainTransaction
+    if tx == nil or tx.graveyardMutationBatchesBySeatId == nil or event == nil or event.seatId == nil then
+        return nil, nil
+    end
+    if not BridgeEventMutationIsCurrent(tx) then return nil, nil end
+    local batch = tx.graveyardMutationBatchesBySeatId[event.seatId]
+    if batch == nil then return tx, nil end
+    if batch.eventSequenceSet[tostring(event.sequence or "")] ~= true then return tx, nil end
+    return tx, batch
+end
+
+function BridgeMutationPhysicalBatchesReady(tx)
+    if tx == nil or tx.graveyardMutationBatchesBySeatId == nil then return true, nil end
+    for seatId, batch in pairs(tx.graveyardMutationBatchesBySeatId) do
+        if batch ~= nil and batch.requiredCount >= 2 then
+            if batch.state ~= "VERIFIED" then
+                return false, string.format("seat=%s state=%s staged=%s/%s",
+                    tostring(seatId), tostring(batch.state), tostring(batch.stagedCount or 0),
+                    tostring(batch.requiredCount or 0))
+            end
+        end
+    end
+    return true, nil
+end
+
+function BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
+    if batch ~= nil then
+        batch.state = "FAILED"
+        batch.failureReason = reason
+        if BridgeState.libraryBatchBySeatId ~= nil and batch.seatId ~= nil then
+            BridgeState.libraryBatchBySeatId[batch.seatId] = nil
+        end
+    end
+    BridgeLog(string.format(
+        "[Bridge] MUTATION_ABORT token=%s forgeSequence=%s range=%s..%s seat=%s cardInstanceIds=%s generation=%s reason=%s",
+        tostring(tx and tx.token), tostring(tx and tx.forgeSequence),
+        tostring(tx and tx.firstEventSequence), tostring(tx and tx.lastEventSequence),
+        tostring(batch and batch.seatId), BridgeMutationJoinInstanceIds(batch and batch.incomingInstanceIds or nil),
+        tostring(tx and tx.physicalTransactionGeneration), tostring(reason)))
+    if tx ~= nil and BridgeEventMutationIsCurrent(tx) then
+        BridgeAbortEventMutationTransaction(tx, "atomic graveyard mutation failed: " .. tostring(reason))
+    end
+end
+
+function BridgeCommitAtomicGraveyardMutation(tx, batch)
+    if tx == nil or batch == nil then return end
+    if not BridgeEventMutationIsCurrent(tx) then return end
+    if batch.state == "VERIFIED" or batch.state == "FAILED" then return end
+    batch.state = "DESTINATION_COMMITTING"
+    BridgeLog(string.format(
+        "[Bridge] MUTATION_DESTINATION_COMMIT_BEGIN token=%s forgeSequence=%s range=%s..%s seat=%s cardInstanceIds=%s generation=%s",
+        tostring(tx.token), tostring(tx.forgeSequence), tostring(tx.firstEventSequence),
+        tostring(tx.lastEventSequence), tostring(batch.seatId),
+        BridgeMutationJoinInstanceIds(batch.incomingInstanceIds), tostring(tx.physicalTransactionGeneration)))
+
+    local target = BridgeFindGraveyardContainer(batch.seatId)
+    local stagedMoves = batch.stagedPhysicalMoves or {}
+    local startIndex = 1
+    if target == nil then
+        local first = stagedMoves[1]
+        if first == nil or not BridgeObjectIsUsable(first.object) then
+            BridgeAbortAtomicGraveyardMutation(tx, batch,
+                "missing first staged card while creating native graveyard container")
+            return
+        end
+        target = first.object
+        startIndex = 2
+    end
+
+    for index = startIndex, #stagedMoves do
+        local staged = stagedMoves[index]
+        if staged == nil or not BridgeObjectIsUsable(staged.object) then
+            BridgeAbortAtomicGraveyardMutation(tx, batch,
+                "staged object unavailable index=" .. tostring(index))
+            return
+        end
+        local putOk, putResult = pcall(function() return target.putObject(staged.object, 0) end)
+        if not putOk then
+            BridgeAbortAtomicGraveyardMutation(tx, batch,
+                "native graveyard putObject failed index=" .. tostring(index) .. " error=" .. tostring(putResult))
+            return
+        end
+        if putResult ~= nil and putResult.tag == "Deck" then target = putResult end
+    end
+
+    if target == nil or target.tag ~= "Deck" then
+        target = BridgeFindGraveyardContainer(batch.seatId)
+    end
+    if target == nil or target.tag ~= "Deck" then
+        BridgeAbortAtomicGraveyardMutation(tx, batch,
+            "TTS did not produce an active graveyard Deck for staged cards")
+        return
+    end
+
+    batch.targetDeck = target
+    BridgeVerifyGraveyardDeckSettlement(target, 8, function(settled, settleError)
+        if not BridgeEventMutationIsCurrent(tx) then return end
+        if not settled then
+            BridgeAbortAtomicGraveyardMutation(tx, batch,
+                "graveyard-settlement:" .. tostring(settleError))
+            return
+        end
+        if not BridgeRecordGraveyardContainerEntries(batch.seatId, target, batch.expectedInstances) then
+            local reason = "graveyard-reconciliation:entries="
+                .. tostring(#(BridgeLibraryEntries(target) or {}))
+                .. ":expected=" .. tostring(BridgeTableSize(batch.expectedInstances or {}))
+                .. ":rebind=" .. tostring(BridgeState.lastGraveyardRebindFailure)
+            BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
+            return
+        end
+        for _, expected in ipairs(batch.expectedInstances or {}) do
+            local instanceId = expected and expected.instanceId or nil
+            if instanceId ~= nil then
+                local represented, representationError = BridgeVerifyFinalPhysicalRepresentation(
+                    instanceId, batch.seatId, "graveyard")
+                if not represented then
+                    BridgeAbortAtomicGraveyardMutation(tx, batch,
+                        "final-representation:" .. tostring(instanceId) .. ":" .. tostring(representationError))
+                    return
+                end
+            end
+        end
+        local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(batch.seatId, "after-mutation-batch")
+        if not shapeOk then
+            BridgeAbortAtomicGraveyardMutation(tx, batch, "graveyard-shape:" .. tostring(shapeReason))
+            return
+        end
+        batch.state = "VERIFIED"
+        batch.verifiedAt = os.clock()
+        if BridgeState.libraryBatchBySeatId ~= nil then
+            BridgeState.libraryBatchBySeatId[batch.seatId] = nil
+        end
+        BridgeLog(string.format(
+            "[Bridge] MUTATION_DESTINATION_VERIFIED token=%s forgeSequence=%s range=%s..%s seat=%s cardInstanceIds=%s generation=%s",
+            tostring(tx.token), tostring(tx.forgeSequence), tostring(tx.firstEventSequence),
+            tostring(tx.lastEventSequence), tostring(batch.seatId),
+            BridgeMutationJoinInstanceIds(batch.incomingInstanceIds), tostring(tx.physicalTransactionGeneration)))
+        if BridgeWakePhysicalReadinessDependency ~= nil then
+            BridgeWakePhysicalReadinessDependency(tx.physicalTransactionGeneration, "atomic-graveyard-verified")
+        end
+    end, function(sampleCount, inventory)
+        BridgeLog(string.format(
+            "[Bridge] MUTATION_DESTINATION_SETTLEMENT_SAMPLE token=%s forgeSequence=%s seat=%s sample=%s inventoryCount=%s generation=%s",
+            tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId),
+            tostring(sampleCount), tostring(#(inventory or {})), tostring(tx.physicalTransactionGeneration)))
+    end)
+end
+
+function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, complete)
+    if tx == nil or batch == nil then
+        if complete ~= nil then complete("missing-mutation-batch") end
+        return
+    end
+    if not BridgeEventMutationIsCurrent(tx) then
+        if complete ~= nil then complete("stale-mutation") end
+        return
+    end
+    if batch.state == "FAILED" or batch.state == "VERIFIED" then
+        if complete ~= nil then complete("terminal-mutation") end
+        return
+    end
+    local sequenceKey = tostring(event and event.sequence or "")
+    if batch.stagedBySequence[sequenceKey] ~= nil then
+        if complete ~= nil then complete("duplicate-stage-callback") end
+        return
+    end
+    if not BridgeObjectIsUsable(taken) then
+        BridgeAbortAtomicGraveyardMutation(tx, batch,
+            "staged extraction returned unusable object sequence=" .. tostring(event and event.sequence))
+        if complete ~= nil then complete("unusable-staged-object") end
+        return
+    end
+    local seat = BRIDGE_SEATS[event.seatId]
+    local anchor = BridgeGraveyardPosition(event.seatId)
+    if seat ~= nil and anchor ~= nil then
+        pcall(function()
+            taken.use_hands = false
+            BridgeSetPhysicalFaceDown(taken, seat, false)
+            local offset = (batch.stagedCount or 0) + 1
+            taken.setPositionSmooth({anchor.x + (0.35 * offset), anchor.y + 1.1, anchor.z}, false, true)
+            taken.setLock(true)
+        end)
+    end
+    local staged = {
+        eventSequence = event.sequence,
+        cardInstanceId = event.cardInstanceId,
+        sourceZone = event.sourceZone,
+        destinationZone = event.destinationZone,
+        guid = BridgeSafeObjectGuid(taken),
+        object = taken,
+        token = tx.token,
+        sessionId = tx.sessionId,
+        eventSessionGeneration = tx.eventSessionGeneration,
+        physicalTransactionGeneration = tx.physicalTransactionGeneration
+    }
+    batch.stagedBySequence[sequenceKey] = staged
+    table.insert(batch.stagedPhysicalMoves, staged)
+    batch.stagedCount = (batch.stagedCount or 0) + 1
+    batch.state = "STAGING"
+    BridgeLog(string.format(
+        "[Bridge] MUTATION_STAGE_EXTRACTED token=%s forgeSequence=%s range=%s..%s seat=%s sequence=%s cardInstanceId=%s staged=%s/%s generation=%s",
+        tostring(tx.token), tostring(tx.forgeSequence), tostring(tx.firstEventSequence),
+        tostring(tx.lastEventSequence), tostring(batch.seatId), tostring(event.sequence),
+        tostring(event.cardInstanceId), tostring(batch.stagedCount), tostring(batch.requiredCount),
+        tostring(tx.physicalTransactionGeneration)))
+
+    if batch.stagedCount >= batch.requiredCount then
+        BridgeCommitAtomicGraveyardMutation(tx, batch)
+    end
+    if complete ~= nil then complete() end
+end
+
 -- H0: a Forge sequence is a mutation boundary, not a post-commit hint.
 -- Queue ownership remains with this object until every event in the contiguous
 -- group has finished its physical work.  In particular, lastApplied is never
@@ -1970,7 +2249,7 @@ function BridgeBuildEventMutationTransaction(queue)
             index = index + 1
         end
     end
-    return {
+    local tx = {
         sessionId = BridgeState.eventSessionId,
         eventSessionGeneration = BridgeState.eventSessionGeneration or 0,
         physicalTransactionGeneration = BridgeState.physicalTransactionGeneration or 0,
@@ -1985,6 +2264,8 @@ function BridgeBuildEventMutationTransaction(queue)
             .. ":" .. tostring(BridgeState.physicalTransactionGeneration or 0) .. ":" .. tostring(first.sequence),
         startedAt = os.clock()
     }
+    BridgeBuildAtomicLibraryToGraveyardBatches(tx)
+    return tx
 end
 
 function BridgeEventMutationIsCurrent(tx)
@@ -2002,6 +2283,9 @@ function BridgeAbortEventMutationTransaction(tx, reason)
     if BridgeState.eventDrainTransaction == tx then BridgeState.eventDrainTransaction = nil end
     BridgeState.animationRunning = false
     BridgeState.presentationState = "DESYNCED"
+    BridgeLog("[Bridge] MUTATION_ABORT token=" .. tostring(tx.token) .. " first="
+        .. tostring(tx.firstEventSequence) .. " last=" .. tostring(tx.lastEventSequence)
+        .. " reason=" .. tostring(reason))
     BridgeLog("[Bridge] EVENT_MUTATION_ABORT token=" .. tostring(tx.token) .. " first="
         .. tostring(tx.firstEventSequence) .. " last=" .. tostring(tx.lastEventSequence)
         .. " reason=" .. tostring(reason))
@@ -2044,6 +2328,11 @@ function BridgeCommitEventMutationTransaction(tx)
     BridgeState.animationRunning = false
     BridgeState.presentationState = "RUNNING"
     BridgeResetEventCommitWatchdog()
+    BridgeLog("[Bridge] MUTATION_COMMIT token=" .. tostring(tx.token) .. " forgeSequence="
+        .. tostring(tx.forgeSequence) .. " first=" .. tostring(tx.firstEventSequence)
+        .. " last=" .. tostring(tx.lastEventSequence)
+        .. " count=" .. tostring(tx.eventCount)
+        .. " generation=" .. tostring(tx.physicalTransactionGeneration))
     BridgeLog("[Bridge] EVENT_TX_COMMIT transaction=" .. tostring(tx.token) .. " oldLastApplied="
         .. tostring(old) .. " newLastApplied=" .. tostring(tx.lastEventSequence)
         .. " count=" .. tostring(tx.eventCount))
@@ -2082,6 +2371,13 @@ function BridgeProcessEventQueue()
     BridgeLog("[Bridge] EVENT_TX_BEGIN transaction=" .. tostring(tx.token) .. " forgeSequence="
         .. tostring(tx.forgeSequence) .. " first=" .. tostring(tx.firstEventSequence)
         .. " last=" .. tostring(tx.lastEventSequence) .. " count=" .. tostring(tx.eventCount))
+    for seatId, batch in pairs(tx.graveyardMutationBatchesBySeatId or {}) do
+        BridgeLog(string.format(
+            "[Bridge] MUTATION_STAGE_BEGIN token=%s forgeSequence=%s range=%s..%s seat=%s cardInstanceIds=%s generation=%s",
+            tostring(tx.token), tostring(tx.forgeSequence), tostring(tx.firstEventSequence),
+            tostring(tx.lastEventSequence), tostring(seatId),
+            BridgeMutationJoinInstanceIds(batch.incomingInstanceIds), tostring(tx.physicalTransactionGeneration)))
+    end
     for _, event in ipairs(tx.events) do
         local ok, applied, _, err = pcall(BridgeApplyAuthoritativeEvent, event)
         if not ok or not applied then
@@ -2111,6 +2407,12 @@ function BridgeProcessEventQueue()
         if not queueProbeOk then
             BridgeAbortEventMutationTransaction(tx,
                 "physical-readiness-probe-failed: " .. tostring(queuesIdle))
+            return
+        end
+        local mutationReady, mutationReason = BridgeMutationPhysicalBatchesReady(tx)
+        if not mutationReady then
+            BridgeState.resyncLastBlockingPredicate = "mutation-batch-pending:" .. tostring(mutationReason)
+            BridgeWaitFrames(awaitPhysicalSettlement, 1)
             return
         end
         if queuesIdle then
@@ -3758,6 +4060,7 @@ function BridgeApplyStructuredCardMove(event)
         local staging = libraryZone.getPosition()
         local transactionSessionId = BridgeState.eventSessionId
         local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
+        local mutationTx, atomicBatch = BridgeMutationBatchForLibraryToGraveyardEvent(event)
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_ENTER", "library_extraction", event, "event:" .. tostring(event.sequence))
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
             if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
@@ -3779,6 +4082,10 @@ function BridgeApplyStructuredCardMove(event)
                     if not BridgeRequireArtBearingLibraryCard(taken, event.seatId, event.cardInstanceId) then
                         BridgeStopOnDesync(libraryDrawError("physical library returned an artless normal game card"))
                         complete()
+                        return
+                    end
+                    if atomicBatch ~= nil then
+                        BridgeStageAtomicLibraryToGraveyardMove(mutationTx, atomicBatch, event, taken, complete)
                         return
                     end
                     local moved, moveError = BridgeMoveToGraveyard(event, taken, function(mergeSucceeded, mergeError)
@@ -4305,7 +4612,7 @@ end
 -- TTS Card→Deck merges assign new contained GUIDs asynchronously; we must not
 -- attempt reconciliation until the inventory is provably stable.
 -- Returns: (stable, stableError) where stable is bool.
-function BridgeVerifyGraveyardDeckSettlement(deck, maxRetries, callback)
+function BridgeVerifyGraveyardDeckSettlement(deck, maxRetries, callback, sampleObserver)
     -- This operation is asynchronous.  A scheduled frame does not suspend
     -- Lua, so never return the result of checkStable() to the caller.
     local finished = false
@@ -4340,6 +4647,9 @@ function BridgeVerifyGraveyardDeckSettlement(deck, maxRetries, callback)
                 return
             end
             table.insert(inventory, tostring(guid))
+        end
+        if sampleObserver ~= nil then
+            pcall(sampleObserver, retryCount, inventory, lastInventory, maxRetries)
         end
         local stable = lastInventory ~= nil and #lastInventory == #inventory
         if stable then
