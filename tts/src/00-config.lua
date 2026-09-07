@@ -249,6 +249,12 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncScheduled = BridgeState.resyncScheduled == true,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncStartedAt = BridgeState.resyncStartedAt,
+        resyncStartedCpuAt = BridgeState.resyncStartedCpuAt,
+        resyncStage = BridgeState.resyncStage,
+        resyncStageChangedAt = BridgeState.resyncStageChangedAt,
+        resyncLastProgressAt = BridgeState.resyncLastProgressAt,
+        resyncLastFailureReason = BridgeState.resyncLastFailureReason,
+        resyncLastBlockingPredicate = BridgeState.resyncLastBlockingPredicate,
         resyncDeferredReason = BridgeState.resyncDeferredReason,
         resyncDeferredSince = BridgeState.resyncDeferredSince,
         resyncDeferredRetryScheduled = BridgeState.resyncDeferredRetryScheduled == true,
@@ -1272,6 +1278,7 @@ BridgeState = {
     libraryExtractionQueueBySeatId = {},
     libraryExtractionActiveBySeatId = {},
     libraryExtractionTransactionBySeatId = {},
+    libraryInsertionHandReleaseByGuid = {},
     graveyardExtractionActiveBySeatId = {},
     -- Consecutive library transitions emitted by one Forge mutation are one
     -- physical transaction.  The queue still serializes Deck operations, but
@@ -1315,6 +1322,7 @@ BridgeState = {
     resyncDeferredRetryScheduled = false,
     resyncDeferredSince = nil,
     resyncWatchdogToken = nil,
+    resyncStartedCpuAt = nil,
     resyncBootstrapGeneration = 0,
     lastChoiceAttempt = nil,
     counterStateByInstanceId = {},
@@ -1367,6 +1375,7 @@ BridgeState = {
     sessionRecoveryInFlight = false,
     resyncToken = 0,
     resyncStartedAt = nil,
+    resyncStartedCpuAt = nil,
     resyncStage = "Idle",
     resyncStageChangedAt = nil,
     resyncAttempt = 0,
@@ -1606,6 +1615,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.resyncLastBlockingPredicate = nil
     BridgeState.resyncStage = "Idle"
     BridgeState.resyncStartedAt = nil
+    BridgeState.resyncStartedCpuAt = nil
     BridgeState.resyncOrigin = nil
     BridgeState.resyncLastFailureReason = nil
     BridgeState.resyncNoProgressAttempts = 0

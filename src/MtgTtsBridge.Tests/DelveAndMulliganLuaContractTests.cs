@@ -122,6 +122,18 @@ public sealed class DelveAndMulliganLuaContractTests
     }
 
     [Fact]
+    public void MulliganLibraryInsertion_WaitsForHandCardToLeaveTtsHandBeforePutObject()
+    {
+        Assert.Contains("function BridgeSeatHandContainsGuid(seatId, guid)", Script);
+        Assert.Contains("card remained in player hand before library insertion", Script);
+        Assert.Contains("releaseMarkers[guid] = true", Script);
+        Assert.Contains("BridgeWaitFrames(function() waitForHandRelease(attempt + 1) end, 2)", Script);
+        Assert.Contains("Stage the card over", Script);
+        Assert.Contains("object.setPosition({libraryPosition.x, libraryPosition.y + 3.0, libraryPosition.z})", Script);
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, callback, cardInstanceId)", Script);
+    }
+
+    [Fact]
     public void MulliganBottomFailure_DoesNotContinueMutatingTheRemainingQueue()
     {
         var start = Script.IndexOf("function BridgeProcessMulliganBottomQueue", StringComparison.Ordinal);

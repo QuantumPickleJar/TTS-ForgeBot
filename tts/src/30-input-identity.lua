@@ -2049,9 +2049,10 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
         or BridgeState.resyncInFlight ~= true then return false end
 
     BridgeLog(string.format(
-        "[Bridge] RESYNC_STALLED origin=%s session=%s token=%s startedAt=%s received=%s applied=%s queueLength=%s reason=%s",
+        "[Bridge] RESYNC_STALLED origin=%s session=%s token=%s startedAt=%s startedCpuAt=%s stage=%s received=%s applied=%s queueLength=%s reason=%s",
         tostring(BridgeState.resyncOrigin), tostring(sessionId), tostring(token),
-        tostring(BridgeState.resyncStartedAt), tostring(BridgeState.lastReceivedEventSequence),
+        tostring(BridgeState.resyncStartedAt), tostring(BridgeState.resyncStartedCpuAt),
+        tostring(BridgeState.resyncStage), tostring(BridgeState.lastReceivedEventSequence),
         tostring(BridgeState.lastAppliedEventSequence), tostring(#(BridgeState.eventQueue or {})),
         tostring(reason or "watchdog")))
 
@@ -2066,6 +2067,7 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeState.resyncScheduled = false
     BridgeState.bootstrapping = false
     BridgeState.resyncStartedAt = nil
+    BridgeState.resyncStartedCpuAt = nil
     BridgeState.resyncLastFailureReason = tostring(reason or "watchdog")
     BridgeState.resyncDeferredReason = tostring(reason or "watchdog")
     BridgeSetSchedulerOwner("NORMAL", "resync-stalled")
@@ -2084,9 +2086,19 @@ end
 function BridgeCheckResyncWatchdog(reason)
     if BridgeState.resyncInFlight ~= true or BridgeState.resyncStartedAt == nil then return false end
     local now = BridgeResyncClockNow()
-    if now == nil or now - BridgeState.resyncStartedAt < BRIDGE_RESYNC_STALL_SECONDS then return false end
+    local wallElapsed = now ~= nil and now - BridgeState.resyncStartedAt or nil
+    -- Time.time can pause or jump while TTS is under load. Keep a second,
+    -- independent CPU-clock deadline so a recovery that owns event polling
+    -- cannot remain in-flight forever merely because the game clock stalled.
+    local cpuNow = BridgePerformanceNow ~= nil and BridgePerformanceNow() or os.clock()
+    local cpuElapsed = BridgeState.resyncStartedCpuAt ~= nil and cpuNow - BridgeState.resyncStartedCpuAt or nil
+    local wallStalled = wallElapsed ~= nil and wallElapsed >= BRIDGE_RESYNC_STALL_SECONDS
+    local cpuStalled = cpuElapsed ~= nil and cpuElapsed >= BRIDGE_RESYNC_STALL_SECONDS
+    if not wallStalled and not cpuStalled then return false end
     local token = BridgeState.resyncToken
-    return BridgeReleaseStalledResync(BridgeState.eventSessionId, token, reason or "clock")
+    local clock = cpuStalled and not wallStalled and "cpu-clock" or "wall-clock"
+    return BridgeReleaseStalledResync(BridgeState.eventSessionId, token,
+        tostring(reason or "clock") .. ":" .. clock)
 end
 
 function BridgeScheduleResyncWatchdog(sessionId, token)
@@ -2185,18 +2197,36 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
                     BridgeLog("[Bridge] RESYNC_DEFERRED reason=physical-library-queue-timeout origin=" .. tostring(origin)
                         .. "; stopping automatic progression for manual recovery")
                     BridgeStopOnDesync("automatic authoritative resync blocked by physical library queue")
-                    -- After timeout, monitor for when physical queue becomes idle so manual
-                    -- recovery can take ownership without requiring another operator gesture.
+                    -- The queue can finish just after the grace window (multi-card mill
+                    -- batches commonly do). Keep observing it and restart the same bounded
+                    -- authoritative recovery as soon as it is idle. The resync circuit
+                    -- breaker still owns repeated/no-progress failures; if it refuses the
+                    -- retry, retain the manual recovery control.
                     if not BridgeState.queueTimeoutMonitorScheduled then
                         BridgeState.queueTimeoutMonitorScheduled = true
-                        BridgeWaitFrames(function()
+                        local monitorSessionId = BridgeState.eventSessionId
+                        local function resumeAutomaticRecoveryWhenIdle()
+                            if BridgeState.eventSessionId ~= monitorSessionId
+                                or BridgeState.desyncLatched ~= true then
+                                BridgeState.queueTimeoutMonitorScheduled = false
+                                return
+                            end
+                            if BridgeState.resyncInFlight == true then
+                                BridgeState.queueTimeoutMonitorScheduled = false
+                                return
+                            end
+                            if not BridgePhysicalLibraryQueuesIdle() then
+                                BridgeWaitFrames(resumeAutomaticRecoveryWhenIdle, 1)
+                                return
+                            end
                             BridgeState.queueTimeoutMonitorScheduled = false
-                            if BridgeState.desyncLatched == true and BridgeState.resyncInFlight ~= true
-                                and BridgePhysicalLibraryQueuesIdle() then
-                                BridgeLog("[Bridge] RESYNC_QUEUE_IDLE_AFTER_TIMEOUT manual recovery now available")
+                            BridgeLog("[Bridge] RESYNC_QUEUE_IDLE_AFTER_TIMEOUT retrying automatic authoritative recovery")
+                            BridgeResyncFromAuthoritativeSnapshot(origin)
+                            if BridgeState.resyncInFlight ~= true then
                                 BridgeEnsureDesyncRecovery("queue-idle-after-timeout")
                             end
-                        end, 1)
+                        end
+                        BridgeWaitFrames(resumeAutomaticRecoveryWhenIdle, 1)
                     end
                     return false
                 end
@@ -2256,6 +2286,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     BridgeState.resyncOrigin = origin
     BridgeState.resyncStartedAt = BridgeResyncClockNow()
+    BridgeState.resyncStartedCpuAt = BridgePerformanceNow ~= nil and BridgePerformanceNow() or os.clock()
     BridgeState.resyncInFlight = true
     BridgeState.resyncReconcileStarted = false
     BridgeState.resyncLastBlockingPredicate = nil
@@ -2296,6 +2327,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeState.resyncScheduled = false
         BridgeState.resyncWatchdogToken = nil
         BridgeState.resyncStartedAt = nil
+        BridgeState.resyncStartedCpuAt = nil
         BridgeState.resyncSnapshotFingerprint = nil
         BridgeState.resyncSnapshotRepeatCount = 0
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end

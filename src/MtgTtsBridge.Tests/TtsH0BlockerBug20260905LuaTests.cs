@@ -16,7 +16,7 @@ namespace MtgTtsBridge.Tests;
 /// Fixes verify:
 /// - Library→hand extraction now verifies final membership before completion
 /// - Choice submission is blocked when desyncLatched
-/// - Physical queue timeout transitions to manual recovery state (not orphaned)
+/// - Physical queue timeout automatically retries once the owned queue becomes idle
 /// </summary>
 public sealed class TtsH0BlockerBug20260905LuaTests
 {
@@ -57,22 +57,23 @@ public sealed class TtsH0BlockerBug20260905LuaTests
     }
 
     [Fact]
-    public void AutomaticRecovery_SchedulesQueueIdleCheckAfterTimeout()
+    public void AutomaticRecovery_RetriesWhenQueueBecomesIdleAfterTimeout()
     {
-        // Fix 2: When automatic recovery times out due to physical queue blocking,
-        // schedule explicit check for queue-idle event to transition to manual recovery.
+        // When automatic recovery times out due to physical queue blocking,
+        // keep observing the owned queue and retry authoritative recovery once idle.
         // The bug: Timeout set desyncLatched=true and returned, reaching orphaned state
-        // (no recovery owner, no way to proceed).
-        // The fix: Schedule BridgeWaitFrames callback that checks if queue idles,
-        // then calls BridgeEnsureDesyncRecovery to make manual RESYNC available.
+        // (no recovery owner, no way to proceed) if a multi-card mill needed more
+        // than one additional frame to settle.
         
         Assert.Contains("RESYNC_DEFERRED reason=physical-library-queue-timeout", Script);
         Assert.Contains("BridgeStopOnDesync(\"automatic authoritative resync blocked by physical library queue\")", Script);
         Assert.Contains("BridgeState.queueTimeoutMonitorScheduled = true", Script);
-        Assert.Contains("BridgeWaitFrames(function()", Script);
+        Assert.Contains("function resumeAutomaticRecoveryWhenIdle()", Script);
         Assert.Contains("BridgePhysicalLibraryQueuesIdle()", Script);
+        Assert.Contains("BridgeWaitFrames(resumeAutomaticRecoveryWhenIdle, 1)", Script);
+        Assert.Contains("BridgeResyncFromAuthoritativeSnapshot(origin)", Script);
         Assert.Contains("BridgeEnsureDesyncRecovery(\"queue-idle-after-timeout\")", Script);
-        Assert.Contains("RESYNC_QUEUE_IDLE_AFTER_TIMEOUT", Script);
+        Assert.Contains("RESYNC_QUEUE_IDLE_AFTER_TIMEOUT retrying automatic authoritative recovery", Script);
     }
 
     [Fact]
@@ -82,7 +83,9 @@ public sealed class TtsH0BlockerBug20260905LuaTests
         // desyncLatched=true AND resyncInFlight=false AND no explicit recovery path
         // The fix ensures automatic queue timeout explicitly transitions to manual recovery.
         
-        Assert.Contains("if BridgeState.desyncLatched == true and BridgeState.resyncInFlight ~= true", Script);
+        Assert.Contains("BridgeState.desyncLatched ~= true", Script);
+        Assert.Contains("BridgeState.resyncInFlight == true", Script);
+        Assert.Contains("BridgeResyncFromAuthoritativeSnapshot(origin)", Script);
         Assert.Contains("BridgeEnsureDesyncRecovery", Script);
     }
 
@@ -100,6 +103,17 @@ public sealed class TtsH0BlockerBug20260905LuaTests
         
         // UI state should only appear in diagnostics, not decision logic
         Assert.True(uiResyncCountCheck <= 2, "ui.resyncInFlight should only appear in diagnostics, not core logic");
+    }
+
+    [Fact]
+    public void ResyncWatchdog_UsesIndependentCpuClockWhenGameClockIsUnavailable()
+    {
+        Assert.Contains("resyncStartedCpuAt", Script);
+        Assert.Contains("local wallElapsed =", Script);
+        Assert.Contains("local cpuElapsed =", Script);
+        Assert.Contains("local wallStalled =", Script);
+        Assert.Contains("local cpuStalled =", Script);
+        Assert.Contains("cpu-clock", Script);
     }
 
     [Fact]

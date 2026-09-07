@@ -875,6 +875,7 @@ function BridgeStopOnDecisionProvenanceLag(detail, fault)
     BridgeState.resyncDeferredRetryScheduled = false
     BridgeState.resyncWatchdogToken = nil
     BridgeState.resyncStartedAt = nil
+    BridgeState.resyncStartedCpuAt = nil
     BridgeState.resyncOrigin = nil
     BridgeState.resyncDeferredReason = nil
     if BridgeState.ui ~= nil then
@@ -3902,7 +3903,14 @@ function BridgeResetSession()
             BridgeResetSessionRequest(function(ok, body, err)
         if not ok then
             BridgeSetSetupBusy(false)
-            BridgeShowError("explicit session reset failed: " .. BridgeHttpFailureDetail(body, err))
+            local detail = BridgeHttpFailureDetail(body, err)
+            local code = body and (body.errorCode or body.code) or nil
+            if code == "forge_deck_inventory_mismatch" then
+                BridgeSetLifecycleState(BRIDGE_LIFECYCLE_START_FAILED, "deck-validation-failed")
+                BridgeSetupFailure("deck-validation", detail)
+            else
+                BridgeShowError("explicit session reset failed: " .. detail)
+            end
             return
         end
 

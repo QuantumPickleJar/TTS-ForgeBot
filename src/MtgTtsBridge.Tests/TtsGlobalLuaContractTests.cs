@@ -697,6 +697,20 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void Reset_ReportsForgeInventoryMismatchAsDeckValidationFailure()
+    {
+        var start = Script.IndexOf("function BridgeResetSession()", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeSmokeTest()", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var reset = Script[start..end];
+
+        Assert.Contains("code == \"forge_deck_inventory_mismatch\"", reset);
+        Assert.Contains("BridgeSetLifecycleState(BRIDGE_LIFECYCLE_START_FAILED, \"deck-validation-failed\")", reset);
+        Assert.Contains("BridgeSetupFailure(\"deck-validation\", detail)", reset);
+        Assert.DoesNotContain("explicit session reset failed: \" .. BridgeHttpFailureDetail(body, err)", reset);
+    }
+
+    [Fact]
     public void AuthoritativeDraw_TakesVerifiedNamedCardFromPhysicalDeckWithoutChatLeak()
     {
         Assert.Contains("if event.kind == \"draw\"", Script);
@@ -1238,13 +1252,14 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void Launcher_CanStartForgeWithAuthoritativeManualManaChoices()
+    public void Launcher_UsesEagerCardScriptsForAuthoritativeDeckLoading()
     {
         var launcher = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tools", "Start-ForgeBot.ps1"));
         Assert.Contains("[switch]$ManualMana", launcher);
         Assert.Contains("--askmana", launcher);
         Assert.Contains("[switch]$LazyCardScripts", launcher);
-        Assert.Contains("$lazyCardScriptsOption = if ($LazyCardScripts) { ' --lazy-card-scripts' } else { '' }", launcher);
+        Assert.Contains("$lazyCardScriptsOption = ''", launcher);
+        Assert.Contains("Ignoring -LazyCardScripts", launcher);
         Assert.Contains("--numeric-choices$manualManaOption$lazyCardScriptsOption$seedOption", launcher);
     }
 
@@ -3448,5 +3463,20 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("TAP_CHANGED_EXIT", Script);
         Assert.Contains("GRAVEYARD_PUT_OBJECT_ENTER", Script);
         Assert.Contains("FINAL_REPRESENTATION_VERIFY_ENTER", Script);
+    }
+
+    [Fact]
+    public void AtomicMillAndRecovery_FormLooseGraveyardsWithNativeGrouping()
+    {
+        var atomicStart = Script.IndexOf("function BridgeCommitAtomicGraveyardMutation", StringComparison.Ordinal);
+        var atomicEnd = Script.IndexOf("function BridgeStageAtomicLibraryToGraveyardMove", atomicStart, StringComparison.Ordinal);
+        var recoveryStart = Script.IndexOf("function BridgeEnsureNativeGraveyardContainer", StringComparison.Ordinal);
+        var recoveryEnd = Script.IndexOf("function BridgeCollectGraveyardExpectedInstances", recoveryStart, StringComparison.Ordinal);
+        Assert.True(atomicStart >= 0 && atomicEnd > atomicStart);
+        Assert.True(recoveryStart >= 0 && recoveryEnd > recoveryStart);
+        Assert.Contains("MUTATION_DESTINATION_GROUP_REQUESTED", Script[atomicStart..atomicEnd]);
+        Assert.Contains("return group(cardsToGroup)", Script[atomicStart..atomicEnd]);
+        Assert.Contains("return group(loose)", Script[recoveryStart..recoveryEnd]);
+        Assert.DoesNotContain("container = loose[1]", Script[recoveryStart..Script.IndexOf("if type(group) == \"function\"", recoveryStart, StringComparison.Ordinal)]);
     }
 }

@@ -116,6 +116,32 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
+    public async Task TargetSelectionPublishesFromTheLatestCommittedSnapshotWhenForgeOmitsAMarker()
+    {
+        await using var adapter = WatermarkAdapter("target-session", 108, 18);
+        var stage = PrivateMethod("StageDecisionCandidate");
+        var publish = PrivateMethod("TryPublishPendingDecision");
+        var target = new ForgeTuiDecision(
+            new DecisionDto("forge-tui-target", "target_selection", [
+                new LegalActionDto("forge-tui-target-choice-0", "choose_target", "Player 1", false, null, null),
+                new LegalActionDto("forge-tui-target-choice-1", "choose_target", "AI", false, null, null)
+            ]),
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["forge-tui-target-choice-0"] = "0",
+                ["forge-tui-target-choice-1"] = "1"
+            });
+
+        stage.Invoke(adapter, [target, false]);
+        publish.Invoke(adapter, ["markerless-target-prompt"]);
+
+        var state = await adapter.GetStateAsync(CancellationToken.None);
+        Assert.Equal("forge-tui-target", state.CurrentDecision?.DecisionId);
+        Assert.Equal(108, state.CurrentDecision?.EventCursor);
+        Assert.Equal(18, state.CurrentDecision?.ForgeSequence);
+    }
+
+    [Fact]
     public async Task G3_ReadinessMarkerBeforeCandidatePublishesAfterCandidateArrives()
     {
         await using var adapter = WatermarkAdapter("session-before", 7, 3);

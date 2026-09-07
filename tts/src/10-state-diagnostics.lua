@@ -29,6 +29,19 @@ function BridgeTryGetSeatHandObjects(seatId)
     return handObjects or {}, nil
 end
 
+-- TTS hand membership can lag behind a Card's position/use_hands flags by a
+-- few frames. Callers that move a hand card into a native Deck must wait for
+-- this exact GUID to leave the hand before invoking putObject.
+function BridgeSeatHandContainsGuid(seatId, guid)
+    if guid == nil then return false, nil end
+    local handObjects, handError = BridgeTryGetSeatHandObjects(seatId)
+    if handObjects == nil then return nil, handError end
+    for _, handObject in ipairs(handObjects) do
+        if BridgeSafeObjectGuid(handObject) == guid then return true, nil end
+    end
+    return false, nil
+end
+
 function BridgeBuildSeatHandGuidSet(seatId)
     local handObjects, handError = BridgeTryGetSeatHandObjects(seatId)
     if handObjects == nil then
@@ -912,6 +925,58 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
     if guid == nil then callback(false, "library insertion card has no GUID"); return end
     if not BridgeRequireArtBearingLibraryCard(object, seatId, cardInstanceId) then
         callback(false, "library insertion rejected an artless normal game card")
+        return
+    end
+
+    -- A Card can still belong to a TTS player's private hand after Forge has
+    -- emitted the hand->library transition. Calling putObject immediately can
+    -- then leave the card visually in hand or produce an incomplete Deck.
+    -- Eject the exact card first and wait for TTS hand membership to clear.
+    -- The marker prevents the bounded retry from recursively re-entering this
+    -- release phase once the hand has actually let go of the card.
+    local releaseMarkers = BridgeState.libraryInsertionHandReleaseByGuid
+    if releaseMarkers[guid] == true then
+        releaseMarkers[guid] = nil
+    else
+        local function waitForHandRelease(attempt)
+            local inHand, handError = BridgeSeatHandContainsGuid(seatId, guid)
+            if inHand == nil then
+                callback(false, handError or "could not inspect player hand")
+                return
+            end
+            if not inHand then
+                releaseMarkers[guid] = true
+                BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, callback, cardInstanceId)
+                return
+            end
+            if attempt >= 30 then
+                callback(false, "card remained in player hand before library insertion")
+                return
+            end
+            local ok, releaseError = pcall(function()
+                object.setLock(false)
+                object.use_hands = false
+                local position = object.getPosition()
+                -- A vertical nudge at the hand's existing x/z can remain
+                -- inside TTS's hand volume indefinitely. Stage the card over
+                -- its own library instead: it is outside the private hand,
+                -- remains on its owner's side, and is still deliberately
+                -- above the deck until the next callback performs putObject.
+                local library = BridgeResolveSeatLibraryDeck(seatId)
+                if BridgeObjectIsUsable(library) then
+                    local libraryPosition = library.getPosition()
+                    object.setPosition({libraryPosition.x, libraryPosition.y + 3.0, libraryPosition.z})
+                else
+                    object.setPosition({position.x, position.y + 3.0, position.z})
+                end
+            end)
+            if not ok then
+                callback(false, "could not release card from player hand: " .. tostring(releaseError))
+                return
+            end
+            BridgeWaitFrames(function() waitForHandRelease(attempt + 1) end, 2)
+        end
+        waitForHandRelease(1)
         return
     end
 

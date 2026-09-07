@@ -2101,55 +2101,100 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         BridgeMutationJoinInstanceIds(batch.incomingInstanceIds), tostring(tx.physicalTransactionGeneration)))
 
     local target = BridgeFindGraveyardContainer(batch.seatId)
+    local needsNewContainer = target == nil
     local stagedMoves = batch.stagedPhysicalMoves or {}
     local startIndex = 1
-    if target == nil then
+    if needsNewContainer then
         local first = stagedMoves[1]
         if first == nil or not BridgeObjectIsUsable(first.object) then
             BridgeAbortAtomicGraveyardMutation(tx, batch,
                 "missing first staged card while creating native graveyard container")
             return
         end
-        target = first.object
-        startIndex = 2
-    end
-
-    for index = startIndex, (tonumber(batch.stagedCount) or 0) do
-        local staged = stagedMoves[index]
-        if staged == nil or not BridgeObjectIsUsable(staged.object) then
-            BridgeAbortAtomicGraveyardMutation(tx, batch,
-                "staged object unavailable index=" .. tostring(index))
-            return
+        -- A loose Card is not a reliable native container. TTS can accept a
+        -- Card.putObject call without producing a live Deck, leaving a mill
+        -- batch stranded forever. group() is the native Card -> Deck
+        -- formation primitive; only use the old Card path in non-TTS probes
+        -- that do not expose group().
+        if type(group) == "function" then
+            local cardsToGroup = {}
+            for index = 1, (tonumber(batch.stagedCount) or 0) do
+                local staged = stagedMoves[index]
+                if staged == nil or not BridgeObjectIsUsable(staged.object) then
+                    BridgeAbortAtomicGraveyardMutation(tx, batch,
+                        "staged object unavailable while grouping index=" .. tostring(index))
+                    return
+                end
+                pcall(function()
+                    staged.object.setLock(false)
+                    staged.object.use_hands = false
+                end)
+                table.insert(cardsToGroup, staged.object)
+            end
+            local groupOk, groupResult = pcall(function() return group(cardsToGroup) end)
+            if not groupOk then
+                BridgeAbortAtomicGraveyardMutation(tx, batch,
+                    "native graveyard group failed: " .. tostring(groupResult))
+                return
+            end
+            if BridgeObjectIsUsable(groupResult) and groupResult.tag == "Deck" then target = groupResult end
+            BridgeLog(string.format(
+                "[Bridge] MUTATION_DESTINATION_GROUP_REQUESTED token=%s forgeSequence=%s seat=%s cards=%s resultTag=%s generation=%s",
+                tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId), tostring(#cardsToGroup),
+                tostring(groupResult and groupResult.tag), tostring(tx.physicalTransactionGeneration)))
+            startIndex = (tonumber(batch.stagedCount) or 0) + 1
+        else
+            target = first.object
+            startIndex = 2
         end
-        local putOk, putResult = pcall(function() return target.putObject(staged.object, 0) end)
-        if not putOk then
-            BridgeAbortAtomicGraveyardMutation(tx, batch,
-                "native graveyard putObject failed index=" .. tostring(index) .. " error=" .. tostring(putResult))
-            return
+    end
+
+    if startIndex <= (tonumber(batch.stagedCount) or 0) then
+        for index = startIndex, (tonumber(batch.stagedCount) or 0) do
+            local staged = stagedMoves[index]
+            if staged == nil or not BridgeObjectIsUsable(staged.object) then
+                BridgeAbortAtomicGraveyardMutation(tx, batch,
+                    "staged object unavailable index=" .. tostring(index))
+                return
+            end
+            local putOk, putResult = pcall(function() return target.putObject(staged.object, 0) end)
+            if not putOk then
+                BridgeAbortAtomicGraveyardMutation(tx, batch,
+                    "native graveyard putObject failed index=" .. tostring(index) .. " error=" .. tostring(putResult))
+                return
+            end
+            if putResult ~= nil and putResult.tag == "Deck" then target = putResult end
         end
-        if putResult ~= nil and putResult.tag == "Deck" then target = putResult end
     end
 
-    if target == nil or target.tag ~= "Deck" then
-        target = BridgeFindGraveyardContainer(batch.seatId)
-    end
-    if target == nil or target.tag ~= "Deck" then
-        BridgeAbortAtomicGraveyardMutation(tx, batch,
-            "TTS did not produce an active graveyard Deck for staged cards")
-        return
-    end
+    -- putObject() is asynchronous in TTS.  In particular, the first Card ->
+    -- Deck promotion can return nil or the original Card while the live Deck
+    -- is only registered on a later frame.  Do not turn that normal physical
+    -- settlement window into a Forge/TTS desync.
+    local deckResolutionRetries = 0
+    local maxDeckResolutionRetries = 12
+    local function settleDestinationDeck()
+        if not BridgeEventMutationIsCurrent(tx) then return end
+        if batch.state == "FAILED" or batch.state == "VERIFIED" then return end
 
-    batch.targetDeck = target
-    BridgeVerifyGraveyardDeckSettlement(target, 8, function(settled, settleError)
+        local resolved = nil
+        if BridgeObjectIsUsable(target) and target.tag == "Deck" then
+            resolved = target
+        else
+            resolved = BridgeFindGraveyardContainer(batch.seatId)
+        end
+        if resolved ~= nil and resolved.tag == "Deck" then
+            batch.targetDeck = resolved
+            BridgeVerifyGraveyardDeckSettlement(resolved, 8, function(settled, settleError)
         if not BridgeEventMutationIsCurrent(tx) then return end
         if not settled then
             BridgeAbortAtomicGraveyardMutation(tx, batch,
                 "graveyard-settlement:" .. tostring(settleError))
             return
         end
-        if not BridgeRecordGraveyardContainerEntries(batch.seatId, target, batch.expectedInstances) then
+        if not BridgeRecordGraveyardContainerEntries(batch.seatId, resolved, batch.expectedInstances) then
             local reason = "graveyard-reconciliation:entries="
-                .. tostring(#(BridgeLibraryEntries(target) or {}))
+                .. tostring(#(BridgeLibraryEntries(resolved) or {}))
                 .. ":expected=" .. tostring(BridgeTableSize(batch.expectedInstances or {}))
                 .. ":rebind=" .. tostring(BridgeState.lastGraveyardRebindFailure)
             BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
@@ -2190,7 +2235,25 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             "[Bridge] MUTATION_DESTINATION_SETTLEMENT_SAMPLE token=%s forgeSequence=%s seat=%s sample=%s inventoryCount=%s generation=%s",
             tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId),
             tostring(sampleCount), tostring(#(inventory or {})), tostring(tx.physicalTransactionGeneration)))
-    end)
+            end)
+            return
+        end
+
+        deckResolutionRetries = deckResolutionRetries + 1
+        if deckResolutionRetries >= maxDeckResolutionRetries then
+            BridgeAbortAtomicGraveyardMutation(tx, batch,
+                "TTS did not produce an active graveyard Deck for staged cards after "
+                .. tostring(maxDeckResolutionRetries) .. " frame checks")
+            return
+        end
+        BridgeLog(string.format(
+            "[Bridge] MUTATION_DESTINATION_WAITING_FOR_DECK token=%s forgeSequence=%s seat=%s retry=%s/%s generation=%s",
+            tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId),
+            tostring(deckResolutionRetries), tostring(maxDeckResolutionRetries),
+            tostring(tx.physicalTransactionGeneration)))
+        BridgeWaitFrames(settleDestinationDeck, 1)
+    end
+    settleDestinationDeck()
 end
 
 function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, complete)
@@ -4753,6 +4816,39 @@ function BridgeEnsureNativeGraveyardContainer(seatId)
         return BridgeRecordGraveyardContainerEntries(seatId, container, allExpectedInstances), nil
     end
     if #loose < 2 then return true, nil end
+
+    -- Rebuild can encounter several loose graveyard Cards after a failed
+    -- mutation. A Card is not a dependable native container: asking the
+    -- first Card to putObject the next can report success without ever
+    -- creating a Deck. Use TTS's group primitive whenever it is available so
+    -- manual and automatic recovery use the same formation semantics as the
+    -- atomic mill path.
+    if type(group) == "function" then
+        for _, card in ipairs(loose) do
+            pcall(function()
+                card.setLock(false)
+                card.use_hands = false
+            end)
+        end
+        local groupOk, groupResult = pcall(function() return group(loose) end)
+        if not groupOk then return false, "could not group loose graveyard Cards into a native Deck" end
+        container = BridgeObjectIsUsable(groupResult) and groupResult.tag == "Deck" and groupResult
+            or BridgeFindGraveyardContainer(seatId)
+        if container == nil or container.tag ~= "Deck" then
+            return false, "TTS did not produce a native graveyard Deck after grouping Cards"
+        end
+        BridgeLog(string.format("[Bridge] graveyard container group seat=%s deckGuid=%s cards=%s",
+            tostring(seatId), tostring(BridgeSafeObjectGuid(container)), tostring(#loose)))
+        local stable = BridgeRecordGraveyardContainerEntries(seatId, container, allExpectedInstances)
+        if stable then
+            local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(seatId, "after-container-formation")
+            if not shapeOk then
+                BridgeLog("[Bridge] CRITICAL graveyard object-shape violation after formation: " .. tostring(shapeReason))
+                return false, shapeReason
+            end
+        end
+        return stable, stable and nil or "native graveyard Deck inventory did not preserve exact identities"
+    end
 
     container = loose[1]
     for index = 2, #loose do

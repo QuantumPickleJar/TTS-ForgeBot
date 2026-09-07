@@ -44,6 +44,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
             destinationCommitCount = BridgeTestCountLogToken('MUTATION_DESTINATION_COMMIT_BEGIN')
             destinationSampleCount = BridgeTestCountLogToken('MUTATION_DESTINATION_SETTLEMENT_SAMPLE')
             destinationVerifiedCount = BridgeTestCountLogToken('MUTATION_DESTINATION_VERIFIED')
+            groupRequestCount = bridgeTest.groupCalls or 0
             mutationCommitCount = BridgeTestCountLogToken('MUTATION_COMMIT')
             mutationAbortCount = BridgeTestCountLogToken('MUTATION_ABORT')
             debugDesync = tostring(desyncReason)
@@ -63,6 +64,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Assert.Equal(1, lua.Globals.Get("stageBeginCount").Number);
         Assert.Equal(2, lua.Globals.Get("extractedCount").Number);
         Assert.Equal(1, lua.Globals.Get("destinationCommitCount").Number);
+        Assert.Equal(1, lua.Globals.Get("groupRequestCount").Number);
         Assert.True(lua.Globals.Get("destinationSampleCount").Number >= 1);
         Assert.Equal(1, lua.Globals.Get("destinationVerifiedCount").Number);
         Assert.Equal(1, lua.Globals.Get("mutationCommitCount").Number);
@@ -927,6 +929,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     delayed = {},
                     delayTakeIndex = nil,
                     deckPutCount = 0,
+                    groupCalls = 0,
                     promotePutCount = 0,
                     containedReassignCount = 0,
                     forceMissingDeckAfterPromotion = false,
@@ -1022,6 +1025,15 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     end
                     if bridgeTest.reassignContainedEveryPut then bridgeTest.reassignContainedGuids() end
                     bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
+                    return bridgeTest.graveyardDeck
+                end
+
+                function group(objects)
+                    bridgeTest.groupCalls = bridgeTest.groupCalls + 1
+                    bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
+                    for _, object in ipairs(objects or {}) do
+                        bridgeTest.graveyardDeck.putObject(object, 0)
+                    end
                     return bridgeTest.graveyardDeck
                 end
 

@@ -84,7 +84,9 @@ app.MapPost("/api/v1/session/start", async (IForgeAdapter adapter, ILogger<Progr
 	}
 	catch (InvalidOperationException exception)
 	{
-		return Results.BadRequest(new ErrorResponseDto("deck_inventory_required", exception.Message, null));
+		var failedState = await adapter.GetStateAsync(CancellationToken.None);
+		var errorCode = failedState.Diagnostic?.Code ?? "deck_inventory_required";
+		return Results.BadRequest(new ErrorResponseDto(errorCode, exception.Message, null));
 	}
 });
 
@@ -191,7 +193,9 @@ app.MapPost("/api/v1/session/reset", async (IForgeAdapter adapter, CancellationT
 	}
 	catch (InvalidOperationException exception)
 	{
-		return Results.BadRequest(new ErrorResponseDto("deck_inventory_required", exception.Message, null));
+		var failedState = await adapter.GetStateAsync(CancellationToken.None);
+		var errorCode = failedState.Diagnostic?.Code ?? "deck_inventory_required";
+		return Results.BadRequest(new ErrorResponseDto(errorCode, exception.Message, null));
 	}
 });
 

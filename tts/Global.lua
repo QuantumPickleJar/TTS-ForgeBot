@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 6fa1246b70ee000473764c4b8f95f2952211abccb2b9e8b3a1c314cb421a9bcd
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "6fa1246b70ee000473764c4b8f95f2952211abccb2b9e8b3a1c314cb421a9bcd"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: bd7b186edf482ce822f5baf2976d5403da280d04c272b85eac05f3da9b0e0288
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "bd7b186edf482ce822f5baf2976d5403da280d04c272b85eac05f3da9b0e0288"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -252,6 +252,12 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncScheduled = BridgeState.resyncScheduled == true,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncStartedAt = BridgeState.resyncStartedAt,
+        resyncStartedCpuAt = BridgeState.resyncStartedCpuAt,
+        resyncStage = BridgeState.resyncStage,
+        resyncStageChangedAt = BridgeState.resyncStageChangedAt,
+        resyncLastProgressAt = BridgeState.resyncLastProgressAt,
+        resyncLastFailureReason = BridgeState.resyncLastFailureReason,
+        resyncLastBlockingPredicate = BridgeState.resyncLastBlockingPredicate,
         resyncDeferredReason = BridgeState.resyncDeferredReason,
         resyncDeferredSince = BridgeState.resyncDeferredSince,
         resyncDeferredRetryScheduled = BridgeState.resyncDeferredRetryScheduled == true,
@@ -1275,6 +1281,7 @@ BridgeState = {
     libraryExtractionQueueBySeatId = {},
     libraryExtractionActiveBySeatId = {},
     libraryExtractionTransactionBySeatId = {},
+    libraryInsertionHandReleaseByGuid = {},
     graveyardExtractionActiveBySeatId = {},
     -- Consecutive library transitions emitted by one Forge mutation are one
     -- physical transaction.  The queue still serializes Deck operations, but
@@ -1318,6 +1325,7 @@ BridgeState = {
     resyncDeferredRetryScheduled = false,
     resyncDeferredSince = nil,
     resyncWatchdogToken = nil,
+    resyncStartedCpuAt = nil,
     resyncBootstrapGeneration = 0,
     lastChoiceAttempt = nil,
     counterStateByInstanceId = {},
@@ -1370,6 +1378,7 @@ BridgeState = {
     sessionRecoveryInFlight = false,
     resyncToken = 0,
     resyncStartedAt = nil,
+    resyncStartedCpuAt = nil,
     resyncStage = "Idle",
     resyncStageChangedAt = nil,
     resyncAttempt = 0,
@@ -1609,6 +1618,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.resyncLastBlockingPredicate = nil
     BridgeState.resyncStage = "Idle"
     BridgeState.resyncStartedAt = nil
+    BridgeState.resyncStartedCpuAt = nil
     BridgeState.resyncOrigin = nil
     BridgeState.resyncLastFailureReason = nil
     BridgeState.resyncNoProgressAttempts = 0
@@ -2207,6 +2217,19 @@ function BridgeTryGetSeatHandObjects(seatId)
         return nil, "cannot access hand objects for seat " .. tostring(seatId)
     end
     return handObjects or {}, nil
+end
+
+-- TTS hand membership can lag behind a Card's position/use_hands flags by a
+-- few frames. Callers that move a hand card into a native Deck must wait for
+-- this exact GUID to leave the hand before invoking putObject.
+function BridgeSeatHandContainsGuid(seatId, guid)
+    if guid == nil then return false, nil end
+    local handObjects, handError = BridgeTryGetSeatHandObjects(seatId)
+    if handObjects == nil then return nil, handError end
+    for _, handObject in ipairs(handObjects) do
+        if BridgeSafeObjectGuid(handObject) == guid then return true, nil end
+    end
+    return false, nil
 end
 
 function BridgeBuildSeatHandGuidSet(seatId)
@@ -3092,6 +3115,58 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
     if guid == nil then callback(false, "library insertion card has no GUID"); return end
     if not BridgeRequireArtBearingLibraryCard(object, seatId, cardInstanceId) then
         callback(false, "library insertion rejected an artless normal game card")
+        return
+    end
+
+    -- A Card can still belong to a TTS player's private hand after Forge has
+    -- emitted the hand->library transition. Calling putObject immediately can
+    -- then leave the card visually in hand or produce an incomplete Deck.
+    -- Eject the exact card first and wait for TTS hand membership to clear.
+    -- The marker prevents the bounded retry from recursively re-entering this
+    -- release phase once the hand has actually let go of the card.
+    local releaseMarkers = BridgeState.libraryInsertionHandReleaseByGuid
+    if releaseMarkers[guid] == true then
+        releaseMarkers[guid] = nil
+    else
+        local function waitForHandRelease(attempt)
+            local inHand, handError = BridgeSeatHandContainsGuid(seatId, guid)
+            if inHand == nil then
+                callback(false, handError or "could not inspect player hand")
+                return
+            end
+            if not inHand then
+                releaseMarkers[guid] = true
+                BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, callback, cardInstanceId)
+                return
+            end
+            if attempt >= 30 then
+                callback(false, "card remained in player hand before library insertion")
+                return
+            end
+            local ok, releaseError = pcall(function()
+                object.setLock(false)
+                object.use_hands = false
+                local position = object.getPosition()
+                -- A vertical nudge at the hand's existing x/z can remain
+                -- inside TTS's hand volume indefinitely. Stage the card over
+                -- its own library instead: it is outside the private hand,
+                -- remains on its owner's side, and is still deliberately
+                -- above the deck until the next callback performs putObject.
+                local library = BridgeResolveSeatLibraryDeck(seatId)
+                if BridgeObjectIsUsable(library) then
+                    local libraryPosition = library.getPosition()
+                    object.setPosition({libraryPosition.x, libraryPosition.y + 3.0, libraryPosition.z})
+                else
+                    object.setPosition({position.x, position.y + 3.0, position.z})
+                end
+            end)
+            if not ok then
+                callback(false, "could not release card from player hand: " .. tostring(releaseError))
+                return
+            end
+            BridgeWaitFrames(function() waitForHandRelease(attempt + 1) end, 2)
+        end
+        waitForHandRelease(1)
         return
     end
 
@@ -4719,6 +4794,7 @@ function BridgeStopOnDecisionProvenanceLag(detail, fault)
     BridgeState.resyncDeferredRetryScheduled = false
     BridgeState.resyncWatchdogToken = nil
     BridgeState.resyncStartedAt = nil
+    BridgeState.resyncStartedCpuAt = nil
     BridgeState.resyncOrigin = nil
     BridgeState.resyncDeferredReason = nil
     if BridgeState.ui ~= nil then
@@ -7746,7 +7822,14 @@ function BridgeResetSession()
             BridgeResetSessionRequest(function(ok, body, err)
         if not ok then
             BridgeSetSetupBusy(false)
-            BridgeShowError("explicit session reset failed: " .. BridgeHttpFailureDetail(body, err))
+            local detail = BridgeHttpFailureDetail(body, err)
+            local code = body and (body.errorCode or body.code) or nil
+            if code == "forge_deck_inventory_mismatch" then
+                BridgeSetLifecycleState(BRIDGE_LIFECYCLE_START_FAILED, "deck-validation-failed")
+                BridgeSetupFailure("deck-validation", detail)
+            else
+                BridgeShowError("explicit session reset failed: " .. detail)
+            end
             return
         end
 
@@ -10366,9 +10449,10 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
         or BridgeState.resyncInFlight ~= true then return false end
 
     BridgeLog(string.format(
-        "[Bridge] RESYNC_STALLED origin=%s session=%s token=%s startedAt=%s received=%s applied=%s queueLength=%s reason=%s",
+        "[Bridge] RESYNC_STALLED origin=%s session=%s token=%s startedAt=%s startedCpuAt=%s stage=%s received=%s applied=%s queueLength=%s reason=%s",
         tostring(BridgeState.resyncOrigin), tostring(sessionId), tostring(token),
-        tostring(BridgeState.resyncStartedAt), tostring(BridgeState.lastReceivedEventSequence),
+        tostring(BridgeState.resyncStartedAt), tostring(BridgeState.resyncStartedCpuAt),
+        tostring(BridgeState.resyncStage), tostring(BridgeState.lastReceivedEventSequence),
         tostring(BridgeState.lastAppliedEventSequence), tostring(#(BridgeState.eventQueue or {})),
         tostring(reason or "watchdog")))
 
@@ -10383,6 +10467,7 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeState.resyncScheduled = false
     BridgeState.bootstrapping = false
     BridgeState.resyncStartedAt = nil
+    BridgeState.resyncStartedCpuAt = nil
     BridgeState.resyncLastFailureReason = tostring(reason or "watchdog")
     BridgeState.resyncDeferredReason = tostring(reason or "watchdog")
     BridgeSetSchedulerOwner("NORMAL", "resync-stalled")
@@ -10401,9 +10486,19 @@ end
 function BridgeCheckResyncWatchdog(reason)
     if BridgeState.resyncInFlight ~= true or BridgeState.resyncStartedAt == nil then return false end
     local now = BridgeResyncClockNow()
-    if now == nil or now - BridgeState.resyncStartedAt < BRIDGE_RESYNC_STALL_SECONDS then return false end
+    local wallElapsed = now ~= nil and now - BridgeState.resyncStartedAt or nil
+    -- Time.time can pause or jump while TTS is under load. Keep a second,
+    -- independent CPU-clock deadline so a recovery that owns event polling
+    -- cannot remain in-flight forever merely because the game clock stalled.
+    local cpuNow = BridgePerformanceNow ~= nil and BridgePerformanceNow() or os.clock()
+    local cpuElapsed = BridgeState.resyncStartedCpuAt ~= nil and cpuNow - BridgeState.resyncStartedCpuAt or nil
+    local wallStalled = wallElapsed ~= nil and wallElapsed >= BRIDGE_RESYNC_STALL_SECONDS
+    local cpuStalled = cpuElapsed ~= nil and cpuElapsed >= BRIDGE_RESYNC_STALL_SECONDS
+    if not wallStalled and not cpuStalled then return false end
     local token = BridgeState.resyncToken
-    return BridgeReleaseStalledResync(BridgeState.eventSessionId, token, reason or "clock")
+    local clock = cpuStalled and not wallStalled and "cpu-clock" or "wall-clock"
+    return BridgeReleaseStalledResync(BridgeState.eventSessionId, token,
+        tostring(reason or "clock") .. ":" .. clock)
 end
 
 function BridgeScheduleResyncWatchdog(sessionId, token)
@@ -10502,18 +10597,36 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
                     BridgeLog("[Bridge] RESYNC_DEFERRED reason=physical-library-queue-timeout origin=" .. tostring(origin)
                         .. "; stopping automatic progression for manual recovery")
                     BridgeStopOnDesync("automatic authoritative resync blocked by physical library queue")
-                    -- After timeout, monitor for when physical queue becomes idle so manual
-                    -- recovery can take ownership without requiring another operator gesture.
+                    -- The queue can finish just after the grace window (multi-card mill
+                    -- batches commonly do). Keep observing it and restart the same bounded
+                    -- authoritative recovery as soon as it is idle. The resync circuit
+                    -- breaker still owns repeated/no-progress failures; if it refuses the
+                    -- retry, retain the manual recovery control.
                     if not BridgeState.queueTimeoutMonitorScheduled then
                         BridgeState.queueTimeoutMonitorScheduled = true
-                        BridgeWaitFrames(function()
+                        local monitorSessionId = BridgeState.eventSessionId
+                        local function resumeAutomaticRecoveryWhenIdle()
+                            if BridgeState.eventSessionId ~= monitorSessionId
+                                or BridgeState.desyncLatched ~= true then
+                                BridgeState.queueTimeoutMonitorScheduled = false
+                                return
+                            end
+                            if BridgeState.resyncInFlight == true then
+                                BridgeState.queueTimeoutMonitorScheduled = false
+                                return
+                            end
+                            if not BridgePhysicalLibraryQueuesIdle() then
+                                BridgeWaitFrames(resumeAutomaticRecoveryWhenIdle, 1)
+                                return
+                            end
                             BridgeState.queueTimeoutMonitorScheduled = false
-                            if BridgeState.desyncLatched == true and BridgeState.resyncInFlight ~= true
-                                and BridgePhysicalLibraryQueuesIdle() then
-                                BridgeLog("[Bridge] RESYNC_QUEUE_IDLE_AFTER_TIMEOUT manual recovery now available")
+                            BridgeLog("[Bridge] RESYNC_QUEUE_IDLE_AFTER_TIMEOUT retrying automatic authoritative recovery")
+                            BridgeResyncFromAuthoritativeSnapshot(origin)
+                            if BridgeState.resyncInFlight ~= true then
                                 BridgeEnsureDesyncRecovery("queue-idle-after-timeout")
                             end
-                        end, 1)
+                        end
+                        BridgeWaitFrames(resumeAutomaticRecoveryWhenIdle, 1)
                     end
                     return false
                 end
@@ -10573,6 +10686,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     BridgeState.resyncOrigin = origin
     BridgeState.resyncStartedAt = BridgeResyncClockNow()
+    BridgeState.resyncStartedCpuAt = BridgePerformanceNow ~= nil and BridgePerformanceNow() or os.clock()
     BridgeState.resyncInFlight = true
     BridgeState.resyncReconcileStarted = false
     BridgeState.resyncLastBlockingPredicate = nil
@@ -10613,6 +10727,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeState.resyncScheduled = false
         BridgeState.resyncWatchdogToken = nil
         BridgeState.resyncStartedAt = nil
+        BridgeState.resyncStartedCpuAt = nil
         BridgeState.resyncSnapshotFingerprint = nil
         BridgeState.resyncSnapshotRepeatCount = 0
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
@@ -12920,55 +13035,100 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         BridgeMutationJoinInstanceIds(batch.incomingInstanceIds), tostring(tx.physicalTransactionGeneration)))
 
     local target = BridgeFindGraveyardContainer(batch.seatId)
+    local needsNewContainer = target == nil
     local stagedMoves = batch.stagedPhysicalMoves or {}
     local startIndex = 1
-    if target == nil then
+    if needsNewContainer then
         local first = stagedMoves[1]
         if first == nil or not BridgeObjectIsUsable(first.object) then
             BridgeAbortAtomicGraveyardMutation(tx, batch,
                 "missing first staged card while creating native graveyard container")
             return
         end
-        target = first.object
-        startIndex = 2
-    end
-
-    for index = startIndex, (tonumber(batch.stagedCount) or 0) do
-        local staged = stagedMoves[index]
-        if staged == nil or not BridgeObjectIsUsable(staged.object) then
-            BridgeAbortAtomicGraveyardMutation(tx, batch,
-                "staged object unavailable index=" .. tostring(index))
-            return
+        -- A loose Card is not a reliable native container. TTS can accept a
+        -- Card.putObject call without producing a live Deck, leaving a mill
+        -- batch stranded forever. group() is the native Card -> Deck
+        -- formation primitive; only use the old Card path in non-TTS probes
+        -- that do not expose group().
+        if type(group) == "function" then
+            local cardsToGroup = {}
+            for index = 1, (tonumber(batch.stagedCount) or 0) do
+                local staged = stagedMoves[index]
+                if staged == nil or not BridgeObjectIsUsable(staged.object) then
+                    BridgeAbortAtomicGraveyardMutation(tx, batch,
+                        "staged object unavailable while grouping index=" .. tostring(index))
+                    return
+                end
+                pcall(function()
+                    staged.object.setLock(false)
+                    staged.object.use_hands = false
+                end)
+                table.insert(cardsToGroup, staged.object)
+            end
+            local groupOk, groupResult = pcall(function() return group(cardsToGroup) end)
+            if not groupOk then
+                BridgeAbortAtomicGraveyardMutation(tx, batch,
+                    "native graveyard group failed: " .. tostring(groupResult))
+                return
+            end
+            if BridgeObjectIsUsable(groupResult) and groupResult.tag == "Deck" then target = groupResult end
+            BridgeLog(string.format(
+                "[Bridge] MUTATION_DESTINATION_GROUP_REQUESTED token=%s forgeSequence=%s seat=%s cards=%s resultTag=%s generation=%s",
+                tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId), tostring(#cardsToGroup),
+                tostring(groupResult and groupResult.tag), tostring(tx.physicalTransactionGeneration)))
+            startIndex = (tonumber(batch.stagedCount) or 0) + 1
+        else
+            target = first.object
+            startIndex = 2
         end
-        local putOk, putResult = pcall(function() return target.putObject(staged.object, 0) end)
-        if not putOk then
-            BridgeAbortAtomicGraveyardMutation(tx, batch,
-                "native graveyard putObject failed index=" .. tostring(index) .. " error=" .. tostring(putResult))
-            return
+    end
+
+    if startIndex <= (tonumber(batch.stagedCount) or 0) then
+        for index = startIndex, (tonumber(batch.stagedCount) or 0) do
+            local staged = stagedMoves[index]
+            if staged == nil or not BridgeObjectIsUsable(staged.object) then
+                BridgeAbortAtomicGraveyardMutation(tx, batch,
+                    "staged object unavailable index=" .. tostring(index))
+                return
+            end
+            local putOk, putResult = pcall(function() return target.putObject(staged.object, 0) end)
+            if not putOk then
+                BridgeAbortAtomicGraveyardMutation(tx, batch,
+                    "native graveyard putObject failed index=" .. tostring(index) .. " error=" .. tostring(putResult))
+                return
+            end
+            if putResult ~= nil and putResult.tag == "Deck" then target = putResult end
         end
-        if putResult ~= nil and putResult.tag == "Deck" then target = putResult end
     end
 
-    if target == nil or target.tag ~= "Deck" then
-        target = BridgeFindGraveyardContainer(batch.seatId)
-    end
-    if target == nil or target.tag ~= "Deck" then
-        BridgeAbortAtomicGraveyardMutation(tx, batch,
-            "TTS did not produce an active graveyard Deck for staged cards")
-        return
-    end
+    -- putObject() is asynchronous in TTS.  In particular, the first Card ->
+    -- Deck promotion can return nil or the original Card while the live Deck
+    -- is only registered on a later frame.  Do not turn that normal physical
+    -- settlement window into a Forge/TTS desync.
+    local deckResolutionRetries = 0
+    local maxDeckResolutionRetries = 12
+    local function settleDestinationDeck()
+        if not BridgeEventMutationIsCurrent(tx) then return end
+        if batch.state == "FAILED" or batch.state == "VERIFIED" then return end
 
-    batch.targetDeck = target
-    BridgeVerifyGraveyardDeckSettlement(target, 8, function(settled, settleError)
+        local resolved = nil
+        if BridgeObjectIsUsable(target) and target.tag == "Deck" then
+            resolved = target
+        else
+            resolved = BridgeFindGraveyardContainer(batch.seatId)
+        end
+        if resolved ~= nil and resolved.tag == "Deck" then
+            batch.targetDeck = resolved
+            BridgeVerifyGraveyardDeckSettlement(resolved, 8, function(settled, settleError)
         if not BridgeEventMutationIsCurrent(tx) then return end
         if not settled then
             BridgeAbortAtomicGraveyardMutation(tx, batch,
                 "graveyard-settlement:" .. tostring(settleError))
             return
         end
-        if not BridgeRecordGraveyardContainerEntries(batch.seatId, target, batch.expectedInstances) then
+        if not BridgeRecordGraveyardContainerEntries(batch.seatId, resolved, batch.expectedInstances) then
             local reason = "graveyard-reconciliation:entries="
-                .. tostring(#(BridgeLibraryEntries(target) or {}))
+                .. tostring(#(BridgeLibraryEntries(resolved) or {}))
                 .. ":expected=" .. tostring(BridgeTableSize(batch.expectedInstances or {}))
                 .. ":rebind=" .. tostring(BridgeState.lastGraveyardRebindFailure)
             BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
@@ -13009,7 +13169,25 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             "[Bridge] MUTATION_DESTINATION_SETTLEMENT_SAMPLE token=%s forgeSequence=%s seat=%s sample=%s inventoryCount=%s generation=%s",
             tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId),
             tostring(sampleCount), tostring(#(inventory or {})), tostring(tx.physicalTransactionGeneration)))
-    end)
+            end)
+            return
+        end
+
+        deckResolutionRetries = deckResolutionRetries + 1
+        if deckResolutionRetries >= maxDeckResolutionRetries then
+            BridgeAbortAtomicGraveyardMutation(tx, batch,
+                "TTS did not produce an active graveyard Deck for staged cards after "
+                .. tostring(maxDeckResolutionRetries) .. " frame checks")
+            return
+        end
+        BridgeLog(string.format(
+            "[Bridge] MUTATION_DESTINATION_WAITING_FOR_DECK token=%s forgeSequence=%s seat=%s retry=%s/%s generation=%s",
+            tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId),
+            tostring(deckResolutionRetries), tostring(maxDeckResolutionRetries),
+            tostring(tx.physicalTransactionGeneration)))
+        BridgeWaitFrames(settleDestinationDeck, 1)
+    end
+    settleDestinationDeck()
 end
 
 function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, complete)
@@ -15572,6 +15750,39 @@ function BridgeEnsureNativeGraveyardContainer(seatId)
         return BridgeRecordGraveyardContainerEntries(seatId, container, allExpectedInstances), nil
     end
     if #loose < 2 then return true, nil end
+
+    -- Rebuild can encounter several loose graveyard Cards after a failed
+    -- mutation. A Card is not a dependable native container: asking the
+    -- first Card to putObject the next can report success without ever
+    -- creating a Deck. Use TTS's group primitive whenever it is available so
+    -- manual and automatic recovery use the same formation semantics as the
+    -- atomic mill path.
+    if type(group) == "function" then
+        for _, card in ipairs(loose) do
+            pcall(function()
+                card.setLock(false)
+                card.use_hands = false
+            end)
+        end
+        local groupOk, groupResult = pcall(function() return group(loose) end)
+        if not groupOk then return false, "could not group loose graveyard Cards into a native Deck" end
+        container = BridgeObjectIsUsable(groupResult) and groupResult.tag == "Deck" and groupResult
+            or BridgeFindGraveyardContainer(seatId)
+        if container == nil or container.tag ~= "Deck" then
+            return false, "TTS did not produce a native graveyard Deck after grouping Cards"
+        end
+        BridgeLog(string.format("[Bridge] graveyard container group seat=%s deckGuid=%s cards=%s",
+            tostring(seatId), tostring(BridgeSafeObjectGuid(container)), tostring(#loose)))
+        local stable = BridgeRecordGraveyardContainerEntries(seatId, container, allExpectedInstances)
+        if stable then
+            local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(seatId, "after-container-formation")
+            if not shapeOk then
+                BridgeLog("[Bridge] CRITICAL graveyard object-shape violation after formation: " .. tostring(shapeReason))
+                return false, shapeReason
+            end
+        end
+        return stable, stable and nil or "native graveyard Deck inventory did not preserve exact identities"
+    end
 
     container = loose[1]
     for index = 2, #loose do

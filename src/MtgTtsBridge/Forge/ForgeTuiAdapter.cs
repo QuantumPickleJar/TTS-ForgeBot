@@ -55,6 +55,9 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private readonly string? _opponentSeatId;
     private string? _humanDeckPath;
     private string? _aiDeckPath;
+    private IReadOnlyDictionary<string, IReadOnlyDictionary<string, int>> _configuredDeckInventoryBySeat =
+        new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal);
+    private bool _initialDeckInventoryValidationPending;
     private string _deckFormat = "unknown";
     private string? _deckFormatProvenance;
     private bool _allowDeckMinimumOverride;
@@ -116,6 +119,12 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         {
             _humanDeckPath = humanPath;
             _aiDeckPath = aiPath;
+            _configuredDeckInventoryBySeat = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal)
+            {
+                [human.SeatId] = ForgeDeckInventoryValidator.BuildInventory(human.Cards),
+                [ai.SeatId] = ForgeDeckInventoryValidator.BuildInventory(ai.Cards),
+            };
+            _initialDeckInventoryValidationPending = true;
             _deckFormat = normalizedFormat;
             _deckFormatProvenance = request.FormatProvenance;
             _allowDeckMinimumOverride = request.AllowDeckMinimumOverride;
@@ -280,6 +289,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _lastPresentedDecisionId = null;
             _lastPresentedDecisionKind = null;
             _lastPresentedAtUtc = DateTimeOffset.MinValue;
+            _initialDeckInventoryValidationPending = _configuredDeckInventoryBySeat.Count > 0;
             _process = process;
             _processCancellation = cancellation;
             processGeneration = ++_processGeneration;
@@ -561,6 +571,24 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                         var current = _structuredState.Current;
                         if (current is not null)
                         {
+                            if (_initialDeckInventoryValidationPending
+                                && ForgeDeckInventoryValidator.IsInitialDeckInventorySnapshot(current))
+                            {
+                                var inventory = ForgeDeckInventoryValidator.Validate(
+                                    _configuredDeckInventoryBySeat, current);
+                                if (!inventory.IsValid)
+                                {
+                                    _initialDeckInventoryValidationPending = false;
+                                    Fail("forge_deck_inventory_mismatch", inventory.ErrorMessage!);
+                                }
+                                else
+                                {
+                                    _initialDeckInventoryValidationPending = false;
+                                    _logger.LogInformation(
+                                        "Forge authoritative deck inventory matches TTS inventory: seats={SeatCount}",
+                                        _configuredDeckInventoryBySeat.Count);
+                                }
+                            }
                             _latestObservedTurnNumber = current.TurnNumber ?? _latestObservedTurnNumber;
                             _latestObservedActiveSeatId = current.ActiveSeatId ?? _latestObservedActiveSeatId;
                             _latestObservedPrioritySeatId = current.PrioritySeatId ?? _latestObservedPrioritySeatId;
@@ -727,6 +755,14 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             ContextCardInstanceId = NormalizeInstanceId(sessionId, parsed.Decision.ContextCardInstanceId),
             SessionId = sessionId,
         };
+        // Target prompts are emitted synchronously while Forge is blocked on
+        // target input. Some TUI paths (including Thought Scour) do not emit
+        // a decision-ready marker for that nested prompt. The most recently
+        // committed snapshot is therefore the stable authority boundary.
+        var markerlessTargetReadySequence = normalizedDecision.Kind == "target_selection"
+            && !structuredFrameInProgress
+            ? baselineForgeSequence
+            : null;
 
         _pendingDecision = new PendingDecisionCandidate(
             normalizedDecision,
@@ -736,7 +772,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             baselineForgeSequence,
             _state == "awaiting_forge" && baselineForgeSequence is not null && structuredFrameInProgress,
             structuredFrameInProgress,
-            null,
+            markerlessTargetReadySequence,
             null);
             ApplyPendingDecisionReadyMarker();
     }
@@ -1444,7 +1480,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private static async Task WriteDeckAsync(string path, IReadOnlyList<DeckCardLoadDto> cards, CancellationToken cancellationToken)
     {
         var mainCards = cards
-            .Select(card => new { CardName = ImportedCardName(card.CardName), card.Count })
+            .Select(card => new { CardName = ForgeDeckInventoryValidator.NormalizeCardName(card.CardName), card.Count })
             .Where(card => !string.IsNullOrWhiteSpace(card.CardName))
             .GroupBy(card => card.CardName, StringComparer.OrdinalIgnoreCase)
             .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
@@ -1456,16 +1492,6 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         var temporary = path + ".tmp";
         await File.WriteAllLinesAsync(temporary, lines, cancellationToken).ConfigureAwait(false);
         File.Move(temporary, path, overwrite: true);
-    }
-
-    private static string ImportedCardName(string name)
-    {
-        var imported = (name ?? string.Empty).Replace("\r", "\n", StringComparison.Ordinal);
-        var lineBreak = imported.IndexOf('\n');
-        if (lineBreak >= 0) imported = imported[..lineBreak];
-        var splitFace = imported.IndexOf(" // ", StringComparison.Ordinal);
-        if (splitFace >= 0) imported = imported[..splitFace];
-        return imported.Trim();
     }
 
     private static bool CanResolveExecutable(string executable)
