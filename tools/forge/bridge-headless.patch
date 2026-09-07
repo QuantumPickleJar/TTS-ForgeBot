@@ -1861,7 +1861,8 @@ index 0d731bb64c4d44a8d6710a7da5fa5191d58ad09b..006a742909581af966cb6ed3c89c5089
 +    }
 +
      private int getIntInput(int min, int max) {
-         BridgeStateFeed.emitDecisionReadyFromController(); while (true) { //}}
+-        while (true) {
++        BridgeStateFeed.emitDecisionReadyFromController(); while (true) { //}}
              // Inform the reader about the valid range (for random/scripted agents)
 @@ -1165,7 +1549,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
                      if (selectedAttackers.contains(creature)) {
