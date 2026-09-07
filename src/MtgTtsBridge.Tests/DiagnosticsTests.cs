@@ -189,6 +189,27 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public void SelfTests_DoNotRequireOpaquePrivateHandCardsAsLooseMappings()
+    {
+        var hiddenHandCard = new GameCardSnapshotDto(
+            "opponent-hand-instance", 77, "Lightning Strike", "Lightning Strike", "hand", 0,
+            "forge-player-2", "forge-player-2", false, false, false,
+            new Dictionary<string, int>(), []);
+        var seat = new GameSeatSnapshotDto(
+            "forge-player-2", 2, "AI", 20, 0, new Dictionary<string, int>(),
+            [new GameZoneSnapshotDto("hand", [hiddenHandCard])]);
+        var snapshot = new GameSnapshotDto("session", 9, "GameEventZoneUpdate", [seat], [], EventCursor: 9);
+
+        var result = new DiagnosticSelfTestRunner().Run(
+            null, null, snapshot,
+            new DiagnosticReportRequestDto(SessionId: "session", MappedCardInstanceIds: []),
+            new BridgeProcessIdentity());
+
+        var mapping = Assert.Single(result.Checks, check => check.Id == "snapshot_card_mappings");
+        Assert.Equal("pass", mapping.Status);
+    }
+
+    [Fact]
     public void SelfTests_RejectDeadOrDuplicatePhysicalMappings()
     {
         var card = new GameCardSnapshotDto(

@@ -335,9 +335,12 @@ public sealed class DiagnosticSelfTestRunner
         // Cards still contained in an opaque Forge/TTS library Deck do not
         // have distinct loose TTS embodiments. Requiring their instance IDs
         // here turns a normal early-turn snapshot into a false mapping alarm.
+        // Private hand zones are similarly opaque: Forge can report logical
+        // hand identities while TTS intentionally does not expose distinct,
+        // stable per-card loose mappings for every hidden card.
         var snapshotCards = snapshot.Seats
             .SelectMany(seat => seat.Zones)
-            .Where(zone => !string.Equals(zone.Name, "library", StringComparison.OrdinalIgnoreCase))
+            .Where(zone => ZoneRequiresPhysicalMapping(zone.Name))
             .SelectMany(zone => zone.Cards)
             .Where(IsPhysicalCard);
         var snapshotStackCards = snapshot.Stack.Where(IsPhysicalCard);
@@ -356,6 +359,10 @@ public sealed class DiagnosticSelfTestRunner
         !card.IsVirtual
         && !string.Equals(card.MaterializationPolicy, "virtual", StringComparison.OrdinalIgnoreCase)
         && !string.Equals(card.MaterializationPolicy, "virtual-stack", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ZoneRequiresPhysicalMapping(string? zoneName) =>
+        !string.Equals(zoneName, "library", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(zoneName, "hand", StringComparison.OrdinalIgnoreCase);
 
     private sealed record MappingAudit(string[] Missing, string[] DuplicateInstances, string[] DuplicateGuids, string[] Invalid)
     {

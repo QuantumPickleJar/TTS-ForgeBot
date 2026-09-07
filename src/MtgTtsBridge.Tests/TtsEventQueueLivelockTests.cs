@@ -1085,6 +1085,211 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void NewMatchSnapshotCompositionCommitsCursorAndSupersedesOpeningHistory()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.lastReceivedEventSequence = 54
+            BridgeState.lastAppliedEventSequence = 0
+            BridgeState.eventQueue = {}
+            for sequence = 1, 54 do
+                table.insert(BridgeState.eventQueue, {sequence=sequence, kind='card_moved', sourceZone='library', destinationZone='hand'})
+            end
+            function BridgePrepareEventSession(sessionId, resetCards, preserveCursor)
+                BridgeState.eventSessionId = sessionId
+            end
+            function BridgeGetEmbodimentSnapshot(callback)
+                callback(true, {sessionId='session', eventCursor=54, forgeSequence=12, seats={}}, nil)
+            end
+            function BridgeRecordExpectedHandIdentities(snapshot) end
+            function BridgeAuditDuplicateLibraryGuids() return 0 end
+            function BridgeStageSeatCardsForBootstrap(snapshot, callback) callback(true, nil, {}) end
+            function BridgeVerifyLibraryIdentityStability(callback) callback(true, nil) end
+            function BridgeAnnotateSnapshotBattlefieldKinds(snapshot, callback) callback(true, nil) end
+            function BridgeBootstrapSeats(snapshot, seatIndex, callback) callback(true, nil) end
+            function BridgeUiMarkDirty(reason) end
+            bootstrapOk = nil
+            bootstrapErr = nil
+            BridgeBootstrapCurrentSnapshot('session', function(ok, err)
+                bootstrapOk = ok
+                bootstrapErr = err
+            end, false, 'attach')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(lua.Globals.Get("bootstrapOk").Boolean, lua.Globals.Get("bootstrapErr").ToPrintString());
+        Assert.Equal(54, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(54, state.Get("lastReceivedEventSequence").Number);
+        Assert.Equal(0, state.Get("eventQueue").Table.Length);
+        Assert.Equal(54, state.Get("lastSnapshotSupersededRange").Table.Get("count").Number);
+    }
+
+    [Fact]
+    public void ManualResyncFromStrandedStateTakesSingleOwnershipAndBypassesCircuitGate()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.lastReceivedEventSequence = 54
+            BridgeState.lastAppliedEventSequence = 0
+            BridgeState.eventQueue = {}
+            for sequence = 1, 54 do
+                table.insert(BridgeState.eventQueue, {sequence=sequence, kind='card_moved'})
+            end
+            BridgeState.desyncLatched = true
+            BridgeState.resyncCircuitOpen = true
+            BridgeState.resyncRootCause = 'identical-snapshot-circuit-breaker'
+            BridgeState.resyncDeferredReason = 'physical-library-queue'
+            BridgeState.ui = {resyncInFlight=false, fastForwardActive=false, autoAdvanceMode='NORMAL'}
+            function BridgePhysicalLibraryQueuesIdle() return false end
+            function BridgeWaitFrames(callback, frames) end
+            function BridgeWaitTime(callback, delay) end
+            function BridgeStopEventPolling(reason) end
+            function BridgeStopDecisionPolling() end
+            function BridgeResumeChoiceProtocol(reason) end
+            function BridgeClearHighlights() end
+            function BridgeResetSelectionState() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeSetStatus(headline, detail) end
+            function BridgeUiMarkDirty(reason) end
+            function BridgeStartEventPolling(sessionId, skipExisting) end
+            function BridgeStartDecisionPolling() end
+            function BridgeGetDecision(callback) end
+            bootstrapCalls = 0
+            pendingBootstrap = nil
+            bootstrapResume = nil
+            bootstrapOrigin = nil
+            function BridgeBootstrapCurrentSnapshot(sessionId, callback, resume, origin)
+                bootstrapCalls = bootstrapCalls + 1
+                pendingBootstrap = callback
+                bootstrapResume = resume
+                bootstrapOrigin = origin
+            end
+            firstStarted = BridgeResyncFromAuthoritativeSnapshot('hud')
+            secondStarted = BridgeResyncFromAuthoritativeSnapshot('hud')
+            BridgeState.lastReceivedEventSequence = 54
+            BridgeState.lastAppliedEventSequence = 54
+            BridgeState.eventQueue = {}
+            pendingBootstrap(true, nil)
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(lua.Globals.Get("firstStarted").Boolean);
+        Assert.False(lua.Globals.Get("secondStarted").Boolean);
+        Assert.Equal(1, lua.Globals.Get("bootstrapCalls").Number);
+        Assert.True(lua.Globals.Get("bootstrapResume").Boolean);
+        Assert.Equal("hud", lua.Globals.Get("bootstrapOrigin").String);
+        Assert.False(state.Get("resyncCircuitOpen").Boolean);
+        Assert.False(state.Get("resyncInFlight").Boolean);
+        Assert.False(state.Get("ui").Table.Get("resyncInFlight").Boolean);
+        Assert.Equal(54, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(0, state.Get("eventQueue").Table.Length);
+    }
+
+    [Fact]
+    public void StructuredCardMoveSuccessfulReturnClosesWatchdogOperation()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            breadcrumbs = {}
+            function BridgeTtsExecutionBreadcrumb(stage, operation, event, detail)
+                table.insert(breadcrumbs, {stage=stage, operation=operation})
+            end
+            function getObjectFromGUID(guid)
+                if guid == 'guid-1' then return {tag='Card', getGUID=function() return 'guid-1' end} end
+                return nil
+            end
+            function BridgeClearCardDesignationPresentation(cardInstanceId, object, retire) end
+            BridgeState.physicalByInstanceId['card-1'] = 'guid-1'
+            BridgeState.physicalInstanceIdByGuid['guid-1'] = 'card-1'
+            BridgeState.physicalSeatByGuid['guid-1'] = 'forge-player-1'
+            BridgeState.physicalZoneByGuid['guid-1'] = 'graveyard'
+            moveOk, moveErr = BridgeApplyStructuredCardMove({
+                sequence=11, kind='card_moved', cardInstanceId='card-1', seatId='forge-player-1',
+                sourceZone='graveyard', destinationZone='graveyard', cardName='Shock'
+            })
+            structuredEnter = 0
+            structuredReturned = 0
+            for _, crumb in ipairs(breadcrumbs) do
+                if crumb.stage == 'STRUCTURED_CARD_MOVE_ENTER' then structuredEnter = structuredEnter + 1 end
+                if crumb.stage == 'STRUCTURED_CARD_MOVE_RETURNED' then structuredReturned = structuredReturned + 1 end
+            end
+        ");
+
+        Assert.True(lua.Globals.Get("moveOk").Boolean, lua.Globals.Get("moveErr").ToPrintString());
+        Assert.Equal(1, lua.Globals.Get("structuredEnter").Number);
+        Assert.Equal(1, lua.Globals.Get("structuredReturned").Number);
+    }
+
+    [Fact]
+    public void StructuredCardMoveFailureReturnClosesWatchdogOperation()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            breadcrumbs = {}
+            function BridgeTtsExecutionBreadcrumb(stage, operation, event, detail)
+                table.insert(breadcrumbs, {stage=stage, operation=operation})
+            end
+            moveOk, moveErr = BridgeApplyStructuredCardMove({sequence=12, kind='card_moved', seatId='forge-player-1'})
+            structuredEnter = 0
+            structuredReturned = 0
+            for _, crumb in ipairs(breadcrumbs) do
+                if crumb.stage == 'STRUCTURED_CARD_MOVE_ENTER' then structuredEnter = structuredEnter + 1 end
+                if crumb.stage == 'STRUCTURED_CARD_MOVE_RETURNED' then structuredReturned = structuredReturned + 1 end
+            end
+        ");
+
+        Assert.False(lua.Globals.Get("moveOk").Boolean);
+        Assert.Contains("cardInstanceId", lua.Globals.Get("moveErr").String);
+        Assert.Equal(1, lua.Globals.Get("structuredEnter").Number);
+        Assert.Equal(1, lua.Globals.Get("structuredReturned").Number);
+    }
+
+    [Fact]
+    public void StructuredCardMoveAsyncDispatchClosesParentAndTracksChildSeparately()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            breadcrumbs = {}
+            function BridgeTtsExecutionBreadcrumb(stage, operation, event, detail)
+                table.insert(breadcrumbs, {stage=stage, operation=operation})
+            end
+            function BridgeFindLibraryDeckForSeat(seatId) return {tag='Deck'} end
+            function BridgeTryGetSeatHandTransform(seatId) return {position={0, 2, 0}}, nil end
+            function BridgeResolvePhysicalCard(event, zoneName, options) return nil, 'probe-unmapped' end
+            extractionQueued = 0
+            extractionInstanceId = nil
+            function BridgeQueueLibraryExtraction(seatId, worker, metadata)
+                extractionQueued = extractionQueued + 1
+                extractionInstanceId = metadata and metadata.cardInstanceId or nil
+            end
+            moveOk, moveErr = BridgeApplyStructuredCardMove({
+                sequence=13, kind='draw', cardInstanceId='card-2', seatId='forge-player-1',
+                sourceZone='library', destinationZone='hand', cardName='Island'
+            })
+            structuredEnter = 0
+            structuredReturned = 0
+            extractionEnter = 0
+            extractionReturned = 0
+            for _, crumb in ipairs(breadcrumbs) do
+                if crumb.stage == 'STRUCTURED_CARD_MOVE_ENTER' then structuredEnter = structuredEnter + 1 end
+                if crumb.stage == 'STRUCTURED_CARD_MOVE_RETURNED' then structuredReturned = structuredReturned + 1 end
+                if crumb.stage == 'LIBRARY_EXTRACTION_DISPATCH_ENTER' then extractionEnter = extractionEnter + 1 end
+                if crumb.stage == 'LIBRARY_EXTRACTION_DISPATCH_RETURNED' then extractionReturned = extractionReturned + 1 end
+            end
+        ");
+
+        Assert.True(lua.Globals.Get("moveOk").Boolean, lua.Globals.Get("moveErr").ToPrintString());
+        Assert.Equal(1, lua.Globals.Get("extractionQueued").Number);
+        Assert.Equal("card-2", lua.Globals.Get("extractionInstanceId").String);
+        Assert.Equal(1, lua.Globals.Get("structuredEnter").Number);
+        Assert.Equal(1, lua.Globals.Get("structuredReturned").Number);
+        Assert.Equal(1, lua.Globals.Get("extractionEnter").Number);
+        Assert.Equal(1, lua.Globals.Get("extractionReturned").Number);
+    }
+
+    [Fact]
     public void SameSessionResyncStagesMappingsAndRollsThemBackWithoutLosingTheCommittedRegistry()
     {
         var lua = NewQueueProbe();

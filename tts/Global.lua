@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 392f7e4af5edf358d58d49ae172988b387fbc8b24360cb774253687bc3a64ac8
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "392f7e4af5edf358d58d49ae172988b387fbc8b24360cb774253687bc3a64ac8"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 6fa1246b70ee000473764c4b8f95f2952211abccb2b9e8b3a1c314cb421a9bcd
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "6fa1246b70ee000473764c4b8f95f2952211abccb2b9e8b3a1c314cb421a9bcd"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -10116,15 +10116,12 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                                     if not currentBootstrap() then return end
                                     if not seatsOk then finishBootstrap(false, seatsError); return end
                                     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
-                                    if resumeFromSnapshotCursor == true then
-                                        local cursor = snapshotCursor
-                                        -- The snapshot is coherent through this bridge event cursor.
-                                        -- Resume polling after it so no pre-snapshot transition is
-                                        -- replayed over the just-rebuilt physical embodiment.
-                                        local committed, commitError = BridgeCommitSnapshotCheckpoint(
-                                            snapshot, "physical-reconcile-complete")
-                                        if not committed then finishBootstrap(false, commitError); return end
-                                    end
+                                    -- The snapshot is coherent through this bridge event cursor.
+                                    -- Resume polling after it so no pre-snapshot transition is
+                                    -- replayed over the just-rebuilt physical embodiment.
+                                    local committed, commitError = BridgeCommitSnapshotCheckpoint(
+                                        snapshot, "physical-reconcile-complete")
+                                    if not committed then finishBootstrap(false, commitError); return end
                                     BridgeLog(string.format(
                                         "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
                                         #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
@@ -10492,40 +10489,45 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             -- before this readiness check. Do not call it again: one RESYNC
             -- owns exactly one generation advance.
         else
-            if not explicit and (BridgeState.resyncDeferredSince or 0) <= 0 then
-                BridgeState.resyncDeferredSince = now
-            end
-            if not explicit and now - (BridgeState.resyncDeferredSince or now)
-                >= BRIDGE_RESYNC_AUTOMATIC_QUEUE_GRACE_SECONDS then
-                BridgeState.resyncDeferredReason = "physical-library-queue-timeout"
-                BridgeLog("[Bridge] RESYNC_DEFERRED reason=physical-library-queue-timeout origin=" .. tostring(origin)
-                    .. "; stopping automatic progression for manual recovery")
-                BridgeStopOnDesync("automatic authoritative resync blocked by physical library queue")
-                -- After timeout, monitor for when physical queue becomes idle so manual
-                -- recovery can take ownership without requiring another operator gesture.
-                if not BridgeState.queueTimeoutMonitorScheduled then
-                    BridgeState.queueTimeoutMonitorScheduled = true
-                    BridgeWaitFrames(function()
-                        BridgeState.queueTimeoutMonitorScheduled = false
-                        if BridgeState.desyncLatched == true and BridgeState.resyncInFlight ~= true
-                            and BridgePhysicalLibraryQueuesIdle() then
-                            BridgeLog("[Bridge] RESYNC_QUEUE_IDLE_AFTER_TIMEOUT manual recovery now available")
-                            BridgeEnsureDesyncRecovery("queue-idle-after-timeout")
-                        end
-                    end, 1)
+            if explicit then
+                BridgeLog("[Bridge] RESYNC_FORCE_LOCAL_RETIRE origin=" .. tostring(origin)
+                    .. " reason=explicit-recovery-owns-queue")
+            else
+                if (BridgeState.resyncDeferredSince or 0) <= 0 then
+                    BridgeState.resyncDeferredSince = now
                 end
+                if now - (BridgeState.resyncDeferredSince or now)
+                    >= BRIDGE_RESYNC_AUTOMATIC_QUEUE_GRACE_SECONDS then
+                    BridgeState.resyncDeferredReason = "physical-library-queue-timeout"
+                    BridgeLog("[Bridge] RESYNC_DEFERRED reason=physical-library-queue-timeout origin=" .. tostring(origin)
+                        .. "; stopping automatic progression for manual recovery")
+                    BridgeStopOnDesync("automatic authoritative resync blocked by physical library queue")
+                    -- After timeout, monitor for when physical queue becomes idle so manual
+                    -- recovery can take ownership without requiring another operator gesture.
+                    if not BridgeState.queueTimeoutMonitorScheduled then
+                        BridgeState.queueTimeoutMonitorScheduled = true
+                        BridgeWaitFrames(function()
+                            BridgeState.queueTimeoutMonitorScheduled = false
+                            if BridgeState.desyncLatched == true and BridgeState.resyncInFlight ~= true
+                                and BridgePhysicalLibraryQueuesIdle() then
+                                BridgeLog("[Bridge] RESYNC_QUEUE_IDLE_AFTER_TIMEOUT manual recovery now available")
+                                BridgeEnsureDesyncRecovery("queue-idle-after-timeout")
+                            end
+                        end, 1)
+                    end
+                    return false
+                end
+                BridgeState.resyncDeferredReason = "physical-library-queue"
+                BridgeLog("[Bridge] RESYNC_DEFERRED reason=physical-library-queue origin=" .. tostring(origin)
+                    .. " graceUntil=" .. tostring(BridgeState.manualResyncGraceUntil))
+                if BridgeState.resyncDeferredRetryScheduled then return false end
+                BridgeState.resyncDeferredRetryScheduled = true
+                BridgeWaitFrames(function()
+                    BridgeState.resyncDeferredRetryScheduled = false
+                    BridgeResyncFromAuthoritativeSnapshot(origin)
+                end, 2)
                 return false
             end
-            BridgeState.resyncDeferredReason = "physical-library-queue"
-            BridgeLog("[Bridge] RESYNC_DEFERRED reason=physical-library-queue origin=" .. tostring(origin)
-                .. " graceUntil=" .. tostring(BridgeState.manualResyncGraceUntil))
-            if BridgeState.resyncDeferredRetryScheduled then return false end
-            BridgeState.resyncDeferredRetryScheduled = true
-            BridgeWaitFrames(function()
-                BridgeState.resyncDeferredRetryScheduled = false
-                BridgeResyncFromAuthoritativeSnapshot(origin)
-            end, 2)
-            return false
         end
     end
     BridgeState.resyncDeferredSince = nil
@@ -14595,9 +14597,7 @@ function BridgePreparePhysicalCardForPublicZoneMove(object, destinationZone)
     return true, nil
 end
 
-function BridgeApplyStructuredCardMove(event)
-    BridgeTtsExecutionBreadcrumb("STRUCTURED_CARD_MOVE_ENTER", "structured_card_move", event,
-        "event:" .. tostring(event and event.sequence or "unknown"))
+local function BridgeApplyStructuredCardMoveCore(event)
     if event.cardInstanceId == nil then return false, "structured zone change has no cardInstanceId" end
     BridgeBeginLibraryBatch(event)
     local seat = BRIDGE_SEATS[event.seatId]
@@ -15263,6 +15263,15 @@ function BridgeApplyStructuredCardMove(event)
 
     BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, event.destinationZone)
     return true, nil
+end
+
+function BridgeApplyStructuredCardMove(event)
+    local operationId = "event:" .. tostring(event and event.sequence or "unknown")
+    BridgeTtsExecutionBreadcrumb("STRUCTURED_CARD_MOVE_ENTER", "structured_card_move", event, operationId)
+    local ok, err = BridgeApplyStructuredCardMoveCore(event)
+    BridgeTtsExecutionBreadcrumb("STRUCTURED_CARD_MOVE_RETURNED", "structured_card_move", event,
+        operationId .. "|ok=" .. tostring(ok) .. "|err=" .. tostring(err))
+    return ok, err
 end
 
 function BridgeFindGraveyardContainer(seatId, excludeGuid)
@@ -17927,9 +17936,9 @@ function BridgeDiagnosticCaptureGameplayFingerprint()
         value(BridgeState.lastReceivedEventSequence), value(BridgeState.lastAppliedEventSequence),
         value(BridgeState.lastConsumedEventSequence), value(BridgeState.lastStateProjectedEventSequence),
         value(BridgeState.lastPhysicalPresentationEventSequence), value(#(BridgeState.eventQueue or {})),
-        value(BridgeState.eventPollGeneration), value(BridgeState.eventSessionGeneration),
+        value(BridgeState.eventSessionGeneration),
         value(BridgeState.eventPolling), value(BridgeState.eventRequestInFlight),
-        value(BridgeState.eventPollScheduled), value(BridgeState.decisionPollGeneration),
+        value(BridgeState.eventPollScheduled),
         value(BridgeState.decisionPollInFlight), value(BridgeState.decisionPollScheduled),
         value(BridgeState.decisionPresentationGeneration), value(BridgeState.submitting),
         value(BridgeState.choiceProtocolPaused), value(BridgeState.animationRunning),

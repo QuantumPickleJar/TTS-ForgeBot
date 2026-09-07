@@ -260,6 +260,74 @@ public sealed class TtsDiagnosticCaptureLuaTests
     }
 
     [Fact]
+    public void DiagnosticCapturePurity_IgnoresBenignSchedulerGenerationDrift()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            table.concat = function(values, separator)
+                local result = ''
+                for index, value in ipairs(values) do
+                    if index > 1 then result = result .. separator end
+                    result = result .. tostring(value)
+                end
+                return result
+            end
+            BridgeState.eventSessionId = 'capture-session'
+            BridgeState.lastReceivedEventSequence = 54
+            BridgeState.lastAppliedEventSequence = 0
+            BridgeState.eventQueue = {}
+            for sequence = 1, 54 do
+                table.insert(BridgeState.eventQueue, {sequence=sequence, kind='card_moved'})
+            end
+            BridgeState.eventPolling = false
+            BridgeState.eventPollGeneration = 9
+            BridgeState.decisionPollGeneration = 86
+            BridgeState.decisionPollScheduled = true
+            BridgeState.resyncInFlight = false
+            BridgeState.resyncScheduled = false
+            BridgeState.desyncLatched = false
+            BridgeState.ui = {autoAdvanceMode='NORMAL', autoPassEmpty=false, fastForwardActive=false}
+            before = BridgeDiagnosticCaptureGameplayFingerprint()
+            BridgeState.decisionPollGeneration = 87
+            BridgeState.eventPollGeneration = 10
+            pure = BridgeCheckDiagnosticCapturePurity(before, 7, 'completion')
+        ");
+
+        Assert.True(lua.Globals.Get("pure").Boolean);
+    }
+
+    [Fact]
+    public void DiagnosticCapturePurity_StillFailsForAuthoritativeCursorMutation()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            table.concat = function(values, separator)
+                local result = ''
+                for index, value in ipairs(values) do
+                    if index > 1 then result = result .. separator end
+                    result = result .. tostring(value)
+                end
+                return result
+            end
+            BridgeState.eventSessionId = 'capture-session'
+            BridgeState.lastReceivedEventSequence = 54
+            BridgeState.lastAppliedEventSequence = 54
+            BridgeState.eventQueue = {}
+            BridgeState.eventPolling = false
+            BridgeState.decisionPollScheduled = true
+            BridgeState.resyncInFlight = false
+            BridgeState.resyncScheduled = false
+            BridgeState.desyncLatched = false
+            BridgeState.ui = {autoAdvanceMode='NORMAL', autoPassEmpty=false, fastForwardActive=false}
+            before = BridgeDiagnosticCaptureGameplayFingerprint()
+            BridgeState.lastAppliedEventSequence = 55
+            pure = BridgeCheckDiagnosticCapturePurity(before, 8, 'completion')
+        ");
+
+        Assert.False(lua.Globals.Get("pure").Boolean);
+    }
+
+    [Fact]
     public void DroppedDecisionTimer_IsRearmedByIndependentLivenessWatchdog()
     {
         var lua = NewProbe();

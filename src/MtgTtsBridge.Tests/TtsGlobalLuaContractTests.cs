@@ -1945,7 +1945,10 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void LibraryMill_UsesSerializedExactExtractionBeforeLaterDraws()
     {
-        var moveStart = Script.IndexOf("function BridgeApplyStructuredCardMove(event)", StringComparison.Ordinal);
+        var moveStart = Script.IndexOf("local function BridgeApplyStructuredCardMoveCore(event)", StringComparison.Ordinal);
+        if (moveStart < 0)
+            moveStart = Script.IndexOf("function BridgeApplyStructuredCardMove(event)", StringComparison.Ordinal);
+        Assert.True(moveStart >= 0);
         var moveEnd = Script.IndexOf("function BridgeMoveToGraveyard", moveStart, StringComparison.Ordinal);
         var moveBody = Script[moveStart..moveEnd];
 

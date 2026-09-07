@@ -3778,9 +3778,7 @@ function BridgePreparePhysicalCardForPublicZoneMove(object, destinationZone)
     return true, nil
 end
 
-function BridgeApplyStructuredCardMove(event)
-    BridgeTtsExecutionBreadcrumb("STRUCTURED_CARD_MOVE_ENTER", "structured_card_move", event,
-        "event:" .. tostring(event and event.sequence or "unknown"))
+local function BridgeApplyStructuredCardMoveCore(event)
     if event.cardInstanceId == nil then return false, "structured zone change has no cardInstanceId" end
     BridgeBeginLibraryBatch(event)
     local seat = BRIDGE_SEATS[event.seatId]
@@ -4446,6 +4444,15 @@ function BridgeApplyStructuredCardMove(event)
 
     BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, event.destinationZone)
     return true, nil
+end
+
+function BridgeApplyStructuredCardMove(event)
+    local operationId = "event:" .. tostring(event and event.sequence or "unknown")
+    BridgeTtsExecutionBreadcrumb("STRUCTURED_CARD_MOVE_ENTER", "structured_card_move", event, operationId)
+    local ok, err = BridgeApplyStructuredCardMoveCore(event)
+    BridgeTtsExecutionBreadcrumb("STRUCTURED_CARD_MOVE_RETURNED", "structured_card_move", event,
+        operationId .. "|ok=" .. tostring(ok) .. "|err=" .. tostring(err))
+    return ok, err
 end
 
 function BridgeFindGraveyardContainer(seatId, excludeGuid)
