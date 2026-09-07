@@ -129,12 +129,16 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
             finalApplied = BridgeState.lastAppliedEventSequence
             mutationCommitCount = BridgeTestCountLogToken('MUTATION_COMMIT')
             mutationAbortCount = BridgeTestCountLogToken('MUTATION_ABORT')
+            topologyLogCount = BridgeTestCountLogToken('MUTATION_GRAVEYARD_TOPOLOGY')
+            groupResultLogCount = BridgeTestCountLogToken('MUTATION_GRAVEYARD_GROUP_RESULT')
             desyncState = tostring(desyncReason)
         ");
 
         Assert.Equal(902, lua.Globals.Get("finalApplied").Number);
         Assert.Equal(1, lua.Globals.Get("mutationCommitCount").Number);
         Assert.Equal(0, lua.Globals.Get("mutationAbortCount").Number);
+        Assert.True(lua.Globals.Get("topologyLogCount").Number >= 3);
+        Assert.Equal(1, lua.Globals.Get("groupResultLogCount").Number);
         Assert.Equal("nil", lua.Globals.Get("desyncState").String);
     }
 
@@ -216,6 +220,60 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void SupplierThreeCardMillDoesNotDuplicatePhysicalEntriesDuringNativeGrouping()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            bridgeTest.autoStackOverlappingStagedCards = true
+            BridgeState.lastAppliedEventSequence = 116
+            BridgeState.lastReceivedEventSequence = 119
+            BridgeState.cardNameByInstanceId[':37'] = 'Baleful Strix'
+            BridgeState.cardNameByInstanceId[':2'] = 'Treasure Cruise'
+            BridgeState.cardNameByInstanceId[':31'] = 'Harmonized Trio'
+            local c1 = BridgeTestCreateCard(':37', 'Baleful Strix', 'loose-37')
+            local c2 = BridgeTestCreateCard(':2', 'Treasure Cruise', 'loose-2')
+            local c3 = BridgeTestCreateCard(':31', 'Harmonized Trio', 'loose-31')
+            BridgeTestQueueExtractionCards({c1, c2, c3})
+            BridgeTestSetEventQueue(
+                {sequence=117, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':37', cardName='Baleful Strix', forgeSequence=24},
+                {sequence=118, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':2', cardName='Treasure Cruise', forgeSequence=24},
+                {sequence=119, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':31', cardName='Harmonized Trio', forgeSequence=24}
+            )
+            local committedLedgerBefore = BridgeZoneLedger('forge-player-1', 'graveyard')
+            ledgerBeforeCount = BridgeTestArrayLength(committedLedgerBefore or {})
+            BridgeProcessEventQueue()
+            local committedLedgerAfter = BridgeZoneLedger('forge-player-1', 'graveyard')
+            finalApplied = BridgeState.lastAppliedEventSequence
+            finalLedgerCount = BridgeTestArrayLength(committedLedgerAfter or {})
+            nativeEntryCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.getObjects() or {})
+            nativeDeckCount = bridgeTest.graveyardContainer == bridgeTest.graveyardDeck and 1 or 0
+            looseCount = BridgeTestLooseGraveyardCardCount()
+            duplicateRepresentationCount = BridgeTestDuplicateGraveyardInstanceCount()
+            treasureRepresentationCount = BridgeTestGraveyardInstanceCount(':2')
+            trioRepresentationCount = BridgeTestGraveyardInstanceCount(':31')
+            mutationCommitCount = BridgeTestCountLogToken('MUTATION_COMMIT')
+            mutationAbortCount = BridgeTestCountLogToken('MUTATION_ABORT')
+            autoStackCount = bridgeTest.autoStackCount or 0
+            debugDesync = tostring(desyncReason)
+        ");
+
+        Assert.Equal(0, lua.Globals.Get("ledgerBeforeCount").Number);
+        Assert.True(lua.Globals.Get("autoStackCount").Number == 0,
+            $"pre-group native autoStackCount={lua.Globals.Get("autoStackCount").Number}; desync={lua.Globals.Get("debugDesync").String}; logs={CapturedLogsTail(lua)}");
+        Assert.Equal(119, lua.Globals.Get("finalApplied").Number);
+        Assert.Equal(3, lua.Globals.Get("finalLedgerCount").Number);
+        Assert.Equal(1, lua.Globals.Get("nativeDeckCount").Number);
+        Assert.Equal(3, lua.Globals.Get("nativeEntryCount").Number);
+        Assert.Equal(0, lua.Globals.Get("looseCount").Number);
+        Assert.Equal(0, lua.Globals.Get("duplicateRepresentationCount").Number);
+        Assert.Equal(1, lua.Globals.Get("treasureRepresentationCount").Number);
+        Assert.Equal(1, lua.Globals.Get("trioRepresentationCount").Number);
+        Assert.Equal(1, lua.Globals.Get("mutationCommitCount").Number);
+        Assert.Equal(0, lua.Globals.Get("mutationAbortCount").Number);
+    }
+
+    [Fact]
     public void ArmoredSkaabFourCardMillCommitsAsOneMutation()
     {
         var lua = NewProbe();
@@ -255,6 +313,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         var lua = NewProbe();
         ExecuteProbe(lua, @"
             BridgeTestInitAtomicHarness()
+            bridgeTest.autoStackOverlappingStagedCards = true
             BridgeState.lastAppliedEventSequence = 200
             BridgeState.cardNameByInstanceId[':old1'] = 'Old One'
             BridgeState.cardNameByInstanceId[':old2'] = 'Old Two'
@@ -283,6 +342,11 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
             final3 = finalLedger[3]
             final4 = finalLedger[4]
             containerTag = bridgeTest.graveyardContainer and bridgeTest.graveyardContainer.tag or 'nil'
+            nativeEntryCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.getObjects() or {})
+            duplicateRepresentationCount = BridgeTestDuplicateGraveyardInstanceCount()
+            autoStackCount = bridgeTest.autoStackCount or 0
+            mutationCommitCount = BridgeTestCountLogToken('MUTATION_COMMIT')
+            mutationAbortCount = BridgeTestCountLogToken('MUTATION_ABORT')
         ");
 
         Assert.Equal(202, lua.Globals.Get("finalApplied").Number);
@@ -292,6 +356,11 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Assert.Equal(":new1", lua.Globals.Get("final3").String);
         Assert.Equal(":new2", lua.Globals.Get("final4").String);
         Assert.Equal("Deck", lua.Globals.Get("containerTag").String);
+        Assert.Equal(4, lua.Globals.Get("nativeEntryCount").Number);
+        Assert.Equal(0, lua.Globals.Get("duplicateRepresentationCount").Number);
+        Assert.Equal(0, lua.Globals.Get("autoStackCount").Number);
+        Assert.Equal(1, lua.Globals.Get("mutationCommitCount").Number);
+        Assert.Equal(0, lua.Globals.Get("mutationAbortCount").Number);
     }
 
     [Fact]
@@ -1101,7 +1170,13 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     bridgeTest.groupCalls = bridgeTest.groupCalls + 1
                     bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
                     for _, object in ipairs(objects or {}) do
-                        bridgeTest.graveyardDeck.putObject(object, 0)
+                        if object ~= nil and object._nativeAutoStack ~= nil then
+                            bridgeTest.forEachArrayEntry(object._nativeAutoStack, function(member)
+                                bridgeTest.graveyardDeck.putObject(member, 0)
+                            end)
+                        else
+                            bridgeTest.graveyardDeck.putObject(object, 0)
+                        end
                     end
                     if bridgeTest.groupReturnsArray then return {bridgeTest.graveyardDeck} end
                     return bridgeTest.graveyardDeck
@@ -1119,9 +1194,39 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     }
                     card.getGUID = function() return card._guid end
                     card.getName = function() return card.name end
-                    card.setPositionSmooth = function(position, smooth, collide)
+                    local function setCardPosition(position)
                         card._lastPosition = position
+                        bridgeTest.stagedPositionCount = (bridgeTest.stagedPositionCount or 0) + 1
+                        if bridgeTest.autoStackOverlappingStagedCards == true
+                            and bridgeTest.stagedPositionCount >= 3
+                            and bridgeTest.autoStackCount == nil then
+                            local nearest = nil
+                            local nearestDistance = nil
+                            bridgeTest.forEachArrayEntry(bridgeTest.allCards, function(other)
+                                if bridgeTest.autoStackCount == nil and other ~= card
+                                    and other._lastPosition ~= nil and other._inDeck ~= true
+                                    and other._inLibrary ~= true then
+                                    local dx = (tonumber(position.x) or 0) - (tonumber(other._lastPosition.x) or 0)
+                                    local dz = (tonumber(position.z) or 0) - (tonumber(other._lastPosition.z) or 0)
+                                    local distance = math.sqrt((dx * dx) + (dz * dz))
+                                    if distance < 2.6 and (nearestDistance == nil or distance < nearestDistance) then
+                                        nearest = other
+                                        nearestDistance = distance
+                                    end
+                                end
+                            end)
+                            if nearest ~= nil then
+                                local nativeStack = {nearest, card}
+                                nearest._nativeAutoStack = nativeStack
+                                card._nativeAutoStack = nativeStack
+                                bridgeTest.autoStackCount = 1
+                                bridgeTest.autoStackFirstInstanceId = nearest._instanceId
+                                bridgeTest.autoStackSecondInstanceId = card._instanceId
+                            end
+                        end
                     end
+                    card.setPositionSmooth = function(position, smooth, collide) setCardPosition(position) end
+                    card.setPosition = function(position) setCardPosition(position) end
                     card.setLock = function(value) card._locked = value end
                     card.setRotation = function(_) end
                     card.putObject = function(other, position)
@@ -1238,6 +1343,28 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                         if card._inDeck ~= true and card._lastPosition ~= nil then
                             count = count + 1
                         end
+                    end)
+                    return count
+                end
+
+                function BridgeTestDuplicateGraveyardInstanceCount()
+                    local seen = {}
+                    local duplicates = 0
+                    bridgeTest.forEachArrayEntry(bridgeTest.graveyardDeck.entries or {}, function(entry)
+                        local instanceId = tostring(entry and entry.instanceId or '')
+                        if seen[instanceId] == true then
+                            duplicates = duplicates + 1
+                        else
+                            seen[instanceId] = true
+                        end
+                    end)
+                    return duplicates
+                end
+
+                function BridgeTestGraveyardInstanceCount(expectedInstanceId)
+                    local count = 0
+                    bridgeTest.forEachArrayEntry(bridgeTest.graveyardDeck.entries or {}, function(entry)
+                        if entry ~= nil and entry.instanceId == expectedInstanceId then count = count + 1 end
                     end)
                     return count
                 end

@@ -1302,7 +1302,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-09-07-resync-mill-repair\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-09-07-h0-supplier-recovery-watchdog\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -2676,7 +2676,7 @@ public sealed class TtsGlobalLuaContractTests
     public void ScriptRevisionHasOneCanonicalConfigOwner()
     {
         Assert.True(Regex.Matches(Script, @"BRIDGE_SCRIPT_REVISION\s*(?<![=])=(?!=)").Count == 1);
-        Assert.Contains("2026-09-07-resync-mill-repair", Script);
+        Assert.Contains("2026-09-07-h0-supplier-recovery-watchdog", Script);
     }
 
     [Fact]

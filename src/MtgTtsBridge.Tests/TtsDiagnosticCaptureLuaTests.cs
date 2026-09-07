@@ -158,8 +158,19 @@ public sealed class TtsDiagnosticCaptureLuaTests
             captureInFlightWhilePending = BridgeState.ui.reportCaptureInFlight
             blockedWhilePending = BridgeAutomaticDecisionBlocked(BridgeState.lastDecision)
             BridgeHudResyncFromForge(nil, nil, nil)
+            -- Model ordinary automatic recovery advancing while the bridge is
+            -- still collecting the asynchronous ZIP.
+            BridgeState.resyncInFlight = true
+            BridgeState.desyncLatched = true
+            BridgeState.eventPolling = false
             pendingReportCallback(true, {success = true, reportId = 'report-1'}, nil)
             blockedAfterCompletion = BridgeAutomaticDecisionBlocked(BridgeState.lastDecision)
+            capturePurityViolations = 0
+            for _, item in ipairs(BridgeState.diagnosticCaptureLifecycle or {}) do
+                if item.stage == 'DIAG_CAPTURE_PURITY_VIOLATION' then
+                    capturePurityViolations = capturePurityViolations + 1
+                end
+            end
         ");
 
         var state = lua.Globals.Get("BridgeState").Table;
@@ -167,11 +178,12 @@ public sealed class TtsDiagnosticCaptureLuaTests
         Assert.True(lua.Globals.Get("captureInFlightWhilePending").Boolean);
         Assert.True(ui.Get("reportCaptureInFlight").Boolean == false);
         Assert.True(lua.Globals.Get("blockedWhilePending").IsNil());
-        Assert.True(lua.Globals.Get("blockedAfterCompletion").IsNil());
+        Assert.Equal("desync-latched", lua.Globals.Get("blockedAfterCompletion").String);
         Assert.Equal(1, lua.Globals.Get("resyncCalls").Number);
         Assert.Equal(0, lua.Globals.Get("eventPollCalls").Number);
         Assert.Equal(0, lua.Globals.Get("decisionGets").Number);
         Assert.Equal(0, lua.Globals.Get("recoveryCalls").Number);
+        Assert.Equal(0, lua.Globals.Get("capturePurityViolations").Number);
         Assert.Equal("forge-tui-12", state.Get("lastDecision").Table.Get("decisionId").String);
         Assert.Equal(22, state.Get("lastReceivedEventSequence").Number);
         Assert.Equal(22, state.Get("lastAppliedEventSequence").Number);

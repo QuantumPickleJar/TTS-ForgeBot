@@ -54,6 +54,34 @@ public sealed class DiagnosticsTests
         Assert.Null(completed.OpenOperation);
     }
 
+    [Theory]
+    [InlineData(116, true)]
+    [InlineData(117, false)]
+    public void StructuredCardMoveReturnedClosesTheActualBreadcrumbCorrelation(long eventSequence, bool succeeded)
+    {
+        var watchdog = new TtsExecutionWatchdog(TimeSpan.FromSeconds(2));
+        var now = DateTimeOffset.UtcNow;
+        var operationId = $"event:{eventSequence}";
+        var entered = new TtsExecutionBreadcrumb(
+            "1788810443.43422-4898653501-962480", "ea02b6a5207e46a494c85c8034b196ee",
+            7, 129, eventSequence, "card_moved", "STRUCTURED_CARD_MOVE_ENTER",
+            "structured_card_move", operationId, ":31", "library", "graveyard", 100, now);
+        var returned = entered with
+        {
+            Stage = "STRUCTURED_CARD_MOVE_RETURNED",
+            ReceivedAtUtc = now.AddMilliseconds(4)
+        };
+
+        // Success/failure is deliberately separate from correlation identity.
+        var outcome = succeeded ? "ok=true|err=nil" : "ok=false|err=forced";
+        Assert.NotEmpty(outcome);
+        watchdog.Record(entered, now, out _);
+        watchdog.Record(returned, returned.ReceivedAtUtc, out var completed);
+
+        Assert.Null(completed.OpenOperation);
+        Assert.False(watchdog.Evaluate(now.AddSeconds(3), out _));
+    }
+
     [Fact]
     public void TtsExecutionBreadcrumbRing_IsBoundedAndPreservesIdentity()
     {

@@ -836,6 +836,177 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void SupplierAbortAutomaticRecoveryCommitsSnapshot119AndRestartsOnce()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "SupplierAbortAutomaticRecoveryCommitsSnapshot119AndRestartsOnce.probe.lua", @"
+            BridgeState.eventSessionId = 'session-S'
+            BridgeState.lifecycleState = BRIDGE_LIFECYCLE_ACTIVE
+            BridgeState.lastReceivedEventSequence = 119
+            BridgeState.lastAppliedEventSequence = 116
+            BridgeState.eventQueue = {
+                {sequence=117, kind='card_moved', cardInstanceId=':37', forgeSequence=24},
+                {sequence=118, kind='card_moved', cardInstanceId=':2', forgeSequence=24},
+                {sequence=119, kind='card_moved', cardInstanceId=':31', forgeSequence=24}
+            }
+            BridgeState.desyncLatched = true
+            BridgeState.resyncInFlight = false
+            BridgeState.resyncScheduled = false
+            BridgeState.resyncCircuitOpen = false
+            BridgeState.ui = {resyncInFlight=false, fastForwardActive=false, autoAdvanceMode='NORMAL'}
+            physicalGraveyard = {':37', ':2', ':37', ':2', ':31'}
+            snapshotRequests = 0
+            checkpointCommits = 0
+            decisionReattachments = 0
+            eventPollingRestarts = 0
+
+            function BridgeWaitFrames(callback, frames)
+                if frames ~= BRIDGE_RESYNC_STALL_FRAMES then callback() end
+            end
+            function BridgeWaitTime(callback, delay) end
+            function BridgePhysicalLibraryQueuesIdle() return true end
+            function BridgeStopEventPolling(reason) BridgeState.eventPolling = false end
+            function BridgeStopDecisionPolling() end
+            function BridgeResumeChoiceProtocol(reason) end
+            function BridgeClearHighlights() end
+            function BridgeResetSelectionState() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeSetStatus(headline, detail) lastStatusHeadline=headline; lastStatusDetail=detail end
+            function BridgeUiMarkDirty(reason) end
+            function BridgeTraceStart(marker, detail)
+                if string.find(tostring(marker), 'ERROR', 1, true) ~= nil then traceError=tostring(detail) end
+            end
+            function BridgeRecordExpectedHandIdentities(snapshot) end
+            function BridgeAuditDuplicateLibraryGuids() return 0 end
+            function BridgeStageSeatCardsForBootstrap(snapshot, callback) recoveryMarker='staged'; callback(true, nil, {}) end
+            function BridgeVerifyLibraryIdentityStability(callback) recoveryMarker='stable'; callback(true, nil) end
+            function BridgeAnnotateSnapshotBattlefieldKinds(snapshot, callback) recoveryMarker='annotated'; callback(true, nil) end
+            function BridgeBootstrapSeats(snapshot, seatIndex, callback)
+                recoveryMarker='seats'
+                physicalGraveyard = {}
+                physicalGraveyard[1] = ':37'
+                physicalGraveyard[2] = ':2'
+                physicalGraveyard[3] = ':31'
+                callback(true, nil)
+            end
+            function BridgeGetEmbodimentSnapshot(callback)
+                snapshotRequests = snapshotRequests + 1
+                callback(true, {
+                    sessionId='session-S', eventCursor=119, forgeSequence=25,
+                    seats={{seatId='forge-player-1', graveyard={
+                        {cardInstanceId=':37'}, {cardInstanceId=':2'}, {cardInstanceId=':31'}
+                    }}}
+                }, nil)
+            end
+            local rawCheckpointCommit = BridgeCommitSnapshotCheckpoint
+            BridgeCommitSnapshotCheckpoint = function(snapshot, reason)
+                checkpointCommits = checkpointCommits + 1
+                return rawCheckpointCommit(snapshot, reason)
+            end
+            function BridgeStartEventPolling(sessionId, skipExisting)
+                eventPollingRestarts = eventPollingRestarts + 1
+                BridgeState.eventPolling = true
+            end
+            function BridgeGetDecision(callback)
+                callback(true, {decisionId='decision-119', sessionId='session-S', eventCursor=119,
+                    kind='main_priority', actions={{actionId='pass', type='pass_priority'}}}, nil)
+            end
+            function BridgeAcceptDecision(decision, origin, sessionId, generation)
+                decisionReattachments = decisionReattachments + 1
+                BridgeState.lastDecision = decision
+            end
+
+            BridgeEnsureDesyncRecovery('captured-atomic-abort')
+            finalPhysicalCount = 0
+            for index = 1, 3 do
+                if physicalGraveyard[index] ~= nil then finalPhysicalCount = finalPhysicalCount + 1 end
+            end
+            physicalFirst = physicalGraveyard[1]
+            physicalSecond = physicalGraveyard[2]
+            physicalThird = physicalGraveyard[3]
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(1, lua.Globals.Get("snapshotRequests").Number);
+        Assert.True(lua.Globals.Get("checkpointCommits").Number == 1,
+            $"checkpointCommits={lua.Globals.Get("checkpointCommits").Number} "
+            + $"bootstrapStage={state.Get("bootstrapStage").ToPrintString()} "
+            + $"resyncStage={state.Get("resyncStage").ToPrintString()} "
+            + $"lastFailure={state.Get("resyncLastFailureReason").ToPrintString()} "
+            + $"marker={lua.Globals.Get("recoveryMarker").ToPrintString()} "
+            + $"traceError={lua.Globals.Get("traceError").ToPrintString()} "
+            + $"desync={lua.Globals.Get("desyncReason").ToPrintString()}");
+        Assert.Equal(119, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(119, state.Get("lastReceivedEventSequence").Number);
+        Assert.Equal(0, state.Get("eventQueue").Table.Length);
+        Assert.Equal(3, lua.Globals.Get("finalPhysicalCount").Number);
+        Assert.Equal(":37", lua.Globals.Get("physicalFirst").String);
+        Assert.Equal(":2", lua.Globals.Get("physicalSecond").String);
+        Assert.Equal(":31", lua.Globals.Get("physicalThird").String);
+        Assert.Equal(1, lua.Globals.Get("eventPollingRestarts").Number);
+        Assert.Equal(1, lua.Globals.Get("decisionReattachments").Number);
+        Assert.True(state.Get("eventPolling").Boolean);
+        Assert.False(state.Get("desyncLatched").Boolean);
+        Assert.False(state.Get("resyncInFlight").Boolean);
+        Assert.Equal("RUNNING", state.Get("presentationState").String);
+    }
+
+    [Fact]
+    public void FailedAutomaticRecoveryCannotFetchTheSameSnapshotForever()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "FailedAutomaticRecoveryCannotFetchTheSameSnapshotForever.probe.lua", @"
+            BridgeState.eventSessionId = 'session-S'
+            BridgeState.lastReceivedEventSequence = 119
+            BridgeState.lastAppliedEventSequence = 116
+            BridgeState.eventQueue = {
+                {sequence=117}, {sequence=118}, {sequence=119}
+            }
+            BridgeState.desyncLatched = true
+            BridgeState.resyncInFlight = false
+            BridgeState.resyncScheduled = false
+            BridgeState.resyncCircuitOpen = false
+            BridgeState.ui = {resyncInFlight=false, fastForwardActive=false, autoAdvanceMode='NORMAL'}
+            snapshotAttempts = 0
+            function BridgeWaitFrames(callback, frames)
+                if frames ~= BRIDGE_RESYNC_STALL_FRAMES then callback() end
+            end
+            function BridgeWaitTime(callback, delay) end
+            function BridgePhysicalLibraryQueuesIdle() return true end
+            function BridgeStopEventPolling(reason) end
+            function BridgeStopDecisionPolling() end
+            function BridgeResumeChoiceProtocol(reason) end
+            function BridgeClearHighlights() end
+            function BridgeResetSelectionState() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeSetStatus(headline, detail) lastStatusHeadline=headline; lastStatusDetail=detail end
+            function BridgeUiMarkDirty(reason) end
+            function BridgeBootstrapCurrentSnapshot(sessionId, callback, resume, origin)
+                snapshotAttempts = snapshotAttempts + 1
+                BridgeState.resyncSnapshotFingerprint = 'session-S|119|25'
+                BridgeState.resyncSnapshotRepeatCount = snapshotAttempts
+                callback(false, 'forced physical reconstruction failure')
+            end
+
+            BridgeEnsureDesyncRecovery('captured-atomic-abort')
+            for attempt = 1, 50 do BridgeEnforceDesyncRecovery('probe-update') end
+            automaticAttempts = snapshotAttempts
+            explicitStarted = BridgeResyncFromAuthoritativeSnapshot('hud')
+            attemptsAfterExplicit = snapshotAttempts
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(1, lua.Globals.Get("automaticAttempts").Number);
+        Assert.True(state.Get("resyncCircuitOpen").Boolean);
+        Assert.True(state.Get("desyncLatched").Boolean);
+        Assert.False(state.Get("resyncInFlight").Boolean);
+        Assert.False(state.Get("resyncScheduled").Boolean);
+        Assert.Equal("RESYNC AVAILABLE", lua.Globals.Get("lastStatusHeadline").String);
+        Assert.True(lua.Globals.Get("explicitStarted").Boolean);
+        Assert.Equal(2, lua.Globals.Get("attemptsAfterExplicit").Number);
+    }
+
+    [Fact]
     public void DesyncLatchAlwaysSchedulesRecovery()
     {
         var lua = NewQueueProbe();
@@ -1007,6 +1178,7 @@ public sealed class TtsEventQueueLivelockTests
         Assert.False(state.Get("ui").Table.Get("resyncInFlight").Boolean);
         Assert.Equal(5, state.Get("resyncToken").Number);
         Assert.Equal(1, state.Get("resyncBootstrapGeneration").Number);
+        Assert.True(state.Get("resyncCircuitOpen").Boolean);
     }
 
     [Fact]
@@ -1226,6 +1398,7 @@ public sealed class TtsEventQueueLivelockTests
             BridgeState.resyncSnapshotFingerprint = 'session|31|11'
             BridgeState.resyncSnapshotRepeatCount = 3
             BridgeState.resyncNoProgressAttempts = 2
+            BridgeState.resyncNoProgress = {sessionId='session', forgeSequence=11, eventCursor=31, count=4, lastLoggedCount=4}
             BridgeState.resyncDeferredReason = 'physical-library-queue'
             BridgeState.ui = {resyncInFlight=false, fastForwardActive=false, autoAdvanceMode='NORMAL'}
             function BridgePhysicalLibraryQueuesIdle() return false end
@@ -1254,6 +1427,7 @@ public sealed class TtsEventQueueLivelockTests
                 bootstrapFingerprint = BridgeState.resyncSnapshotFingerprint
                 bootstrapRepeatCount = BridgeState.resyncSnapshotRepeatCount
                 bootstrapNoProgressAttempts = BridgeState.resyncNoProgressAttempts
+                bootstrapNoProgressCount = BridgeState.resyncNoProgress and BridgeState.resyncNoProgress.count or -1
             end
             firstStarted = BridgeResyncFromAuthoritativeSnapshot('hud')
             secondStarted = BridgeResyncFromAuthoritativeSnapshot('hud')
@@ -1272,6 +1446,7 @@ public sealed class TtsEventQueueLivelockTests
         Assert.True(lua.Globals.Get("bootstrapFingerprint").IsNil());
         Assert.Equal(0, lua.Globals.Get("bootstrapRepeatCount").Number);
         Assert.Equal(0, lua.Globals.Get("bootstrapNoProgressAttempts").Number);
+        Assert.Equal(0, lua.Globals.Get("bootstrapNoProgressCount").Number);
         Assert.False(state.Get("resyncCircuitOpen").Boolean);
         Assert.False(state.Get("resyncInFlight").Boolean);
         Assert.False(state.Get("ui").Table.Get("resyncInFlight").Boolean);
@@ -1286,7 +1461,7 @@ public sealed class TtsEventQueueLivelockTests
         lua.DoString(@"
             breadcrumbs = {}
             function BridgeTtsExecutionBreadcrumb(stage, operation, event, detail)
-                table.insert(breadcrumbs, {stage=stage, operation=operation})
+                table.insert(breadcrumbs, {stage=stage, operation=operation, operationId=detail})
             end
             function getObjectFromGUID(guid)
                 if guid == 'guid-1' then return {tag='Card', getGUID=function() return 'guid-1' end} end
@@ -1303,15 +1478,26 @@ public sealed class TtsEventQueueLivelockTests
             })
             structuredEnter = 0
             structuredReturned = 0
+            structuredEnterOperationId = nil
+            structuredReturnedOperationId = nil
             for _, crumb in ipairs(breadcrumbs) do
-                if crumb.stage == 'STRUCTURED_CARD_MOVE_ENTER' then structuredEnter = structuredEnter + 1 end
-                if crumb.stage == 'STRUCTURED_CARD_MOVE_RETURNED' then structuredReturned = structuredReturned + 1 end
+                if crumb.stage == 'STRUCTURED_CARD_MOVE_ENTER' then
+                    structuredEnter = structuredEnter + 1
+                    structuredEnterOperationId = crumb.operationId
+                end
+                if crumb.stage == 'STRUCTURED_CARD_MOVE_RETURNED' then
+                    structuredReturned = structuredReturned + 1
+                    structuredReturnedOperationId = crumb.operationId
+                end
             end
         ");
 
         Assert.True(lua.Globals.Get("moveOk").Boolean, lua.Globals.Get("moveErr").ToPrintString());
         Assert.Equal(1, lua.Globals.Get("structuredEnter").Number);
         Assert.Equal(1, lua.Globals.Get("structuredReturned").Number);
+        Assert.Equal("event:11", lua.Globals.Get("structuredEnterOperationId").String);
+        Assert.Equal(lua.Globals.Get("structuredEnterOperationId").String,
+            lua.Globals.Get("structuredReturnedOperationId").String);
     }
 
     [Fact]
@@ -1321,14 +1507,22 @@ public sealed class TtsEventQueueLivelockTests
         lua.DoString(@"
             breadcrumbs = {}
             function BridgeTtsExecutionBreadcrumb(stage, operation, event, detail)
-                table.insert(breadcrumbs, {stage=stage, operation=operation})
+                table.insert(breadcrumbs, {stage=stage, operation=operation, operationId=detail})
             end
             moveOk, moveErr = BridgeApplyStructuredCardMove({sequence=12, kind='card_moved', seatId='forge-player-1'})
             structuredEnter = 0
             structuredReturned = 0
+            structuredEnterOperationId = nil
+            structuredReturnedOperationId = nil
             for _, crumb in ipairs(breadcrumbs) do
-                if crumb.stage == 'STRUCTURED_CARD_MOVE_ENTER' then structuredEnter = structuredEnter + 1 end
-                if crumb.stage == 'STRUCTURED_CARD_MOVE_RETURNED' then structuredReturned = structuredReturned + 1 end
+                if crumb.stage == 'STRUCTURED_CARD_MOVE_ENTER' then
+                    structuredEnter = structuredEnter + 1
+                    structuredEnterOperationId = crumb.operationId
+                end
+                if crumb.stage == 'STRUCTURED_CARD_MOVE_RETURNED' then
+                    structuredReturned = structuredReturned + 1
+                    structuredReturnedOperationId = crumb.operationId
+                end
             end
         ");
 
@@ -1336,6 +1530,9 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Contains("cardInstanceId", lua.Globals.Get("moveErr").String);
         Assert.Equal(1, lua.Globals.Get("structuredEnter").Number);
         Assert.Equal(1, lua.Globals.Get("structuredReturned").Number);
+        Assert.Equal("event:12", lua.Globals.Get("structuredEnterOperationId").String);
+        Assert.Equal(lua.Globals.Get("structuredEnterOperationId").String,
+            lua.Globals.Get("structuredReturnedOperationId").String);
     }
 
     [Fact]

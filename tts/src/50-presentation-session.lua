@@ -1872,6 +1872,7 @@ end
 
 function BridgeEnforceDesyncRecovery(reason)
     if BridgeState.desyncLatched == true
+        and BridgeState.resyncCircuitOpen ~= true
         and not BridgeState.resyncInFlight
         and not BridgeState.resyncScheduled
         and not BridgeState.recoveryCheckpointCommitInProgress then
@@ -1914,6 +1915,14 @@ end
 function BridgeEnsureDesyncRecovery(reason)
     if BridgeState.desyncLatched ~= true or BridgeState.resyncInFlight == true then return end
     if BridgeState.resyncScheduled == true then return end
+    if BridgeState.resyncCircuitOpen == true then
+        BridgeState.resyncScheduled = false
+        BridgeState.resyncDeferredRetryScheduled = false
+        BridgeLog("[Bridge] RESYNC_NOT_SCHEDULED reason=circuit-open request=" .. tostring(reason)
+            .. " lastFailure=" .. tostring(BridgeState.resyncLastFailureReason))
+        BridgeSetStatus("RESYNC AVAILABLE", "Automatic recovery stopped; use RESYNC FORGE for one new attempt.")
+        return
+    end
     if BridgeState.eventSessionId == nil then
         BridgeState.desyncLatched = false
         BridgeLog("[Bridge] cleared desync latch: no active session reason=" .. tostring(reason))
@@ -2265,7 +2274,6 @@ function BridgeHudSubmitReport(category, summary)
         -- A report is an observer. Completion must not restart pollers,
         -- refresh a decision, or rebuild presentation; normal liveness and
         -- recovery watchdogs own those mutations.
-        BridgeCheckDiagnosticCapturePurity(capturePurityBefore, captureToken, "completion")
     end
 
     -- Arm the watchdog before collecting any diagnostic payload.  Payload
@@ -2304,6 +2312,12 @@ function BridgeHudSubmitReport(category, summary)
         diagnosticCaptureLifecycle = performance.diagnosticCaptureLifecycle,
         eventDrainDiagnostics = performance.eventDrainDiagnostics
     }
+    -- Purity belongs to the synchronous payload collection owned by this
+    -- capture. Once the request is handed off, normal event/resync callbacks
+    -- are allowed to advance the match while ZIP creation runs asynchronously;
+    -- attributing that later drift to diagnostics produced the captured false
+    -- DIAG_CAPTURE_PURITY_VIOLATION.
+    BridgeCheckDiagnosticCapturePurity(capturePurityBefore, captureToken, "payload-copy")
     local requestOk, requestError = pcall(function()
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_HANDED_OFF", captureToken, "bridge-request")
         BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)

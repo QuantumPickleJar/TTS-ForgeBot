@@ -58,7 +58,7 @@ BRIDGE_ALLOW_DECK_MINIMUM_OVERRIDE = false
 -- lands after they enter. STRICT re-applies the persistent land row only on
 -- authoritative layout events or an explicit organize request.
 BRIDGE_LAND_PLACEMENT_MODE = BRIDGE_LAND_PLACEMENT_MODE or "FREEFORM"
-BRIDGE_SCRIPT_REVISION = "2026-09-07-resync-mill-repair"
+BRIDGE_SCRIPT_REVISION = "2026-09-07-h0-supplier-recovery-watchdog"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,

@@ -2071,6 +2071,10 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeState.resyncStartedCpuAt = nil
     BridgeState.resyncLastFailureReason = tostring(reason or "watchdog")
     BridgeState.resyncDeferredReason = tostring(reason or "watchdog")
+    -- Releasing ownership is terminal for this automatic attempt. Without a
+    -- circuit fence, onUpdate immediately acquired another identical snapshot
+    -- attempt, producing the captured 7-9 second request storm.
+    BridgeState.resyncCircuitOpen = true
     BridgeSetSchedulerOwner("NORMAL", "resync-stalled")
     BridgeState.animationRunning = false
     BridgeState.eventDrainTransaction = nil
@@ -2162,6 +2166,9 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeState.resyncSnapshotFingerprint = nil
         BridgeState.resyncSnapshotRepeatCount = 0
         BridgeState.resyncNoProgressAttempts = 0
+        BridgeState.resyncNoProgress = {
+            sessionId = nil, forgeSequence = nil, eventCursor = nil, count = 0, lastLoggedCount = 0
+        }
     end
     -- H0 recovery owns replacement, not the failed worker.  Abort and fence
     -- once before looking at queue readiness; repeated HUD clicks return via
@@ -2222,7 +2229,8 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
                         local monitorSessionId = BridgeState.eventSessionId
                         local function resumeAutomaticRecoveryWhenIdle()
                             if BridgeState.eventSessionId ~= monitorSessionId
-                                or BridgeState.desyncLatched ~= true then
+                                or BridgeState.desyncLatched ~= true
+                                or BridgeState.resyncCircuitOpen == true then
                                 BridgeState.queueTimeoutMonitorScheduled = false
                                 return
                             end
@@ -2345,30 +2353,39 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeState.resyncStartedAt = nil
         BridgeState.resyncStartedUpdateTick = nil
         BridgeState.resyncStartedCpuAt = nil
-        BridgeState.resyncSnapshotFingerprint = nil
-        BridgeState.resyncSnapshotRepeatCount = 0
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
         if not ok then
             BridgeState.resyncLastFailureReason = tostring(err)
             if string.find(tostring(err), "no progress", 1, true) ~= nil then
                 BridgeState.resyncNoProgressAttempts = (BridgeState.resyncNoProgressAttempts or 0) + 1
-                if BridgeState.resyncNoProgressAttempts >= 2 then
-                    BridgeState.resyncCircuitOpen = true
-                end
             end
+            -- One failed owned snapshot reconstruction is a bounded automatic
+            -- outcome. Preserve its fingerprint for diagnostics and require an
+            -- explicit retry; otherwise BridgeStopOnDesync/onUpdate immediately
+            -- schedules the same snapshot again forever.
+            BridgeState.resyncCircuitOpen = true
+            BridgeState.resyncDeferredReason = "snapshot-reconcile-failed"
             BridgeRestoreResyncMappingTransaction("bootstrap-failed:" .. tostring(err))
             BridgeRestoreResyncCheckpoint("bootstrap-failed")
             BridgeState.desyncLatched = true
             BridgeState.presentationState = "DESYNCED"
             BridgeSetSchedulerOwner("NORMAL", "resync-failed")
             BridgeStopOnDesync("authoritative resync failed: " .. tostring(err))
+            BridgeSetStatus("RESYNC AVAILABLE", "Automatic recovery failed; use RESYNC FORGE for one new attempt.")
             BridgeUiMarkDirty("resync-failed")
             BridgeLog("[Bridge] RESYNC_FAILED reason=" .. tostring(err))
             return
         end
         BridgeState.resyncCheckpoint = nil
         BridgeCommitResyncMappingTransaction()
+        BridgeState.resyncSnapshotFingerprint = nil
+        BridgeState.resyncSnapshotRepeatCount = 0
         BridgeState.resyncNoProgressAttempts = 0
+        BridgeState.resyncNoProgress = {
+            sessionId = nil, forgeSequence = nil, eventCursor = nil, count = 0, lastLoggedCount = 0
+        }
+        BridgeState.resyncCircuitOpen = false
+        BridgeState.resyncDeferredReason = nil
         BridgeState.resyncLastProgressAt = BridgeResyncClockNow()
         BridgeSetSchedulerOwner("NORMAL", "resync-commit")
         BridgeStartEventPolling(sessionId, false)

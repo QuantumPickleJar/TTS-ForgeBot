@@ -1984,6 +1984,155 @@ function BridgeMutationJoinInstanceIds(instanceIds)
     return table.concat(parts, ",")
 end
 
+local function BridgeAtomicGraveyardPosition(object)
+    local position = nil
+    if BridgeObjectIsUsable(object) and type(object.getPosition) == "function" then
+        pcall(function() position = object.getPosition() end)
+    end
+    return position
+end
+
+local function BridgeAtomicGraveyardGuidSet(values)
+    local set = {}
+    for _, value in ipairs(values or {}) do
+        local guid = value and value.guid or nil
+        if guid ~= nil and tostring(guid) ~= "" then set[tostring(guid)] = true end
+    end
+    return set
+end
+
+-- Bounded, public-zone-only topology for future incident ZIPs. Names are read
+-- only from the graveyard or from the exact cards Forge is moving there; no
+-- library inventory is enumerated.
+function BridgeCaptureAtomicGraveyardTopology(seatId, batch, phase)
+    local expectedCount = 0
+    for _, _ in ipairs(batch and batch.expectedInstances or {}) do
+        expectedCount = expectedCount + 1
+    end
+    local topology = {
+        phase = phase, seatId = seatId,
+        sessionId = BridgeState.eventSessionId,
+        physicalGeneration = BridgeState.physicalTransactionGeneration,
+        resyncInFlight = BridgeState.resyncInFlight == true,
+        expectedCount = expectedCount,
+        staged = {}, graveyardContainers = {}, graveyardEntries = {}, nearby = {}
+    }
+    local allObjects = {}
+    if type(getAllObjects) == "function" then
+        pcall(function() allObjects = getAllObjects() or {} end)
+    end
+    local stagedGuidSet = {}
+    for index = 1, (tonumber(batch and batch.stagedCount) or 0) do
+        local staged = batch.stagedPhysicalMoves and batch.stagedPhysicalMoves[index] or nil
+        local object = staged and staged.object or nil
+        local guid = object and BridgeSafeObjectGuid(object) or staged and staged.guid or nil
+        if guid ~= nil then stagedGuidSet[tostring(guid)] = true end
+    end
+
+    local containedByDeck = {}
+    for _, object in ipairs(allObjects) do
+        if BridgeObjectIsUsable(object) and object.tag == "Deck" then
+            local deckGuid = BridgeSafeObjectGuid(object)
+            pcall(function()
+                for _, entry in ipairs(object.getObjects() or {}) do
+                    local containedGuid = entry and (entry.guid or entry.GUID) or nil
+                    if containedGuid ~= nil and stagedGuidSet[tostring(containedGuid)] then
+                        containedByDeck[tostring(containedGuid)] = deckGuid
+                    end
+                end
+            end)
+        end
+    end
+
+    for index = 1, (tonumber(batch and batch.stagedCount) or 0) do
+        local staged = batch.stagedPhysicalMoves and batch.stagedPhysicalMoves[index] or nil
+        local object = staged and staged.object or nil
+        local guid = object and BridgeSafeObjectGuid(object) or staged and staged.guid or nil
+        topology.staged[index] = {
+            guid = guid, originalGuid = staged and staged.guid or nil,
+            cardInstanceId = staged and staged.cardInstanceId or nil,
+            tag = object and object.tag or nil, live = BridgeObjectIsUsable(object),
+            position = BridgeAtomicGraveyardPosition(object),
+            insideDeckGuid = guid and containedByDeck[tostring(guid)] or nil,
+            advertisedInstanceId = BridgeReadPhysicalIdentity(object),
+            advertisedSessionId = BridgeReadPhysicalSessionIdentity(object),
+            inverseInstanceId = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+        }
+    end
+
+    local container = nil
+    pcall(function() container = BridgeFindGraveyardContainer(seatId) end)
+    if container ~= nil then
+        local containerGuid = BridgeSafeObjectGuid(container)
+        topology.graveyardContainers[1] = {
+            guid = containerGuid, tag = container.tag, live = BridgeObjectIsUsable(container),
+            position = BridgeAtomicGraveyardPosition(container)
+        }
+        local entries = {}
+        if container.tag == "Deck" then
+            pcall(function() entries = container.getObjects() or {} end)
+        elseif container.tag == "Card" then
+            entries = {{guid = containerGuid, nickname = BridgeSafeObjectName(container)}}
+        end
+        local preMutation = batch and batch.preMutationContainedGuidSet or {}
+        local preGroup = batch and batch.preGroupContainedGuidSet or {}
+        local seenInstances = {}
+        local seenEntryGuids = {}
+        for index, entry in ipairs(entries) do
+            local guid = entry and (entry.guid or entry.GUID) or nil
+            local inverse = guid and (BridgeState.physicalContainedInstanceIdByGuid[guid]
+                or BridgeState.physicalInstanceIdByGuid[guid]) or nil
+            local duplicateInstance = inverse ~= nil and seenInstances[tostring(inverse)] == true
+            if inverse ~= nil then seenInstances[tostring(inverse)] = true end
+            local duplicateGuid = guid ~= nil and seenEntryGuids[tostring(guid)] == true
+            if guid ~= nil then seenEntryGuids[tostring(guid)] = true end
+            topology.graveyardEntries[index] = {
+                guid = guid, nickname = entry and (entry.nickname or entry.name) or nil,
+                stagedGuid = guid and stagedGuidSet[tostring(guid)] == true or false,
+                advertisedInstanceId = inverse, inverseInstanceId = inverse,
+                existedBeforeMutation = guid and preMutation[tostring(guid)] == true or false,
+                appearedDuringGroup = phase == "after-group" and guid
+                    and preGroup[tostring(guid)] ~= true or false,
+                duplicateContainedGuid = duplicateGuid,
+                duplicatePhysicalInstance = duplicateInstance
+            }
+        end
+    end
+
+    local anchor = nil
+    pcall(function() anchor = BridgeGraveyardPosition(seatId) end)
+    for _, object in ipairs(allObjects) do
+        if BridgeObjectIsUsable(object) and (object.tag == "Card" or object.tag == "Deck") then
+            local position = BridgeAtomicGraveyardPosition(object)
+            local near = anchor ~= nil and position ~= nil
+                and (((tonumber(position.x) or 0) - (tonumber(anchor.x) or 0)) ^ 2
+                    + ((tonumber(position.z) or 0) - (tonumber(anchor.z) or 0)) ^ 2) <= 144
+            if near then
+                local guid = BridgeSafeObjectGuid(object)
+                topology.nearby[#topology.nearby + 1] = {
+                    guid = guid, tag = object.tag,
+                    name = object.tag == "Card" and BridgeSafeObjectName(object) or nil,
+                    live = true, position = position,
+                    staged = guid and stagedGuidSet[tostring(guid)] == true or false,
+                    advertisedInstanceId = BridgeReadPhysicalIdentity(object),
+                    advertisedSessionId = BridgeReadPhysicalSessionIdentity(object),
+                    inverseInstanceId = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil,
+                    trackedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
+                }
+            end
+        end
+    end
+    return topology
+end
+
+function BridgeLogAtomicGraveyardTopology(seatId, batch, phase)
+    local topology = BridgeCaptureAtomicGraveyardTopology(seatId, batch, phase)
+    local encoded = nil
+    pcall(function() encoded = JSON.encode(topology) end)
+    BridgeLog("[Bridge] MUTATION_GRAVEYARD_TOPOLOGY " .. tostring(encoded or phase))
+    return topology
+end
+
 function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
     tx.graveyardMutationBatchesBySeatId = {}
     local candidates = {}
@@ -2039,6 +2188,9 @@ function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
                     cardName = BridgeState.cardNameByInstanceId[instanceId]
                 }
             end
+            local preMutation = BridgeLogAtomicGraveyardTopology(seatId, batch, "before-mutation")
+            batch.preMutationContainedGuidSet = BridgeAtomicGraveyardGuidSet(
+                preMutation and preMutation.graveyardEntries or {})
             tx.graveyardMutationBatchesBySeatId[seatId] = batch
         end
     end
@@ -2109,6 +2261,36 @@ function BridgeDeckFromNativeGroupResult(groupResult)
     return nil
 end
 
+function BridgeValidateLooseGraveyardStaging(stagedMoves, stagedCount)
+    local seenGuids = {}
+    for index = 1, (tonumber(stagedCount) or 0) do
+        local staged = stagedMoves and stagedMoves[index] or nil
+        local object = staged and staged.object or nil
+        if not BridgeObjectIsUsable(object) then
+            return false, "staged object unavailable while grouping index=" .. tostring(index)
+        end
+        local tag = nil
+        pcall(function() tag = object.tag end)
+        if tag ~= "Card" then
+            return false, "staged object is no longer a loose Card index=" .. tostring(index)
+                .. " tag=" .. tostring(tag)
+        end
+        local guid = BridgeSafeObjectGuid(object)
+        if guid == nil or guid == "" then
+            return false, "staged loose Card has no GUID index=" .. tostring(index)
+        end
+        if staged.guid ~= nil and tostring(staged.guid) ~= tostring(guid) then
+            return false, "staged loose Card GUID changed before grouping index=" .. tostring(index)
+                .. " stagedGuid=" .. tostring(staged.guid) .. " liveGuid=" .. tostring(guid)
+        end
+        if seenGuids[tostring(guid)] then
+            return false, "duplicate staged loose Card GUID before grouping guid=" .. tostring(guid)
+        end
+        seenGuids[tostring(guid)] = true
+    end
+    return true, nil
+end
+
 function BridgeCommitAtomicGraveyardMutation(tx, batch)
     if tx == nil or batch == nil then return end
     if not BridgeEventMutationIsCurrent(tx) then return end
@@ -2124,6 +2306,15 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
     local needsNewContainer = target == nil
     local stagedMoves = batch.stagedPhysicalMoves or {}
     local startIndex = 1
+    if type(group) == "function" then
+        local stagingValid, stagingError = BridgeValidateLooseGraveyardStaging(
+            stagedMoves, batch.stagedCount)
+        if not stagingValid then
+            BridgeLogAtomicGraveyardTopology(batch.seatId, batch, "invalid-before-destination-commit")
+            BridgeAbortAtomicGraveyardMutation(tx, batch, stagingError)
+            return
+        end
+    end
     if needsNewContainer then
         local first = stagedMoves[1]
         if first == nil or not BridgeObjectIsUsable(first.object) then
@@ -2137,6 +2328,9 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         -- formation primitive; only use the old Card path in non-TTS probes
         -- that do not expose group().
         if type(group) == "function" then
+            local preGroup = BridgeLogAtomicGraveyardTopology(batch.seatId, batch, "before-group")
+            batch.preGroupContainedGuidSet = BridgeAtomicGraveyardGuidSet(
+                preGroup and preGroup.graveyardEntries or {})
             local cardsToGroup = {}
             for index = 1, (tonumber(batch.stagedCount) or 0) do
                 local staged = stagedMoves[index]
@@ -2165,6 +2359,25 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
                 "[Bridge] MUTATION_DESTINATION_GROUP_REQUESTED token=%s forgeSequence=%s seat=%s cards=%s resultTag=%s generation=%s",
                 tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId), tostring(#cardsToGroup),
                 tostring(groupedCandidate and groupedCandidate.tag), tostring(tx.physicalTransactionGeneration)))
+            local groupShape = {rawType = type(groupResult), resultCount = 0, resultTags = {},
+                deckGuid = groupedCandidate and BridgeSafeObjectGuid(groupedCandidate) or nil,
+                deckEntryCount = nil}
+            if type(groupResult) == "table" and groupedCandidate ~= groupResult then
+                for index, candidate in ipairs(groupResult) do
+                    groupShape.resultCount = groupShape.resultCount + 1
+                    groupShape.resultTags[index] = candidate and candidate.tag or nil
+                end
+            elseif groupResult ~= nil then
+                groupShape.resultCount = 1
+                groupShape.resultTags[1] = groupResult.tag
+            end
+            if groupedCandidate ~= nil and groupedCandidate.tag == "Deck" then
+                pcall(function() groupShape.deckEntryCount = #(groupedCandidate.getObjects() or {}) end)
+            end
+            local encodedShape = nil
+            pcall(function() encodedShape = JSON.encode(groupShape) end)
+            BridgeLog("[Bridge] MUTATION_GRAVEYARD_GROUP_RESULT " .. tostring(encodedShape or type(groupResult)))
+            BridgeLogAtomicGraveyardTopology(batch.seatId, batch, "after-group")
             startIndex = (tonumber(batch.stagedCount) or 0) + 1
         else
             target = first.object
@@ -2219,6 +2432,7 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             return
         end
         if not BridgeRecordGraveyardContainerEntries(batch.seatId, resolved, batch.expectedInstances) then
+            BridgeLogAtomicGraveyardTopology(batch.seatId, batch, "settled-reconciliation-failed")
             local reason = "graveyard-reconciliation:entries="
                 .. tostring(#(BridgeLibraryEntries(resolved) or {}))
                 .. ":expected=" .. tostring(BridgeTableSize(batch.expectedInstances or {}))
@@ -2313,7 +2527,27 @@ function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, comple
             taken.use_hands = false
             BridgeSetPhysicalFaceDown(taken, seat, false)
             local offset = (batch.stagedCount or 0) + 1
-            taken.setPositionSmooth({anchor.x + (0.35 * offset), anchor.y + 1.1, anchor.z}, false, true)
+            -- Keep every extracted object physically isolated until the atomic
+            -- destination commit owns group(). The old smooth move was locked
+            -- immediately, so the cards could remain together at the shared
+            -- library extraction point. Its 0.35-unit destinations also
+            -- overlapped ordinary card footprints. Native auto-stacking then
+            -- turned two Card references into aliases of the same Deck before
+            -- group(cardsToGroup); passing both aliases represented those two
+            -- cards twice (3 authoritative -> 5 physical entries). The lane
+            -- begins one card-width to the right of an existing graveyard and
+            -- does not cross the library/exile anchors sharing its x coordinate.
+            local stagedPosition = {
+                x = anchor.x + 4.0 + ((offset - 1) * 3.2),
+                y = anchor.y + 1.1,
+                z = anchor.z
+            }
+            if type(taken.setPosition) == "function" then
+                taken.setPosition(stagedPosition)
+            else
+                -- Non-TTS deterministic probes may expose only the smooth API.
+                taken.setPositionSmooth(stagedPosition, false, true)
+            end
             taken.setLock(true)
         end)
     end
@@ -4539,8 +4773,12 @@ function BridgeApplyStructuredCardMove(event)
     local operationId = "event:" .. tostring(event and event.sequence or "unknown")
     BridgeTtsExecutionBreadcrumb("STRUCTURED_CARD_MOVE_ENTER", "structured_card_move", event, operationId)
     local ok, err = BridgeApplyStructuredCardMoveCore(event)
-    BridgeTtsExecutionBreadcrumb("STRUCTURED_CARD_MOVE_RETURNED", "structured_card_move", event,
-        operationId .. "|ok=" .. tostring(ok) .. "|err=" .. tostring(err))
+    -- Correlation identity is immutable across the synchronous call. Encoding
+    -- the outcome into RETURNED's operationId left every ENTER open forever in
+    -- the bridge watchdog even though Core returned within milliseconds.
+    BridgeTtsExecutionBreadcrumb("STRUCTURED_CARD_MOVE_RETURNED", "structured_card_move", event, operationId)
+    BridgeLog(string.format("[Bridge] STRUCTURED_CARD_MOVE_RESULT operationId=%s ok=%s error=%s",
+        tostring(operationId), tostring(ok), tostring(err)))
     return ok, err
 end
 
