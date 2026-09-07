@@ -1243,6 +1243,9 @@ public sealed class TtsGlobalLuaContractTests
         var launcher = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tools", "Start-ForgeBot.ps1"));
         Assert.Contains("[switch]$ManualMana", launcher);
         Assert.Contains("--askmana", launcher);
+        Assert.Contains("[switch]$LazyCardScripts", launcher);
+        Assert.Contains("$lazyCardScriptsOption = if ($LazyCardScripts) { ' --lazy-card-scripts' } else { '' }", launcher);
+        Assert.Contains("--numeric-choices$manualManaOption$lazyCardScriptsOption$seedOption", launcher);
     }
 
     [Fact]

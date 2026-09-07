@@ -3,6 +3,7 @@ param(
     [Nullable[int]]$Seed,
     [switch]$TraceBridgeState,
     [switch]$ManualMana,
+    [switch]$LazyCardScripts,
     [switch]$NoBuild
 )
 
@@ -107,8 +108,9 @@ if ((Test-Path $bridgeStateFeedSource) -and ((Get-Item $bridgeStateFeedSource).L
 
 $bridgeStateTraceOption = if ($TraceBridgeState) { '-Dforge.bridge.trace=true ' } else { '' }
 $manualManaOption = if ($ManualMana) { ' --askmana' } else { '' }
+$lazyCardScriptsOption = if ($LazyCardScripts) { ' --lazy-card-scripts' } else { '' }
 $seedOption = if ($null -ne $Seed) { " --seed $Seed" } else { ' --seed {seed}' }
-$forgeArguments = "$($bridgeStateTraceOption)-Dforge.assets.dir=`"$assetsDirectory`" -jar `"$($jar.FullName)`" tui `"{humanDeck}`" `"{aiDeck}`" --p1 tui --p2 ai --numeric-choices$manualManaOption$seedOption"
+$forgeArguments = "$($bridgeStateTraceOption)-Dforge.assets.dir=`"$assetsDirectory`" -jar `"$($jar.FullName)`" tui `"{humanDeck}`" `"{aiDeck}`" --p1 tui --p2 ai --numeric-choices$manualManaOption$lazyCardScriptsOption$seedOption"
 Write-Host 'Starting ForgeBot at http://127.0.0.1:43110'
 Write-Host 'Health endpoint: http://127.0.0.1:43110/health'
 Write-Host "Forge JAR: $($jar.FullName)"
@@ -117,6 +119,7 @@ if ($null -ne $Seed) { Write-Host "Forge seed: $Seed (explicit)" } else { Write-
 Write-Host 'Decks: loaded from the two TTS library piles when NEW MATCH is pressed (Legacy assumption).'
 if ($TraceBridgeState) { Write-Host 'BridgeStateFeed trace: enabled (public battlefield summaries only).' }
 if ($ManualMana) { Write-Host 'Mana payment: manual human Forge source choices enabled.' }
+if ($LazyCardScripts) { Write-Host 'Card script loading: lazy (opt-in) mode enabled.' }
 if ($NoBuild) { Write-Host "Bridge launch: using existing binary $bridgeDll" }
 
 Push-Location $repoRoot
