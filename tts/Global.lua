@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 5aadccfd0fb5d83579210986c40e1ce3bb057586309a81907a7861523674773f
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "5aadccfd0fb5d83579210986c40e1ce3bb057586309a81907a7861523674773f"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 392f7e4af5edf358d58d49ae172988b387fbc8b24360cb774253687bc3a64ac8
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "392f7e4af5edf358d58d49ae172988b387fbc8b24360cb774253687bc3a64ac8"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -612,8 +612,21 @@ function BridgeObserveEventDrainBlocked(reason)
                     if tx ~= nil and BridgeEventMutationIsCurrent ~= nil
                         and BridgeCommitEventMutationTransaction ~= nil then
                         local txCurrentOk, txIsCurrent = pcall(BridgeEventMutationIsCurrent, tx)
-                        local queueProbeOk, queuesIdle = pcall(BridgePhysicalLibraryQueuesIdle)
-                        if txCurrentOk and txIsCurrent and queueProbeOk and queuesIdle then
+                        local queueProbeOk, queuesIdle = pcall(function()
+                            if BridgePhysicalMutationOperationsIdle ~= nil then
+                                return BridgePhysicalMutationOperationsIdle()
+                            end
+                            return BridgePhysicalLibraryQueuesIdle()
+                        end)
+                        local mutationReadyOk, mutationReady = true, true
+                        if BridgeMutationPhysicalBatchesReady ~= nil then
+                            mutationReadyOk, mutationReady = pcall(function()
+                                local ready = BridgeMutationPhysicalBatchesReady(tx)
+                                return ready
+                            end)
+                        end
+                        if txCurrentOk and txIsCurrent and queueProbeOk and queuesIdle
+                            and mutationReadyOk and mutationReady then
                             local commitOk, commitResult = pcall(BridgeCommitEventMutationTransaction, tx)
                             if commitOk and commitResult then
                                 BridgeLog(string.format(
@@ -13046,9 +13059,8 @@ function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, comple
     }
     batch.stagedBySequence[sequenceKey] = staged
     batch.stagedCount = (batch.stagedCount or 0) + 1
-    -- Keep the staged move array explicitly indexed; this is also the
-    -- representation used by the MoonSharp test harness and avoids native
-    -- table.insert interop changing the visible array length.
+    -- Keep staged move ordering explicit so commit/verification never depends
+    -- on implicit length behavior while asynchronous callbacks are retiring.
     batch.stagedPhysicalMoves[batch.stagedCount] = staged
     batch.state = "STAGING"
     BridgeLog(string.format(
@@ -13072,8 +13084,8 @@ function BridgeBuildEventMutationTransaction(queue)
     local first = queue and queue[1] or nil
     if first == nil then return nil end
     local forgeSequence = BridgeNormalizeForgeSequence(first.forgeSequence)
-    -- Assign the first entry explicitly.  Some MoonSharp/native table
-    -- interop paths do not expose constructor array slots consistently.
+    -- Assign the first entry explicitly so transaction indexing is deterministic
+    -- even if a host has mixed-key queue instrumentation.
     local events = {}
     events[1] = first
     local eventCount = 1

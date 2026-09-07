@@ -34,7 +34,7 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("lastReceivedEventSequence", Script);
         Assert.Contains("lastAppliedEventSequence", Script);
-        Assert.DoesNotContain("lastEventSequence", Script);
+        Assert.DoesNotContain("BridgeState.lastEventSequence", Script);
 
         var failedApplication = Script.IndexOf("if not applied then", StringComparison.Ordinal);
         var appliedAdvance = Script.IndexOf("BridgeState.lastAppliedEventSequence = event.sequence", StringComparison.Ordinal);

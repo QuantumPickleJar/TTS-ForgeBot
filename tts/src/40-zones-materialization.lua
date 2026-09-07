@@ -2242,9 +2242,8 @@ function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, comple
     }
     batch.stagedBySequence[sequenceKey] = staged
     batch.stagedCount = (batch.stagedCount or 0) + 1
-    -- Keep the staged move array explicitly indexed; this is also the
-    -- representation used by the MoonSharp test harness and avoids native
-    -- table.insert interop changing the visible array length.
+    -- Keep staged move ordering explicit so commit/verification never depends
+    -- on implicit length behavior while asynchronous callbacks are retiring.
     batch.stagedPhysicalMoves[batch.stagedCount] = staged
     batch.state = "STAGING"
     BridgeLog(string.format(
@@ -2268,8 +2267,8 @@ function BridgeBuildEventMutationTransaction(queue)
     local first = queue and queue[1] or nil
     if first == nil then return nil end
     local forgeSequence = BridgeNormalizeForgeSequence(first.forgeSequence)
-    -- Assign the first entry explicitly.  Some MoonSharp/native table
-    -- interop paths do not expose constructor array slots consistently.
+    -- Assign the first entry explicitly so transaction indexing is deterministic
+    -- even if a host has mixed-key queue instrumentation.
     local events = {}
     events[1] = first
     local eventCount = 1

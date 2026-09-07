@@ -386,7 +386,7 @@ public sealed class TtsEventQueueLivelockTests
                 applyCount = applyCount + 1
                 return true, 0
             end
-            BridgePhysicalLibraryQueuesIdle = function() error('readiness probe exploded') end
+            BridgePhysicalMutationOperationsIdle = function() error('readiness probe exploded') end
             BridgeProcessEventQueue()
             postQueueLength = #(BridgeState.eventQueue or {})
             postDrainState = BridgeState.eventDrainTransaction and BridgeState.eventDrainTransaction.state or 'nil'
@@ -401,6 +401,255 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Equal(2, state.Get("eventQueue").Table.Length);
         Assert.True(probe.Get("commits").Table.Length == 0);
         Assert.Contains("physical-readiness-probe-failed", lua.Globals.Get("desyncReason").String);
+    }
+
+    [Fact]
+    public void LogicalBatchStillOpenButPhysicalOperationsSettledCanCommit()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "LogicalBatchStillOpenButPhysicalOperationsSettledCanCommit.probe.lua", @"
+            queueProbe = { commits = {} }
+            local _rawCommit = BridgeCommitEventMutationTransaction
+            BridgeCommitEventMutationTransaction = function(tx)
+                local ok, resultOrErr = pcall(function() return _rawCommit(tx) end)
+                table.insert(queueProbe.commits, {
+                    ok = ok,
+                    commitReturned = ok and resultOrErr or false,
+                    commitError = ok and nil or tostring(resultOrErr),
+                    stateAfter = tx and tx.state or nil,
+                    lastApplied = BridgeState.lastAppliedEventSequence,
+                    queueLengthAfter = #(BridgeState.eventQueue or {}),
+                    logicalBatchActiveAfter = BridgeState.libraryBatchBySeatId['forge-player-1']
+                        and BridgeState.libraryBatchBySeatId['forge-player-1'].active == true
+                })
+                return ok and resultOrErr or false
+            end
+            BridgeState.libraryBatchBySeatId['forge-player-1'] = {
+                active = true,
+                forgeSequence = 701,
+                cardInstanceIds = {'forge-object:8'}
+            }
+            BridgeState.eventQueue = {}
+            setmetatable(BridgeState.eventQueue, {
+                __len = function(values)
+                    local length = 0
+                    while values[length + 1] ~= nil do
+                        length = length + 1
+                    end
+                    return length
+                end
+            })
+            BridgeState.eventQueue[1] = {sequence=8, kind='phase_changed', seatId='forge-player-1'}
+            applyCount = 0
+            function BridgeApplyAuthoritativeEvent(event)
+                applyCount = applyCount + 1
+                return true, 0
+            end
+            function BridgeWaitTime(callback, delay) end
+            BridgeProcessEventQueue()
+            queueLenAfter = #(BridgeState.eventQueue or {})
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        var probe = lua.Globals.Get("queueProbe").Table;
+        Assert.Equal(1, lua.Globals.Get("applyCount").Number);
+        Assert.Equal(8, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(0, lua.Globals.Get("queueLenAfter").Number);
+        Assert.Equal(1, probe.Get("commits").Table.Length);
+        var commit = probe.Get("commits").Table.Get(1).Table
+            ?? probe.Get("commits").Table.Get(0).Table;
+        Assert.NotNull(commit);
+        Assert.True(commit.Get("commitReturned").Boolean);
+        Assert.Equal("COMMITTED", commit.Get("stateAfter").String);
+        Assert.True(commit.Get("logicalBatchActiveAfter").Boolean);
+        Assert.True(lua.Globals.Get("desyncReason").IsNil() || string.IsNullOrWhiteSpace(lua.Globals.Get("desyncReason").String));
+    }
+
+    [Fact]
+    public void PhysicalDestinationVerificationPendingCannotCommit()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "PhysicalDestinationVerificationPendingCannotCommit.probe.lua", @"
+            queueProbe = { commits = {} }
+            local _rawCommit = BridgeCommitEventMutationTransaction
+            BridgeCommitEventMutationTransaction = function(tx)
+                local ok, resultOrErr = pcall(function() return _rawCommit(tx) end)
+                table.insert(queueProbe.commits, {
+                    ok = ok,
+                    commitReturned = ok and resultOrErr or false,
+                    commitError = ok and nil or tostring(resultOrErr),
+                    stateAfter = tx and tx.state or nil,
+                    lastApplied = BridgeState.lastAppliedEventSequence
+                })
+                return ok and resultOrErr or false
+            end
+            waitFramesCount = 0
+            function BridgeWaitFrames(callback, frames)
+                waitFramesCount = waitFramesCount + 1
+            end
+            function BridgeWaitTime(callback, delay) end
+            BridgeState.eventQueue = {}
+            setmetatable(BridgeState.eventQueue, {
+                __len = function(values)
+                    local length = 0
+                    while values[length + 1] ~= nil do
+                        length = length + 1
+                    end
+                    return length
+                end
+            })
+            BridgeState.eventQueue[1] = {sequence=8, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId='forge-object:8', forgeSequence=801}
+            BridgeState.eventQueue[2] = {sequence=9, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId='forge-object:9', forgeSequence=801}
+            applyCount = 0
+            function BridgeApplyAuthoritativeEvent(event)
+                applyCount = applyCount + 1
+                local tx = BridgeState.eventDrainTransaction
+                local batch = tx and tx.graveyardMutationBatchesBySeatId and tx.graveyardMutationBatchesBySeatId['forge-player-1'] or nil
+                if batch ~= nil then
+                    batch.state = 'DESTINATION_COMMITTING'
+                    batch.stagedCount = batch.requiredCount or 0
+                end
+                return true, 0
+            end
+            BridgeProcessEventQueue()
+            txStateAfter = BridgeState.eventDrainTransaction and BridgeState.eventDrainTransaction.state or 'nil'
+            batchStateAfter = BridgeState.eventDrainTransaction
+                and BridgeState.eventDrainTransaction.graveyardMutationBatchesBySeatId
+                and BridgeState.eventDrainTransaction.graveyardMutationBatchesBySeatId['forge-player-1']
+                and BridgeState.eventDrainTransaction.graveyardMutationBatchesBySeatId['forge-player-1'].state or 'nil'
+            queueLenAfter = #(BridgeState.eventQueue or {})
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        var probe = lua.Globals.Get("queueProbe").Table;
+        Assert.True(lua.Globals.Get("applyCount").Number >= 1,
+            $"applyCount={lua.Globals.Get("applyCount").ToPrintString()} txState={lua.Globals.Get("txStateAfter").ToPrintString()} batchState={lua.Globals.Get("batchStateAfter").ToPrintString()} queueLen={state.Get("eventQueue").Table.Length} desync={lua.Globals.Get("desyncReason").ToPrintString()}");
+        Assert.Equal(7, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(2, lua.Globals.Get("queueLenAfter").Number);
+        Assert.Equal("PREPARING", lua.Globals.Get("txStateAfter").String);
+        Assert.Equal("DESTINATION_COMMITTING", lua.Globals.Get("batchStateAfter").String);
+        Assert.True(lua.Globals.Get("waitFramesCount").Number >= 1);
+        Assert.Equal(0, probe.Get("commits").Table.Length);
+        Assert.True(lua.Globals.Get("desyncReason").IsNil() || string.IsNullOrWhiteSpace(lua.Globals.Get("desyncReason").String));
+    }
+
+    [Fact]
+    public void HandPlacementVerificationPendingCannotCommit()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "HandPlacementVerificationPendingCannotCommit.probe.lua", @"
+            queueProbe = { commits = {} }
+            local _rawCommit = BridgeCommitEventMutationTransaction
+            BridgeCommitEventMutationTransaction = function(tx)
+                local ok, resultOrErr = pcall(function() return _rawCommit(tx) end)
+                table.insert(queueProbe.commits, {
+                    ok = ok,
+                    commitReturned = ok and resultOrErr or false,
+                    commitError = ok and nil or tostring(resultOrErr),
+                    stateAfter = tx and tx.state or nil,
+                    lastApplied = BridgeState.lastAppliedEventSequence
+                })
+                return ok and resultOrErr or false
+            end
+            waitFramesCount = 0
+            function BridgeWaitFrames(callback, frames)
+                waitFramesCount = waitFramesCount + 1
+            end
+            function BridgeWaitTime(callback, delay) end
+            BridgeState.eventQueue = {}
+            setmetatable(BridgeState.eventQueue, {
+                __len = function(values)
+                    local length = 0
+                    while values[length + 1] ~= nil do
+                        length = length + 1
+                    end
+                    return length
+                end
+            })
+            BridgeState.eventQueue[1] = {sequence=8, kind='draw', seatId='forge-player-1', sourceZone='library', destinationZone='hand', cardInstanceId='forge-object:draw-8', forgeSequence=810}
+            applyCount = 0
+            function BridgeApplyAuthoritativeEvent(event)
+                applyCount = applyCount + 1
+                BridgeState.libraryExtractionActiveBySeatId['forge-player-1'] = true
+                BridgeState.libraryExtractionTransactionBySeatId['forge-player-1'] = {
+                    sessionId = BridgeState.eventSessionId,
+                    generation = BridgeState.physicalTransactionGeneration,
+                    cardInstanceId = event.cardInstanceId
+                }
+                return true, 0
+            end
+            BridgeProcessEventQueue()
+            extractionActiveAfter = BridgeState.libraryExtractionActiveBySeatId['forge-player-1'] == true
+            queueLenAfter = #(BridgeState.eventQueue or {})
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        var probe = lua.Globals.Get("queueProbe").Table;
+        Assert.True(lua.Globals.Get("applyCount").Number >= 1,
+            $"applyCount={lua.Globals.Get("applyCount").ToPrintString()} extractionActive={lua.Globals.Get("extractionActiveAfter").ToPrintString()} queueLen={state.Get("eventQueue").Table.Length} desync={lua.Globals.Get("desyncReason").ToPrintString()}");
+        Assert.Equal(7, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(1, lua.Globals.Get("queueLenAfter").Number);
+        Assert.True(lua.Globals.Get("extractionActiveAfter").Boolean);
+        Assert.True(lua.Globals.Get("waitFramesCount").Number >= 1);
+        Assert.Equal(0, probe.Get("commits").Table.Length);
+        Assert.True(lua.Globals.Get("desyncReason").IsNil() || string.IsNullOrWhiteSpace(lua.Globals.Get("desyncReason").String));
+    }
+
+    [Fact]
+    public void ExtractionWorkerPendingCannotCommit()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "ExtractionWorkerPendingCannotCommit.probe.lua", @"
+            queueProbe = { commits = {} }
+            local _rawCommit = BridgeCommitEventMutationTransaction
+            BridgeCommitEventMutationTransaction = function(tx)
+                local ok, resultOrErr = pcall(function() return _rawCommit(tx) end)
+                table.insert(queueProbe.commits, {
+                    ok = ok,
+                    commitReturned = ok and resultOrErr or false,
+                    commitError = ok and nil or tostring(resultOrErr),
+                    stateAfter = tx and tx.state or nil,
+                    lastApplied = BridgeState.lastAppliedEventSequence
+                })
+                return ok and resultOrErr or false
+            end
+            waitFramesCount = 0
+            function BridgeWaitFrames(callback, frames)
+                waitFramesCount = waitFramesCount + 1
+            end
+            function BridgeWaitTime(callback, delay) end
+            BridgeState.libraryExtractionQueueBySeatId['forge-player-1'] = {
+                { cardInstanceId = 'forge-object:queued', expectedCardName = 'Island', run = function(complete) end }
+            }
+            BridgeState.eventQueue = {}
+            setmetatable(BridgeState.eventQueue, {
+                __len = function(values)
+                    local length = 0
+                    while values[length + 1] ~= nil do
+                        length = length + 1
+                    end
+                    return length
+                end
+            })
+            BridgeState.eventQueue[1] = {sequence=8, kind='phase_changed', seatId='forge-player-1'}
+            applyCount = 0
+            function BridgeApplyAuthoritativeEvent(event)
+                applyCount = applyCount + 1
+                return true, 0
+            end
+            BridgeProcessEventQueue()
+            queueLenAfter = #(BridgeState.eventQueue or {})
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        var probe = lua.Globals.Get("queueProbe").Table;
+        Assert.True(lua.Globals.Get("applyCount").Number >= 1,
+            $"applyCount={lua.Globals.Get("applyCount").ToPrintString()} queueLen={state.Get("eventQueue").Table.Length} waitFrames={lua.Globals.Get("waitFramesCount").ToPrintString()} desync={lua.Globals.Get("desyncReason").ToPrintString()}");
+        Assert.Equal(7, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(1, lua.Globals.Get("queueLenAfter").Number);
+        Assert.True(lua.Globals.Get("waitFramesCount").Number >= 1);
+        Assert.Equal(0, probe.Get("commits").Table.Length);
+        Assert.True(lua.Globals.Get("desyncReason").IsNil() || string.IsNullOrWhiteSpace(lua.Globals.Get("desyncReason").String));
     }
 
     [Fact]

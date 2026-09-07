@@ -458,6 +458,187 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Assert.Equal("forge-player-1", lua.Globals.Get("handSeat").String);
     }
 
+    [Fact]
+    public void ThoughtScourTwoCardMillAndDrawPreservesPhysicalAtomicity()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BRIDGE_SEATS['forge-player-2'] = BRIDGE_SEATS['forge-player-2'] or {}
+            BRIDGE_SEATS['forge-player-2'].libraryZoneGuid = 'lib-zone'
+            BRIDGE_SEATS['forge-player-2'].graveyardAnchor = {x=-2, y=0, z=0}
+            BRIDGE_SEATS['forge-player-2'].handTransform = {position={x=-8, y=2, z=0}, rotation={x=0, y=0, z=0}}
+            BRIDGE_SEATS['forge-player-2'].tableSideZ = 1
+            BridgeState.lastAppliedEventSequence = 800
+            BridgeState.cardNameByInstanceId[':opp86'] = 'Baleful Strix'
+            BridgeState.cardNameByInstanceId[':opp98'] = 'Recruiter of the Guard'
+            BridgeState.cardNameByInstanceId[':draw15'] = 'Stitcher\'s Supplier'
+            local mill1 = BridgeTestCreateCard(':opp86', 'Baleful Strix', 'loose-opp86')
+            local mill2 = BridgeTestCreateCard(':opp98', 'Recruiter of the Guard', 'loose-opp98')
+            local draw1 = BridgeTestCreateCard(':draw15', 'Stitcher\'s Supplier', 'loose-draw15')
+            BridgeTestQueueExtractionCards({mill1, mill2, draw1})
+            drawSeenInHand = false
+            local rawTryGetSeatHandObjects = BridgeTryGetSeatHandObjects
+            BridgeTryGetSeatHandObjects = function(seatId)
+                local handObjects, handError = rawTryGetSeatHandObjects(seatId)
+                if handObjects ~= nil then
+                    for _, handObject in ipairs(handObjects) do
+                        local handGuid = handObject and BridgeSafeObjectGuid(handObject) or nil
+                        if handObject ~= nil and (handObject._instanceId == ':draw15' or tostring(handGuid or '') == 'loose-draw15') then
+                            drawSeenInHand = true
+                            break
+                        end
+                    end
+                end
+                return handObjects, handError
+            end
+            local rawCommit = BridgeCommitEventMutationTransaction
+            BridgeCommitEventMutationTransaction = function(tx)
+                commitEnterCount = (commitEnterCount or 0) + 1
+                commitSawDrawInHand = drawSeenInHand
+                return rawCommit(tx)
+            end
+            BridgeTestSetEventQueue(
+                {sequence=801, kind='card_moved', seatId='forge-player-2', sourceZone='library', destinationZone='graveyard', cardInstanceId=':opp86', cardName='Baleful Strix', forgeSequence=820},
+                {sequence=802, kind='card_moved', seatId='forge-player-2', sourceZone='library', destinationZone='graveyard', cardInstanceId=':opp98', cardName='Recruiter of the Guard', forgeSequence=820},
+                {sequence=803, kind='draw', seatId='forge-player-1', sourceZone='library', destinationZone='hand', cardInstanceId=':draw15', cardName='Stitcher\'s Supplier', forgeSequence=820}
+            )
+            BridgeProcessEventQueue()
+            local oppLedger = BridgeZoneLedger('forge-player-2', 'graveyard')
+            oppLedgerCount = BridgeTestArrayLength(oppLedger or {})
+            oppLedger1 = oppLedger[1]
+            oppLedger2 = oppLedger[2]
+            drawGuid = BridgeState.physicalByInstanceId[':draw15']
+            drawZone = drawGuid and BridgeState.physicalZoneByGuid[drawGuid] or nil
+            drawSeat = drawGuid and BridgeState.physicalSeatByGuid[drawGuid] or nil
+            finalApplied = BridgeState.lastAppliedEventSequence
+            commitEnterCount = commitEnterCount or 0
+            mutationCommitCount = BridgeTestCountLogToken('MUTATION_COMMIT')
+            mutationAbortCount = BridgeTestCountLogToken('MUTATION_ABORT')
+            stageBeginCount = BridgeTestCountLogToken('MUTATION_STAGE_BEGIN')
+            extractedCount = BridgeTestCountLogToken('MUTATION_STAGE_EXTRACTED')
+            destinationVerifiedCount = BridgeTestCountLogToken('MUTATION_DESTINATION_VERIFIED')
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.True(lua.Globals.Get("commitSawDrawInHand").Boolean,
+            $"commitSawDrawInHand={lua.Globals.Get("commitSawDrawInHand").Boolean} finalApplied={lua.Globals.Get("finalApplied").Number} drawGuid={lua.Globals.Get("drawGuid").ToPrintString()} drawZone={lua.Globals.Get("drawZone").ToPrintString()} drawSeat={lua.Globals.Get("drawSeat").ToPrintString()} oppLedgerCount={lua.Globals.Get("oppLedgerCount").Number} stageBegin={lua.Globals.Get("stageBeginCount").Number} extracted={lua.Globals.Get("extractedCount").Number} destVerified={lua.Globals.Get("destinationVerifiedCount").Number} mutationCommit={lua.Globals.Get("mutationCommitCount").Number} mutationAbort={lua.Globals.Get("mutationAbortCount").Number} desync={lua.Globals.Get("desyncState").String} logs={CapturedLogsTail(lua)}");
+        Assert.Equal(803, lua.Globals.Get("finalApplied").Number);
+        Assert.Equal(2, lua.Globals.Get("oppLedgerCount").Number);
+        Assert.Equal(":opp86", lua.Globals.Get("oppLedger1").String);
+        Assert.Equal(":opp98", lua.Globals.Get("oppLedger2").String);
+        Assert.Equal("loose-draw15", lua.Globals.Get("drawGuid").String);
+        Assert.Equal("hand", lua.Globals.Get("drawZone").String);
+        Assert.Equal("forge-player-1", lua.Globals.Get("drawSeat").String);
+        Assert.Equal(1, lua.Globals.Get("commitEnterCount").Number);
+        Assert.Equal(1, lua.Globals.Get("stageBeginCount").Number);
+        Assert.Equal(2, lua.Globals.Get("extractedCount").Number);
+        Assert.Equal(1, lua.Globals.Get("destinationVerifiedCount").Number);
+        Assert.Equal(1, lua.Globals.Get("mutationCommitCount").Number);
+        Assert.Equal(0, lua.Globals.Get("mutationAbortCount").Number);
+    }
+
+    [Fact]
+    public void NilForgeSequenceEventsRemainSingletonTransactions()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.lastAppliedEventSequence = 40
+            BridgeState.cardNameByInstanceId[':n1'] = 'Card N1'
+            BridgeState.cardNameByInstanceId[':n2'] = 'Card N2'
+            local n1 = BridgeTestCreateCard(':n1', 'Card N1', 'loose-n1')
+            local n2 = BridgeTestCreateCard(':n2', 'Card N2', 'loose-n2')
+            BridgeTestQueueExtractionCards({n1, n2})
+            commitRanges = {}
+            local rawCommit = BridgeCommitEventMutationTransaction
+            BridgeCommitEventMutationTransaction = function(tx)
+                commitRanges[BridgeTestArrayLength(commitRanges) + 1] = {
+                    first = tx and tx.firstEventSequence or nil,
+                    last = tx and tx.lastEventSequence or nil,
+                    count = tx and tx.eventCount or nil
+                }
+                return rawCommit(tx)
+            end
+            function BridgeWaitTime(callback, delay) end
+            BridgeTestSetEventQueue(
+                {sequence=41, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':n1', cardName='Card N1'},
+                {sequence=42, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':n2', cardName='Card N2'}
+            )
+            BridgeProcessEventQueue()
+            local ledger = BridgeZoneLedger('forge-player-1', 'graveyard')
+            ledgerCount = BridgeTestArrayLength(ledger or {})
+            ledger1 = ledger[1]
+            commitCount = BridgeTestArrayLength(commitRanges or {})
+            firstCommitCount = commitRanges[1] and commitRanges[1].count or nil
+            queueLenAfter = #(BridgeState.eventQueue or {})
+            queueHeadAfter = BridgeState.eventQueue[1] and BridgeState.eventQueue[1].sequence or nil
+            finalApplied = BridgeState.lastAppliedEventSequence
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.Equal(41, lua.Globals.Get("finalApplied").Number);
+        Assert.Equal(1, lua.Globals.Get("commitCount").Number);
+        Assert.Equal(1, lua.Globals.Get("firstCommitCount").Number);
+        Assert.Equal(1, lua.Globals.Get("ledgerCount").Number);
+        Assert.Equal(":n1", lua.Globals.Get("ledger1").String);
+        Assert.Equal(1, lua.Globals.Get("queueLenAfter").Number);
+        Assert.Equal(42, lua.Globals.Get("queueHeadAfter").Number);
+        Assert.Equal("nil", lua.Globals.Get("desyncState").String);
+    }
+
+    [Fact]
+    public void DifferentPositiveForgeSequencesAreNotBatchedTogether()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.lastAppliedEventSequence = 50
+            BridgeState.cardNameByInstanceId[':p1'] = 'Card P1'
+            BridgeState.cardNameByInstanceId[':p2'] = 'Card P2'
+            local p1 = BridgeTestCreateCard(':p1', 'Card P1', 'loose-p1')
+            local p2 = BridgeTestCreateCard(':p2', 'Card P2', 'loose-p2')
+            BridgeTestQueueExtractionCards({p1, p2})
+            commitRanges = {}
+            local rawCommit = BridgeCommitEventMutationTransaction
+            BridgeCommitEventMutationTransaction = function(tx)
+                commitRanges[BridgeTestArrayLength(commitRanges) + 1] = {
+                    first = tx and tx.firstEventSequence or nil,
+                    last = tx and tx.lastEventSequence or nil,
+                    count = tx and tx.eventCount or nil,
+                    forgeSequence = tx and tx.forgeSequence or nil
+                }
+                return rawCommit(tx)
+            end
+            function BridgeWaitTime(callback, delay) end
+            BridgeTestSetEventQueue(
+                {sequence=51, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':p1', cardName='Card P1', forgeSequence=901},
+                {sequence=52, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':p2', cardName='Card P2', forgeSequence=902}
+            )
+            BridgeProcessEventQueue()
+            local ledger = BridgeZoneLedger('forge-player-1', 'graveyard')
+            ledgerCount = BridgeTestArrayLength(ledger or {})
+            ledger1 = ledger[1]
+            commitCount = BridgeTestArrayLength(commitRanges or {})
+            firstCommitCount = commitRanges[1] and commitRanges[1].count or nil
+            firstCommitForgeSequence = commitRanges[1] and commitRanges[1].forgeSequence or nil
+            queueLenAfter = #(BridgeState.eventQueue or {})
+            queueHeadAfter = BridgeState.eventQueue[1] and BridgeState.eventQueue[1].sequence or nil
+            finalApplied = BridgeState.lastAppliedEventSequence
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.Equal(51, lua.Globals.Get("finalApplied").Number);
+        Assert.Equal(1, lua.Globals.Get("commitCount").Number);
+        Assert.Equal(1, lua.Globals.Get("firstCommitCount").Number);
+        Assert.Equal(901, lua.Globals.Get("firstCommitForgeSequence").Number);
+        Assert.Equal(1, lua.Globals.Get("ledgerCount").Number);
+        Assert.Equal(":p1", lua.Globals.Get("ledger1").String);
+        Assert.Equal(1, lua.Globals.Get("queueLenAfter").Number);
+        Assert.Equal(52, lua.Globals.Get("queueHeadAfter").Number);
+        Assert.Equal("nil", lua.Globals.Get("desyncState").String);
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script();

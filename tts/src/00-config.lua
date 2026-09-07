@@ -609,8 +609,21 @@ function BridgeObserveEventDrainBlocked(reason)
                     if tx ~= nil and BridgeEventMutationIsCurrent ~= nil
                         and BridgeCommitEventMutationTransaction ~= nil then
                         local txCurrentOk, txIsCurrent = pcall(BridgeEventMutationIsCurrent, tx)
-                        local queueProbeOk, queuesIdle = pcall(BridgePhysicalLibraryQueuesIdle)
-                        if txCurrentOk and txIsCurrent and queueProbeOk and queuesIdle then
+                        local queueProbeOk, queuesIdle = pcall(function()
+                            if BridgePhysicalMutationOperationsIdle ~= nil then
+                                return BridgePhysicalMutationOperationsIdle()
+                            end
+                            return BridgePhysicalLibraryQueuesIdle()
+                        end)
+                        local mutationReadyOk, mutationReady = true, true
+                        if BridgeMutationPhysicalBatchesReady ~= nil then
+                            mutationReadyOk, mutationReady = pcall(function()
+                                local ready = BridgeMutationPhysicalBatchesReady(tx)
+                                return ready
+                            end)
+                        end
+                        if txCurrentOk and txIsCurrent and queueProbeOk and queuesIdle
+                            and mutationReadyOk and mutationReady then
                             local commitOk, commitResult = pcall(BridgeCommitEventMutationTransaction, tx)
                             if commitOk and commitResult then
                                 BridgeLog(string.format(
