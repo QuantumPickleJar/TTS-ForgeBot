@@ -2067,6 +2067,7 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeState.resyncScheduled = false
     BridgeState.bootstrapping = false
     BridgeState.resyncStartedAt = nil
+    BridgeState.resyncStartedUpdateTick = nil
     BridgeState.resyncStartedCpuAt = nil
     BridgeState.resyncLastFailureReason = tostring(reason or "watchdog")
     BridgeState.resyncDeferredReason = tostring(reason or "watchdog")
@@ -2092,11 +2093,15 @@ function BridgeCheckResyncWatchdog(reason)
     -- cannot remain in-flight forever merely because the game clock stalled.
     local cpuNow = BridgePerformanceNow ~= nil and BridgePerformanceNow() or os.clock()
     local cpuElapsed = BridgeState.resyncStartedCpuAt ~= nil and cpuNow - BridgeState.resyncStartedCpuAt or nil
+    local updateElapsed = BridgeState.resyncStartedUpdateTick ~= nil
+        and (BridgeState.resyncUpdateTick or 0) - BridgeState.resyncStartedUpdateTick or nil
     local wallStalled = wallElapsed ~= nil and wallElapsed >= BRIDGE_RESYNC_STALL_SECONDS
     local cpuStalled = cpuElapsed ~= nil and cpuElapsed >= BRIDGE_RESYNC_STALL_SECONDS
-    if not wallStalled and not cpuStalled then return false end
+    local updateStalled = updateElapsed ~= nil and updateElapsed >= BRIDGE_RESYNC_STALL_FRAMES
+    if not wallStalled and not cpuStalled and not updateStalled then return false end
     local token = BridgeState.resyncToken
-    local clock = cpuStalled and not wallStalled and "cpu-clock" or "wall-clock"
+    local clock = updateStalled and not wallStalled and not cpuStalled and "update-frames"
+        or (cpuStalled and not wallStalled and "cpu-clock" or "wall-clock")
     return BridgeReleaseStalledResync(BridgeState.eventSessionId, token,
         tostring(reason or "clock") .. ":" .. clock)
 end
@@ -2147,7 +2152,17 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     -- completion retires the queue and this bounded retry then starts from a
     -- stable physical order.
     local explicit = BridgeIsExplicitResyncOrigin(origin)
-    if explicit then BridgeState.resyncCircuitOpen = false end
+    if explicit then
+        -- A manual retry is deliberately allowed to re-read the same Forge
+        -- snapshot. Forge is correctly idle at that cursor after a failed
+        -- physical mutation, so carrying an automatic retry's fingerprint
+        -- into this attempt turns the no-progress guard into a permanent
+        -- recovery lockout.
+        BridgeState.resyncCircuitOpen = false
+        BridgeState.resyncSnapshotFingerprint = nil
+        BridgeState.resyncSnapshotRepeatCount = 0
+        BridgeState.resyncNoProgressAttempts = 0
+    end
     -- H0 recovery owns replacement, not the failed worker.  Abort and fence
     -- once before looking at queue readiness; repeated HUD clicks return via
     -- resyncInFlight above and therefore cannot churn generations.
@@ -2286,6 +2301,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     BridgeState.resyncOrigin = origin
     BridgeState.resyncStartedAt = BridgeResyncClockNow()
+    BridgeState.resyncStartedUpdateTick = BridgeState.resyncUpdateTick or 0
     BridgeState.resyncStartedCpuAt = BridgePerformanceNow ~= nil and BridgePerformanceNow() or os.clock()
     BridgeState.resyncInFlight = true
     BridgeState.resyncReconcileStarted = false
@@ -2327,6 +2343,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeState.resyncScheduled = false
         BridgeState.resyncWatchdogToken = nil
         BridgeState.resyncStartedAt = nil
+        BridgeState.resyncStartedUpdateTick = nil
         BridgeState.resyncStartedCpuAt = nil
         BridgeState.resyncSnapshotFingerprint = nil
         BridgeState.resyncSnapshotRepeatCount = 0

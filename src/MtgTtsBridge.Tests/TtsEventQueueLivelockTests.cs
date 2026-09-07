@@ -1010,6 +1010,33 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void StalledResyncUsesUpdateFramesWhenBothClocksAreFrozen()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.resyncToken = 4
+            BridgeState.resyncInFlight = true
+            BridgeState.bootstrapping = true
+            BridgeState.resyncStartedAt = 10
+            BridgeState.resyncStartedCpuAt = 10
+            BridgeState.resyncStartedUpdateTick = 50
+            BridgeState.resyncUpdateTick = 50 + BRIDGE_RESYNC_STALL_FRAMES
+            BridgeState.ui = {resyncInFlight=true}
+            BridgeSetStatus = function(headline, detail) end
+            BridgeUiMarkDirty = function(reason) end
+            Time.time = 10
+            released = BridgeCheckResyncWatchdog('test-update-frames')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(lua.Globals.Get("released").Boolean);
+        Assert.False(state.Get("resyncInFlight").Boolean);
+        Assert.False(state.Get("bootstrapping").Boolean);
+        Assert.True(state.Get("resyncStartedUpdateTick").IsNil());
+    }
+
+    [Fact]
     public void AutomaticResyncBehindPhysicalQueueUsesOneBoundedRetry()
     {
         var lua = NewQueueProbe();
@@ -1064,23 +1091,31 @@ public sealed class TtsEventQueueLivelockTests
         var lua = NewQueueProbe();
         ExecuteProbe(lua, "StartInventoryIncludesAlreadyDealtHandCards.probe.lua", @"
             local deckEntries = {}
-            for index = 1, 33 do deckEntries[index] = {nickname='Island'} end
+            for index = 1, 33 do table.insert(deckEntries, {nickname='Island'}) end
             local deck = {tag='Deck'}
             deck.getObjects = function() return deckEntries end
             local hand = {}
             for index = 1, 7 do
                 local card = {tag='Card'}
                 card.getName = function() return 'Island' end
-                hand[index] = card
+                table.insert(hand, card)
             end
             BridgeObjectIsUsable = function(object) return object ~= nil end
             BridgeSafeObjectName = function(object) return object.getName() end
+            BridgeImportedCardName = function(name) return tostring(name or '') end
+            BridgeNormalizeCardName = function(name) return string.lower(tostring(name or '')) end
             BridgeTryGetSeatHandObjects = function(seatId) return hand, nil end
             counts, totalCards, libraryCards, handCards = BridgeCollectSeatStartingInventory(
                 deck, 'forge-player-1')
+            probeUsable = BridgeObjectIsUsable(deck)
+            probeTag = deck.tag
+            probeEntries = #(deck.getObjects() or {})
+            probeName = BridgeImportedCardName(deckEntries[1].nickname)
+            probeNormalized = BridgeNormalizeCardName(probeName)
         ");
 
-        Assert.Equal(40, lua.Globals.Get("totalCards").Number);
+        Assert.True(lua.Globals.Get("totalCards").Number == 40,
+            $"usable={lua.Globals.Get("probeUsable").ToPrintString()} tag={lua.Globals.Get("probeTag").ToPrintString()} entries={lua.Globals.Get("probeEntries").ToPrintString()} name={lua.Globals.Get("probeName").ToPrintString()} normalized={lua.Globals.Get("probeNormalized").ToPrintString()}");
         Assert.Equal(33, lua.Globals.Get("libraryCards").Number);
         Assert.Equal(7, lua.Globals.Get("handCards").Number);
         Assert.Equal(40, lua.Globals.Get("counts").Table.Get("Island").Number);
@@ -1188,6 +1223,9 @@ public sealed class TtsEventQueueLivelockTests
             BridgeState.desyncLatched = true
             BridgeState.resyncCircuitOpen = true
             BridgeState.resyncRootCause = 'identical-snapshot-circuit-breaker'
+            BridgeState.resyncSnapshotFingerprint = 'session|31|11'
+            BridgeState.resyncSnapshotRepeatCount = 3
+            BridgeState.resyncNoProgressAttempts = 2
             BridgeState.resyncDeferredReason = 'physical-library-queue'
             BridgeState.ui = {resyncInFlight=false, fastForwardActive=false, autoAdvanceMode='NORMAL'}
             function BridgePhysicalLibraryQueuesIdle() return false end
@@ -1213,6 +1251,9 @@ public sealed class TtsEventQueueLivelockTests
                 pendingBootstrap = callback
                 bootstrapResume = resume
                 bootstrapOrigin = origin
+                bootstrapFingerprint = BridgeState.resyncSnapshotFingerprint
+                bootstrapRepeatCount = BridgeState.resyncSnapshotRepeatCount
+                bootstrapNoProgressAttempts = BridgeState.resyncNoProgressAttempts
             end
             firstStarted = BridgeResyncFromAuthoritativeSnapshot('hud')
             secondStarted = BridgeResyncFromAuthoritativeSnapshot('hud')
@@ -1228,6 +1269,9 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Equal(1, lua.Globals.Get("bootstrapCalls").Number);
         Assert.True(lua.Globals.Get("bootstrapResume").Boolean);
         Assert.Equal("hud", lua.Globals.Get("bootstrapOrigin").String);
+        Assert.True(lua.Globals.Get("bootstrapFingerprint").IsNil());
+        Assert.Equal(0, lua.Globals.Get("bootstrapRepeatCount").Number);
+        Assert.Equal(0, lua.Globals.Get("bootstrapNoProgressAttempts").Number);
         Assert.False(state.Get("resyncCircuitOpen").Boolean);
         Assert.False(state.Get("resyncInFlight").Boolean);
         Assert.False(state.Get("ui").Table.Get("resyncInFlight").Boolean);

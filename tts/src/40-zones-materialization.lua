@@ -2089,6 +2089,26 @@ function BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
     end
 end
 
+-- TTS's native group API can return either the new Deck directly or a table
+-- containing it. During the creation frame getGUID() may still be unavailable,
+-- so do not discard a Deck-shaped result merely because it is not usable yet:
+-- the later settlement loop owns that readiness check.
+function BridgeDeckFromNativeGroupResult(groupResult)
+    if groupResult == nil then return nil end
+    local function isDeck(candidate)
+        if candidate == nil then return false end
+        local ok, tag = pcall(function() return candidate.tag end)
+        return ok and tag == "Deck"
+    end
+    if isDeck(groupResult) then return groupResult end
+    if type(groupResult) == "table" then
+        for _, candidate in ipairs(groupResult) do
+            if isDeck(candidate) then return candidate end
+        end
+    end
+    return nil
+end
+
 function BridgeCommitAtomicGraveyardMutation(tx, batch)
     if tx == nil or batch == nil then return end
     if not BridgeEventMutationIsCurrent(tx) then return end
@@ -2137,20 +2157,10 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
                     "native graveyard group failed: " .. tostring(groupResult))
                 return
             end
-            -- TTS returns an array of resulting objects from group(), while
-            -- older probes returned the Deck directly. Accept both shapes.
-            local groupedCandidate = groupResult
-            if type(groupResult) == "table" and groupResult.tag == nil then
-                for _, candidate in ipairs(groupResult) do
-                    if BridgeObjectIsUsable(candidate) and candidate.tag == "Deck" then
-                        groupedCandidate = candidate
-                        break
-                    end
-                end
-            end
-            if BridgeObjectIsUsable(groupedCandidate) and groupedCandidate.tag == "Deck" then
-                target = groupedCandidate
-            end
+            local groupedCandidate = BridgeDeckFromNativeGroupResult(groupResult)
+            -- Retain a not-yet-addressable Deck object. Its GUID can become
+            -- available only after the native grouping callback returns.
+            if groupedCandidate ~= nil then target = groupedCandidate end
             BridgeLog(string.format(
                 "[Bridge] MUTATION_DESTINATION_GROUP_REQUESTED token=%s forgeSequence=%s seat=%s cards=%s resultTag=%s generation=%s",
                 tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId), tostring(#cardsToGroup),
@@ -2185,7 +2195,7 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
     -- is only registered on a later frame.  Do not turn that normal physical
     -- settlement window into a Forge/TTS desync.
     local deckResolutionRetries = 0
-    local maxDeckResolutionRetries = 12
+    local maxDeckResolutionRetries = 60
     local function settleDestinationDeck()
         if not BridgeEventMutationIsCurrent(tx) then return end
         if batch.state == "FAILED" or batch.state == "VERIFIED" then return end
@@ -2194,7 +2204,10 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         if BridgeObjectIsUsable(target) and target.tag == "Deck" then
             resolved = target
         else
-            resolved = BridgeFindGraveyardContainer(batch.seatId)
+            local discovered = BridgeFindGraveyardContainer(batch.seatId)
+            if BridgeObjectIsUsable(discovered) and discovered.tag == "Deck" then
+                resolved = discovered
+            end
         end
         if resolved ~= nil and resolved.tag == "Deck" then
             batch.targetDeck = resolved
@@ -4845,7 +4858,7 @@ function BridgeEnsureNativeGraveyardContainer(seatId)
         end
         local groupOk, groupResult = pcall(function() return group(loose) end)
         if not groupOk then return false, "could not group loose graveyard Cards into a native Deck" end
-        container = BridgeObjectIsUsable(groupResult) and groupResult.tag == "Deck" and groupResult
+        container = BridgeDeckFromNativeGroupResult(groupResult)
             or BridgeFindGraveyardContainer(seatId)
         if container == nil or container.tag ~= "Deck" then
             return false, "TTS did not produce a native graveyard Deck after grouping Cards"

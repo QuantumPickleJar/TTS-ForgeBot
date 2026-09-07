@@ -58,7 +58,7 @@ BRIDGE_ALLOW_DECK_MINIMUM_OVERRIDE = false
 -- lands after they enter. STRICT re-applies the persistent land row only on
 -- authoritative layout events or an explicit organize request.
 BRIDGE_LAND_PLACEMENT_MODE = BRIDGE_LAND_PLACEMENT_MODE or "FREEFORM"
-BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-gameplay-repair"
+BRIDGE_SCRIPT_REVISION = "2026-09-07-resync-mill-repair"
 
 -- TTS can leave callbacks scheduled by the previous Global.lua alive during a
 -- Save & Play reload.  Generations inside BridgeState start from zero again,
@@ -249,6 +249,8 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncScheduled = BridgeState.resyncScheduled == true,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncStartedAt = BridgeState.resyncStartedAt,
+        resyncUpdateTick = BridgeState.resyncUpdateTick,
+        resyncStartedUpdateTick = BridgeState.resyncStartedUpdateTick,
         resyncStartedCpuAt = BridgeState.resyncStartedCpuAt,
         resyncStage = BridgeState.resyncStage,
         resyncStageChangedAt = BridgeState.resyncStageChangedAt,
@@ -540,6 +542,8 @@ function BridgeEventDrainQueueState()
         schedulerOwner = BridgeState.schedulerOwner,
         lastSnapshotSupersededRange = BridgeState.lastSnapshotSupersededRange,
         resyncStartedAt = BridgeState.resyncStartedAt,
+        resyncUpdateTick = BridgeState.resyncUpdateTick,
+        resyncStartedUpdateTick = BridgeState.resyncStartedUpdateTick,
         resyncDeferredReason = BridgeState.resyncDeferredReason,
         resyncDeferredSince = BridgeState.resyncDeferredSince,
         resyncDeferredRetryScheduled = BridgeState.resyncDeferredRetryScheduled == true,
@@ -1322,6 +1326,8 @@ BridgeState = {
     resyncDeferredRetryScheduled = false,
     resyncDeferredSince = nil,
     resyncWatchdogToken = nil,
+    resyncUpdateTick = 0,
+    resyncStartedUpdateTick = nil,
     resyncStartedCpuAt = nil,
     resyncBootstrapGeneration = 0,
     lastChoiceAttempt = nil,
@@ -1375,6 +1381,7 @@ BridgeState = {
     sessionRecoveryInFlight = false,
     resyncToken = 0,
     resyncStartedAt = nil,
+    resyncStartedUpdateTick = nil,
     resyncStartedCpuAt = nil,
     resyncStage = "Idle",
     resyncStageChangedAt = nil,
@@ -1615,6 +1622,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.resyncLastBlockingPredicate = nil
     BridgeState.resyncStage = "Idle"
     BridgeState.resyncStartedAt = nil
+    BridgeState.resyncStartedUpdateTick = nil
     BridgeState.resyncStartedCpuAt = nil
     BridgeState.resyncOrigin = nil
     BridgeState.resyncLastFailureReason = nil

@@ -1961,7 +1961,9 @@ end
 BRIDGE_DEV_UI_ENABLED = true
 BRIDGE_DEV_ANNOTATIONS_ENABLED = true
 BRIDGE_PHYSICAL_PRIORITY_CONTROLS_ENABLED = true
-BRIDGE_SCRIPT_REVISION = "2026-08-30-u2-gameplay-repair"
+-- BRIDGE_SCRIPT_REVISION is owned by 00-config.lua. Do not overwrite it in
+-- this late presentation block: the bridge uses it to identify the exact Lua
+-- implementation that produced a diagnostic capture.
 
 BRIDGE_HUD_COLORS = {
     active = "#6DB5FF",

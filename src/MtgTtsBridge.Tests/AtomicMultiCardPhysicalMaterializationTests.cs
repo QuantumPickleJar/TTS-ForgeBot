@@ -139,6 +139,38 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void NativeGroupArrayDeckThatReceivesItsGuidOnALaterFrameIsRetained()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            bridgeTest.groupReturnsArray = true
+            bridgeTest.groupDeckUnreadyGuidReads = 2
+            bridgeTest.groupDeckGuidReads = 0
+            BridgeState.lastAppliedEventSequence = 900
+            BridgeState.cardNameByInstanceId[':g1'] = 'Group A'
+            BridgeState.cardNameByInstanceId[':g2'] = 'Group B'
+            local a = BridgeTestCreateCard(':g1', 'Group A', 'loose-g1')
+            local b = BridgeTestCreateCard(':g2', 'Group B', 'loose-g2')
+            BridgeTestQueueExtractionCards({a, b})
+            BridgeTestSetEventQueue(
+                {sequence=901, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':g1', cardName='Group A', forgeSequence=922},
+                {sequence=902, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':g2', cardName='Group B', forgeSequence=922}
+            )
+            BridgeProcessEventQueue()
+            finalApplied = BridgeState.lastAppliedEventSequence
+            mutationCommitCount = BridgeTestCountLogToken('MUTATION_COMMIT')
+            mutationAbortCount = BridgeTestCountLogToken('MUTATION_ABORT')
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.Equal(902, lua.Globals.Get("finalApplied").Number);
+        Assert.Equal(1, lua.Globals.Get("mutationCommitCount").Number);
+        Assert.Equal(0, lua.Globals.Get("mutationAbortCount").Number);
+        Assert.Equal("nil", lua.Globals.Get("desyncState").String);
+    }
+
+    [Fact]
     public void SupplierThreeCardMillCommitsAsOneMutation()
     {
         var lua = NewProbe();
@@ -1008,7 +1040,14 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                 }
                 bridgeTest.graveyardDeck = {
                     tag = 'Deck',
-                    getGUID = function() return 'grave-deck' end,
+                    getGUID = function()
+                        bridgeTest.groupDeckGuidReads = (bridgeTest.groupDeckGuidReads or 0) + 1
+                        if bridgeTest.groupDeckUnreadyGuidReads ~= nil
+                            and bridgeTest.groupDeckGuidReads <= bridgeTest.groupDeckUnreadyGuidReads then
+                            return nil
+                        end
+                        return 'grave-deck'
+                    end,
                     entries = {}
                 }
                 bridgeTest.graveyardDeck.getObjects = function()

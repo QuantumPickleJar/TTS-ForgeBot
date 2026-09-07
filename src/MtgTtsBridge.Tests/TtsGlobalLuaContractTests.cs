@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace MtgTtsBridge.Tests;
 
@@ -1301,7 +1302,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ChoiceSubmission_UsesDecisionScopedTransactionsAndBoundedRetirement()
     {
-        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-08-30-u2-gameplay-repair\"", Script);
+        Assert.Contains("BRIDGE_SCRIPT_REVISION = \"2026-09-07-resync-mill-repair\"", Script);
         Assert.Contains("choiceTransactions = {}", Script);
         Assert.Contains("retiredChoiceDecisionIds = {}", Script);
         Assert.Contains("function BridgeLogChoiceAttempt", Script);
@@ -2667,7 +2668,15 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("authoritative snapshot is missing a valid event cursor", Script);
         Assert.Contains("BridgeState.submitting = false", resync);
         Assert.Contains("BridgeResumeChoiceProtocol(\"authoritative_resync\")", resync);
+        Assert.Contains("BridgeState.resyncSnapshotFingerprint = nil", resync);
         Assert.Contains("resyncPresentationState", Script);
+    }
+
+    [Fact]
+    public void ScriptRevisionHasOneCanonicalConfigOwner()
+    {
+        Assert.True(Regex.Matches(Script, @"BRIDGE_SCRIPT_REVISION\s*(?<![=])=(?!=)").Count == 1);
+        Assert.Contains("2026-09-07-resync-mill-repair", Script);
     }
 
     [Fact]
@@ -3475,8 +3484,10 @@ public sealed class TtsGlobalLuaContractTests
         Assert.True(atomicStart >= 0 && atomicEnd > atomicStart);
         Assert.True(recoveryStart >= 0 && recoveryEnd > recoveryStart);
         Assert.Contains("MUTATION_DESTINATION_GROUP_REQUESTED", Script[atomicStart..atomicEnd]);
+        Assert.Contains("BridgeDeckFromNativeGroupResult", Script[atomicStart..atomicEnd]);
         Assert.Contains("return group(cardsToGroup)", Script[atomicStart..atomicEnd]);
         Assert.Contains("return group(loose)", Script[recoveryStart..recoveryEnd]);
+        Assert.Contains("BridgeDeckFromNativeGroupResult(groupResult)", Script[recoveryStart..recoveryEnd]);
         Assert.DoesNotContain("container = loose[1]", Script[recoveryStart..Script.IndexOf("if type(group) == \"function\"", recoveryStart, StringComparison.Ordinal)]);
     }
 }
