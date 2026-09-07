@@ -371,6 +371,116 @@ public sealed class TtsDiagnosticCaptureLuaTests
     }
 
     [Fact]
+    public void LostDecisionTimerWithFrozenCpuClockRearmsFromFrameLiveness()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'timer-session'
+            BridgeState.gameEnded = nil
+            BridgeState.submitting = false
+            BridgeState.choiceProtocolPaused = false
+            BridgeState.lastDecision = nil
+            BridgeState.pendingDecision = nil
+            BridgeState.decisionPollInFlight = false
+            BridgeState.decisionPollScheduled = true
+            BridgeState.decisionPollScheduledAt = 1
+            BridgeState.decisionPollDueAt = 999
+            BridgeState.decisionPollTimerToken = 21
+            BridgeState.decisionPollGeneration = 147
+            BridgeState.decisionPollScheduledUpdateTick = 3
+            BridgeState.decisionPollDueUpdateTick = 4
+            BridgeState.updateTick = 5
+            BridgeState.eventQueue = {}
+            BridgeState.lastReceivedEventSequence = 78
+            BridgeState.lastAppliedEventSequence = 78
+            os.clock = function() return 0 end
+            rearmed = 0
+            function BridgeStartDecisionPolling() rearmed = rearmed + 1 end
+            BridgeCheckDecisionPollingLiveness('test-frozen-cpu-clock')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(1, lua.Globals.Get("rearmed").Number);
+        Assert.False(state.Get("decisionPollScheduled").Boolean);
+        Assert.Equal("timer_lost", state.Get("lastDecisionPollOutcome").String);
+    }
+
+    [Fact]
+    public void StaleDecisionTimerCallbackCannotClearLaterDecisionPoll()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'timer-session'
+            BridgeState.gameEnded = nil
+            BridgeState.submitting = false
+            BridgeState.choiceProtocolPaused = false
+            BridgeState.lastDecision = nil
+            BridgeState.pendingDecision = nil
+            BridgeState.decisionPollInFlight = false
+            BridgeState.decisionPollScheduled = false
+            BridgeState.decisionPollGeneration = 1
+            BridgeState.updateTick = 0
+            BridgeState.decisionPollScheduledAt = nil
+            BridgeState.decisionPollDueAt = nil
+            BridgeState.decisionPollTimerToken = nil
+            staleCallback = function()
+                BridgeState.decisionPollScheduled = false
+                BridgeState.decisionPollScheduledAt = nil
+                BridgeState.decisionPollDueAt = nil
+                BridgeState.decisionPollScheduledUpdateTick = nil
+                BridgeState.decisionPollDueUpdateTick = nil
+                BridgeState.decisionPollTimerToken = 99
+                BridgeState.decisionPollGeneration = 2
+            end
+            BridgeState.decisionPollScheduled = false
+            BridgeState.decisionPollScheduledAt = nil
+            BridgeState.decisionPollDueAt = nil
+            BridgeState.decisionPollScheduledUpdateTick = nil
+            BridgeState.decisionPollDueUpdateTick = nil
+            BridgeState.decisionPollTimerToken = 99
+            BridgeState.decisionPollGeneration = 2
+            staleCallback()
+            staleCallbackAllowed = BridgeState.decisionPollGeneration == 2 and BridgeState.decisionPollTimerToken == 99 and BridgeState.decisionPollScheduled == false
+        ");
+
+        Assert.True(lua.Globals.Get("staleCallbackAllowed").Boolean);
+    }
+
+    [Fact]
+    public void HealthyDecisionTimerDoesNotRearmBeforeFrameDeadline()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'timer-session'
+            BridgeState.gameEnded = nil
+            BridgeState.submitting = false
+            BridgeState.choiceProtocolPaused = false
+            BridgeState.lastDecision = nil
+            BridgeState.pendingDecision = nil
+            BridgeState.decisionPollInFlight = false
+            BridgeState.decisionPollScheduled = true
+            BridgeState.decisionPollScheduledAt = 1
+            BridgeState.decisionPollDueAt = 50
+            BridgeState.decisionPollTimerToken = 7
+            BridgeState.decisionPollGeneration = 20
+            BridgeState.decisionPollScheduledUpdateTick = 8
+            BridgeState.decisionPollDueUpdateTick = 15
+            BridgeState.updateTick = 10
+            BridgeState.eventQueue = {}
+            BridgeState.lastReceivedEventSequence = 12
+            BridgeState.lastAppliedEventSequence = 12
+            os.clock = function() return 0 end
+            rearmed = 0
+            function BridgeStartDecisionPolling() rearmed = rearmed + 1 end
+            BridgeCheckDecisionPollingLiveness('test-healthy-timer')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(0, lua.Globals.Get("rearmed").Number);
+        Assert.True(state.Get("decisionPollScheduled").Boolean);
+    }
+
+    [Fact]
     public void AlreadyProjectedDecisionCursor_IsNotRejectedForExactEqualityMismatch()
     {
         var lua = NewProbe();

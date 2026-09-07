@@ -1527,6 +1527,7 @@ function onUpdate()
     -- dispatching frames. Keep a monotonically increasing local observation
     -- count for recovery ownership so a stuck bootstrap cannot retain both
     -- pollers forever under that condition.
+    BridgeState.updateTick = (BridgeState.updateTick or 0) + 1
     BridgeState.resyncUpdateTick = (BridgeState.resyncUpdateTick or 0) + 1
     if BridgeEnforceDesyncRecovery ~= nil then BridgeEnforceDesyncRecovery("onUpdate") end
     if BridgeCheckRecoveryConvergence ~= nil then BridgeCheckRecoveryConvergence("onUpdate") end

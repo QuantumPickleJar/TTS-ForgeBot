@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: aeff486216c7261447602398718d0241cc140aec6c391a6498289f9744d5a759
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "aeff486216c7261447602398718d0241cc140aec6c391a6498289f9744d5a759"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 90d050c7d2c315519b95d0926ff97885f789a7ceed7b3a6e0149a7db362908dc
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "90d050c7d2c315519b95d0926ff97885f789a7ceed7b3a6e0149a7db362908dc"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -214,6 +214,8 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         decisionPollScheduled = BridgeState.decisionPollScheduled == true,
         decisionPollScheduledAt = BridgeState.decisionPollScheduledAt,
         decisionPollDueAt = BridgeState.decisionPollDueAt,
+        decisionPollScheduledUpdateTick = BridgeState.decisionPollScheduledUpdateTick,
+        decisionPollDueUpdateTick = BridgeState.decisionPollDueUpdateTick,
         decisionPollTimerToken = BridgeState.decisionPollTimerToken,
         lastDecisionPollStartedAt = BridgeState.lastDecisionPollStartedAt,
         lastDecisionPollCompletedAt = BridgeState.lastDecisionPollCompletedAt,
@@ -1155,12 +1157,15 @@ BridgeState = {
     eventRequestInFlight = false,
     eventPollScheduled = false,
     eventRequestGeneration = nil,
+    updateTick = 0,
     decisionPollGeneration = 0,
     decisionPresentationGeneration = 0,
     decisionPollInFlight = false,
     decisionPollScheduled = false,
     decisionPollScheduledAt = nil,
     decisionPollDueAt = nil,
+    decisionPollScheduledUpdateTick = nil,
+    decisionPollDueUpdateTick = nil,
     decisionPollTimerToken = nil,
     lastDecisionPollStartedAt = nil,
     lastDecisionPollCompletedAt = nil,
@@ -3725,6 +3730,7 @@ function onUpdate()
     -- dispatching frames. Keep a monotonically increasing local observation
     -- count for recovery ownership so a stuck bootstrap cannot retain both
     -- pollers forever under that condition.
+    BridgeState.updateTick = (BridgeState.updateTick or 0) + 1
     BridgeState.resyncUpdateTick = (BridgeState.resyncUpdateTick or 0) + 1
     if BridgeEnforceDesyncRecovery ~= nil then BridgeEnforceDesyncRecovery("onUpdate") end
     if BridgeCheckRecoveryConvergence ~= nil then BridgeCheckRecoveryConvergence("onUpdate") end
@@ -4758,6 +4764,8 @@ function BridgeStopDecisionPolling()
     BridgeState.decisionPollScheduled = false
     BridgeState.decisionPollScheduledAt = nil
     BridgeState.decisionPollDueAt = nil
+    BridgeState.decisionPollScheduledUpdateTick = nil
+    BridgeState.decisionPollDueUpdateTick = nil
     BridgeState.decisionPollTimerToken = nil
 end
 
@@ -4874,29 +4882,40 @@ function BridgeDecisionPollNow()
     return os.clock()
 end
 
--- A scheduled flag is only a claim made by the scheduler.  The timer token
--- and deadline make that claim auditable and let the frame watchdog recover a
--- callback which TTS silently drops.
+-- A scheduled flag is only a claim made by the scheduler. The timer token,
+-- deadline, and frame-based due tick make that claim auditable and let the
+-- onUpdate watchdog recover a callback which TTS silently drops.
 function BridgeCheckDecisionPollingLiveness(reason)
     if BridgeState.gameEnded ~= nil or BridgeState.eventSessionId == nil
         or BridgeState.submitting or BridgeState.choiceProtocolPaused then return false end
 
     local now = BridgeDecisionPollNow()
-    if BridgeState.decisionPollScheduled == true
-        and BridgeState.decisionPollDueAt ~= nil
-        and now >= tonumber(BridgeState.decisionPollDueAt) then
-        BridgeLog(string.format("[Bridge] DECISION_POLL_TIMER_LOST reason=%s token=%s due=%s now=%s",
-            tostring(reason), tostring(BridgeState.decisionPollTimerToken),
-            tostring(BridgeState.decisionPollDueAt), tostring(now)))
-        BridgeState.decisionPollScheduled = false
-        BridgeState.decisionPollScheduledAt = nil
-        BridgeState.decisionPollDueAt = nil
-        BridgeState.decisionPollTimerToken = nil
-        BridgeState.lastDecisionPollOutcome = "timer_lost"
+    local updateTick = tonumber(BridgeState.updateTick or 0) or 0
+    local dueUpdateTick = tonumber(BridgeState.decisionPollDueUpdateTick or 0) or 0
+    local timerLost = false
+    if BridgeState.decisionPollScheduled == true then
+        if BridgeState.decisionPollDueAt ~= nil and now >= tonumber(BridgeState.decisionPollDueAt) then
+            timerLost = true
+        elseif dueUpdateTick > 0 and updateTick >= dueUpdateTick then
+            timerLost = true
+        end
+        if timerLost then
+            BridgeLog(string.format("[Bridge] DECISION_POLL_TIMER_LOST reason=%s token=%s due=%s dueTick=%s now=%s tick=%s",
+                tostring(reason), tostring(BridgeState.decisionPollTimerToken),
+                tostring(BridgeState.decisionPollDueAt), tostring(BridgeState.decisionPollDueUpdateTick),
+                tostring(now), tostring(updateTick)))
+            BridgeState.decisionPollScheduled = false
+            BridgeState.decisionPollScheduledAt = nil
+            BridgeState.decisionPollDueAt = nil
+            BridgeState.decisionPollScheduledUpdateTick = nil
+            BridgeState.decisionPollDueUpdateTick = nil
+            BridgeState.decisionPollTimerToken = nil
+            BridgeState.lastDecisionPollOutcome = "timer_lost"
+        end
     end
 
     -- A current decision is presentation state, not proof that a poller is
-    -- alive.  The normal caller may explicitly allow a same-decision refresh.
+    -- alive. The normal caller may explicitly allow a same-decision refresh.
     if BridgeState.lastDecision == nil
         and not BridgeState.decisionPollInFlight
         and not BridgeState.decisionPollScheduled then
@@ -5015,6 +5034,8 @@ function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDeci
     BridgeState.decisionPollScheduled = true
     BridgeState.decisionPollScheduledAt = BridgeDecisionPollNow()
     BridgeState.decisionPollDueAt = BridgeState.decisionPollScheduledAt + nextDelay
+    BridgeState.decisionPollScheduledUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+    BridgeState.decisionPollDueUpdateTick = BridgeState.decisionPollScheduledUpdateTick + math.max(1, math.ceil((nextDelay or 0) * 60))
     BridgeState.decisionPollTimerToken = (BridgeState.decisionPollTimerToken or 0) + 1
     local timerToken = BridgeState.decisionPollTimerToken
     BridgeWaitTime(function()
@@ -5023,6 +5044,8 @@ function BridgeScheduleDecisionPoll(delay, generation, attempt, allowCurrentDeci
         BridgeState.decisionPollScheduled = false
         BridgeState.decisionPollScheduledAt = nil
         BridgeState.decisionPollDueAt = nil
+        BridgeState.decisionPollScheduledUpdateTick = nil
+        BridgeState.decisionPollDueUpdateTick = nil
         BridgeState.decisionPollTimerToken = nil
         BridgeState.lastDecisionPollStartedAt = BridgeDecisionPollNow()
         BridgeState.lastDecisionPollOutcome = "started"
