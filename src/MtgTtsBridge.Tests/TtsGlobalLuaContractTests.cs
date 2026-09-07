@@ -648,7 +648,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("LIBRARY_BATCH_BEGIN", Script);
         Assert.Contains("LIBRARY_BATCH_COMMITTED", Script);
         Assert.Contains("libraryBatchBySeatId[seatId]", Script);
-        Assert.Contains("BridgeState.libraryBatchBySeatId[seatId].active == true", Script);
+        Assert.DoesNotContain("BridgeState.libraryBatchBySeatId[seatId].active == true", Script);
         Assert.Contains("BridgeBeginLibraryBatch(event)", Script);
         Assert.Contains("physicalInstanceIdByGuid or {})", Script);
         Assert.Contains("reverseAsset", Script);

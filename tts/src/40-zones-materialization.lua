@@ -2137,11 +2137,24 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
                     "native graveyard group failed: " .. tostring(groupResult))
                 return
             end
-            if BridgeObjectIsUsable(groupResult) and groupResult.tag == "Deck" then target = groupResult end
+            -- TTS returns an array of resulting objects from group(), while
+            -- older probes returned the Deck directly. Accept both shapes.
+            local groupedCandidate = groupResult
+            if type(groupResult) == "table" and groupResult.tag == nil then
+                for _, candidate in ipairs(groupResult) do
+                    if BridgeObjectIsUsable(candidate) and candidate.tag == "Deck" then
+                        groupedCandidate = candidate
+                        break
+                    end
+                end
+            end
+            if BridgeObjectIsUsable(groupedCandidate) and groupedCandidate.tag == "Deck" then
+                target = groupedCandidate
+            end
             BridgeLog(string.format(
                 "[Bridge] MUTATION_DESTINATION_GROUP_REQUESTED token=%s forgeSequence=%s seat=%s cards=%s resultTag=%s generation=%s",
                 tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId), tostring(#cardsToGroup),
-                tostring(groupResult and groupResult.tag), tostring(tx.physicalTransactionGeneration)))
+                tostring(groupedCandidate and groupedCandidate.tag), tostring(tx.physicalTransactionGeneration)))
             startIndex = (tonumber(batch.stagedCount) or 0) + 1
         else
             target = first.object

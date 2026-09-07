@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: bd7b186edf482ce822f5baf2976d5403da280d04c272b85eac05f3da9b0e0288
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "bd7b186edf482ce822f5baf2976d5403da280d04c272b85eac05f3da9b0e0288"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 8d76cd87041f407dd21c4d308bee957f8a5e7eeb18f33914bbae0445f4944515
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "8d76cd87041f407dd21c4d308bee957f8a5e7eeb18f33914bbae0445f4944515"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -6413,10 +6413,12 @@ end
 -- deferred until every seat's ordered library queue is idle.
 function BridgePhysicalLibraryQueuesIdle()
     for seatId, _ in pairs(BRIDGE_SEATS or {}) do
-        if BridgeState.libraryBatchBySeatId[seatId] ~= nil
-            and BridgeState.libraryBatchBySeatId[seatId].active == true then
-            return false
-        end
+        -- libraryBatchBySeatId is logical bookkeeping for the Forge mutation,
+        -- not an outstanding TTS operation.  It is retired only after the
+        -- event transaction commits, so using it as a resync readiness fence
+        -- creates a cycle: desync stops the drain, the drain cannot commit the
+        -- batch, and recovery waits forever for that same batch to disappear.
+        -- Only callbacks which can still mutate a physical Deck belong here.
         if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
             or #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}) > 0
             or BridgeState.graveyardExtractionActiveBySeatId[seatId] == true

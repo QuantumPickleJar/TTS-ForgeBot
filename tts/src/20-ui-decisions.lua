@@ -626,6 +626,44 @@ function BridgeDeckCardCount(deck)
     return 0
 end
 
+-- START MATCH may be pressed after players have physically dealt opening
+-- hands.  Those cards are still part of the submitted deck inventory even
+-- though they no longer live inside the library Deck object.  Aggregate the
+-- library and that seat's hand once so development setup does not require
+-- restacking both piles merely to satisfy deck validation.
+function BridgeCollectSeatStartingInventory(deck, seatId)
+    local counts = {}
+    local libraryCount = 0
+    local handCount = 0
+    local function addName(rawName, source)
+        local name = BridgeImportedCardName(rawName or "")
+        if BridgeNormalizeCardName(name) == "" then return end
+        counts[name] = (counts[name] or 0) + 1
+        if source == "hand" then handCount = handCount + 1 else libraryCount = libraryCount + 1 end
+    end
+
+    if deck ~= nil and BridgeObjectIsUsable(deck) then
+        if deck.tag == "Deck" then
+            for _, contained in ipairs(deck.getObjects() or {}) do
+                addName(contained.nickname or contained.name, "library")
+            end
+        elseif deck.tag == "Card" then
+            addName(BridgeSafeObjectName(deck), "library")
+        end
+    end
+
+    local handObjects = nil
+    if BridgeTryGetSeatHandObjects ~= nil then
+        handObjects = select(1, BridgeTryGetSeatHandObjects(seatId))
+    end
+    for _, object in ipairs(handObjects or {}) do
+        if BridgeObjectIsUsable(object) and object.tag == "Card" then
+            addName(BridgeSafeObjectName(object), "hand")
+        end
+    end
+    return counts, libraryCount + handCount, libraryCount, handCount
+end
+
 function BridgeBuildDeckGuidManifest(deck)
     local manifest = {}
     if deck == nil or not BridgeObjectIsUsable(deck) then return manifest end
@@ -704,8 +742,10 @@ function BridgeStartMatchPreflight(humanDeck, aiDeck)
     if minimum == nil then
         return false, "unsupported selected format '" .. tostring(format) .. "'"
     end
-    local humanCards = BridgeDeckCardCount(humanDeck)
-    local aiCards = BridgeDeckCardCount(aiDeck)
+    local _, humanCards, humanLibraryCards, humanHandCards = BridgeCollectSeatStartingInventory(
+        humanDeck, "forge-player-1")
+    local _, aiCards, aiLibraryCards, aiHandCards = BridgeCollectSeatStartingInventory(
+        aiDeck, "forge-player-2")
     local override = BridgeState.allowDeckMinimumOverride == true
     if not override and (humanCards < minimum or aiCards < minimum) then
         return false, string.format(
@@ -718,8 +758,9 @@ function BridgeStartMatchPreflight(humanDeck, aiDeck)
             tostring(format), minimum, tostring(provenance), humanCards, aiCards))
     end
     BridgeSetupTrace("START_PREFLIGHT_OK", string.format(
-        "format=%s provenance=%s min=%s override=%s humanCards=%s aiCards=%s",
-        tostring(format), tostring(provenance), tostring(minimum), tostring(override), tostring(humanCards), tostring(aiCards)))
+        "format=%s provenance=%s min=%s override=%s humanCards=%s aiCards=%s humanLibrary=%s humanHand=%s aiLibrary=%s aiHand=%s",
+        tostring(format), tostring(provenance), tostring(minimum), tostring(override), tostring(humanCards), tostring(aiCards),
+        tostring(humanLibraryCards), tostring(humanHandCards), tostring(aiLibraryCards), tostring(aiHandCards)))
     return true, nil
 end
 
@@ -735,21 +776,16 @@ function BridgeConfigureDecks(callback)
             BridgeSetupTrace("DECK_PILE_SCAN_RESULT", "seat=" .. tostring(seatId) .. " pileGuid=nil objectType=nil cardCount=0 detectedFormat=unknown error=" .. tostring(deckError))
             callback(false, nil, "cannot load TTS library for " .. tostring(seatId) .. ": " .. tostring(deckError)); return
         end
-        local counts = {}
-        local containedCards = deck.getObjects() or {}
-        for _, contained in ipairs(containedCards) do
-            local name = BridgeImportedCardName(contained.nickname or contained.name or "")
-            if BridgeNormalizeCardName(name) ~= "" then counts[name] = (counts[name] or 0) + 1 end
-        end
+        local counts, totalCards, libraryCards, handCards = BridgeCollectSeatStartingInventory(deck, seatId)
         local cards = {}
         for name, count in pairs(counts) do table.insert(cards, {cardName = name, count = count}) end
         BridgeSetupTrace("DECK_PILE_SCAN_RESULT", string.format(
-            "seat=%s pileGuid=%s objectType=%s cardCount=%s detectedFormat=%s uniqueNames=%s",
-            tostring(seatId), tostring(BridgeSafeObjectGuid(deck)), tostring(deck.tag), tostring(#containedCards),
-            tostring(BridgeState.selectedFormat or "unknown"), tostring(#cards)))
+            "seat=%s pileGuid=%s objectType=%s cardCount=%s libraryCards=%s handCards=%s detectedFormat=%s uniqueNames=%s",
+            tostring(seatId), tostring(BridgeSafeObjectGuid(deck)), tostring(deck.tag), tostring(totalCards),
+            tostring(libraryCards), tostring(handCards), tostring(BridgeState.selectedFormat or "unknown"), tostring(#cards)))
         if #cards == 0 then callback(false, nil, "TTS library is empty for " .. tostring(seatId)); return end
         BridgeLog(string.format("[Bridge] TTS deck inventory seat=%s uniqueNames=%d totalCards=%d revision=%s",
-            tostring(seatId), #cards, #(deck.getObjects() or {}), tostring(BRIDGE_SCRIPT_REVISION)))
+            tostring(seatId), #cards, totalCards, tostring(BRIDGE_SCRIPT_REVISION)))
         table.insert(seats, {seatId = seatId, cards = cards})
     end
     local selectedFormat = BridgeNormalizedDeckFormat()
@@ -2494,10 +2530,12 @@ end
 -- deferred until every seat's ordered library queue is idle.
 function BridgePhysicalLibraryQueuesIdle()
     for seatId, _ in pairs(BRIDGE_SEATS or {}) do
-        if BridgeState.libraryBatchBySeatId[seatId] ~= nil
-            and BridgeState.libraryBatchBySeatId[seatId].active == true then
-            return false
-        end
+        -- libraryBatchBySeatId is logical bookkeeping for the Forge mutation,
+        -- not an outstanding TTS operation.  It is retired only after the
+        -- event transaction commits, so using it as a resync readiness fence
+        -- creates a cycle: desync stops the drain, the drain cannot commit the
+        -- batch, and recovery waits forever for that same batch to disappear.
+        -- Only callbacks which can still mutate a physical Deck belong here.
         if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
             or #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}) > 0
             or BridgeState.graveyardExtractionActiveBySeatId[seatId] == true

@@ -1039,6 +1039,54 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void CompletedPhysicalMillDoesNotLetLogicalBatchDeadlockRecovery()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "CompletedPhysicalMillDoesNotLetLogicalBatchDeadlockRecovery.probe.lua", @"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.libraryBatchBySeatId = {
+                ['forge-player-1'] = {forgeSequence=22, active=true, cardInstanceIds={':36', ':37', ':12'}}
+            }
+            BridgeState.libraryExtractionQueueBySeatId = {['forge-player-1']={}}
+            BridgeState.libraryExtractionActiveBySeatId = {}
+            BridgeState.graveyardExtractionActiveBySeatId = {}
+            BridgeState.mulliganBottomQueueBySeatId = {['forge-player-1']={}}
+            BridgeState.mulliganBottomInsertionActiveBySeatId = {}
+            physicalIdle = BridgePhysicalLibraryQueuesIdle()
+        ");
+
+        Assert.True(lua.Globals.Get("physicalIdle").Boolean);
+    }
+
+    [Fact]
+    public void StartInventoryIncludesAlreadyDealtHandCards()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "StartInventoryIncludesAlreadyDealtHandCards.probe.lua", @"
+            local deckEntries = {}
+            for index = 1, 33 do deckEntries[index] = {nickname='Island'} end
+            local deck = {tag='Deck'}
+            deck.getObjects = function() return deckEntries end
+            local hand = {}
+            for index = 1, 7 do
+                local card = {tag='Card'}
+                card.getName = function() return 'Island' end
+                hand[index] = card
+            end
+            BridgeObjectIsUsable = function(object) return object ~= nil end
+            BridgeSafeObjectName = function(object) return object.getName() end
+            BridgeTryGetSeatHandObjects = function(seatId) return hand, nil end
+            counts, totalCards, libraryCards, handCards = BridgeCollectSeatStartingInventory(
+                deck, 'forge-player-1')
+        ");
+
+        Assert.Equal(40, lua.Globals.Get("totalCards").Number);
+        Assert.Equal(33, lua.Globals.Get("libraryCards").Number);
+        Assert.Equal(7, lua.Globals.Get("handCards").Number);
+        Assert.Equal(40, lua.Globals.Get("counts").Table.Get("Island").Number);
+    }
+
+    [Fact]
     public void ValidMulliganSnapshotSupersedesQueuedIntermediateEvents()
     {
         var lua = NewQueueProbe();
