@@ -1604,6 +1604,7 @@ function onUpdate()
     -- pollers forever under that condition.
     BridgeState.updateTick = (BridgeState.updateTick or 0) + 1
     BridgeState.resyncUpdateTick = (BridgeState.resyncUpdateTick or 0) + 1
+    if BridgePumpEmbodimentTransaction ~= nil then BridgePumpEmbodimentTransaction() end
     if BridgeCheckEventDrainContinuationLiveness ~= nil then BridgeCheckEventDrainContinuationLiveness("onUpdate") end
     if BridgeCheckResyncCompletionLiveness ~= nil then BridgeCheckResyncCompletionLiveness("onUpdate") end
     if BridgeEnforceDesyncRecovery ~= nil then BridgeEnforceDesyncRecovery("onUpdate") end
@@ -1612,7 +1613,9 @@ function onUpdate()
     -- Wait.time is normally sufficient, but a bootstrap can be waiting on a
     -- TTS callback while the time scheduler is delayed.  Keep the resync
     -- watchdog reactive from the frame loop as well.
-    if BridgeCheckResyncWatchdog ~= nil then BridgeCheckResyncWatchdog("onUpdate") end
+    if BridgeState.embodimentTransaction == nil and BridgeCheckResyncWatchdog ~= nil then
+        BridgeCheckResyncWatchdog("onUpdate")
+    end
 end
 
 function BridgeBeginLibraryBatch(event)

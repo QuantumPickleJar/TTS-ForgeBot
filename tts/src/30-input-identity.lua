@@ -1646,7 +1646,7 @@ function BridgeRecordBootstrapStage(stage, state, detail)
         .. " state=" .. tostring(state) .. (detail ~= nil and (" detail=" .. tostring(detail)) or ""))
 end
 
-function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotCursor, resyncOrigin)
+function BridgeLegacyBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotCursor, resyncOrigin, embodimentTx)
     if BridgeState.eventSessionId == sessionId
         and BridgeState.lifecycleState == BRIDGE_LIFECYCLE_ACTIVE
         and tonumber(BridgeState.lastAppliedEventSequence or 0) > 0
@@ -1761,6 +1761,9 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
             if snapshotCursor == nil or snapshotCursor < 0 then
                 finishBootstrap(false, "authoritative snapshot is missing a valid event cursor")
                 return
+            end
+            if embodimentTx ~= nil and BridgeEmbodimentSetSnapshot ~= nil then
+                if not BridgeEmbodimentSetSnapshot(embodimentTx, snapshot) then return end
             end
             if resumeFromSnapshotCursor == true and BridgeState.resyncInFlight == true then
                 BridgeState.resyncCandidateSnapshot = snapshot
@@ -1914,8 +1917,13 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                                 -- The snapshot is coherent through this bridge event cursor.
                                 -- Resume polling after it so no pre-snapshot transition is
                                 -- replayed over the just-rebuilt physical embodiment.
-                                local committed, commitError = BridgeCommitSnapshotCheckpoint(
-                                    snapshot, "physical-reconcile-complete")
+                                if embodimentTx ~= nil and BridgeEmbodimentTransactionIsCurrent ~= nil
+                                    and BridgeEmbodimentTransactionIsCurrent(embodimentTx) then
+                                    BridgeRecordBootstrapStage("checkpoint", "DEFERRED", "embodiment-transaction")
+                                    finishBootstrap(true, nil)
+                                    return true
+                                end
+                                local committed, commitError = BridgeCommitSnapshotCheckpoint(snapshot, "physical-reconcile-complete")
                                 BridgeRecordBootstrapStage("checkpoint", committed and "OBSERVED" or "FAILED", commitError)
                                 if not committed then finishBootstrap(false, commitError); return false end
                                 BridgeLog(string.format(
@@ -1954,6 +1962,29 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
             end)
         end)
     end)
+end
+
+-- Bootstrap, Resume, automatic recovery, and manual recovery all enter the
+-- same update-driven physical owner.  This wrapper returns through the caller's
+-- original callback only after VERIFY + COMMIT, never merely because a native
+-- Wait callback happened to return.
+function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotCursor, resyncOrigin)
+    local tx, started = BridgeBeginEmbodimentTransaction(
+        sessionId, resyncOrigin or (resumeFromSnapshotCursor == true and "recovery" or "initial-bootstrap"),
+        resumeFromSnapshotCursor, callback)
+    if tx == nil then
+        if callback ~= nil then callback(false, "another embodiment reconciliation owns physical state") end
+        return false
+    end
+    if started and BridgePumpEmbodimentTransaction ~= nil then
+        -- Drain synchronous adapters through VERIFY/COMMIT. Native asynchronous
+        -- work stops the loop at operationStarted and resumes from onUpdate.
+        for _ = 1, 10 do
+            if BridgeState.embodimentTransaction ~= tx or tx.operationStarted then break end
+            BridgePumpEmbodimentTransaction()
+        end
+    end
+    return true
 end
 
 function BridgeBootstrapWhenAvailable(sessionId, attempt, callback)
@@ -2041,7 +2072,7 @@ end
 function BridgeIsExplicitResyncOrigin(origin)
     local value = string.lower(tostring(origin or ""))
     return value == "hud" or value == "manual" or value == "manual-control"
-        or value == "user" or value == "user-resync"
+        or value == "user" or value == "user-resync" or value == "resume"
 end
 
 local function BridgeCopyResyncValue(value, seen)
@@ -2393,6 +2424,7 @@ function BridgeScheduleResyncWatchdog(sessionId, token)
 end
 
 function BridgeResyncFromAuthoritativeSnapshot(origin)
+    local explicit = BridgeIsExplicitResyncOrigin(origin)
     if BridgeCurrentTerminalRecoveryError() ~= nil then
         BridgeLog("[Bridge] RESYNC_BLOCKED reason=terminal-recovery-error origin=" .. tostring(origin)
             .. " kind=" .. tostring(BridgeState.terminalRecoveryError.kind))
@@ -2405,8 +2437,21 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         return false
     end
     if BridgeState.resyncInFlight == true then
-        BridgeLog("[Bridge] RESYNC_DEFERRED reason=already-in-flight origin=" .. tostring(origin))
-        return false
+        local activeEmbodiment = BridgeState.embodimentTransaction
+        if explicit and activeEmbodiment ~= nil and activeEmbodiment.reason ~= origin then
+            -- Manual recovery replaces one obsolete automatic physical plan.
+            -- Epoch + token fencing makes every callback from that plan inert;
+            -- the new transaction will observe already-executed physics.
+            BridgeAdvanceEmbodimentEpoch("manual-resync-replaces-automatic")
+            BridgeState.resyncToken = (BridgeState.resyncToken or 0) + 1
+            BridgeState.resyncInFlight = false
+            BridgeState.bootstrapping = false
+            BridgeState.resyncScheduled = false
+            BridgeState.resyncWatchdogToken = nil
+        else
+            BridgeLog("[Bridge] RESYNC_DEFERRED reason=already-in-flight origin=" .. tostring(origin))
+            return false
+        end
     end
     if BridgeState.resyncCircuitOpen == true and not BridgeIsExplicitResyncOrigin(origin) then
         BridgeLog("[Bridge] RESYNC_BLOCKED reason=circuit-open rootCause=" .. tostring(BridgeState.resyncRootCause))
@@ -2424,7 +2469,6 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     -- that physical transaction is still mutating the Deck; the callback's
     -- completion retires the queue and this bounded retry then starts from a
     -- stable physical order.
-    local explicit = BridgeIsExplicitResyncOrigin(origin)
     if explicit then
         -- A manual retry is deliberately allowed to re-read the same Forge
         -- snapshot. Forge is correctly idle at that cursor after a failed
@@ -2570,7 +2614,6 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         lastApplied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
         eventQueue = BridgeState.eventQueue
     }
-    BridgeBeginResyncMappingTransaction()
     BridgeState.resyncToken = (BridgeState.resyncToken or 0) + 1
     local resyncToken = BridgeState.resyncToken
     BridgeState.resyncAttempt = (BridgeState.resyncAttempt or 0) + 1
@@ -2610,7 +2653,8 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = true end
     local checkpointReceived = BridgeState.resyncCheckpoint.lastReceived
     local checkpointApplied = BridgeState.resyncCheckpoint.lastApplied
-    BridgeScheduleResyncWatchdog(sessionId, resyncToken)
+    -- The embodiment pump owns forward progress by update tick. CPU/wall
+    -- clocks remain telemetry and cannot abort a current physical plan.
     -- Recovery is an explicit way out of a stale-choice/protocol pause.  Any
     -- outstanding request belongs to the pre-rebuild presentation and must
     -- not keep the replacement decision pipeline permanently blocked.
@@ -2658,7 +2702,6 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             -- schedules the same snapshot again forever.
             BridgeState.resyncCircuitOpen = true
             BridgeState.resyncDeferredReason = "snapshot-reconcile-failed"
-            BridgeRestoreResyncMappingTransaction("bootstrap-failed:" .. tostring(err))
             BridgeRestoreResyncCheckpoint("bootstrap-failed")
             BridgeState.desyncLatched = true
             BridgeState.presentationState = "DESYNCED"
@@ -2670,7 +2713,6 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             return
         end
         BridgeState.resyncCheckpoint = nil
-        BridgeCommitResyncMappingTransaction()
         BridgeState.resyncSnapshotFingerprint = nil
         BridgeState.resyncSnapshotRepeatCount = 0
         BridgeState.resyncNoProgressAttempts = 0

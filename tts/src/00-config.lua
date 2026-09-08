@@ -53,6 +53,9 @@ BRIDGE_RESYNC_STALL_SECONDS = 30.0
 -- a separate, shorter owner so onUpdate can resume that exact finalization
 -- without rolling a proven table back to the pre-resync cursor.
 BRIDGE_RESYNC_COMPLETION_STALL_FRAMES = 180
+BRIDGE_EMBODIMENT_REOBSERVE_FRAMES = 240
+BRIDGE_EMBODIMENT_MAX_REPLANS = 6
+BRIDGE_EMBODIMENT_JOURNAL_CAPACITY = 64
 -- A recovery request may wait briefly for an already-running physical library
 -- transaction, but it must not create an unbounded retry stream.  The frame
 -- watchdog is a fallback for hosts where a time callback is delayed while the
@@ -872,6 +875,18 @@ function BridgeEventDrainQueueState()
         resyncDeferredRetryScheduled = BridgeState.resyncDeferredRetryScheduled == true,
         resyncWatchdogToken = BridgeState.resyncWatchdogToken,
         resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration,
+        embodimentEpoch = BridgeState.embodimentEpoch,
+        embodimentTransactionToken = BridgeState.embodimentTransactionToken,
+        embodimentActive = BridgeState.embodimentTransaction ~= nil,
+        embodimentReason = BridgeState.embodimentTransaction and BridgeState.embodimentTransaction.reason or nil,
+        embodimentSessionId = BridgeState.embodimentTransaction and BridgeState.embodimentTransaction.targetSessionId or nil,
+        embodimentTargetCursor = BridgeState.embodimentTransaction and BridgeState.embodimentTransaction.targetCursor or nil,
+        embodimentPhase = BridgeState.embodimentTransaction and BridgeState.embodimentTransaction.phase or nil,
+        embodimentOperationIndex = BridgeState.embodimentTransaction and BridgeState.embodimentTransaction.operationIndex or nil,
+        embodimentReplanCount = BridgeState.embodimentTransaction and BridgeState.embodimentTransaction.replanCount or nil,
+        embodimentLastProgressUpdateTick = BridgeState.embodimentTransaction and BridgeState.embodimentTransaction.lastProgressUpdateTick or nil,
+        embodimentLastBlockingPredicate = BridgeState.embodimentTransaction and BridgeState.embodimentTransaction.lastBlockingPredicate or nil,
+        embodimentJournal = BridgeDiagnosticSnapshot(BridgeState.embodimentJournal or {}),
         bootstrapStage = BridgeState.bootstrapStage,
         bootstrapStageChangedAt = BridgeState.bootstrapStageChangedAt,
         bootstrapLastProgressAt = BridgeState.bootstrapLastProgressAt,
@@ -1175,6 +1190,607 @@ function BridgeDiagnosticSnapshot(value, active)
     return copy
 end
 
+-- ============================================================
+-- H0 EMBODIMENT RECONCILIATION OWNERSHIP
+--
+-- One update-driven transaction owns correctness-critical snapshot physics.
+-- Native callbacks are hints; the pump advances only from observed physical
+-- postconditions.  Legacy materializers remain operation adapters until event
+-- mutations migrate onto the same desired-zone interface.
+-- ============================================================
+
+function BridgeEmbodimentJournal(tx, phase, operationType, detail)
+    if tx == nil then return end
+    local record = {
+        runtimeEpoch = tx.runtimeEpoch,
+        embodimentEpoch = tx.epoch,
+        token = tx.token,
+        reason = tx.reason,
+        sessionId = tx.targetSessionId,
+        targetCursor = tx.targetCursor,
+        phase = phase or tx.phase,
+        operationIndex = tx.operationIndex or 0,
+        operationType = operationType,
+        operationToken = tx.currentOperation and tx.currentOperation.token or nil,
+        precondition = tx.currentOperation and tx.currentOperation.precondition or nil,
+        nativeAction = tx.currentOperation and tx.currentOperation.nativeAction or nil,
+        postcondition = tx.currentOperation and tx.currentOperation.postcondition or nil,
+        detail = detail ~= nil and tostring(detail) or nil,
+        updateTick = tonumber(BridgeState.updateTick or 0) or 0,
+        lastProgressUpdateTick = tx.lastProgressUpdateTick,
+        replanCount = tx.replanCount or 0,
+        lastBlockingPredicate = tx.lastBlockingPredicate
+    }
+    BridgeState.embodimentJournal = BridgeState.embodimentJournal or {}
+    table.insert(BridgeState.embodimentJournal, record)
+    while #BridgeState.embodimentJournal > BRIDGE_EMBODIMENT_JOURNAL_CAPACITY do
+        table.remove(BridgeState.embodimentJournal, 1)
+    end
+end
+
+function BridgeEmbodimentTransactionIsCurrent(tx)
+    return tx ~= nil and BridgeState.embodimentTransaction == tx
+        and tx.runtimeEpoch == BRIDGE_RUNTIME_EPOCH_LOCAL
+        and tx.epoch == BridgeState.embodimentEpoch
+        and tx.token == BridgeState.embodimentTransactionToken
+end
+
+function BridgeCapturePhysicalLedger()
+    return {
+        physicalByInstanceId = BridgeDiagnosticSnapshot(BridgeState.physicalByInstanceId or {}),
+        physicalInstanceIdByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalInstanceIdByGuid or {}),
+        physicalSeatByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalSeatByGuid or {}),
+        physicalZoneByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalZoneByGuid or {}),
+        physicalContainerByInstanceId = BridgeDiagnosticSnapshot(BridgeState.physicalContainerByInstanceId or {}),
+        physicalContainedInstanceIdByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalContainedInstanceIdByGuid or {})
+    }
+end
+
+function BridgeActivatePhysicalLedger(ledger)
+    if ledger == nil then return false end
+    BridgeState.physicalByInstanceId = ledger.physicalByInstanceId
+    BridgeState.physicalInstanceIdByGuid = ledger.physicalInstanceIdByGuid
+    BridgeState.physicalSeatByGuid = ledger.physicalSeatByGuid
+    BridgeState.physicalZoneByGuid = ledger.physicalZoneByGuid
+    BridgeState.physicalContainerByInstanceId = ledger.physicalContainerByInstanceId
+    BridgeState.physicalContainedInstanceIdByGuid = ledger.physicalContainedInstanceIdByGuid
+    return true
+end
+
+function BridgeAdvanceEmbodimentEpoch(reason)
+    local prior = BridgeState.embodimentTransaction
+    if prior ~= nil and prior.committedPhysicalLedger ~= nil then
+        BridgeActivatePhysicalLedger(prior.committedPhysicalLedger)
+    end
+    BridgeState.embodimentEpoch = (BridgeState.embodimentEpoch or 0) + 1
+    BridgeState.embodimentTransactionToken = (BridgeState.embodimentTransactionToken or 0) + 1
+    BridgeState.embodimentTransaction = nil
+    if prior ~= nil then BridgeEmbodimentJournal(prior, "ABORT", "EPOCH_REPLACED", reason) end
+    BridgeLog("[Bridge] EMBODIMENT_EPOCH_ADVANCED epoch=" .. tostring(BridgeState.embodimentEpoch)
+        .. " reason=" .. tostring(reason or "unspecified"))
+    return BridgeState.embodimentEpoch
+end
+
+function BridgeObserveObjectPhysicalZone(object, handSeatId)
+    if handSeatId ~= nil then return handSeatId, "hand" end
+    if BridgeObjectNearSeatZone == nil then return nil, nil end
+    for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+        for _, zoneName in ipairs({"library", "graveyard", "exile", "battlefield", "stack"}) do
+            local ok, near = pcall(function() return BridgeObjectNearSeatZone(object, seatId, zoneName) end)
+            if ok and near == true then return seatId, zoneName end
+        end
+    end
+    return nil, nil
+end
+
+function BridgeBuildDesiredPhysicalState(snapshot)
+    if snapshot == nil then return nil end
+    local desired = {
+        sessionId = snapshot.sessionId,
+        cursor = tonumber(snapshot.eventCursor or 0) or 0,
+        forgeSequence = snapshot.forgeSequence,
+        cardsByInstanceId = {}, zonesBySeat = {}
+    }
+    for _, seatSnapshot in ipairs(snapshot.seats or {}) do
+        local seatId = seatSnapshot.seatId
+        desired.zonesBySeat[seatId] = desired.zonesBySeat[seatId] or {}
+        for _, zone in ipairs(seatSnapshot.zones or {}) do
+            local zoneName = string.lower(tostring(zone.name or ""))
+            local zoneState = {seatId = seatId, zone = zoneName, instanceIds = {}, count = 0}
+            for _, card in ipairs(zone.cards or {}) do
+                local instanceId = card.cardInstanceId and tostring(card.cardInstanceId) or nil
+                if instanceId ~= nil and card.isVirtual ~= true
+                    and tostring(card.materializationPolicy or "") ~= "virtual"
+                    and tostring(card.materializationPolicy or "") ~= "virtual-stack" then
+                    zoneState.count = zoneState.count + 1
+                    zoneState.instanceIds[instanceId] = true
+                    desired.cardsByInstanceId[instanceId] = {
+                        cardInstanceId = instanceId,
+                        seatId = seatId,
+                        zone = zoneName,
+                        private = zoneName == "hand" or zoneName == "library",
+                        tapped = card.tapped == true,
+                        faceDown = card.faceDown == true,
+                        controllerSeatId = card.controllerSeatId or seatId
+                    }
+                end
+            end
+            zoneState.topology = zoneState.count == 0 and "EMPTY"
+                or (zoneState.count == 1 and "CARD" or "DECK")
+            desired.zonesBySeat[seatId][zoneName] = zoneState
+        end
+    end
+    return desired
+end
+
+function BridgeObservePhysicalState(desired)
+    local observed = {objects = {}, byInstanceId = {}, duplicateInstanceIds = {}, handsBySeat = {}, zones = {}}
+    local handSeatByGuid = {}
+    for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+        local hands = BridgeTryGetSeatHandObjects ~= nil and BridgeTryGetSeatHandObjects(seatId) or {}
+        observed.handsBySeat[seatId] = {}
+        for _, object in ipairs(hands or {}) do
+            local guid = BridgeSafeObjectGuid ~= nil and BridgeSafeObjectGuid(object) or nil
+            if guid ~= nil then
+                observed.handsBySeat[seatId][guid] = true
+                handSeatByGuid[guid] = seatId
+            end
+        end
+    end
+    local objects = type(getAllObjects) == "function" and (getAllObjects() or {}) or {}
+    for _, object in ipairs(objects) do
+        if object ~= nil and (object.tag == "Card" or object.tag == "Deck") then
+            local guid = BridgeSafeObjectGuid ~= nil and BridgeSafeObjectGuid(object) or nil
+            if guid ~= nil then
+                local entry = {guid = guid, tag = object.tag, handSeatId = handSeatByGuid[guid], contained = {}}
+                entry.seatId, entry.zone = BridgeObserveObjectPhysicalZone(object, entry.handSeatId)
+                if object.tag == "Card" then
+                    entry.instanceId = BridgeReadPhysicalIdentity ~= nil and BridgeReadPhysicalIdentity(object) or nil
+                    entry.sessionId = BridgeReadPhysicalSessionIdentity ~= nil and BridgeReadPhysicalSessionIdentity(object) or nil
+                    if entry.instanceId ~= nil and (entry.sessionId == nil
+                        or desired == nil or tostring(entry.sessionId) == tostring(desired.sessionId)) then
+                        if observed.byInstanceId[entry.instanceId] ~= nil then
+                            observed.duplicateInstanceIds[entry.instanceId] = true
+                        else
+                            observed.byInstanceId[entry.instanceId] = entry
+                        end
+                    end
+                else
+                    local ok, contained = pcall(function() return object.getObjects() or {} end)
+                    if ok then
+                        for _, native in ipairs(contained) do
+                            local containedGuid = native.guid or native.GUID
+                            local instanceId = containedGuid and BridgeState.physicalContainedInstanceIdByGuid[containedGuid] or nil
+                            local containedEntry = {guid = containedGuid, deckGuid = guid, instanceId = instanceId,
+                                seatId = entry.seatId, zone = entry.zone}
+                            table.insert(entry.contained, containedEntry)
+                            if instanceId ~= nil and observed.byInstanceId[instanceId] == nil then
+                                observed.byInstanceId[instanceId] = containedEntry
+                            elseif instanceId ~= nil then
+                                observed.duplicateInstanceIds[instanceId] = true
+                            end
+                        end
+                    end
+                end
+                table.insert(observed.objects, entry)
+            end
+        end
+    end
+    return observed
+end
+
+function BridgePlanEmbodimentReconciliation(desired, observed)
+    local plan = {operations = {}, affectedZones = {}, missing = {}, misplaced = {}, ambiguous = {}}
+    if desired == nil then
+        table.insert(plan.operations, {type = "FETCH_AND_RECONCILE_SNAPSHOT",
+            precondition = "one current embodiment owner",
+            nativeAction = "BridgeLegacyBootstrapCurrentSnapshot",
+            postcondition = "authoritative snapshot fully verified"})
+        return plan
+    end
+    for instanceId, _ in pairs(observed.duplicateInstanceIds or {}) do table.insert(plan.ambiguous, instanceId) end
+    for instanceId, card in pairs(desired.cardsByInstanceId or {}) do
+        local physical = observed.byInstanceId[instanceId]
+        if physical == nil then
+            table.insert(plan.missing, instanceId)
+            plan.affectedZones[card.seatId .. ":" .. card.zone] = true
+        elseif tostring(physical.zone or "") ~= tostring(card.zone)
+            or tostring(physical.seatId or "") ~= tostring(card.seatId) then
+            table.insert(plan.misplaced, instanceId)
+            plan.affectedZones[card.seatId .. ":" .. card.zone] = true
+        end
+    end
+    if #plan.ambiguous > 0 then
+        plan.blockingPredicate = "duplicate exact physical identity"
+    elseif #plan.missing > 0 or #plan.misplaced > 0 then
+        table.insert(plan.operations, {type = "RECONCILE_SNAPSHOT_ZONES",
+            precondition = "unambiguous desired and observed exact identities",
+            nativeAction = "BridgeLegacyBootstrapCurrentSnapshot",
+            postcondition = "desired exact identity/zone state verified"})
+    end
+    return plan
+end
+
+function BridgeAssignEmbodimentOperationTokens(tx)
+    for index, operation in ipairs(tx.plan and tx.plan.operations or {}) do
+        operation.index = index
+        operation.token = table.concat({tostring(tx.epoch), tostring(tx.token), tostring(tx.replanCount or 0), tostring(index)}, ":")
+    end
+end
+
+-- Generic affected-zone seam for the next gameplay/mill migration. A same-
+-- forgeSequence mutation can supply multiple desired zones and receive one
+-- plan/verify boundary without creating card-specific synchronization code.
+function BridgeBuildDesiredZoneState(snapshot, seatId, zoneName)
+    local desired = BridgeBuildDesiredPhysicalState(snapshot)
+    return desired and desired.zonesBySeat[seatId]
+        and desired.zonesBySeat[seatId][string.lower(tostring(zoneName or ""))] or nil
+end
+
+function BridgeObserveZoneState(desiredZone, observed)
+    observed = observed or BridgeObservePhysicalState(nil)
+    local result = {seatId = desiredZone and desiredZone.seatId or nil,
+        zone = desiredZone and desiredZone.zone or nil, instanceIds = {}, count = 0}
+    for instanceId, entry in pairs(observed.byInstanceId or {}) do
+        if desiredZone ~= nil and tostring(entry.zone or "") == tostring(desiredZone.zone or "") then
+            result.instanceIds[instanceId] = true
+            result.count = result.count + 1
+        end
+    end
+    result.topology = result.count == 0 and "EMPTY" or (result.count == 1 and "CARD" or "DECK")
+    return result
+end
+
+function BridgePlanZoneReconciliation(desiredZone, observedZone)
+    local plan = {operations = {}, exact = true}
+    for instanceId in pairs(desiredZone and desiredZone.instanceIds or {}) do
+        if observedZone == nil or observedZone.instanceIds[instanceId] ~= true then
+            plan.exact = false
+            table.insert(plan.operations, {type = "MATERIALIZE_EXACT_INSTANCE", cardInstanceId = instanceId,
+                destinationSeatId = desiredZone.seatId, destinationZone = desiredZone.zone,
+                precondition = "exact instance has one physical source",
+                nativeAction = "materialize-or-move-exact-instance",
+                postcondition = "exact instance observed in desired zone"})
+        end
+    end
+    if observedZone ~= nil and observedZone.count ~= (desiredZone and desiredZone.count or 0) then
+        plan.exact = false
+        table.insert(plan.operations, {type = "NORMALIZE_ZONE_TOPOLOGY",
+            destinationSeatId = desiredZone and desiredZone.seatId or nil,
+            destinationZone = desiredZone and desiredZone.zone or nil,
+            expectedTopology = desiredZone and desiredZone.topology or "EMPTY",
+            precondition = "zone exact identities are unambiguous",
+            nativeAction = "normalize-native-card-deck-topology",
+            postcondition = "native topology and exact count match desired zone"})
+    end
+    return plan
+end
+
+function BridgeEmbodimentSetSnapshot(tx, snapshot)
+    if not BridgeEmbodimentTransactionIsCurrent(tx) then return false end
+    tx.snapshot = snapshot
+    tx.targetSessionId = snapshot and snapshot.sessionId or tx.targetSessionId
+    tx.targetCursor = snapshot and tonumber(snapshot.eventCursor or 0) or tx.targetCursor
+    tx.targetForgeSequence = snapshot and snapshot.forgeSequence or tx.targetForgeSequence
+    tx.desiredState = BridgeBuildDesiredPhysicalState(snapshot)
+    tx.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+    BridgeEmbodimentJournal(tx, tx.phase, "SNAPSHOT_OBSERVED", "cursor=" .. tostring(tx.targetCursor))
+    return true
+end
+
+function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
+    if not BridgeEmbodimentTransactionIsCurrent(tx) then return false end
+    tx.phase = ok and "COMMITTED" or "ABORTED"
+    tx.commitResult = ok == true
+    tx.lastBlockingPredicate = errorMessage or tx.lastBlockingPredicate
+    BridgeEmbodimentJournal(tx, tx.phase, ok and "COMMIT" or "ABORT", errorMessage)
+    if ok then
+        tx.candidatePhysicalLedger = BridgeCapturePhysicalLedger()
+        BridgeState.committedPhysicalLedger = tx.candidatePhysicalLedger
+    elseif tx.committedPhysicalLedger ~= nil then
+        -- This restores only the last committed logical publication. It does
+        -- not claim physics rolled back: tx.observedState remains the durable
+        -- account of current TTS reality and the next plan reobserves the table.
+        BridgeActivatePhysicalLedger(tx.committedPhysicalLedger)
+    end
+    BridgeState.lastEmbodimentTransaction = BridgeDiagnosticSnapshot(tx)
+    BridgeState.embodimentTransaction = nil
+    -- Retire every callback belonging to the operation adapter. Physics is
+    -- already observed; only callback ownership is discarded.
+    BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
+    BridgeState.bootstrapping = false
+    local callback = tx.callback
+    if callback ~= nil then callback(ok, errorMessage) end
+    return true
+end
+
+function BridgeBeginEmbodimentTransaction(sessionId, reason, resumeFromSnapshotCursor, callback)
+    local current = BridgeState.embodimentTransaction
+    if current ~= nil and BridgeEmbodimentTransactionIsCurrent(current) then
+        if current.reason == reason and current.targetSessionId == sessionId then return current, false end
+        return nil, false
+    end
+    BridgeState.embodimentTransactionToken = (BridgeState.embodimentTransactionToken or 0) + 1
+    local tx = {
+        runtimeEpoch = BRIDGE_RUNTIME_EPOCH_LOCAL,
+        epoch = BridgeState.embodimentEpoch or 1,
+        token = BridgeState.embodimentTransactionToken,
+        reason = reason or "snapshot-bootstrap",
+        targetSessionId = sessionId,
+        targetCursor = nil,
+        targetForgeSequence = nil,
+        phase = "OBSERVE",
+        operationIndex = 0,
+        operationAttempt = 0,
+        operationStarted = false,
+        lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0,
+        replanCount = 0,
+        resumeFromSnapshotCursor = resumeFromSnapshotCursor == true,
+        callback = callback
+    }
+    tx.committedPhysicalLedger = BridgeState.committedPhysicalLedger ~= nil
+        and BridgeDiagnosticSnapshot(BridgeState.committedPhysicalLedger) or BridgeCapturePhysicalLedger()
+    tx.candidatePhysicalLedger = BridgeDiagnosticSnapshot(tx.committedPhysicalLedger)
+    BridgeActivatePhysicalLedger(tx.candidatePhysicalLedger)
+    BridgeState.embodimentTransaction = tx
+    BridgeEmbodimentJournal(tx, "OBSERVE", "BEGIN", nil)
+    return tx, true
+end
+
+function BridgeBeginNewMatchCleanupTransaction(callback)
+    local tx, started = BridgeBeginEmbodimentTransaction(
+        BridgeState.eventSessionId, "new-match-cleanup", false, callback)
+    if tx ~= nil and started then
+        tx.kind = "NEW_MATCH_CLEANUP"
+        tx.phase = "APPLY"
+        tx.operationStarted = false
+        tx.cleanupAttempted = false
+        BridgeEmbodimentJournal(tx, "APPLY", "CONVERGE_OLD_CARDS_TO_LIBRARIES", nil)
+    end
+    return tx, started
+end
+
+function BridgeNewMatchCleanupPhysicalReady()
+    local libraryGuids = {}
+    for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+        local library = BridgeResolveSeatLibraryDeck ~= nil and BridgeResolveSeatLibraryDeck(seatId) or nil
+        local libraryGuid = BridgeSafeObjectGuid ~= nil and BridgeSafeObjectGuid(library) or nil
+        if libraryGuid ~= nil then libraryGuids[libraryGuid] = true end
+    end
+    local objects = type(getAllObjects) == "function" and (getAllObjects() or {}) or {}
+    for _, object in ipairs(objects) do
+        if object ~= nil and object.tag == "Card" and not BridgeIsPresentationOnlyObject(object) then
+            local guid = BridgeSafeObjectGuid(object)
+            local advertised = BridgeReadPhysicalIdentity(object)
+            local trackedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
+            if libraryGuids[guid] ~= true
+                and (advertised ~= nil or (trackedZone ~= nil and trackedZone ~= "library")) then
+                return false, "previous-game loose Card remains outside a native library"
+            end
+        end
+    end
+    for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+        local hands = BridgeTryGetSeatHandObjects(seatId)
+        if hands ~= nil and #hands > 0 then return false, "previous-game hand is not empty" end
+    end
+    return true, nil
+end
+
+function BridgePumpNewMatchCleanupTransaction(tx, updateTick)
+    local ready, readyError = false, "cleanup operation has not observed the old table yet"
+    if tx.cleanupAttempted then
+        ready, readyError = BridgeNewMatchCleanupPhysicalReady()
+        if ready then return BridgeFinishEmbodimentTransaction(tx, true, nil) end
+    end
+    tx.lastBlockingPredicate = readyError
+    if not tx.operationStarted then
+        tx.operationStarted = true
+        tx.operationAttempt = (tx.operationAttempt or 0) + 1
+        tx.lastProgressUpdateTick = updateTick
+        local attempt = tx.operationAttempt
+        -- From the next update onward, physical observation—not callback
+        -- delivery—may prove cleanup complete.
+        tx.cleanupAttempted = true
+        BridgeEmbodimentJournal(tx, "APPLY", "RETURN_PREVIOUS_GAME_CARDS", "attempt=" .. tostring(attempt))
+        BridgeReturnPreviousGameCardsToLibraries(function(ok, err)
+            if not BridgeEmbodimentTransactionIsCurrent(tx) or tx.operationAttempt ~= attempt then return end
+            tx.operationStarted = false
+            tx.cleanupAttempted = true
+            if ok then
+                tx.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+                BridgeEmbodimentJournal(tx, "SETTLE", "CLEANUP_CALLBACK", nil)
+            else
+                tx.replanCount = (tx.replanCount or 0) + 1
+                tx.lastBlockingPredicate = tostring(err or "cleanup operation failed")
+                BridgeEmbodimentJournal(tx, "OBSERVE", "CLEANUP_REPLAN", tx.lastBlockingPredicate)
+            end
+        end)
+    elseif updateTick - (tx.lastProgressUpdateTick or updateTick) >= BRIDGE_EMBODIMENT_REOBSERVE_FRAMES then
+        tx.operationStarted = false
+        tx.operationAttempt = tx.operationAttempt + 1
+        -- The callback is only a notification. Reobserve before deciding
+        -- whether the already-issued native actions need another plan.
+        tx.cleanupAttempted = true
+        tx.replanCount = (tx.replanCount or 0) + 1
+        tx.lastProgressUpdateTick = updateTick
+        BridgeEmbodimentJournal(tx, "OBSERVE", "CLEANUP_CALLBACK_LOST_REPLAN", readyError)
+    end
+    if (tx.replanCount or 0) > BRIDGE_EMBODIMENT_MAX_REPLANS then
+        return BridgeFinishEmbodimentTransaction(tx, false,
+            "NEW MATCH physical cleanup could not converge: " .. tostring(tx.lastBlockingPredicate))
+    end
+    return true
+end
+
+function BridgeEmbodimentOperationCallback(tx, attempt, ok, errorMessage, snapshot)
+    if not BridgeEmbodimentTransactionIsCurrent(tx) or tx.operationAttempt ~= attempt then return false end
+    if snapshot ~= nil then BridgeEmbodimentSetSnapshot(tx, snapshot) end
+    tx.operationStarted = false
+    tx.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+    if ok then
+        tx.phase = "SETTLE"
+        BridgeEmbodimentJournal(tx, "SETTLE", "LEGACY_ADAPTER_RETURNED", nil)
+    else
+        tx.lastBlockingPredicate = tostring(errorMessage or "physical operation failed")
+        if tx.snapshot == nil then
+            -- No authoritative target was obtained, so there is nothing safe
+            -- to replan toward. Transport/session failure is immediately
+            -- actionable rather than a physical convergence retry.
+            return BridgeFinishEmbodimentTransaction(tx, false, tx.lastBlockingPredicate)
+        end
+        tx.replanCount = (tx.replanCount or 0) + 1
+        tx.phase = "OBSERVE"
+        BridgeEmbodimentJournal(tx, "OBSERVE", "OPERATION_FAILED_REOBSERVE", tx.lastBlockingPredicate)
+    end
+    return true
+end
+
+-- Deterministic fault injection is inert unless a test explicitly configures
+-- it. It exercises ownership/correlation, while TTS object fakes model GUID
+-- churn, async Deck promotion, hand lag, and auto-stacking at the native edge.
+function BridgeConfigureEmbodimentFaultInjection(faults)
+    BridgeState.embodimentFaultInjection = faults or {}
+    BridgeState.embodimentDelayedCallbacks = {}
+end
+
+function BridgeDeliverEmbodimentOperationCallback(tx, attempt, ok, errorMessage, snapshot, callbackKind)
+    local faults = BridgeState.embodimentFaultInjection or {}
+    local kind = callbackKind or "operation"
+    if faults.dropCallback == kind or faults.dropNextCallback == true then
+        faults.dropNextCallback = false
+        return false
+    end
+    local deliver = function() BridgeEmbodimentOperationCallback(tx, attempt, ok, errorMessage, snapshot) end
+    if faults.delayCallback == kind then
+        table.insert(BridgeState.embodimentDelayedCallbacks, deliver)
+        return false
+    end
+    deliver()
+    if faults.duplicateCallback == kind then deliver() end
+    return true
+end
+
+function BridgeReleaseEmbodimentDelayedCallbacks()
+    local delayed = BridgeState.embodimentDelayedCallbacks or {}
+    BridgeState.embodimentDelayedCallbacks = {}
+    for _, callback in ipairs(delayed) do callback() end
+end
+
+function BridgePumpEmbodimentTransaction()
+    local tx = BridgeState.embodimentTransaction
+    if not BridgeEmbodimentTransactionIsCurrent(tx) then return false end
+    local updateTick = tonumber(BridgeState.updateTick or 0) or 0
+    if tx.kind == "NEW_MATCH_CLEANUP" then
+        return BridgePumpNewMatchCleanupTransaction(tx, updateTick)
+    end
+
+    -- Callback-independent completion: once current TTS reality fully proves
+    -- the target snapshot, proceed even if the native completion callback was
+    -- dropped.  Verification, never elapsed time, authorizes the commit.
+    if tx.snapshot ~= nil and tx.phase ~= "COMMIT" then
+        local handsOk, handsError = BridgeReconcileSnapshotHandOwnership(tx.snapshot)
+        local valid, validationError = false, handsError
+        if handsOk then valid, validationError = BridgeValidateAuthoritativeSnapshotPhysicalState(tx.snapshot) end
+        if valid then
+            tx.verificationResult = true
+            tx.lastBlockingPredicate = nil
+            tx.phase = "VERIFY"
+            tx.lastProgressUpdateTick = updateTick
+            BridgeEmbodimentJournal(tx, "VERIFY", "POSTCONDITION_SATISFIED", nil)
+        else
+            tx.verificationResult = false
+            tx.lastBlockingPredicate = tostring(validationError or "physical snapshot not yet verified")
+        end
+    end
+
+    if tx.phase == "OBSERVE" then
+        tx.observedState = BridgeObservePhysicalState(tx.desiredState)
+        tx.phase = "PLAN"
+        tx.lastProgressUpdateTick = updateTick
+        BridgeEmbodimentJournal(tx, "OBSERVE", "PHYSICAL_STATE_CAPTURED", nil)
+    elseif tx.phase == "PLAN" then
+        tx.plan = BridgePlanEmbodimentReconciliation(tx.desiredState, tx.observedState or {})
+        if tx.plan.blockingPredicate ~= nil then
+            return BridgeFinishEmbodimentTransaction(tx, false, tx.plan.blockingPredicate)
+        end
+        BridgeAssignEmbodimentOperationTokens(tx)
+        tx.phase = "APPLY"
+        tx.operationStarted = false
+        tx.lastProgressUpdateTick = updateTick
+        BridgeEmbodimentJournal(tx, "PLAN", "PLAN_CREATED", "operations=" .. tostring(#(tx.plan.operations or {})))
+    elseif tx.phase == "APPLY" then
+        if not tx.operationStarted then
+            tx.operationStarted = true
+            tx.operationIndex = 1
+            tx.operationAttempt = (tx.operationAttempt or 0) + 1
+            tx.lastProgressUpdateTick = updateTick
+            local attempt = tx.operationAttempt
+            tx.currentOperation = tx.plan and tx.plan.operations and tx.plan.operations[1] or {
+                index = 1,
+                token = table.concat({tostring(tx.epoch), tostring(tx.token), tostring(tx.replanCount or 0), "1"}, ":"),
+                type = "VERIFY_OR_RECONCILE_EXISTING_SNAPSHOT",
+                precondition = "authoritative snapshot acquired",
+                nativeAction = "BridgeLegacyBootstrapCurrentSnapshot",
+                postcondition = "authoritative snapshot fully verified"
+            }
+            BridgeEmbodimentJournal(tx, "APPLY", tx.currentOperation.type,
+                "operationToken=" .. tostring(tx.currentOperation.token) .. " attempt=" .. tostring(attempt))
+            BridgeLegacyBootstrapCurrentSnapshot(tx.targetSessionId, function(ok, err, snapshot)
+                BridgeDeliverEmbodimentOperationCallback(tx, attempt, ok, err, snapshot, "snapshot-reconcile")
+            end, tx.resumeFromSnapshotCursor, tx.reason, tx)
+        elseif updateTick - (tx.lastProgressUpdateTick or updateTick) >= BRIDGE_EMBODIMENT_REOBSERVE_FRAMES then
+            tx.replanCount = (tx.replanCount or 0) + 1
+            tx.operationAttempt = tx.operationAttempt + 1
+            tx.operationStarted = false
+            tx.phase = "OBSERVE"
+            tx.lastBlockingPredicate = "operation callback absent; reobserving current physical state"
+            -- Fence the abandoned callback graph. Already-executed physics is
+            -- intentionally retained and will be observed on the next pump.
+            BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
+            BridgeState.bootstrapping = false
+            BridgeEmbodimentJournal(tx, "OBSERVE", "CALLBACK_LOST_REPLAN", tx.lastBlockingPredicate)
+        end
+    elseif tx.phase == "SETTLE" then
+        if updateTick - (tx.lastProgressUpdateTick or updateTick) >= BRIDGE_EMBODIMENT_REOBSERVE_FRAMES then
+            tx.replanCount = (tx.replanCount or 0) + 1
+            tx.phase = "OBSERVE"
+            BridgeEmbodimentJournal(tx, "OBSERVE", "SETTLE_REOBSERVE", tx.lastBlockingPredicate)
+        end
+    elseif tx.phase == "VERIFY" then
+        local handsOk, handsError = BridgeReconcileSnapshotHandOwnership(tx.snapshot)
+        local valid, validationError = false, handsError
+        if handsOk then valid, validationError = BridgeValidateAuthoritativeSnapshotPhysicalState(tx.snapshot) end
+        if valid then
+            tx.phase = "COMMIT"
+            BridgeEmbodimentJournal(tx, "VERIFY", "VERIFIED", nil)
+        else
+            tx.replanCount = (tx.replanCount or 0) + 1
+            tx.lastBlockingPredicate = tostring(validationError or "verification failed")
+            tx.phase = "OBSERVE"
+            BridgeEmbodimentJournal(tx, "OBSERVE", "VERIFY_FAILED_REPLAN", tx.lastBlockingPredicate)
+        end
+    elseif tx.phase == "COMMIT" then
+        local committed, commitError = BridgeCommitSnapshotCheckpoint(tx.snapshot, "embodiment-transaction")
+        if not committed then return BridgeFinishEmbodimentTransaction(tx, false, commitError) end
+        BridgeState.committedPhysicalLedger = {
+            physicalByInstanceId = BridgeDiagnosticSnapshot(BridgeState.physicalByInstanceId or {}),
+            physicalInstanceIdByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalInstanceIdByGuid or {}),
+            physicalSeatByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalSeatByGuid or {}),
+            physicalZoneByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalZoneByGuid or {}),
+            physicalContainerByInstanceId = BridgeDiagnosticSnapshot(BridgeState.physicalContainerByInstanceId or {}),
+            physicalContainedInstanceIdByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalContainedInstanceIdByGuid or {})
+        }
+        return BridgeFinishEmbodimentTransaction(tx, true, nil)
+    end
+
+    if (tx.replanCount or 0) > BRIDGE_EMBODIMENT_MAX_REPLANS then
+        return BridgeFinishEmbodimentTransaction(tx, false,
+            "embodiment reconciliation could not verify target after bounded replans: "
+                .. tostring(tx.lastBlockingPredicate or "unknown physical predicate"))
+    end
+    return true
+end
+
 function BridgePerformanceDiagnosticPayload()
     -- Work exclusively on detached diagnostic data. Capturing a report must
     -- not write back into the live synchronization or presentation state while
@@ -1391,6 +2007,14 @@ BridgeState = {
     lifecycleState = "DISCONNECTED",
     bridgeProcessInstanceId = nil,
     connectionEpoch = 0,
+    -- Runtime reload and embodiment ownership are intentionally separate.
+    -- Save & Play changes BRIDGE_RUNTIME_EPOCH_LOCAL; this epoch fences
+    -- destructive lifecycle/recovery plans within one loaded Global script.
+    embodimentEpoch = 1,
+    embodimentTransactionToken = 0,
+    embodimentTransaction = nil,
+    embodimentJournal = {},
+    committedPhysicalLedger = nil,
     sessionCleanupApplied = false,
     selectedFormat = BRIDGE_DEFAULT_MATCH_FORMAT,
     selectedFormatProvenance = "tts-default-limited",

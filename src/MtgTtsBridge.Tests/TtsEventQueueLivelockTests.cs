@@ -935,6 +935,7 @@ public sealed class TtsEventQueueLivelockTests
             function BridgeUiMarkDirty(reason) end
             function BridgeStartEventPolling(sessionId, skipExisting) end
             function BridgeStartDecisionPolling() end
+            function BridgeGetDecision(callback) callback(false, nil, 'probe-no-decision') end
             function BridgeBootstrapCurrentSnapshot(sessionId, callback, resume, origin)
                 BridgeState.lastReceivedEventSequence = 96
                 BridgeState.lastAppliedEventSequence = 96
@@ -1975,7 +1976,7 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
-    public void ResumeOnActiveCoherentSessionDoesNotAttachOrResetCheckpoint()
+    public void ResumeOnActiveCoherentSessionUsesAuthoritativeSnapshotReconciliation()
     {
         var lua = NewQueueProbe();
         lua.DoString(@"
@@ -1995,10 +1996,12 @@ public sealed class TtsEventQueueLivelockTests
             attached = false
             rendered = false
             eventStarted = false
+            resyncOrigin = nil
             function BridgeAttachToActiveSession(done) attached = true end
             function BridgeRenderDecision(decision, force) rendered = true end
             function BridgeStartEventPolling(sessionId, skipExisting) eventStarted = true end
             function BridgeStartDecisionPolling(allowCurrent) end
+            function BridgeResyncFromAuthoritativeSnapshot(origin) resyncOrigin = origin; return true end
             function BridgeResumeChoiceProtocol(reason) end
             function BridgeSetSetupBusy(value, detail) BridgeState.setupBusy = value end
             function BridgeSetStatus(headline, detail) end
@@ -2009,15 +2012,16 @@ public sealed class TtsEventQueueLivelockTests
 
         var state = lua.Globals.Get("BridgeState").Table;
         Assert.False(lua.Globals.Get("attached").Boolean);
-        Assert.True(lua.Globals.Get("rendered").Boolean);
-        Assert.True(lua.Globals.Get("eventStarted").Boolean);
+        Assert.False(lua.Globals.Get("rendered").Boolean);
+        Assert.False(lua.Globals.Get("eventStarted").Boolean);
+        Assert.Equal("resume", lua.Globals.Get("resyncOrigin").String);
         Assert.Equal("active-session", state.Get("eventSessionId").String);
         Assert.Equal(213, state.Get("lastAppliedEventSequence").Number);
         Assert.Equal("forge-tui-10", state.Get("lastDecision").Table.Get("decisionId").String);
     }
 
     [Fact]
-    public void ResumeWithCurrentCursorMappingDefectRequestsScopedRepairWithoutAttach()
+    public void ResumeWithCurrentCursorMappingDefectUsesTheSameSnapshotReconciler()
     {
         var lua = NewQueueProbe();
         lua.DoString(@"
@@ -2032,16 +2036,16 @@ public sealed class TtsEventQueueLivelockTests
             BridgeState.ui = {fastForwardActive=false}
             BridgeDecisionPhysicalMappingsReady = function(decision) return false, 'mountain-51' end
             attached = false
-            repairRequested = false
+            resyncOrigin = nil
             function BridgeAttachToActiveSession(done) attached = true end
-            function BridgeScheduleSnapshotReconcile(reason, category) repairRequested = reason == 'resume-targeted-mapping-repair' end
+            function BridgeResyncFromAuthoritativeSnapshot(origin) resyncOrigin = origin; return true end
             function BridgeSetStatus(headline, detail) end
             function BridgeUiMarkDirty(reason) end
             BridgeDoPressResume(nil, false)
         ");
 
         Assert.False(lua.Globals.Get("attached").Boolean);
-        Assert.True(lua.Globals.Get("repairRequested").Boolean);
+        Assert.Equal("resume", lua.Globals.Get("resyncOrigin").String);
         var state = lua.Globals.Get("BridgeState").Table;
         Assert.Equal(213, state.Get("lastAppliedEventSequence").Number);
         Assert.True(state.Get("desyncLatched").Boolean);

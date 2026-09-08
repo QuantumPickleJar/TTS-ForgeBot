@@ -3629,41 +3629,11 @@ function BridgeResumeActiveSession(reason)
         BridgeShowError("authoritative recovery is already in progress; use RESUME after it completes")
         return false
     end
-    if classification == "CURSOR_BEHIND" then
-        BridgeSetStatus("SYNCHRONIZING", "RESUME is waiting for the authoritative event checkpoint")
-        if BridgeState.desyncLatched == true then
-            BridgeEnsureDesyncRecovery("resume-cursor-behind")
-        else
-            -- A paused poller with queued authoritative work is not a new
-            -- session. Resume its existing event session and let the normal
-            -- ordered consumer catch up; only a latched desync escalates to
-            -- snapshot recovery.
-            BridgeStartEventPolling(BridgeState.eventSessionId, false)
-            BridgeStartDecisionPolling(false)
-        end
-        return false
-    end
-    if classification == "CURSOR_CURRENT_MAPPING_DEFECT" then
-        -- Never use the fresh-session bootstrap here.  The recovery scheduler
-        -- owns any authoritative identity repair and its transaction preserves
-        -- the committed cursor/mapping registry until a replacement is valid.
-        BridgeLog("[Bridge] TARGETED_MAPPING_REPAIR_REQUESTED instance=" .. tostring(detail))
-        BridgeSetStatus("MAPPING REPAIR", "Repairing only the missing authoritative physical identity")
-        BridgeScheduleSnapshotReconcile("resume-targeted-mapping-repair", "RECOVERY")
-        return false
-    end
-
-    BridgeResumeChoiceProtocol(reason or "resume-active-session")
-    if BridgeStartEventPolling ~= nil then BridgeStartEventPolling(BridgeState.eventSessionId, false) end
-    if BridgeState.lastDecision ~= nil then
-        BridgeRenderDecision(BridgeState.lastDecision, true)
-    else
-        BridgeStartDecisionPolling(true)
-    end
-    BridgeSetSetupBusy(false)
-    BridgeSetStatus("MATCH ACTIVE", "Resumed the existing Forge match without resetting its checkpoint")
-    BridgeUiMarkDirty("resume-active-session")
-    return true
+    -- Resume never trusts a paused cursor or old mapping ledger. It enters the
+    -- same snapshot reconciliation engine as recovery, observes current TTS
+    -- reality, verifies the snapshot, commits its cursor, then restarts polls.
+    BridgeSetStatus("SYNCHRONIZING", "RESUME is reconciling the physical table with Forge")
+    return BridgeResyncFromAuthoritativeSnapshot("resume")
 end
 
 function BridgePressNewMatch(object, playerColor, altClick)
@@ -3939,13 +3909,19 @@ function BridgeStartSessionIfNone(done)
 end
 
 function BridgeResetSession()
+    local embodimentEpoch = BridgeAdvanceEmbodimentEpoch("new-match")
+    local function ownsNewMatch()
+        return embodimentEpoch == BridgeState.embodimentEpoch
+            and BridgeRuntimeIsCurrent(BRIDGE_RUNTIME_EPOCH_LOCAL)
+    end
     BridgeStopEventPolling("session-reset")
     BridgeClearHighlights()
     BridgeState.lastDecision = nil
     BridgeState.newMatchCleanupOwner = "NEW_MATCH_CLEANUP"
     BridgeState.lastNewMatchCleanupFailure = nil
 
-    BridgeReturnPreviousGameCardsToLibraries(function(returnOk, returnError)
+    local cleanupTx = BridgeBeginNewMatchCleanupTransaction(function(returnOk, returnError)
+        if not ownsNewMatch() then return end
         if not returnOk then
             BridgeSetSetupBusy(false)
             BridgeShowError("previous game cleanup failed: " .. tostring(returnError))
@@ -3954,12 +3930,14 @@ function BridgeResetSession()
         end
         BridgeState.newMatchCleanupOwner = nil
         BridgeConfigureDecks(function(deckOk, _, deckError)
+            if not ownsNewMatch() then return end
             if not deckOk then
                 BridgeSetSetupBusy(false)
                 BridgeShowError("TTS library load failed: " .. BridgeHttpFailureDetail(_, deckError))
                 return
             end
             BridgeResetSessionRequest(function(ok, body, err)
+        if not ownsNewMatch() then return end
         if not ok then
             BridgeSetSetupBusy(false)
             local detail = BridgeHttpFailureDetail(body, err)
@@ -3977,6 +3955,7 @@ function BridgeResetSession()
             BridgeState.sessionCleanupApplied = false
             BridgeSetLifecycleState(BRIDGE_LIFECYCLE_ACTIVE, "session-reset")
         BridgeBootstrapWhenAvailable(body.sessionId, 1, function(bootstrapOk, bootstrapError)
+            if not ownsNewMatch() then return end
             if not bootstrapOk then BridgeSetSetupBusy(false); BridgeStopOnDesync(bootstrapError); return end
             -- The snapshot is authoritative through this point, so opening
             -- mutation records are acknowledged instead of replayed.
@@ -3991,6 +3970,12 @@ function BridgeResetSession()
         end)
     end)
     end)
+    if cleanupTx == nil then
+        BridgeSetSetupBusy(false)
+        BridgeShowError("NEW MATCH could not acquire embodiment cleanup ownership")
+        return
+    end
+    BridgePumpEmbodimentTransaction()
 end
 
 function BridgeSmokeTest()

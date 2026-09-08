@@ -606,7 +606,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void SnapshotBootstrap_EstablishesEventSessionBeforeBuildingInstanceMappings()
     {
-        var bootstrap = Script.IndexOf("function BridgeBootstrapCurrentSnapshot", StringComparison.Ordinal);
+        var bootstrap = Script.IndexOf("function BridgeLegacyBootstrapCurrentSnapshot", StringComparison.Ordinal);
         var prepare = Script.IndexOf("BridgePrepareEventSession(sessionId, true, resumeFromSnapshotCursor == true)", bootstrap, StringComparison.Ordinal);
         var requestSnapshot = Script.IndexOf("BridgeGetEmbodimentSnapshot", bootstrap, StringComparison.Ordinal);
 
@@ -1101,9 +1101,11 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("if not BridgeObjectIsUsable(object) or object.tag ~= \"Card\" then", Script);
         Assert.Contains("if not BridgeObjectIsUsable(object) or object.tag ~= \"Card\" then return end", Script);
         var reset = Script.Substring(Script.IndexOf("function BridgeResetSession()", StringComparison.Ordinal));
-        Assert.Contains("BridgeReturnPreviousGameCardsToLibraries(function", reset);
-        Assert.True(reset.IndexOf("BridgeReturnPreviousGameCardsToLibraries", StringComparison.Ordinal)
+        Assert.Contains("BridgeBeginNewMatchCleanupTransaction(function", reset);
+        Assert.True(reset.IndexOf("BridgeBeginNewMatchCleanupTransaction", StringComparison.Ordinal)
             < reset.IndexOf("BridgeConfigureDecks", StringComparison.Ordinal));
+        var cleanupPump = Script.Substring(Script.IndexOf("function BridgePumpNewMatchCleanupTransaction", StringComparison.Ordinal));
+        Assert.Contains("BridgeReturnPreviousGameCardsToLibraries(function", cleanupPump);
     }
 
     [Fact]
@@ -3017,7 +3019,7 @@ public sealed class TtsGlobalLuaContractTests
         var start = Script.IndexOf("function BridgeStageSeatCardsForBootstrap", StringComparison.Ordinal);
         var end = Script.IndexOf("function BridgeObjectNearSeatZone", start, StringComparison.Ordinal);
         var staging = Script[start..end];
-        var bootstrapStart = Script.IndexOf("function BridgeBootstrapCurrentSnapshot", StringComparison.Ordinal);
+        var bootstrapStart = Script.IndexOf("function BridgeLegacyBootstrapCurrentSnapshot", StringComparison.Ordinal);
         var bootstrapEnd = Script.IndexOf("function BridgeAnnotateSnapshotBattlefieldKinds", bootstrapStart, StringComparison.Ordinal);
         var bootstrap = Script[bootstrapStart..bootstrapEnd];
 
