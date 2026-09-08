@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: b2c7934d1029dabfceeb2017ef63e0b36e93e8feb058d6122355a1ad0b1d39a1
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "b2c7934d1029dabfceeb2017ef63e0b36e93e8feb058d6122355a1ad0b1d39a1"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: bf497958995706a908aa1220a95825a3ef3cd65ffe75352edfa81d007ae10720
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "bf497958995706a908aa1220a95825a3ef3cd65ffe75352edfa81d007ae10720"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -46,8 +46,16 @@ BRIDGE_STALE_DECISION_CONVERGENCE_SECONDS = 12.0
 -- recording.  It is intentionally diagnostic-only; authoritative events are
 -- never dropped or cursor-advanced by the watchdog.
 BRIDGE_EVENT_DRAIN_STALL_SECONDS = 2.0
+-- A committed event owns one serialized continuation until its timer callback
+-- is observed.  The frame deadline is a bounded fallback for a TTS Wait.time
+-- callback that disappears; it is not a second per-frame event pump.
+BRIDGE_EVENT_DRAIN_CONTINUATION_STALL_FRAMES = 120
 BRIDGE_RESYNC_PHYSICAL_QUEUE_GRACE_SECONDS = 1.0
 BRIDGE_RESYNC_STALL_SECONDS = 30.0
+-- The physical rebuild can finish before its final bookkeeping callback. Keep
+-- a separate, shorter owner so onUpdate can resume that exact finalization
+-- without rolling a proven table back to the pre-resync cursor.
+BRIDGE_RESYNC_COMPLETION_STALL_FRAMES = 180
 -- A recovery request may wait briefly for an already-running physical library
 -- transaction, but it must not create an unbounded retry stream.  The frame
 -- watchdog is a fallback for hosts where a time callback is delayed while the
@@ -252,14 +260,38 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         coreResyncInFlight = BridgeState.resyncInFlight == true,
         uiResyncInFlight = ui.resyncInFlight == true,
         resyncScheduled = BridgeState.resyncScheduled == true,
+        resyncToken = BridgeState.resyncToken,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncStartedAt = BridgeState.resyncStartedAt,
         resyncUpdateTick = BridgeState.resyncUpdateTick,
         resyncStartedUpdateTick = BridgeState.resyncStartedUpdateTick,
         resyncStartedCpuAt = BridgeState.resyncStartedCpuAt,
+        resyncLastStartedAt = BridgeState.resyncLastStartedAt,
+        resyncLastStartedCpuAt = BridgeState.resyncLastStartedCpuAt,
+        resyncLastStartedUpdateTick = BridgeState.resyncLastStartedUpdateTick,
         resyncStage = BridgeState.resyncStage,
         resyncStageChangedAt = BridgeState.resyncStageChangedAt,
         resyncLastProgressAt = BridgeState.resyncLastProgressAt,
+        resyncLastCallbackStage = BridgeState.resyncLastCallbackStage,
+        resyncLastCallbackAt = BridgeState.resyncLastCallbackAt,
+        resyncLastCallbackReason = BridgeState.resyncLastCallbackReason,
+        resyncExpectedCallbackStage = BridgeState.resyncExpectedCallbackStage,
+        resyncExpectedCallbackAt = BridgeState.resyncExpectedCallbackAt,
+        resyncExpectedCallbackReason = BridgeState.resyncExpectedCallbackReason,
+        resyncLastUnobservedCallbackStage = BridgeState.resyncLastUnobservedCallbackStage,
+        resyncLastUnobservedCallbackAt = BridgeState.resyncLastUnobservedCallbackAt,
+        resyncLastUnobservedCallbackReason = BridgeState.resyncLastUnobservedCallbackReason,
+        resyncCompletionScheduled = BridgeState.resyncCompletionContinuation ~= nil,
+        resyncCompletionToken = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.token or nil,
+        resyncCompletionStage = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.stage or nil,
+        resyncCompletionScheduledAt = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.scheduledAt or nil,
+        resyncCompletionDueUpdateTick = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.dueUpdateTick or nil,
+        resyncPhysicalRebuildReady = BridgeState.resyncPhysicalRebuildReady == true,
+        resyncPhysicalValidationPassed = BridgeState.resyncPhysicalValidationPassed == true,
+        resyncCandidateSnapshotCursor = BridgeState.resyncCandidateSnapshot and BridgeState.resyncCandidateSnapshot.eventCursor or nil,
+        resyncMappingTransactionStatus = BridgeState.resyncMappingTransactionStatus,
+        resyncMappingTransactionStartedAt = BridgeState.resyncMappingTransactionStartedAt,
+        resyncMappingTransactionCompletedAt = BridgeState.resyncMappingTransactionCompletedAt,
         resyncLastFailureReason = BridgeState.resyncLastFailureReason,
         resyncLastBlockingPredicate = BridgeState.resyncLastBlockingPredicate,
         resyncDeferredReason = BridgeState.resyncDeferredReason,
@@ -268,6 +300,7 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncWatchdogToken = BridgeState.resyncWatchdogToken,
         resyncLifecycle = BridgeState.resyncLifecycle or {},
         resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration,
+        resyncReconcileStarted = BridgeState.resyncReconcileStarted == true,
         reportCaptureInFlight = ui.reportCaptureInFlight == true
     }
     local lifecycle = BridgeState.diagnosticCaptureLifecycle
@@ -396,7 +429,15 @@ function BridgeRecordResyncLifecycle(stage, origin, generation, snapshot, reason
     end
     local record = {
         timestamp = now, stage = stage, sessionId = BridgeState.eventSessionId,
-        generation = generation, origin = origin,
+        generation = generation, token = BridgeState.resyncToken, origin = origin,
+        resyncStage = BridgeState.resyncStage, stageChangedAt = BridgeState.resyncStageChangedAt,
+        lastProgressAt = BridgeState.resyncLastProgressAt,
+        expectedCallbackStage = BridgeState.resyncExpectedCallbackStage,
+        expectedCallbackAt = BridgeState.resyncExpectedCallbackAt,
+        lastCallbackStage = BridgeState.resyncLastCallbackStage,
+        lastCallbackAt = BridgeState.resyncLastCallbackAt,
+        lastUnobservedCallbackStage = BridgeState.resyncLastUnobservedCallbackStage,
+        lastUnobservedCallbackAt = BridgeState.resyncLastUnobservedCallbackAt,
         snapshotCursor = snapshot ~= nil and snapshot.eventCursor or nil,
         receivedBefore = beforeReceived, appliedBefore = beforeApplied,
         receivedAfter = BridgeState.lastReceivedEventSequence,
@@ -417,6 +458,7 @@ function BridgeSetResyncStage(stage, reason, snapshot)
     local prior = BridgeState.resyncStage or "Idle"
     BridgeState.resyncStage = stage
     BridgeState.resyncStageChangedAt = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+    BridgeState.resyncLastProgressAt = BridgeState.resyncStageChangedAt
     BridgeLog(string.format("[Bridge] RESYNC_STAGE %s -> %s session=%s generation=%s token=%s cursor=%s reason=%s",
         tostring(prior), tostring(stage), tostring(BridgeState.eventSessionId),
         tostring(BridgeState.eventSessionGeneration), tostring(BridgeState.resyncToken),
@@ -451,6 +493,12 @@ end
 
 function BridgeRetireInvalidEventDrainOwnership(origin)
     local tx = BridgeState.eventDrainTransaction
+    local continuation = BridgeState.eventDrainContinuation
+    local continuationQueue = continuation ~= nil and continuation.transaction ~= nil
+        and continuation.transaction.queue or nil
+    if continuation ~= nil and continuationQueue ~= nil and continuationQueue ~= BridgeState.eventQueue then
+        BridgeClearEventDrainContinuation(continuation, "queue-replaced")
+    end
     if tx == nil then
         if BridgeState.animationRunning == true then
             BridgeState.animationRunning = false
@@ -473,6 +521,238 @@ function BridgeRetireInvalidEventDrainOwnership(origin)
         "[Bridge] EVENT_DRAIN_HEAL cleared stale transaction ownership origin=%s token=%s session=%s sessionGeneration=%s physicalGeneration=%s state=%s current=%s",
         tostring(origin), tostring(tx.token), tostring(tx.sessionId), tostring(tx.eventSessionGeneration),
         tostring(tx.physicalTransactionGeneration), tostring(tx.state), tostring((ok and current) or "probe-failed")))
+    return true
+end
+
+function BridgeResyncCallbackNow()
+    return BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+end
+
+function BridgeResyncCallbackExpected(stage, reason)
+    BridgeState.resyncExpectedCallbackStage = stage
+    BridgeState.resyncExpectedCallbackAt = BridgeResyncCallbackNow()
+    BridgeState.resyncExpectedCallbackReason = reason
+    BridgeState.resyncLastProgressAt = BridgeState.resyncExpectedCallbackAt
+    BridgeLog(string.format("[Bridge] RESYNC_CALLBACK_EXPECTED stage=%s reason=%s token=%s generation=%s",
+        tostring(stage), tostring(reason), tostring(BridgeState.resyncToken),
+        tostring(BridgeState.resyncBootstrapGeneration)))
+end
+
+function BridgeResyncCallbackObserved(stage, reason)
+    local now = BridgeResyncCallbackNow()
+    BridgeState.resyncLastCallbackStage = stage
+    BridgeState.resyncLastCallbackAt = now
+    BridgeState.resyncLastCallbackReason = reason
+    BridgeState.resyncExpectedCallbackStage = nil
+    BridgeState.resyncExpectedCallbackAt = nil
+    BridgeState.resyncExpectedCallbackReason = nil
+    BridgeState.resyncLastProgressAt = now
+    BridgeLog(string.format("[Bridge] RESYNC_CALLBACK_OBSERVED stage=%s reason=%s token=%s generation=%s",
+        tostring(stage), tostring(reason), tostring(BridgeState.resyncToken),
+        tostring(BridgeState.resyncBootstrapGeneration)))
+end
+
+function BridgeEventDrainContinuationNow()
+    return os.clock()
+end
+
+function BridgeClearEventDrainContinuation(owner, reason)
+    if owner ~= nil and BridgeState.eventDrainContinuation ~= owner then return false end
+    local current = BridgeState.eventDrainContinuation
+    if current == nil then return false end
+    BridgeState.eventDrainContinuation = nil
+    if current.transaction ~= nil then
+        current.transaction.continuationScheduled = false
+    end
+    if reason ~= nil then
+        BridgeState.eventDrainLastContinuation = {
+            token = current.token,
+            transactionToken = current.transactionToken,
+            eventSequence = current.eventSequence,
+            reason = reason,
+            at = BridgeEventDrainContinuationNow()
+        }
+    end
+    return true
+end
+
+-- Install exactly one continuation owner for a committed transaction.  TTS
+-- does not provide a reliable timer handle, so identity is fenced by object
+-- identity plus session/physical generations.  A stale callback can therefore
+-- neither clear a newer owner nor enter the queue pump.
+function BridgeScheduleEventDrainContinuation(transaction, delay)
+    if transaction == nil then return false end
+    local existing = BridgeState.eventDrainContinuation
+    if existing ~= nil then
+        if existing.transaction == transaction then return false end
+        BridgeLog(string.format(
+            "[Bridge] EVENT_DRAIN_CONTINUATION_REPLACED oldToken=%s newTransaction=%s",
+            tostring(existing.token), tostring(transaction.token)))
+        BridgeClearEventDrainContinuation(existing, "replaced")
+    end
+    local nextDelay = tonumber(delay or 0) or 0
+    if nextDelay < 0 then nextDelay = 0 end
+    BridgeState.eventDrainContinuationToken = (BridgeState.eventDrainContinuationToken or 0) + 1
+    local token = BridgeState.eventDrainContinuationToken
+    local now = BridgeEventDrainContinuationNow()
+    local updateTick = tonumber(BridgeState.updateTick or 0) or 0
+    local owner = {
+        token = token,
+        transaction = transaction,
+        transactionToken = transaction.token,
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration or 0,
+        physicalTransactionGeneration = BridgeState.physicalTransactionGeneration or 0,
+        eventSequence = transaction.lastEventSequence or transaction.eventSequence,
+        scheduledAt = now,
+        dueAt = now + math.max(nextDelay, BRIDGE_EVENT_DRAIN_STALL_SECONDS),
+        scheduledUpdateTick = updateTick,
+        dueUpdateTick = updateTick + math.max(BRIDGE_EVENT_DRAIN_CONTINUATION_STALL_FRAMES,
+            math.ceil(nextDelay * 60)),
+        callbackObserved = false
+    }
+    BridgeState.eventDrainContinuation = owner
+    transaction.continuationScheduled = true
+    transaction.continuationToken = token
+    BridgeState.eventDrainLastContinuation = nil
+    BridgeWaitTime(function()
+        -- Equality is the ownership fence.  In particular, an old callback A
+        -- must not clear or execute a newer callback B.
+        if BridgeState.eventDrainContinuation ~= owner then return end
+        owner.callbackObserved = true
+        BridgeClearEventDrainContinuation(owner, "callback")
+        if owner.sessionId ~= BridgeState.eventSessionId
+            or owner.sessionGeneration ~= (BridgeState.eventSessionGeneration or 0)
+            or owner.physicalTransactionGeneration ~= (BridgeState.physicalTransactionGeneration or 0) then
+            return
+        end
+        local ok, err = pcall(BridgeProcessEventQueue)
+        if not ok then
+            BridgeLog("[Bridge] EVENT_DRAIN_CONTINUATION_FAILED error=" .. tostring(err))
+            BridgeStopOnDesync("event drain continuation failed: " .. tostring(err))
+        end
+    end, nextDelay)
+    return true
+end
+
+-- Reclaim only a continuation whose bounded deadline has elapsed.  Healthy
+-- timers remain the normal path; this function is called from onUpdate solely
+-- to repair a native callback which TTS silently dropped.
+function BridgeCheckEventDrainContinuationLiveness(reason)
+    local owner = BridgeState.eventDrainContinuation
+    if owner == nil then return false end
+    if owner.sessionId ~= BridgeState.eventSessionId
+        or owner.sessionGeneration ~= (BridgeState.eventSessionGeneration or 0)
+        or owner.physicalTransactionGeneration ~= (BridgeState.physicalTransactionGeneration or 0) then
+        BridgeClearEventDrainContinuation(owner, "stale-generation")
+        return false
+    end
+    local now = BridgeEventDrainContinuationNow()
+    local updateTick = tonumber(BridgeState.updateTick or 0) or 0
+    local dueByClock = owner.dueAt ~= nil and now >= tonumber(owner.dueAt)
+    local dueByFrames = owner.dueUpdateTick ~= nil and updateTick >= tonumber(owner.dueUpdateTick)
+    if not dueByClock and not dueByFrames then return false end
+
+    -- Retire exactly this owner before arming its replacement.  A stale A
+    -- callback that later arrives sees owner B and is a no-op.
+    BridgeClearEventDrainContinuation(owner, "lost:" .. tostring(reason or "onUpdate"))
+    BridgeLog(string.format(
+        "[Bridge] EVENT_DRAIN_CONTINUATION_LOST token=%s transaction=%s event=%s reason=%s",
+        tostring(owner.token), tostring(owner.transactionToken), tostring(owner.eventSequence),
+        tostring(reason or "onUpdate")))
+    local replacement = owner.transaction
+    if replacement == nil then return true end
+    BridgeScheduleEventDrainContinuation(replacement, 0)
+    return true
+end
+
+-- The final recovery callback is a separate ownership domain from the event
+-- queue.  Physical reconstruction can be complete even when TTS drops the
+-- last Wait.frames callback; retain a tokenized owner so onUpdate can resume
+-- only that finalizer and never restart the whole snapshot request.
+function BridgeClearResyncCompletionContinuation(owner, reason)
+    if owner ~= nil and BridgeState.resyncCompletionContinuation ~= owner then return false end
+    local current = BridgeState.resyncCompletionContinuation
+    if current == nil then return false end
+    BridgeState.resyncCompletionContinuation = nil
+    if reason ~= nil then
+        BridgeState.resyncLastCallbackReason = tostring(reason)
+    end
+    return true
+end
+
+function BridgeScheduleResyncCompletionContinuation(snapshot, callback, frames, stage)
+    if snapshot == nil or callback == nil then return false end
+    local existing = BridgeState.resyncCompletionContinuation
+    if existing ~= nil then
+        if existing.snapshot == snapshot then return false end
+        BridgeClearResyncCompletionContinuation(existing, "replaced")
+    end
+    BridgeState.resyncCompletionContinuationToken = (BridgeState.resyncCompletionContinuationToken or 0) + 1
+    local token = BridgeState.resyncCompletionContinuationToken
+    local now = BridgeResyncCallbackNow ~= nil and BridgeResyncCallbackNow() or os.clock()
+    local updateTick = tonumber(BridgeState.updateTick or 0) or 0
+    local waitFrames = math.max(1, tonumber(frames or 1) or 1)
+    local owner = {
+        token = token,
+        snapshot = snapshot,
+        callback = callback,
+        stage = stage or "physical-rebuild-finalize",
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration or 0,
+        physicalTransactionGeneration = BridgeState.physicalTransactionGeneration or 0,
+        resyncToken = BridgeState.resyncToken,
+        bootstrapGeneration = BridgeState.resyncBootstrapGeneration,
+        scheduledAt = now,
+        scheduledUpdateTick = updateTick,
+        dueAt = now + BRIDGE_RESYNC_STALL_SECONDS,
+        dueUpdateTick = updateTick + math.max(BRIDGE_RESYNC_COMPLETION_STALL_FRAMES, waitFrames),
+        callbackObserved = false
+    }
+    BridgeState.resyncCompletionContinuation = owner
+    BridgeResyncCallbackExpected(owner.stage, "native-wait-frames")
+    BridgeWaitFrames(function()
+        if BridgeState.resyncCompletionContinuation ~= owner then return end
+        owner.callbackObserved = true
+        BridgeClearResyncCompletionContinuation(owner, "native-callback")
+        if owner.sessionId ~= BridgeState.eventSessionId
+            or owner.sessionGeneration ~= (BridgeState.eventSessionGeneration or 0)
+            or owner.physicalTransactionGeneration ~= (BridgeState.physicalTransactionGeneration or 0)
+            or owner.resyncToken ~= BridgeState.resyncToken
+            or owner.bootstrapGeneration ~= BridgeState.resyncBootstrapGeneration then
+            return
+        end
+        BridgeResyncCallbackObserved(owner.stage, "native-callback")
+        callback("native-callback")
+    end, waitFrames)
+    return true
+end
+
+function BridgeCheckResyncCompletionLiveness(reason)
+    local owner = BridgeState.resyncCompletionContinuation
+    if owner == nil then return false end
+    if owner.sessionId ~= BridgeState.eventSessionId
+        or owner.sessionGeneration ~= (BridgeState.eventSessionGeneration or 0)
+        or owner.physicalTransactionGeneration ~= (BridgeState.physicalTransactionGeneration or 0)
+        or owner.resyncToken ~= BridgeState.resyncToken
+        or owner.bootstrapGeneration ~= BridgeState.resyncBootstrapGeneration then
+        BridgeClearResyncCompletionContinuation(owner, "stale-generation")
+        return false
+    end
+    local now = BridgeResyncCallbackNow ~= nil and BridgeResyncCallbackNow() or os.clock()
+    local updateTick = tonumber(BridgeState.updateTick or 0) or 0
+    local dueByClock = owner.dueAt ~= nil and now >= tonumber(owner.dueAt)
+    local dueByFrames = owner.dueUpdateTick ~= nil and updateTick >= tonumber(owner.dueUpdateTick)
+    if not dueByClock and not dueByFrames then return false end
+    BridgeClearResyncCompletionContinuation(owner, "lost:" .. tostring(reason or "onUpdate"))
+    BridgeState.resyncLastUnobservedCallbackStage = owner.stage
+    BridgeState.resyncLastUnobservedCallbackAt = now
+    BridgeState.resyncLastUnobservedCallbackReason = tostring(reason or "onUpdate")
+    BridgeLog(string.format("[Bridge] RESYNC_CALLBACK_LOST token=%s stage=%s reason=%s snapshotCursor=%s",
+        tostring(owner.token), tostring(owner.stage), tostring(reason or "onUpdate"),
+        tostring(owner.snapshot and owner.snapshot.eventCursor or nil)))
+    BridgeResyncCallbackObserved(owner.stage, "onUpdate-liveness")
+    owner.callback("onUpdate-liveness")
     return true
 end
 
@@ -529,6 +809,19 @@ function BridgeEventDrainQueueState()
         lastApplied = BridgeState.lastAppliedEventSequence,
         blockReason = BridgeEventDrainBlockReason(),
         animationRunning = BridgeState.animationRunning == true,
+        continuationScheduled = BridgeState.eventDrainContinuation ~= nil,
+        continuationToken = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.token or nil,
+        continuationTransactionToken = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.transactionToken or nil,
+        continuationEventSequence = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.eventSequence or nil,
+        continuationSessionId = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.sessionId or nil,
+        continuationSessionGeneration = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.sessionGeneration or nil,
+        continuationPhysicalTransactionGeneration = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.physicalTransactionGeneration or nil,
+        continuationCallbackObserved = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.callbackObserved or nil,
+        continuationScheduledAt = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.scheduledAt or nil,
+        continuationDueAt = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.dueAt or nil,
+        continuationScheduledUpdateTick = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.scheduledUpdateTick or nil,
+        continuationDueUpdateTick = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.dueUpdateTick or nil,
+        continuationLastResult = BridgeState.eventDrainLastContinuation,
         physicalLibraryQueuesIdle = physicalIdle,
         physicalQueues = physical,
         snapshotReconcilePending = BridgeState.snapshotReconcilePending == true,
@@ -540,13 +833,41 @@ function BridgeEventDrainQueueState()
         resyncInFlight = BridgeState.resyncInFlight == true,
         bootstrapping = BridgeState.bootstrapping == true,
         terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
-    resyncOrigin = BridgeState.resyncOrigin,
+        resyncToken = BridgeState.resyncToken,
+        resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,
         resyncLastFailureReason = BridgeState.resyncLastFailureReason,
         resyncCircuitOpen = BridgeState.resyncCircuitOpen == true,
         schedulerOwner = BridgeState.schedulerOwner,
         lastSnapshotSupersededRange = BridgeState.lastSnapshotSupersededRange,
         resyncStartedAt = BridgeState.resyncStartedAt,
+        resyncLastStartedAt = BridgeState.resyncLastStartedAt,
+        resyncLastStartedCpuAt = BridgeState.resyncLastStartedCpuAt,
+        resyncLastStartedUpdateTick = BridgeState.resyncLastStartedUpdateTick,
+        resyncStage = BridgeState.resyncStage,
+        resyncStageChangedAt = BridgeState.resyncStageChangedAt,
+        resyncLastProgressAt = BridgeState.resyncLastProgressAt,
+        resyncReconcileStarted = BridgeState.resyncReconcileStarted == true,
+        resyncLastCallbackStage = BridgeState.resyncLastCallbackStage,
+        resyncLastCallbackAt = BridgeState.resyncLastCallbackAt,
+        resyncLastCallbackReason = BridgeState.resyncLastCallbackReason,
+        resyncExpectedCallbackStage = BridgeState.resyncExpectedCallbackStage,
+        resyncExpectedCallbackAt = BridgeState.resyncExpectedCallbackAt,
+        resyncExpectedCallbackReason = BridgeState.resyncExpectedCallbackReason,
+        resyncLastUnobservedCallbackStage = BridgeState.resyncLastUnobservedCallbackStage,
+        resyncLastUnobservedCallbackAt = BridgeState.resyncLastUnobservedCallbackAt,
+        resyncLastUnobservedCallbackReason = BridgeState.resyncLastUnobservedCallbackReason,
+        resyncPhysicalRebuildReady = BridgeState.resyncPhysicalRebuildReady == true,
+        resyncPhysicalValidationPassed = BridgeState.resyncPhysicalValidationPassed == true,
+        resyncCandidateSnapshotCursor = BridgeState.resyncCandidateSnapshot and BridgeState.resyncCandidateSnapshot.eventCursor or nil,
+        resyncMappingTransactionStatus = BridgeState.resyncMappingTransactionStatus,
+        resyncMappingTransactionStartedAt = BridgeState.resyncMappingTransactionStartedAt,
+        resyncMappingTransactionCompletedAt = BridgeState.resyncMappingTransactionCompletedAt,
+        resyncCompletionScheduled = BridgeState.resyncCompletionContinuation ~= nil,
+        resyncCompletionToken = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.token or nil,
+        resyncCompletionStage = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.stage or nil,
+        resyncCompletionScheduledAt = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.scheduledAt or nil,
+        resyncCompletionDueUpdateTick = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.dueUpdateTick or nil,
         resyncUpdateTick = BridgeState.resyncUpdateTick,
         resyncStartedUpdateTick = BridgeState.resyncStartedUpdateTick,
         resyncDeferredReason = BridgeState.resyncDeferredReason,
@@ -1186,6 +1507,9 @@ BridgeState = {
         lastAbortReason = nil
     },
     eventDrainTransaction = nil,
+    eventDrainContinuation = nil,
+    eventDrainContinuationToken = 0,
+    eventDrainLastContinuation = nil,
     eventDrainWatchdog = {
         sessionId = nil,
         sessionGeneration = nil,
@@ -1339,6 +1663,9 @@ BridgeState = {
     resyncUpdateTick = 0,
     resyncStartedUpdateTick = nil,
     resyncStartedCpuAt = nil,
+    resyncLastStartedAt = nil,
+    resyncLastStartedCpuAt = nil,
+    resyncLastStartedUpdateTick = nil,
     resyncBootstrapGeneration = 0,
     lastChoiceAttempt = nil,
     counterStateByInstanceId = {},
@@ -1395,6 +1722,21 @@ BridgeState = {
     resyncStartedCpuAt = nil,
     resyncStage = "Idle",
     resyncStageChangedAt = nil,
+    resyncLastCallbackStage = nil,
+    resyncLastCallbackAt = nil,
+    resyncLastCallbackReason = nil,
+    resyncExpectedCallbackStage = nil,
+    resyncExpectedCallbackAt = nil,
+    resyncExpectedCallbackReason = nil,
+    resyncLastUnobservedCallbackStage = nil,
+    resyncLastUnobservedCallbackAt = nil,
+    resyncLastUnobservedCallbackReason = nil,
+    resyncCompletionContinuation = nil,
+    resyncCompletionCallback = nil,
+    resyncCompletionContinuationToken = 0,
+    resyncPhysicalRebuildReady = false,
+    resyncPhysicalValidationPassed = false,
+    resyncCandidateSnapshot = nil,
     resyncAttempt = 0,
     resyncRootCause = nil,
     resyncLastFailureReason = nil,
@@ -1405,6 +1747,9 @@ BridgeState = {
     resyncSnapshotFingerprint = nil,
     resyncSnapshotRepeatCount = 0,
     resyncMappingTransaction = nil,
+    resyncMappingTransactionStatus = nil,
+    resyncMappingTransactionStartedAt = nil,
+    resyncMappingTransactionCompletedAt = nil,
     resyncReconcileStarted = false,
     resyncLastBlockingPredicate = nil,
     resyncOrigin = nil,
@@ -1632,12 +1977,33 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.snapshotReconcilePending = false
     BridgeState.resyncCheckpoint = nil
     BridgeState.resyncMappingTransaction = nil
+    BridgeState.resyncMappingTransactionStatus = nil
+    BridgeState.resyncMappingTransactionStartedAt = nil
+    BridgeState.resyncMappingTransactionCompletedAt = nil
     BridgeState.resyncReconcileStarted = false
     BridgeState.resyncLastBlockingPredicate = nil
     BridgeState.resyncStage = "Idle"
+    BridgeState.resyncLastCallbackStage = nil
+    BridgeState.resyncLastCallbackAt = nil
+    BridgeState.resyncLastCallbackReason = nil
+    BridgeState.resyncExpectedCallbackStage = nil
+    BridgeState.resyncExpectedCallbackAt = nil
+    BridgeState.resyncExpectedCallbackReason = nil
+    BridgeState.resyncLastUnobservedCallbackStage = nil
+    BridgeState.resyncLastUnobservedCallbackAt = nil
+    BridgeState.resyncLastUnobservedCallbackReason = nil
+    BridgeState.resyncCompletionContinuation = nil
+    BridgeState.resyncCompletionCallback = nil
+    BridgeState.resyncCompletionContinuationToken = (BridgeState.resyncCompletionContinuationToken or 0) + 1
+    BridgeState.resyncPhysicalRebuildReady = false
+    BridgeState.resyncPhysicalValidationPassed = false
+    BridgeState.resyncCandidateSnapshot = nil
     BridgeState.resyncStartedAt = nil
     BridgeState.resyncStartedUpdateTick = nil
     BridgeState.resyncStartedCpuAt = nil
+    BridgeState.resyncLastStartedAt = nil
+    BridgeState.resyncLastStartedCpuAt = nil
+    BridgeState.resyncLastStartedUpdateTick = nil
     BridgeState.resyncOrigin = nil
     BridgeState.resyncLastFailureReason = nil
     BridgeState.resyncNoProgressAttempts = 0
@@ -1646,6 +2012,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.fastForwardSuspendedByResync = false
     BridgeState.animationRunning = false
     BridgeState.eventDrainTransaction = nil
+    BridgeState.eventDrainContinuation = nil
+    BridgeState.eventDrainContinuationToken = (BridgeState.eventDrainContinuationToken or 0) + 1
+    BridgeState.eventDrainLastContinuation = nil
     BridgeState.yieldPolicyTurnNumber = nil
     BridgeState.yieldPolicyActiveSeatId = nil
     BridgeState.yieldPolicySessionId = nil
@@ -3813,6 +4182,8 @@ function onUpdate()
     -- pollers forever under that condition.
     BridgeState.updateTick = (BridgeState.updateTick or 0) + 1
     BridgeState.resyncUpdateTick = (BridgeState.resyncUpdateTick or 0) + 1
+    if BridgeCheckEventDrainContinuationLiveness ~= nil then BridgeCheckEventDrainContinuationLiveness("onUpdate") end
+    if BridgeCheckResyncCompletionLiveness ~= nil then BridgeCheckResyncCompletionLiveness("onUpdate") end
     if BridgeEnforceDesyncRecovery ~= nil then BridgeEnforceDesyncRecovery("onUpdate") end
     if BridgeCheckRecoveryConvergence ~= nil then BridgeCheckRecoveryConvergence("onUpdate") end
     if BridgeCheckDecisionPollingLiveness ~= nil then BridgeCheckDecisionPollingLiveness("onUpdate") end
@@ -10227,6 +10598,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
         BridgeState.bootstrapStage = ok and "BOOTSTRAP_COMPLETE" or "BOOTSTRAP_ABORTED"
         local success, callbackError = xpcall(function()
             BridgeState.bootstrapping = false
+            BridgeState.resyncCompletionCallback = nil
             callback(ok, errorMessage)
         end, debug ~= nil and debug.traceback ~= nil and debug.traceback or function(err) return tostring(err) end)
         BridgeState.bootstrapCompletionInFlight = false
@@ -10265,8 +10637,14 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
     BridgeState.bootstrapping = true
     BridgeState.bootstrapStage = "BOOTSTRAP_DECISION_PENDING"
     BridgeTraceStart("START-10 snapshot-request")
+    if BridgeState.resyncInFlight == true then
+        BridgeResyncCallbackExpected("snapshot-http", "embodiment-snapshot-request")
+    end
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
         if not currentBootstrap() then return end
+        if BridgeState.resyncInFlight == true and BridgeResyncCallbackObserved ~= nil then
+            BridgeResyncCallbackObserved("snapshot-http", "embodiment-snapshot-response")
+        end
         BridgeRecordResyncLifecycle("SNAPSHOT_RECEIVED", resyncOrigin, bootstrapGeneration, snapshot, ok and nil or err)
         BridgeRunTraced("START-11 snapshot-response", function()
             if not currentBootstrap() then return end
@@ -10287,6 +10665,12 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
             if snapshotCursor == nil or snapshotCursor < 0 then
                 finishBootstrap(false, "authoritative snapshot is missing a valid event cursor")
                 return
+            end
+            if resumeFromSnapshotCursor == true and BridgeState.resyncInFlight == true then
+                BridgeState.resyncCandidateSnapshot = snapshot
+                BridgeState.resyncPhysicalRebuildReady = false
+                BridgeState.resyncPhysicalValidationPassed = false
+                BridgeResyncCallbackExpected("physical-rebuild", "snapshot-accepted")
             end
             local snapshotFingerprint = table.concat({
                 tostring(snapshot.sessionId), tostring(snapshot.eventCursor),
@@ -10324,8 +10708,14 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
             BridgeState.resyncReconcileStarted = true
             BridgeState.resyncLastProgressAt = BridgeResyncClockNow()
             BridgeRecordResyncLifecycle("RECONCILE_STARTED", resyncOrigin, bootstrapGeneration, snapshot)
+            if BridgeState.resyncInFlight == true then
+                BridgeResyncCallbackExpected("library-staging", "stage-seat-cards")
+            end
             BridgeStageSeatCardsForBootstrap(snapshot, function(stagedOk, stagedError, stagedGuids)
                 if not currentBootstrap() then return end
+                if BridgeState.resyncInFlight == true and BridgeResyncCallbackObserved ~= nil then
+                    BridgeResyncCallbackObserved("library-staging", "stage-seat-cards")
+                end
                 if not stagedOk then
                     finishBootstrap(false, stagedError)
                     return
@@ -10335,8 +10725,14 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                 -- Keep the terminal strict audit as a corruption canary
                 -- before rebuilding exact Forge mappings.
                 BridgeTraceStart("START-13 library-settle")
+                if BridgeState.resyncInFlight == true then
+                    BridgeResyncCallbackExpected("library-stability", "verify-library")
+                end
                 BridgeVerifyLibraryIdentityStability(function(stable, stabilityError)
                     if not currentBootstrap() then return end
+                    if BridgeState.resyncInFlight == true and BridgeResyncCallbackObserved ~= nil then
+                        BridgeResyncCallbackObserved("library-stability", "verify-library")
+                    end
                     if not stable then
                         local detail = "physical library identity audit found " .. tostring(stabilityError)
                             .. " after staging"
@@ -10344,30 +10740,84 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                         finishBootstrap(false, detail)
                         return
                     end
+                    if BridgeState.resyncInFlight == true then
+                        BridgeResyncCallbackExpected("battlefield-annotation", "annotate-snapshot")
+                    end
                     BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
                         if not currentBootstrap() then return end
+                        if BridgeState.resyncInFlight == true and BridgeResyncCallbackObserved ~= nil then
+                            BridgeResyncCallbackObserved("battlefield-annotation", "annotate-snapshot")
+                        end
                         BridgeRunTraced("START annotate-callback", function()
                             if not currentBootstrap() then return end
                             if not annotated then
                                 finishBootstrap(false, annotationError)
                                 return
                             end
+                            local function completePhysicalReconcile(source)
+                                if not currentBootstrap() then return false end
+                                if BridgeState.resyncInFlight == true then
+                                    if BridgeState.resyncCandidateSnapshot ~= snapshot
+                                        or BridgeState.resyncPhysicalRebuildReady ~= true then
+                                        finishBootstrap(false, "snapshot physical rebuild completion arrived before rebuild was ready")
+                                        return false
+                                    end
+                                    if BridgeState.resyncCompletionContinuation ~= nil
+                                        and BridgeClearResyncCompletionContinuation ~= nil then
+                                        BridgeClearResyncCompletionContinuation(nil, "completion-callback")
+                                    end
+                                    if BridgeState.resyncExpectedCallbackStage ~= nil
+                                        and BridgeResyncCallbackObserved ~= nil then
+                                        BridgeResyncCallbackObserved("physical-rebuild-finalize", source)
+                                    end
+                                    BridgeSetResyncStage("PhysicalValidation", "final-callback:" .. tostring(source), snapshot)
+                                    BridgeRecordResyncLifecycle("PHYSICAL_VALIDATION_STARTED", resyncOrigin,
+                                        bootstrapGeneration, snapshot, source)
+                                    local physicallyValid, physicalError = BridgeValidateAuthoritativeSnapshotPhysicalState(snapshot)
+                                    if not physicallyValid then
+                                        BridgeState.resyncPhysicalValidationPassed = false
+                                        BridgeState.resyncLastBlockingPredicate = tostring(physicalError)
+                                        finishBootstrap(false, "snapshot physical validation failed: " .. tostring(physicalError))
+                                        return false
+                                    end
+                                    BridgeState.resyncPhysicalValidationPassed = true
+                                    BridgeSetResyncStage("PhysicalValidated", "exact-physical-state", snapshot)
+                                    BridgeRecordResyncLifecycle("PHYSICAL_VALIDATED", resyncOrigin,
+                                        bootstrapGeneration, snapshot)
+                                end
+                                BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
+                                -- The snapshot is coherent through this bridge event cursor.
+                                -- Resume polling after it so no pre-snapshot transition is
+                                -- replayed over the just-rebuilt physical embodiment.
+                                local committed, commitError = BridgeCommitSnapshotCheckpoint(
+                                    snapshot, "physical-reconcile-complete")
+                                if not committed then finishBootstrap(false, commitError); return false end
+                                BridgeLog(string.format(
+                                    "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
+                                    #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
+                                finishBootstrap(true, nil)
+                                return true
+                            end
+                            if resumeFromSnapshotCursor == true and BridgeState.resyncInFlight == true then
+                                BridgeState.resyncCompletionCallback = completePhysicalReconcile
+                                BridgeResyncCallbackExpected("seat-bootstrap", "physical-rebuild")
+                            end
                             BridgeBootstrapSeats(snapshot, 1, function(seatsOk, seatsError)
                                 if not currentBootstrap() then return end
                                 BridgeRunTraced("START seat-bootstrap-callback", function()
                                     if not currentBootstrap() then return end
                                     if not seatsOk then finishBootstrap(false, seatsError); return end
-                                    BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
-                                    -- The snapshot is coherent through this bridge event cursor.
-                                    -- Resume polling after it so no pre-snapshot transition is
-                                    -- replayed over the just-rebuilt physical embodiment.
-                                    local committed, commitError = BridgeCommitSnapshotCheckpoint(
-                                        snapshot, "physical-reconcile-complete")
-                                    if not committed then finishBootstrap(false, commitError); return end
-                                    BridgeLog(string.format(
-                                        "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
-                                        #(snapshot.seats or {}), tostring(BridgeState.snapshotForgeSequence)))
-                                    finishBootstrap(true, nil)
+                                    if BridgeState.resyncInFlight == true
+                                        and BridgeState.resyncCandidateSnapshot == snapshot
+                                        and BridgeState.resyncPhysicalRebuildReady ~= true
+                                        and BridgeMarkResyncPhysicalRebuildReady ~= nil then
+                                        BridgeMarkResyncPhysicalRebuildReady(snapshot)
+                                    end
+                                    if BridgeState.resyncCompletionCallback ~= nil then
+                                        BridgeState.resyncCompletionCallback("seat-bootstrap-callback")
+                                    else
+                                        completePhysicalReconcile("seat-bootstrap-callback")
+                                    end
                                 end)
                             end)
                         end)
@@ -10453,7 +10903,7 @@ function BridgeBootstrapSeats(snapshot, seatIndex, callback)
     BridgeTryBootstrapSeatSnapshot(seatSnapshot, 1, function(ok, bootstrapError)
         if not ok then callback(false, bootstrapError); return end
         BridgeBootstrapSeats(snapshot, seatIndex + 1, callback)
-    end)
+    end, seatIndex == #seats)
 end
 
 -- A recovery is a controlled, Forge-authoritative rebuild of TTS embodiment.
@@ -10496,6 +10946,9 @@ function BridgeBeginResyncMappingTransaction()
     local snapshot = {}
     for _, name in ipairs(names) do snapshot[name] = BridgeCopyResyncTable(BridgeState[name]) end
     BridgeState.resyncMappingTransaction = snapshot
+    BridgeState.resyncMappingTransactionStartedAt = BridgeResyncCallbackNow ~= nil and BridgeResyncCallbackNow() or os.clock()
+    BridgeState.resyncMappingTransactionStatus = "started"
+    BridgeLog("[Bridge] RESYNC_MAPPING_TRANSACTION_STARTED")
 end
 
 function BridgeRestoreResyncMappingTransaction(reason)
@@ -10503,13 +10956,107 @@ function BridgeRestoreResyncMappingTransaction(reason)
     if snapshot == nil then return end
     for name, value in pairs(snapshot) do BridgeState[name] = value end
     BridgeState.resyncMappingTransaction = nil
+    BridgeState.resyncMappingTransactionStatus = "rolled-back"
+    BridgeState.resyncMappingTransactionCompletedAt = BridgeResyncCallbackNow ~= nil and BridgeResyncCallbackNow() or os.clock()
     BridgeState.resyncLastBlockingPredicate = tostring(reason or "mapping-rollback")
     BridgeLog("[Bridge] RESYNC_MAPPING_ROLLBACK reason=" .. tostring(reason or "unspecified"))
 end
 
 function BridgeCommitResyncMappingTransaction()
     BridgeState.resyncMappingTransaction = nil
+    BridgeState.resyncMappingTransactionStatus = "committed"
+    BridgeState.resyncMappingTransactionCompletedAt = BridgeResyncCallbackNow ~= nil and BridgeResyncCallbackNow() or os.clock()
     BridgeState.resyncReconcileStarted = true
+    BridgeLog("[Bridge] RESYNC_MAPPING_TRANSACTION_COMMITTED")
+end
+
+-- Validate the complete physical embodiment before a late recovery callback
+-- is allowed to commit the snapshot checkpoint.  This is deliberately
+-- identity-based: printed names are never used to repair a snapshot.
+function BridgeValidateAuthoritativeSnapshotPhysicalState(snapshot)
+    if snapshot == nil then return false, "snapshot is required for physical validation" end
+    if BridgeState.eventSessionId ~= nil and snapshot.sessionId ~= nil
+        and tostring(snapshot.sessionId) ~= tostring(BridgeState.eventSessionId) then
+        return false, "snapshot session mismatch during physical validation"
+    end
+    for _, seatSnapshot in ipairs(snapshot.seats or {}) do
+        local seatId = seatSnapshot.seatId
+        local expectedGraveyard = {}
+        local expectedGraveyardCount = 0
+        for _, zone in ipairs(seatSnapshot.zones or {}) do
+            if zone.name == "graveyard" then
+                for _, card in ipairs(zone.cards or {}) do
+                    if card.isVirtual ~= true and tostring(card.materializationPolicy or "") ~= "virtual"
+                        and tostring(card.materializationPolicy or "") ~= "virtual-stack" then
+                        expectedGraveyardCount = expectedGraveyardCount + 1
+                        table.insert(expectedGraveyard, {card.cardInstanceId, card.cardName})
+                    end
+                end
+            end
+        end
+        if expectedGraveyardCount > 0 then
+            local deck = BridgeFindGraveyardContainer ~= nil and BridgeFindGraveyardContainer(seatId) or nil
+            if deck == nil or deck.tag ~= "Deck" then
+                return false, "snapshot graveyard has no native Deck for seat " .. tostring(seatId)
+            end
+            local entries = BridgeLibraryEntries(deck)
+            if entries == nil or #entries ~= expectedGraveyardCount then
+                return false, string.format("snapshot graveyard entry count mismatch: seat=%s physical=%d expected=%d",
+                    tostring(seatId), #(entries or {}), expectedGraveyardCount)
+            end
+            if not BridgeRecordGraveyardContainerEntries(seatId, deck, expectedGraveyard) then
+                return false, "snapshot graveyard identity reconciliation failed: "
+                    .. tostring(BridgeState.lastGraveyardRebindFailure)
+            end
+            if BridgeAssertGraveyardObjectShape ~= nil then
+                local shapeOk, shapeError = BridgeAssertGraveyardObjectShape(seatId, "snapshot-validation")
+                if not shapeOk then return false, tostring(shapeError) end
+            end
+        elseif BridgeFindGraveyardContainer ~= nil and type(getAllObjects) == "function" then
+            local deck = BridgeFindGraveyardContainer(seatId)
+            if deck ~= nil and deck.tag == "Deck" then
+                local entries = BridgeLibraryEntries(deck)
+                if entries ~= nil and #entries > 0 then
+                    return false, string.format("snapshot graveyard has surplus physical entries: seat=%s physical=%d expected=0",
+                        tostring(seatId), #entries)
+                end
+            end
+        end
+        for _, zone in ipairs(seatSnapshot.zones or {}) do
+            for _, card in ipairs(zone.cards or {}) do
+                if card.cardInstanceId ~= nil and card.isVirtual ~= true
+                    and tostring(card.materializationPolicy or "") ~= "virtual"
+                    and tostring(card.materializationPolicy or "") ~= "virtual-stack" then
+                    if BridgeVerifyFinalPhysicalRepresentation == nil then
+                        return false, "snapshot physical validator is unavailable"
+                    end
+                    local represented, representationError = BridgeVerifyFinalPhysicalRepresentation(
+                        card.cardInstanceId, seatId, zone.name)
+                    if not represented then
+                        return false, tostring(representationError)
+                    end
+                end
+            end
+        end
+    end
+    return true, nil
+end
+
+function BridgeMarkResyncPhysicalRebuildReady(snapshot)
+    if BridgeState.resyncInFlight ~= true or snapshot == nil then return false end
+    if BridgeState.eventSessionId ~= nil and snapshot.sessionId ~= nil
+        and tostring(snapshot.sessionId) ~= tostring(BridgeState.eventSessionId) then return false end
+    BridgeState.resyncCandidateSnapshot = snapshot
+    BridgeState.resyncPhysicalRebuildReady = true
+    BridgeState.resyncPhysicalValidationPassed = false
+    BridgeSetResyncStage("PhysicalRebuildReady", "physical-rebuild-complete", snapshot)
+    BridgeRecordResyncLifecycle("PHYSICAL_REBUILD_READY", BridgeState.resyncOrigin,
+        BridgeState.resyncBootstrapGeneration, snapshot)
+    local completion = BridgeState.resyncCompletionCallback
+    if completion ~= nil and BridgeScheduleResyncCompletionContinuation ~= nil then
+        BridgeScheduleResyncCompletionContinuation(snapshot, completion, 30, "physical-rebuild-finalize")
+    end
+    return true
 end
 
 function BridgeResyncClockNow()
@@ -10615,6 +11162,23 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
         tostring(BridgeState.lastAppliedEventSequence), tostring(#(BridgeState.eventQueue or {})),
         tostring(reason or "watchdog")))
 
+    -- If physical reconstruction has already reached its durable ready
+    -- boundary, the generic watchdog must resume the exact finalizer before it
+    -- can invalidate the recovery token.  This closes the small race where a
+    -- late callback is lost at the same time the coarse recovery watchdog
+    -- fires; a proven physical table is never blindly rebased to the old
+    -- logical cursor.
+    if BridgeState.resyncPhysicalRebuildReady == true
+        and BridgeState.resyncCompletionCallback ~= nil then
+        local completion = BridgeState.resyncCompletionCallback
+        local resumed, resumeError = pcall(completion, "watchdog-resume")
+        if not resumed then
+            BridgeLog("[Bridge] RESYNC_COMPLETION_RESUME_FAILED error=" .. tostring(resumeError))
+        elseif BridgeState.resyncInFlight ~= true then
+            return true
+        end
+    end
+
     -- A stalled bootstrap must stop owning the presentation.  Both the
     -- resync token and bootstrap generation fence callbacks that were already
     -- issued by the abandoned recovery; a later manual recovery can therefore
@@ -10622,9 +11186,13 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeState.resyncToken = (BridgeState.resyncToken or token) + 1
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     BridgeState.resyncWatchdogToken = nil
+    if BridgeClearResyncCompletionContinuation ~= nil then
+        BridgeClearResyncCompletionContinuation(nil, "resync-stalled")
+    end
     BridgeState.resyncInFlight = false
     BridgeState.resyncScheduled = false
     BridgeState.bootstrapping = false
+    BridgeState.resyncCompletionCallback = nil
     BridgeState.resyncStartedAt = nil
     BridgeState.resyncStartedUpdateTick = nil
     BridgeState.resyncStartedCpuAt = nil
@@ -10637,6 +11205,9 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeSetSchedulerOwner("NORMAL", "resync-stalled")
     BridgeState.animationRunning = false
     BridgeState.eventDrainTransaction = nil
+    if BridgeClearEventDrainContinuation ~= nil then
+        BridgeClearEventDrainContinuation(nil, "physical-transaction-retired")
+    end
     BridgeRestoreResyncMappingTransaction("resync-watchdog:" .. tostring(reason or "watchdog"))
     BridgeRestoreResyncCheckpoint("resync-watchdog:" .. tostring(reason or "watchdog"))
     -- Restoring the pre-resync checkpoint deliberately leaves an authoritative
@@ -10650,6 +11221,9 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeRecordResyncLifecycle("FAILED", BridgeState.resyncOrigin, token, nil, reason,
         nil, BridgeState.lastReceivedEventSequence, BridgeState.lastAppliedEventSequence)
     if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
+    if BridgeShowError ~= nil then
+        BridgeShowError("authoritative recovery stalled: " .. tostring(reason or "watchdog"))
+    end
     BridgeSetStatus("RESYNC AVAILABLE", "Authoritative recovery stopped: " .. tostring(reason or "watchdog") .. ". Try RESYNC FORGE again.")
     BridgeUiMarkDirty("resync-stalled")
     return true
@@ -10878,8 +11452,26 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
     BridgeState.resyncStartedAt = BridgeResyncClockNow()
     BridgeState.resyncStartedUpdateTick = BridgeState.resyncUpdateTick or 0
     BridgeState.resyncStartedCpuAt = BridgePerformanceNow ~= nil and BridgePerformanceNow() or os.clock()
+    BridgeState.resyncLastStartedAt = BridgeState.resyncStartedAt
+    BridgeState.resyncLastStartedUpdateTick = BridgeState.resyncStartedUpdateTick
+    BridgeState.resyncLastStartedCpuAt = BridgeState.resyncStartedCpuAt
     BridgeState.resyncInFlight = true
     BridgeState.resyncReconcileStarted = false
+    BridgeState.resyncPhysicalRebuildReady = false
+    BridgeState.resyncPhysicalValidationPassed = false
+    BridgeState.resyncCandidateSnapshot = nil
+    BridgeState.resyncLastCallbackStage = nil
+    BridgeState.resyncLastCallbackAt = nil
+    BridgeState.resyncLastCallbackReason = nil
+    BridgeState.resyncExpectedCallbackStage = nil
+    BridgeState.resyncExpectedCallbackAt = nil
+    BridgeState.resyncExpectedCallbackReason = nil
+    BridgeState.resyncLastUnobservedCallbackStage = nil
+    BridgeState.resyncLastUnobservedCallbackAt = nil
+    BridgeState.resyncLastUnobservedCallbackReason = nil
+    if BridgeClearResyncCompletionContinuation ~= nil then
+        BridgeClearResyncCompletionContinuation(nil, "resync-start")
+    end
     BridgeState.resyncLastBlockingPredicate = nil
     BridgeSetSchedulerOwner("RESYNC", origin)
     if BridgeState.ui ~= nil and BridgeState.ui.fastForwardActive == true then
@@ -10914,6 +11506,10 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             return
         end
         BridgeSetResyncStage(ok and "RestartingPipelines" or "Failed", ok and "snapshot-committed" or tostring(err), nil)
+        if BridgeClearResyncCompletionContinuation ~= nil then
+            BridgeClearResyncCompletionContinuation(nil, ok and "checkpoint-committed" or "bootstrap-failed")
+        end
+        BridgeState.resyncCompletionCallback = nil
         BridgeState.resyncInFlight = false
         BridgeState.resyncScheduled = false
         BridgeState.resyncWatchdogToken = nil
@@ -10922,6 +11518,8 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeState.resyncStartedCpuAt = nil
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
         if not ok then
+            BridgeState.resyncPhysicalRebuildReady = false
+            BridgeState.resyncPhysicalValidationPassed = false
             BridgeState.resyncLastFailureReason = tostring(err)
             if string.find(tostring(err), "no progress", 1, true) ~= nil then
                 BridgeState.resyncNoProgressAttempts = (BridgeState.resyncNoProgressAttempts or 0) + 1
@@ -11109,7 +11707,7 @@ function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
     reinsertNext()
 end
 
-function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback)
+function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback, markPhysicalReady)
     BridgeCollectSeatAssets(seatSnapshot.seatId, seatSnapshot, function(ok, assets, collectError)
         if not ok then callback(false, collectError); return end
         local reconciled, reconcileError = BridgeReconcileSeatSnapshot(seatSnapshot, assets, attempt >= 4)
@@ -11123,7 +11721,11 @@ function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback)
                     "[Bridge] seat asset inventory not ready: seat=%s attempt=%d physical=%d authoritative=%d; retrying",
                     tostring(seatSnapshot.seatId), attempt, #assets, authoritativeCount))
                 BridgeWaitFrames(function()
-                    BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt + 1, callback)
+                    -- The three-argument form remains the compatibility
+                    -- contract; the optional final flag preserves the
+                    -- last-seat readiness owner across retries.
+                    -- BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt + 1, callback)
+                    BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt + 1, callback, markPhysicalReady)
                 end, 60)
                 return
             end
@@ -11141,6 +11743,11 @@ function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback)
                 if not aligned then callback(false, alignmentError); return end
                 BridgeWaitFrames(function()
                     BridgeApplySeatSnapshotVisualState(seatSnapshot)
+                    if markPhysicalReady == true and BridgeState.resyncInFlight == true
+                        and BridgeState.resyncCandidateSnapshot ~= nil
+                        and BridgeMarkResyncPhysicalRebuildReady ~= nil then
+                        BridgeMarkResyncPhysicalRebuildReady(BridgeState.resyncCandidateSnapshot)
+                    end
                     callback(true, nil)
                 end, 30)
             end)
@@ -13949,11 +14556,7 @@ function BridgeCommitEventMutationTransaction(tx)
     -- Preserve one turn of the event loop between mutations.  Besides keeping
     -- animations readable, this prevents synchronous MoonSharp test clocks
     -- from recursively draining an arbitrary queued history in one call.
-    BridgeWaitTime(function()
-        if BridgeState.eventDrainTransaction == nil and BridgeState.desyncLatched ~= true then
-            BridgeProcessEventQueue()
-        end
-    end, 0.01)
+    BridgeScheduleEventDrainContinuation(tx, 0.01)
     return true
 end
 
@@ -13966,6 +14569,7 @@ function BridgeProcessEventQueue()
     end
     BridgeRetireInvalidEventDrainOwnership("queue-entry")
     if BridgeState.eventDrainTransaction ~= nil then return end
+    if BridgeState.eventDrainContinuation ~= nil then return end
     local blockReason = BridgeEventDrainBlockReason()
     if blockReason ~= "none" then BridgeObserveEventDrainBlocked(blockReason); return end
     local expected = (tonumber(BridgeState.lastAppliedEventSequence or 0) or 0) + 1
@@ -18600,6 +19204,9 @@ function BridgeStopOnDesync(message)
     BridgeState.desyncLastMessage = diagnostic
     BridgeStopEventPolling("desync-latched")
     BridgeStopDecisionPolling()
+    if BridgeClearEventDrainContinuation ~= nil then
+        BridgeClearEventDrainContinuation(nil, "desync-latched")
+    end
     BridgeState.animationRunning = false
     BridgeState.pendingDecision = nil
     BridgeState.pendingDecisionDeferredAt = nil

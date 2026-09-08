@@ -133,6 +133,137 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void LostEventDrainContinuationRearmsFromUpdateLivenessWithoutReapplyingCommittedEvent()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "LostEventDrainContinuationRearmsFromUpdateLivenessWithoutReapplyingCommittedEvent.probe.lua", @"
+            timers = {}
+            timerCount = 0
+            function BridgeWaitTime(callback, delay)
+                timerCount = timerCount + 1
+                table.insert(timers, {callback = callback, delay = delay})
+            end
+            BridgeState.eventQueue = {}
+            table.insert(BridgeState.eventQueue, {sequence=14, kind='probe-sentinel'})
+            table.insert(BridgeState.eventQueue, {sequence=15, kind='turn_changed', turnNumber=1, activeSeatId='forge-player-2'})
+            table.insert(BridgeState.eventQueue, {sequence=16, kind='phase_changed', phase='Untap step'})
+            table.insert(BridgeState.eventQueue, {sequence=17, kind='phase_changed', phase='Upkeep step'})
+            table.insert(BridgeState.eventQueue, {sequence=18, kind='priority_changed', seatId='forge-player-1'})
+            BridgeState.lastAppliedEventSequence = 14
+            BridgeState.lastReceivedEventSequence = 18
+            BridgeState.eventPolling = true
+            BridgeState.desyncLatched = false
+            local applied = {}
+            local appliedCountLocal = 0
+            local lastAppliedEvent = nil
+            function BridgeApplyAuthoritativeEvent(event)
+                appliedCountLocal = appliedCountLocal + 1
+                lastAppliedEvent = event.sequence
+                table.insert(applied, event.sequence)
+                return true, 0
+            end
+            local _rawSchedule = BridgeScheduleEventDrainContinuation
+            scheduleCalls = 0
+            BridgeScheduleEventDrainContinuation = function(tx, delay)
+                scheduleCalls = scheduleCalls + 1
+                return _rawSchedule(tx, delay)
+            end
+            local function runLatestTimer()
+                local index = timerCount - 1
+                if index < 0 or timers[index] == nil then error('expected a scheduled event-drain continuation') end
+                timers[index].callback()
+            end
+            BridgeProcessEventQueue()
+            runLatestTimer()
+            runLatestTimer()
+            local lostCallback = timers[timerCount - 1].callback
+            local ownerBefore = BridgeState.eventDrainContinuation
+            local tokenBefore = ownerBefore and ownerBefore.token or nil
+            BridgeState.updateTick = (ownerBefore and ownerBefore.dueUpdateTick or 0)
+            local reclaimed = BridgeCheckEventDrainContinuationLiveness('onUpdate')
+            local ownerAfter = BridgeState.eventDrainContinuation
+            local tokenAfter = ownerAfter and ownerAfter.token or nil
+            local appliedBeforeRecovery = appliedCountLocal
+            -- The native callback for event 17 is now deliberately invoked late.
+            lostCallback()
+            local staleDidNotApply = appliedCountLocal == appliedBeforeRecovery
+            -- The replacement owner is the only callback allowed to enter event 18.
+            runLatestTimer()
+            event18Applied = lastAppliedEvent == 18
+            appliedCount = appliedCountLocal
+            finalApplied = BridgeState.lastAppliedEventSequence
+            continuationTokenBefore = tokenBefore
+            continuationTokenAfter = tokenAfter
+            continuationReclaimed = reclaimed
+            staleCallbackSafe = staleDidNotApply
+        ");
+
+        Assert.True(lua.Globals.Get("continuationReclaimed").Boolean);
+        Assert.True(lua.Globals.Get("staleCallbackSafe").Boolean);
+        Assert.True(lua.Globals.Get("event18Applied").Boolean,
+            $"applied={lua.Globals.Get("appliedCount").Number} final={lua.Globals.Get("finalApplied").Number}");
+        Assert.Equal(4, lua.Globals.Get("appliedCount").Number);
+        Assert.Equal(18, lua.Globals.Get("finalApplied").Number);
+        Assert.True(lua.Globals.Get("continuationTokenAfter").Number > lua.Globals.Get("continuationTokenBefore").Number);
+        Assert.Null(lua.Globals.Get("desyncReason").ToObject());
+    }
+
+    [Fact]
+    public void StaleEventDrainContinuationCannotClearNewOwnerOrRunThePumpTwice()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "StaleEventDrainContinuationCannotClearNewOwnerOrRunThePumpTwice.probe.lua", @"
+            timers = {}
+            timerCount = 0
+            function BridgeWaitTime(callback, delay)
+                timerCount = timerCount + 1
+                table.insert(timers, {callback = callback, delay = delay})
+            end
+            local transactionA = {
+                token = 'A', lastEventSequence = 17,
+                sessionId = 'session', eventSessionGeneration = 1,
+                physicalTransactionGeneration = 0, state = 'COMMITTED'
+            }
+            BridgeState.eventDrainContinuationToken = 0
+            BridgeState.eventDrainContinuation = nil
+            BridgeState.eventSessionId = 'session'
+            BridgeState.eventSessionGeneration = 1
+            BridgeState.physicalTransactionGeneration = 0
+            BridgeState.eventQueue = {{sequence=18, kind='priority_changed'}}
+            BridgeState.lastAppliedEventSequence = 17
+            BridgeState.lastReceivedEventSequence = 18
+            BridgeState.eventPolling = true
+            BridgeState.desyncLatched = false
+            pumpCalls = 0
+            function BridgeProcessEventQueue()
+                pumpCalls = pumpCalls + 1
+            end
+            BridgeScheduleEventDrainContinuation(transactionA, 0)
+            local callbackA = timers[timerCount - 1].callback
+            local ownerA = BridgeState.eventDrainContinuation
+            local transactionB = {
+                token = 'B', lastEventSequence = 18,
+                sessionId = 'session', eventSessionGeneration = 1,
+                physicalTransactionGeneration = 0, state = 'COMMITTED'
+            }
+            BridgeClearEventDrainContinuation(ownerA, 'test-rearm')
+            BridgeScheduleEventDrainContinuation(transactionB, 0)
+            local ownerB = BridgeState.eventDrainContinuation
+            callbackA()
+            ownerStillB = BridgeState.eventDrainContinuation == ownerB
+            callbackA_pumpCalls = pumpCalls
+            timers[timerCount - 1].callback()
+            ownerClearedAfterB = BridgeState.eventDrainContinuation == nil
+            finalPumpCalls = pumpCalls
+        ");
+
+        Assert.True(lua.Globals.Get("ownerStillB").Boolean);
+        Assert.Equal(0, lua.Globals.Get("callbackA_pumpCalls").Number);
+        Assert.True(lua.Globals.Get("ownerClearedAfterB").Boolean);
+        Assert.Equal(1, lua.Globals.Get("finalPumpCalls").Number);
+    }
+
+    [Fact]
     public void SessionReplacementAbandonsTheOldQueueWithoutCommittingItsEvent()
     {
         var lua = NewQueueProbe();
@@ -1029,6 +1160,90 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void LostLateResyncCallbackAfterValidatedPhysicalRebuildCanFinalizeCheckpointExactlyOnce()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "LostLateResyncCallbackAfterValidatedPhysicalRebuildCanFinalizeCheckpointExactlyOnce.probe.lua", @"
+            timers = {}
+            timerCount = 0
+            function BridgeWaitFrames(callback, frames)
+                timerCount = timerCount + 1
+                table.insert(timers, {callback = callback, frames = frames})
+            end
+            BridgeState.eventSessionId = 'session-S'
+            BridgeState.eventSessionGeneration = 3
+            BridgeState.physicalTransactionGeneration = 4
+            BridgeState.resyncToken = 9
+            BridgeState.resyncBootstrapGeneration = 12
+            BridgeState.resyncInFlight = true
+            BridgeState.desyncLatched = true
+            BridgeState.lastReceivedEventSequence = 49
+            BridgeState.lastAppliedEventSequence = 17
+            BridgeState.eventQueue = {}
+            for sequence = 18, 49 do table.insert(BridgeState.eventQueue, {sequence=sequence}) end
+            BridgeState.resyncCandidateSnapshot = {
+                sessionId='session-S', eventCursor=49, forgeSequence=12, seats={}
+            }
+            BridgeValidateAuthoritativeSnapshotPhysicalState = function(snapshot)
+                physicalValidationCalls = (physicalValidationCalls or 0) + 1
+                return true, nil
+            end
+            local rawCommit = BridgeCommitSnapshotCheckpoint
+            BridgeCommitSnapshotCheckpoint = function(snapshot, reason)
+                checkpointCommits = (checkpointCommits or 0) + 1
+                return rawCommit(snapshot, reason)
+            end
+            function BridgeStartEventPolling(sessionId, skipExisting)
+                eventPollingRestarts = (eventPollingRestarts or 0) + 1
+                BridgeState.eventPolling = true
+            end
+            function BridgeAcceptDecision(decision, origin, sessionId, generation)
+                decisionAttachments = (decisionAttachments or 0) + 1
+                BridgeState.lastDecision = decision
+            end
+            local snapshot = BridgeState.resyncCandidateSnapshot
+            BridgeState.resyncCompletionCallback = function(source)
+                finalizerCalls = (finalizerCalls or 0) + 1
+                local valid, validationError = BridgeValidateAuthoritativeSnapshotPhysicalState(snapshot)
+                if not valid then error(validationError) end
+                BridgeState.resyncPhysicalValidationPassed = true
+                local committed, commitError = BridgeCommitSnapshotCheckpoint(snapshot, 'late-completion')
+                if not committed then error(commitError) end
+                BridgeState.resyncInFlight = false
+                BridgeState.desyncLatched = false
+                BridgeStartEventPolling(BridgeState.eventSessionId, false)
+                BridgeAcceptDecision({decisionId='forge-tui-2', eventCursor=49}, 'late-resync',
+                    BridgeState.eventSessionId, BridgeState.decisionPresentationGeneration)
+            end
+            BridgeMarkResyncPhysicalRebuildReady(snapshot)
+            local droppedNativeCallback = timers[timerCount - 1].callback
+            local owner = BridgeState.resyncCompletionContinuation
+            BridgeState.updateTick = owner.dueUpdateTick
+            livenessReclaimed = BridgeCheckResyncCompletionLiveness('onUpdate')
+            -- The native callback arrives late after liveness has transferred
+            -- ownership; it must be inert and cannot finalize twice.
+            droppedNativeCallback()
+            finalizerCount = finalizerCalls
+            commitCount = checkpointCommits
+            queueLength = #(BridgeState.eventQueue or {})
+            finalApplied = BridgeState.lastAppliedEventSequence
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(lua.Globals.Get("livenessReclaimed").Boolean);
+        Assert.Equal(1, lua.Globals.Get("finalizerCount").Number);
+        Assert.Equal(1, lua.Globals.Get("commitCount").Number);
+        Assert.Equal(1, lua.Globals.Get("physicalValidationCalls").Number);
+        Assert.Equal(1, lua.Globals.Get("eventPollingRestarts").Number);
+        Assert.Equal(1, lua.Globals.Get("decisionAttachments").Number);
+        Assert.Equal(49, lua.Globals.Get("finalApplied").Number);
+        Assert.Equal(0, lua.Globals.Get("queueLength").Number);
+        Assert.False(state.Get("resyncInFlight").Boolean);
+        Assert.False(state.Get("desyncLatched").Boolean);
+        Assert.True(state.Get("resyncPhysicalValidationPassed").Boolean);
+    }
+
+    [Fact]
     public void DesyncLatchAlwaysSchedulesRecovery()
     {
         var lua = NewQueueProbe();
@@ -1921,6 +2136,10 @@ public sealed class TtsEventQueueLivelockTests
             appliedAfter76 = BridgeState.lastAppliedEventSequence
             queueHeadAfterA = BridgeState.eventQueue[1] and BridgeState.eventQueue[1].sequence or nil
             blockAfterA = BridgeEventDrainBlockReason()
+            -- This probe supplies the serialized timer synchronously via its
+            -- existing no-op Wait.time stub; retire the observed owner before
+            -- manually asking for the next event.
+            BridgeClearEventDrainContinuation(nil, 'test-manual-continuation')
             deferB, cursorB, appliedB = BridgeShouldDeferDecision(decision)
             ProbeDecisionPresentation(deferB)
 

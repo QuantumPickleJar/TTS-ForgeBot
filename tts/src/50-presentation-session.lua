@@ -1849,6 +1849,9 @@ function BridgeStopOnDesync(message)
     BridgeState.desyncLastMessage = diagnostic
     BridgeStopEventPolling("desync-latched")
     BridgeStopDecisionPolling()
+    if BridgeClearEventDrainContinuation ~= nil then
+        BridgeClearEventDrainContinuation(nil, "desync-latched")
+    end
     BridgeState.animationRunning = false
     BridgeState.pendingDecision = nil
     BridgeState.pendingDecisionDeferredAt = nil

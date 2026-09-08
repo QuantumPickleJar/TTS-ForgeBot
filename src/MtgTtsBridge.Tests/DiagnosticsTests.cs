@@ -83,6 +83,27 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public void StructuredCardMoveFailedSynchronousReturnAlsoClosesStableCorrelation()
+    {
+        var watchdog = new TtsExecutionWatchdog(TimeSpan.FromSeconds(2));
+        var now = DateTimeOffset.UtcNow;
+        var entered = new TtsExecutionBreadcrumb(
+            "runtime", "session", 1, 2, 116, "card_moved", "STRUCTURED_CARD_MOVE_ENTER",
+            "structured_card_move", "event:116", ":31", "library", "graveyard", 100, now);
+        var returned = entered with
+        {
+            Stage = "STRUCTURED_CARD_MOVE_RETURNED",
+            ReceivedAtUtc = now.AddMilliseconds(4)
+        };
+
+        watchdog.Record(entered, now, out _);
+        watchdog.Record(returned, returned.ReceivedAtUtc, out var completed);
+
+        Assert.Null(completed.OpenOperation);
+        Assert.False(watchdog.Evaluate(now.AddSeconds(3), out _));
+    }
+
+    [Fact]
     public void TtsExecutionBreadcrumbRing_IsBoundedAndPreservesIdentity()
     {
         var telemetry = new DiagnosticTelemetryBuffer();

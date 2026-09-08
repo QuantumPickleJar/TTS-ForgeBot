@@ -6,6 +6,11 @@
                 if not aligned then callback(false, alignmentError); return end
                 BridgeWaitFrames(function()
                     BridgeApplySeatSnapshotVisualState(seatSnapshot)
+                    if markPhysicalReady == true and BridgeState.resyncInFlight == true
+                        and BridgeState.resyncCandidateSnapshot ~= nil
+                        and BridgeMarkResyncPhysicalRebuildReady ~= nil then
+                        BridgeMarkResyncPhysicalRebuildReady(BridgeState.resyncCandidateSnapshot)
+                    end
                     callback(true, nil)
                 end, 30)
             end)
@@ -2814,11 +2819,7 @@ function BridgeCommitEventMutationTransaction(tx)
     -- Preserve one turn of the event loop between mutations.  Besides keeping
     -- animations readable, this prevents synchronous MoonSharp test clocks
     -- from recursively draining an arbitrary queued history in one call.
-    BridgeWaitTime(function()
-        if BridgeState.eventDrainTransaction == nil and BridgeState.desyncLatched ~= true then
-            BridgeProcessEventQueue()
-        end
-    end, 0.01)
+    BridgeScheduleEventDrainContinuation(tx, 0.01)
     return true
 end
 
@@ -2831,6 +2832,7 @@ function BridgeProcessEventQueue()
     end
     BridgeRetireInvalidEventDrainOwnership("queue-entry")
     if BridgeState.eventDrainTransaction ~= nil then return end
+    if BridgeState.eventDrainContinuation ~= nil then return end
     local blockReason = BridgeEventDrainBlockReason()
     if blockReason ~= "none" then BridgeObserveEventDrainBlocked(blockReason); return end
     local expected = (tonumber(BridgeState.lastAppliedEventSequence or 0) or 0) + 1

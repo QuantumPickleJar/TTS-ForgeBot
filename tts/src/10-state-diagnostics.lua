@@ -1604,6 +1604,8 @@ function onUpdate()
     -- pollers forever under that condition.
     BridgeState.updateTick = (BridgeState.updateTick or 0) + 1
     BridgeState.resyncUpdateTick = (BridgeState.resyncUpdateTick or 0) + 1
+    if BridgeCheckEventDrainContinuationLiveness ~= nil then BridgeCheckEventDrainContinuationLiveness("onUpdate") end
+    if BridgeCheckResyncCompletionLiveness ~= nil then BridgeCheckResyncCompletionLiveness("onUpdate") end
     if BridgeEnforceDesyncRecovery ~= nil then BridgeEnforceDesyncRecovery("onUpdate") end
     if BridgeCheckRecoveryConvergence ~= nil then BridgeCheckRecoveryConvergence("onUpdate") end
     if BridgeCheckDecisionPollingLiveness ~= nil then BridgeCheckDecisionPollingLiveness("onUpdate") end

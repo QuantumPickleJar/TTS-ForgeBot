@@ -43,8 +43,16 @@ BRIDGE_STALE_DECISION_CONVERGENCE_SECONDS = 12.0
 -- recording.  It is intentionally diagnostic-only; authoritative events are
 -- never dropped or cursor-advanced by the watchdog.
 BRIDGE_EVENT_DRAIN_STALL_SECONDS = 2.0
+-- A committed event owns one serialized continuation until its timer callback
+-- is observed.  The frame deadline is a bounded fallback for a TTS Wait.time
+-- callback that disappears; it is not a second per-frame event pump.
+BRIDGE_EVENT_DRAIN_CONTINUATION_STALL_FRAMES = 120
 BRIDGE_RESYNC_PHYSICAL_QUEUE_GRACE_SECONDS = 1.0
 BRIDGE_RESYNC_STALL_SECONDS = 30.0
+-- The physical rebuild can finish before its final bookkeeping callback. Keep
+-- a separate, shorter owner so onUpdate can resume that exact finalization
+-- without rolling a proven table back to the pre-resync cursor.
+BRIDGE_RESYNC_COMPLETION_STALL_FRAMES = 180
 -- A recovery request may wait briefly for an already-running physical library
 -- transaction, but it must not create an unbounded retry stream.  The frame
 -- watchdog is a fallback for hosts where a time callback is delayed while the
@@ -249,14 +257,38 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         coreResyncInFlight = BridgeState.resyncInFlight == true,
         uiResyncInFlight = ui.resyncInFlight == true,
         resyncScheduled = BridgeState.resyncScheduled == true,
+        resyncToken = BridgeState.resyncToken,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncStartedAt = BridgeState.resyncStartedAt,
         resyncUpdateTick = BridgeState.resyncUpdateTick,
         resyncStartedUpdateTick = BridgeState.resyncStartedUpdateTick,
         resyncStartedCpuAt = BridgeState.resyncStartedCpuAt,
+        resyncLastStartedAt = BridgeState.resyncLastStartedAt,
+        resyncLastStartedCpuAt = BridgeState.resyncLastStartedCpuAt,
+        resyncLastStartedUpdateTick = BridgeState.resyncLastStartedUpdateTick,
         resyncStage = BridgeState.resyncStage,
         resyncStageChangedAt = BridgeState.resyncStageChangedAt,
         resyncLastProgressAt = BridgeState.resyncLastProgressAt,
+        resyncLastCallbackStage = BridgeState.resyncLastCallbackStage,
+        resyncLastCallbackAt = BridgeState.resyncLastCallbackAt,
+        resyncLastCallbackReason = BridgeState.resyncLastCallbackReason,
+        resyncExpectedCallbackStage = BridgeState.resyncExpectedCallbackStage,
+        resyncExpectedCallbackAt = BridgeState.resyncExpectedCallbackAt,
+        resyncExpectedCallbackReason = BridgeState.resyncExpectedCallbackReason,
+        resyncLastUnobservedCallbackStage = BridgeState.resyncLastUnobservedCallbackStage,
+        resyncLastUnobservedCallbackAt = BridgeState.resyncLastUnobservedCallbackAt,
+        resyncLastUnobservedCallbackReason = BridgeState.resyncLastUnobservedCallbackReason,
+        resyncCompletionScheduled = BridgeState.resyncCompletionContinuation ~= nil,
+        resyncCompletionToken = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.token or nil,
+        resyncCompletionStage = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.stage or nil,
+        resyncCompletionScheduledAt = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.scheduledAt or nil,
+        resyncCompletionDueUpdateTick = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.dueUpdateTick or nil,
+        resyncPhysicalRebuildReady = BridgeState.resyncPhysicalRebuildReady == true,
+        resyncPhysicalValidationPassed = BridgeState.resyncPhysicalValidationPassed == true,
+        resyncCandidateSnapshotCursor = BridgeState.resyncCandidateSnapshot and BridgeState.resyncCandidateSnapshot.eventCursor or nil,
+        resyncMappingTransactionStatus = BridgeState.resyncMappingTransactionStatus,
+        resyncMappingTransactionStartedAt = BridgeState.resyncMappingTransactionStartedAt,
+        resyncMappingTransactionCompletedAt = BridgeState.resyncMappingTransactionCompletedAt,
         resyncLastFailureReason = BridgeState.resyncLastFailureReason,
         resyncLastBlockingPredicate = BridgeState.resyncLastBlockingPredicate,
         resyncDeferredReason = BridgeState.resyncDeferredReason,
@@ -265,6 +297,7 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncWatchdogToken = BridgeState.resyncWatchdogToken,
         resyncLifecycle = BridgeState.resyncLifecycle or {},
         resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration,
+        resyncReconcileStarted = BridgeState.resyncReconcileStarted == true,
         reportCaptureInFlight = ui.reportCaptureInFlight == true
     }
     local lifecycle = BridgeState.diagnosticCaptureLifecycle
@@ -393,7 +426,15 @@ function BridgeRecordResyncLifecycle(stage, origin, generation, snapshot, reason
     end
     local record = {
         timestamp = now, stage = stage, sessionId = BridgeState.eventSessionId,
-        generation = generation, origin = origin,
+        generation = generation, token = BridgeState.resyncToken, origin = origin,
+        resyncStage = BridgeState.resyncStage, stageChangedAt = BridgeState.resyncStageChangedAt,
+        lastProgressAt = BridgeState.resyncLastProgressAt,
+        expectedCallbackStage = BridgeState.resyncExpectedCallbackStage,
+        expectedCallbackAt = BridgeState.resyncExpectedCallbackAt,
+        lastCallbackStage = BridgeState.resyncLastCallbackStage,
+        lastCallbackAt = BridgeState.resyncLastCallbackAt,
+        lastUnobservedCallbackStage = BridgeState.resyncLastUnobservedCallbackStage,
+        lastUnobservedCallbackAt = BridgeState.resyncLastUnobservedCallbackAt,
         snapshotCursor = snapshot ~= nil and snapshot.eventCursor or nil,
         receivedBefore = beforeReceived, appliedBefore = beforeApplied,
         receivedAfter = BridgeState.lastReceivedEventSequence,
@@ -414,6 +455,7 @@ function BridgeSetResyncStage(stage, reason, snapshot)
     local prior = BridgeState.resyncStage or "Idle"
     BridgeState.resyncStage = stage
     BridgeState.resyncStageChangedAt = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+    BridgeState.resyncLastProgressAt = BridgeState.resyncStageChangedAt
     BridgeLog(string.format("[Bridge] RESYNC_STAGE %s -> %s session=%s generation=%s token=%s cursor=%s reason=%s",
         tostring(prior), tostring(stage), tostring(BridgeState.eventSessionId),
         tostring(BridgeState.eventSessionGeneration), tostring(BridgeState.resyncToken),
@@ -448,6 +490,12 @@ end
 
 function BridgeRetireInvalidEventDrainOwnership(origin)
     local tx = BridgeState.eventDrainTransaction
+    local continuation = BridgeState.eventDrainContinuation
+    local continuationQueue = continuation ~= nil and continuation.transaction ~= nil
+        and continuation.transaction.queue or nil
+    if continuation ~= nil and continuationQueue ~= nil and continuationQueue ~= BridgeState.eventQueue then
+        BridgeClearEventDrainContinuation(continuation, "queue-replaced")
+    end
     if tx == nil then
         if BridgeState.animationRunning == true then
             BridgeState.animationRunning = false
@@ -470,6 +518,238 @@ function BridgeRetireInvalidEventDrainOwnership(origin)
         "[Bridge] EVENT_DRAIN_HEAL cleared stale transaction ownership origin=%s token=%s session=%s sessionGeneration=%s physicalGeneration=%s state=%s current=%s",
         tostring(origin), tostring(tx.token), tostring(tx.sessionId), tostring(tx.eventSessionGeneration),
         tostring(tx.physicalTransactionGeneration), tostring(tx.state), tostring((ok and current) or "probe-failed")))
+    return true
+end
+
+function BridgeResyncCallbackNow()
+    return BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+end
+
+function BridgeResyncCallbackExpected(stage, reason)
+    BridgeState.resyncExpectedCallbackStage = stage
+    BridgeState.resyncExpectedCallbackAt = BridgeResyncCallbackNow()
+    BridgeState.resyncExpectedCallbackReason = reason
+    BridgeState.resyncLastProgressAt = BridgeState.resyncExpectedCallbackAt
+    BridgeLog(string.format("[Bridge] RESYNC_CALLBACK_EXPECTED stage=%s reason=%s token=%s generation=%s",
+        tostring(stage), tostring(reason), tostring(BridgeState.resyncToken),
+        tostring(BridgeState.resyncBootstrapGeneration)))
+end
+
+function BridgeResyncCallbackObserved(stage, reason)
+    local now = BridgeResyncCallbackNow()
+    BridgeState.resyncLastCallbackStage = stage
+    BridgeState.resyncLastCallbackAt = now
+    BridgeState.resyncLastCallbackReason = reason
+    BridgeState.resyncExpectedCallbackStage = nil
+    BridgeState.resyncExpectedCallbackAt = nil
+    BridgeState.resyncExpectedCallbackReason = nil
+    BridgeState.resyncLastProgressAt = now
+    BridgeLog(string.format("[Bridge] RESYNC_CALLBACK_OBSERVED stage=%s reason=%s token=%s generation=%s",
+        tostring(stage), tostring(reason), tostring(BridgeState.resyncToken),
+        tostring(BridgeState.resyncBootstrapGeneration)))
+end
+
+function BridgeEventDrainContinuationNow()
+    return os.clock()
+end
+
+function BridgeClearEventDrainContinuation(owner, reason)
+    if owner ~= nil and BridgeState.eventDrainContinuation ~= owner then return false end
+    local current = BridgeState.eventDrainContinuation
+    if current == nil then return false end
+    BridgeState.eventDrainContinuation = nil
+    if current.transaction ~= nil then
+        current.transaction.continuationScheduled = false
+    end
+    if reason ~= nil then
+        BridgeState.eventDrainLastContinuation = {
+            token = current.token,
+            transactionToken = current.transactionToken,
+            eventSequence = current.eventSequence,
+            reason = reason,
+            at = BridgeEventDrainContinuationNow()
+        }
+    end
+    return true
+end
+
+-- Install exactly one continuation owner for a committed transaction.  TTS
+-- does not provide a reliable timer handle, so identity is fenced by object
+-- identity plus session/physical generations.  A stale callback can therefore
+-- neither clear a newer owner nor enter the queue pump.
+function BridgeScheduleEventDrainContinuation(transaction, delay)
+    if transaction == nil then return false end
+    local existing = BridgeState.eventDrainContinuation
+    if existing ~= nil then
+        if existing.transaction == transaction then return false end
+        BridgeLog(string.format(
+            "[Bridge] EVENT_DRAIN_CONTINUATION_REPLACED oldToken=%s newTransaction=%s",
+            tostring(existing.token), tostring(transaction.token)))
+        BridgeClearEventDrainContinuation(existing, "replaced")
+    end
+    local nextDelay = tonumber(delay or 0) or 0
+    if nextDelay < 0 then nextDelay = 0 end
+    BridgeState.eventDrainContinuationToken = (BridgeState.eventDrainContinuationToken or 0) + 1
+    local token = BridgeState.eventDrainContinuationToken
+    local now = BridgeEventDrainContinuationNow()
+    local updateTick = tonumber(BridgeState.updateTick or 0) or 0
+    local owner = {
+        token = token,
+        transaction = transaction,
+        transactionToken = transaction.token,
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration or 0,
+        physicalTransactionGeneration = BridgeState.physicalTransactionGeneration or 0,
+        eventSequence = transaction.lastEventSequence or transaction.eventSequence,
+        scheduledAt = now,
+        dueAt = now + math.max(nextDelay, BRIDGE_EVENT_DRAIN_STALL_SECONDS),
+        scheduledUpdateTick = updateTick,
+        dueUpdateTick = updateTick + math.max(BRIDGE_EVENT_DRAIN_CONTINUATION_STALL_FRAMES,
+            math.ceil(nextDelay * 60)),
+        callbackObserved = false
+    }
+    BridgeState.eventDrainContinuation = owner
+    transaction.continuationScheduled = true
+    transaction.continuationToken = token
+    BridgeState.eventDrainLastContinuation = nil
+    BridgeWaitTime(function()
+        -- Equality is the ownership fence.  In particular, an old callback A
+        -- must not clear or execute a newer callback B.
+        if BridgeState.eventDrainContinuation ~= owner then return end
+        owner.callbackObserved = true
+        BridgeClearEventDrainContinuation(owner, "callback")
+        if owner.sessionId ~= BridgeState.eventSessionId
+            or owner.sessionGeneration ~= (BridgeState.eventSessionGeneration or 0)
+            or owner.physicalTransactionGeneration ~= (BridgeState.physicalTransactionGeneration or 0) then
+            return
+        end
+        local ok, err = pcall(BridgeProcessEventQueue)
+        if not ok then
+            BridgeLog("[Bridge] EVENT_DRAIN_CONTINUATION_FAILED error=" .. tostring(err))
+            BridgeStopOnDesync("event drain continuation failed: " .. tostring(err))
+        end
+    end, nextDelay)
+    return true
+end
+
+-- Reclaim only a continuation whose bounded deadline has elapsed.  Healthy
+-- timers remain the normal path; this function is called from onUpdate solely
+-- to repair a native callback which TTS silently dropped.
+function BridgeCheckEventDrainContinuationLiveness(reason)
+    local owner = BridgeState.eventDrainContinuation
+    if owner == nil then return false end
+    if owner.sessionId ~= BridgeState.eventSessionId
+        or owner.sessionGeneration ~= (BridgeState.eventSessionGeneration or 0)
+        or owner.physicalTransactionGeneration ~= (BridgeState.physicalTransactionGeneration or 0) then
+        BridgeClearEventDrainContinuation(owner, "stale-generation")
+        return false
+    end
+    local now = BridgeEventDrainContinuationNow()
+    local updateTick = tonumber(BridgeState.updateTick or 0) or 0
+    local dueByClock = owner.dueAt ~= nil and now >= tonumber(owner.dueAt)
+    local dueByFrames = owner.dueUpdateTick ~= nil and updateTick >= tonumber(owner.dueUpdateTick)
+    if not dueByClock and not dueByFrames then return false end
+
+    -- Retire exactly this owner before arming its replacement.  A stale A
+    -- callback that later arrives sees owner B and is a no-op.
+    BridgeClearEventDrainContinuation(owner, "lost:" .. tostring(reason or "onUpdate"))
+    BridgeLog(string.format(
+        "[Bridge] EVENT_DRAIN_CONTINUATION_LOST token=%s transaction=%s event=%s reason=%s",
+        tostring(owner.token), tostring(owner.transactionToken), tostring(owner.eventSequence),
+        tostring(reason or "onUpdate")))
+    local replacement = owner.transaction
+    if replacement == nil then return true end
+    BridgeScheduleEventDrainContinuation(replacement, 0)
+    return true
+end
+
+-- The final recovery callback is a separate ownership domain from the event
+-- queue.  Physical reconstruction can be complete even when TTS drops the
+-- last Wait.frames callback; retain a tokenized owner so onUpdate can resume
+-- only that finalizer and never restart the whole snapshot request.
+function BridgeClearResyncCompletionContinuation(owner, reason)
+    if owner ~= nil and BridgeState.resyncCompletionContinuation ~= owner then return false end
+    local current = BridgeState.resyncCompletionContinuation
+    if current == nil then return false end
+    BridgeState.resyncCompletionContinuation = nil
+    if reason ~= nil then
+        BridgeState.resyncLastCallbackReason = tostring(reason)
+    end
+    return true
+end
+
+function BridgeScheduleResyncCompletionContinuation(snapshot, callback, frames, stage)
+    if snapshot == nil or callback == nil then return false end
+    local existing = BridgeState.resyncCompletionContinuation
+    if existing ~= nil then
+        if existing.snapshot == snapshot then return false end
+        BridgeClearResyncCompletionContinuation(existing, "replaced")
+    end
+    BridgeState.resyncCompletionContinuationToken = (BridgeState.resyncCompletionContinuationToken or 0) + 1
+    local token = BridgeState.resyncCompletionContinuationToken
+    local now = BridgeResyncCallbackNow ~= nil and BridgeResyncCallbackNow() or os.clock()
+    local updateTick = tonumber(BridgeState.updateTick or 0) or 0
+    local waitFrames = math.max(1, tonumber(frames or 1) or 1)
+    local owner = {
+        token = token,
+        snapshot = snapshot,
+        callback = callback,
+        stage = stage or "physical-rebuild-finalize",
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration or 0,
+        physicalTransactionGeneration = BridgeState.physicalTransactionGeneration or 0,
+        resyncToken = BridgeState.resyncToken,
+        bootstrapGeneration = BridgeState.resyncBootstrapGeneration,
+        scheduledAt = now,
+        scheduledUpdateTick = updateTick,
+        dueAt = now + BRIDGE_RESYNC_STALL_SECONDS,
+        dueUpdateTick = updateTick + math.max(BRIDGE_RESYNC_COMPLETION_STALL_FRAMES, waitFrames),
+        callbackObserved = false
+    }
+    BridgeState.resyncCompletionContinuation = owner
+    BridgeResyncCallbackExpected(owner.stage, "native-wait-frames")
+    BridgeWaitFrames(function()
+        if BridgeState.resyncCompletionContinuation ~= owner then return end
+        owner.callbackObserved = true
+        BridgeClearResyncCompletionContinuation(owner, "native-callback")
+        if owner.sessionId ~= BridgeState.eventSessionId
+            or owner.sessionGeneration ~= (BridgeState.eventSessionGeneration or 0)
+            or owner.physicalTransactionGeneration ~= (BridgeState.physicalTransactionGeneration or 0)
+            or owner.resyncToken ~= BridgeState.resyncToken
+            or owner.bootstrapGeneration ~= BridgeState.resyncBootstrapGeneration then
+            return
+        end
+        BridgeResyncCallbackObserved(owner.stage, "native-callback")
+        callback("native-callback")
+    end, waitFrames)
+    return true
+end
+
+function BridgeCheckResyncCompletionLiveness(reason)
+    local owner = BridgeState.resyncCompletionContinuation
+    if owner == nil then return false end
+    if owner.sessionId ~= BridgeState.eventSessionId
+        or owner.sessionGeneration ~= (BridgeState.eventSessionGeneration or 0)
+        or owner.physicalTransactionGeneration ~= (BridgeState.physicalTransactionGeneration or 0)
+        or owner.resyncToken ~= BridgeState.resyncToken
+        or owner.bootstrapGeneration ~= BridgeState.resyncBootstrapGeneration then
+        BridgeClearResyncCompletionContinuation(owner, "stale-generation")
+        return false
+    end
+    local now = BridgeResyncCallbackNow ~= nil and BridgeResyncCallbackNow() or os.clock()
+    local updateTick = tonumber(BridgeState.updateTick or 0) or 0
+    local dueByClock = owner.dueAt ~= nil and now >= tonumber(owner.dueAt)
+    local dueByFrames = owner.dueUpdateTick ~= nil and updateTick >= tonumber(owner.dueUpdateTick)
+    if not dueByClock and not dueByFrames then return false end
+    BridgeClearResyncCompletionContinuation(owner, "lost:" .. tostring(reason or "onUpdate"))
+    BridgeState.resyncLastUnobservedCallbackStage = owner.stage
+    BridgeState.resyncLastUnobservedCallbackAt = now
+    BridgeState.resyncLastUnobservedCallbackReason = tostring(reason or "onUpdate")
+    BridgeLog(string.format("[Bridge] RESYNC_CALLBACK_LOST token=%s stage=%s reason=%s snapshotCursor=%s",
+        tostring(owner.token), tostring(owner.stage), tostring(reason or "onUpdate"),
+        tostring(owner.snapshot and owner.snapshot.eventCursor or nil)))
+    BridgeResyncCallbackObserved(owner.stage, "onUpdate-liveness")
+    owner.callback("onUpdate-liveness")
     return true
 end
 
@@ -526,6 +806,19 @@ function BridgeEventDrainQueueState()
         lastApplied = BridgeState.lastAppliedEventSequence,
         blockReason = BridgeEventDrainBlockReason(),
         animationRunning = BridgeState.animationRunning == true,
+        continuationScheduled = BridgeState.eventDrainContinuation ~= nil,
+        continuationToken = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.token or nil,
+        continuationTransactionToken = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.transactionToken or nil,
+        continuationEventSequence = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.eventSequence or nil,
+        continuationSessionId = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.sessionId or nil,
+        continuationSessionGeneration = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.sessionGeneration or nil,
+        continuationPhysicalTransactionGeneration = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.physicalTransactionGeneration or nil,
+        continuationCallbackObserved = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.callbackObserved or nil,
+        continuationScheduledAt = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.scheduledAt or nil,
+        continuationDueAt = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.dueAt or nil,
+        continuationScheduledUpdateTick = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.scheduledUpdateTick or nil,
+        continuationDueUpdateTick = BridgeState.eventDrainContinuation and BridgeState.eventDrainContinuation.dueUpdateTick or nil,
+        continuationLastResult = BridgeState.eventDrainLastContinuation,
         physicalLibraryQueuesIdle = physicalIdle,
         physicalQueues = physical,
         snapshotReconcilePending = BridgeState.snapshotReconcilePending == true,
@@ -537,13 +830,41 @@ function BridgeEventDrainQueueState()
         resyncInFlight = BridgeState.resyncInFlight == true,
         bootstrapping = BridgeState.bootstrapping == true,
         terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
-    resyncOrigin = BridgeState.resyncOrigin,
+        resyncToken = BridgeState.resyncToken,
+        resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,
         resyncLastFailureReason = BridgeState.resyncLastFailureReason,
         resyncCircuitOpen = BridgeState.resyncCircuitOpen == true,
         schedulerOwner = BridgeState.schedulerOwner,
         lastSnapshotSupersededRange = BridgeState.lastSnapshotSupersededRange,
         resyncStartedAt = BridgeState.resyncStartedAt,
+        resyncLastStartedAt = BridgeState.resyncLastStartedAt,
+        resyncLastStartedCpuAt = BridgeState.resyncLastStartedCpuAt,
+        resyncLastStartedUpdateTick = BridgeState.resyncLastStartedUpdateTick,
+        resyncStage = BridgeState.resyncStage,
+        resyncStageChangedAt = BridgeState.resyncStageChangedAt,
+        resyncLastProgressAt = BridgeState.resyncLastProgressAt,
+        resyncReconcileStarted = BridgeState.resyncReconcileStarted == true,
+        resyncLastCallbackStage = BridgeState.resyncLastCallbackStage,
+        resyncLastCallbackAt = BridgeState.resyncLastCallbackAt,
+        resyncLastCallbackReason = BridgeState.resyncLastCallbackReason,
+        resyncExpectedCallbackStage = BridgeState.resyncExpectedCallbackStage,
+        resyncExpectedCallbackAt = BridgeState.resyncExpectedCallbackAt,
+        resyncExpectedCallbackReason = BridgeState.resyncExpectedCallbackReason,
+        resyncLastUnobservedCallbackStage = BridgeState.resyncLastUnobservedCallbackStage,
+        resyncLastUnobservedCallbackAt = BridgeState.resyncLastUnobservedCallbackAt,
+        resyncLastUnobservedCallbackReason = BridgeState.resyncLastUnobservedCallbackReason,
+        resyncPhysicalRebuildReady = BridgeState.resyncPhysicalRebuildReady == true,
+        resyncPhysicalValidationPassed = BridgeState.resyncPhysicalValidationPassed == true,
+        resyncCandidateSnapshotCursor = BridgeState.resyncCandidateSnapshot and BridgeState.resyncCandidateSnapshot.eventCursor or nil,
+        resyncMappingTransactionStatus = BridgeState.resyncMappingTransactionStatus,
+        resyncMappingTransactionStartedAt = BridgeState.resyncMappingTransactionStartedAt,
+        resyncMappingTransactionCompletedAt = BridgeState.resyncMappingTransactionCompletedAt,
+        resyncCompletionScheduled = BridgeState.resyncCompletionContinuation ~= nil,
+        resyncCompletionToken = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.token or nil,
+        resyncCompletionStage = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.stage or nil,
+        resyncCompletionScheduledAt = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.scheduledAt or nil,
+        resyncCompletionDueUpdateTick = BridgeState.resyncCompletionContinuation and BridgeState.resyncCompletionContinuation.dueUpdateTick or nil,
         resyncUpdateTick = BridgeState.resyncUpdateTick,
         resyncStartedUpdateTick = BridgeState.resyncStartedUpdateTick,
         resyncDeferredReason = BridgeState.resyncDeferredReason,
@@ -1183,6 +1504,9 @@ BridgeState = {
         lastAbortReason = nil
     },
     eventDrainTransaction = nil,
+    eventDrainContinuation = nil,
+    eventDrainContinuationToken = 0,
+    eventDrainLastContinuation = nil,
     eventDrainWatchdog = {
         sessionId = nil,
         sessionGeneration = nil,
@@ -1336,6 +1660,9 @@ BridgeState = {
     resyncUpdateTick = 0,
     resyncStartedUpdateTick = nil,
     resyncStartedCpuAt = nil,
+    resyncLastStartedAt = nil,
+    resyncLastStartedCpuAt = nil,
+    resyncLastStartedUpdateTick = nil,
     resyncBootstrapGeneration = 0,
     lastChoiceAttempt = nil,
     counterStateByInstanceId = {},
@@ -1392,6 +1719,21 @@ BridgeState = {
     resyncStartedCpuAt = nil,
     resyncStage = "Idle",
     resyncStageChangedAt = nil,
+    resyncLastCallbackStage = nil,
+    resyncLastCallbackAt = nil,
+    resyncLastCallbackReason = nil,
+    resyncExpectedCallbackStage = nil,
+    resyncExpectedCallbackAt = nil,
+    resyncExpectedCallbackReason = nil,
+    resyncLastUnobservedCallbackStage = nil,
+    resyncLastUnobservedCallbackAt = nil,
+    resyncLastUnobservedCallbackReason = nil,
+    resyncCompletionContinuation = nil,
+    resyncCompletionCallback = nil,
+    resyncCompletionContinuationToken = 0,
+    resyncPhysicalRebuildReady = false,
+    resyncPhysicalValidationPassed = false,
+    resyncCandidateSnapshot = nil,
     resyncAttempt = 0,
     resyncRootCause = nil,
     resyncLastFailureReason = nil,
@@ -1402,6 +1744,9 @@ BridgeState = {
     resyncSnapshotFingerprint = nil,
     resyncSnapshotRepeatCount = 0,
     resyncMappingTransaction = nil,
+    resyncMappingTransactionStatus = nil,
+    resyncMappingTransactionStartedAt = nil,
+    resyncMappingTransactionCompletedAt = nil,
     resyncReconcileStarted = false,
     resyncLastBlockingPredicate = nil,
     resyncOrigin = nil,
@@ -1629,12 +1974,33 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.snapshotReconcilePending = false
     BridgeState.resyncCheckpoint = nil
     BridgeState.resyncMappingTransaction = nil
+    BridgeState.resyncMappingTransactionStatus = nil
+    BridgeState.resyncMappingTransactionStartedAt = nil
+    BridgeState.resyncMappingTransactionCompletedAt = nil
     BridgeState.resyncReconcileStarted = false
     BridgeState.resyncLastBlockingPredicate = nil
     BridgeState.resyncStage = "Idle"
+    BridgeState.resyncLastCallbackStage = nil
+    BridgeState.resyncLastCallbackAt = nil
+    BridgeState.resyncLastCallbackReason = nil
+    BridgeState.resyncExpectedCallbackStage = nil
+    BridgeState.resyncExpectedCallbackAt = nil
+    BridgeState.resyncExpectedCallbackReason = nil
+    BridgeState.resyncLastUnobservedCallbackStage = nil
+    BridgeState.resyncLastUnobservedCallbackAt = nil
+    BridgeState.resyncLastUnobservedCallbackReason = nil
+    BridgeState.resyncCompletionContinuation = nil
+    BridgeState.resyncCompletionCallback = nil
+    BridgeState.resyncCompletionContinuationToken = (BridgeState.resyncCompletionContinuationToken or 0) + 1
+    BridgeState.resyncPhysicalRebuildReady = false
+    BridgeState.resyncPhysicalValidationPassed = false
+    BridgeState.resyncCandidateSnapshot = nil
     BridgeState.resyncStartedAt = nil
     BridgeState.resyncStartedUpdateTick = nil
     BridgeState.resyncStartedCpuAt = nil
+    BridgeState.resyncLastStartedAt = nil
+    BridgeState.resyncLastStartedCpuAt = nil
+    BridgeState.resyncLastStartedUpdateTick = nil
     BridgeState.resyncOrigin = nil
     BridgeState.resyncLastFailureReason = nil
     BridgeState.resyncNoProgressAttempts = 0
@@ -1643,6 +2009,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.fastForwardSuspendedByResync = false
     BridgeState.animationRunning = false
     BridgeState.eventDrainTransaction = nil
+    BridgeState.eventDrainContinuation = nil
+    BridgeState.eventDrainContinuationToken = (BridgeState.eventDrainContinuationToken or 0) + 1
+    BridgeState.eventDrainLastContinuation = nil
     BridgeState.yieldPolicyTurnNumber = nil
     BridgeState.yieldPolicyActiveSeatId = nil
     BridgeState.yieldPolicySessionId = nil
