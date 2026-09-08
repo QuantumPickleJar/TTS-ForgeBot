@@ -1519,7 +1519,7 @@ public sealed class TtsEventQueueLivelockTests
             BridgeImportedCardName = function(name) return tostring(name or '') end
             BridgeNormalizeCardName = function(name) return string.lower(tostring(name or '')) end
             BridgeTryGetSeatHandObjects = function(seatId) return hand, nil end
-            counts, totalCards, libraryCards, handCards = BridgeCollectSeatStartingInventory(
+            counts, totalCards, libraryCards, handCards, inventory = BridgeCollectSeatStartingInventory(
                 deck, 'forge-player-1')
             probeUsable = BridgeObjectIsUsable(deck)
             probeTag = deck.tag
@@ -1533,6 +1533,31 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Equal(33, lua.Globals.Get("libraryCards").Number);
         Assert.Equal(7, lua.Globals.Get("handCards").Number);
         Assert.Equal(40, lua.Globals.Get("counts").Table.Get("Island").Number);
+        Assert.Equal(33, lua.Globals.Get("inventory").Table.Get("rawLibraryCount").Number);
+        Assert.Equal(7, lua.Globals.Get("inventory").Table.Get("rawHandCount").Number);
+    }
+
+    [Fact]
+    public void StartInventoryReportsAnUnreadableNativeDeckEntryInsteadOfSilentlySubmittingThirtyNineCards()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "StartInventoryReportsAnUnreadableNativeDeckEntry.probe.lua", @"
+            local deckEntries = {}
+            for index = 1, 39 do table.insert(deckEntries, {nickname='Island'}) end
+            table.insert(deckEntries, {nickname=''})
+            local deck = {tag='Deck'}
+            deck.getObjects = function() return deckEntries end
+            BridgeObjectIsUsable = function(object) return object ~= nil end
+            BridgeImportedCardName = function(name) return tostring(name or '') end
+            BridgeNormalizeCardName = function(name) return string.lower(tostring(name or '')) end
+            BridgeTryGetSeatHandObjects = function(seatId) return {}, nil end
+            counts, totalCards, libraryCards, handCards, inventory = BridgeCollectSeatStartingInventory(
+                deck, 'forge-player-2')
+        ");
+
+        Assert.Equal(39, lua.Globals.Get("totalCards").Number);
+        Assert.Equal(40, lua.Globals.Get("inventory").Table.Get("rawLibraryCount").Number);
+        Assert.Equal(1, lua.Globals.Get("inventory").Table.Get("unreadableEntries").Table.Length);
     }
 
     [Fact]

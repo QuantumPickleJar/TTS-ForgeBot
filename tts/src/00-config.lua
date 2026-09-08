@@ -799,6 +799,20 @@ function BridgeEventDrainQueueState()
             generation = BridgeState.physicalTransactionGeneration
         }
     end
+    -- TTS JSON encodes an empty Lua table as [], but this diagnostic value is
+    -- contractually an object. Keep the shape stable before the first hand
+    -- ownership audit has populated it.
+    local zoneOwnership = BridgeState.snapshotPhysicalZoneOwnership
+    if type(zoneOwnership) ~= "table" or next(zoneOwnership) == nil then
+        zoneOwnership = {
+            expectedHandCount = 0,
+            physicallyVerifiedHandCount = 0,
+            internallyMappedHandCount = 0,
+            repairedHandCount = 0,
+            nilZoneCount = 0,
+            wrongSeatCount = 0
+        }
+    end
     return {
         headSequence = head and head.sequence or nil,
         headKind = head and head.kind or nil,
@@ -893,7 +907,7 @@ function BridgeEventDrainQueueState()
         bootstrapStageTrace = BridgeDiagnosticSnapshot(BridgeState.bootstrapStageTrace or {}),
         lastSnapshotReconcileFailureStage = BridgeState.lastSnapshotReconcileFailureStage,
         lastSnapshotReconcileFailureReason = BridgeState.lastSnapshotReconcileFailureReason,
-        snapshotPhysicalZoneOwnership = BridgeDiagnosticSnapshot(BridgeState.snapshotPhysicalZoneOwnership or {})
+        snapshotPhysicalZoneOwnership = BridgeDiagnosticSnapshot(zoneOwnership)
     }
 end
 

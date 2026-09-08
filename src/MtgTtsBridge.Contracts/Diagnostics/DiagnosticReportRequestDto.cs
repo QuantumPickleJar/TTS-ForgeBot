@@ -1,3 +1,6 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
 namespace MtgTtsBridge.Contracts.Diagnostics;
 
 /// <summary>Presentation-side context supplied by TTS when a tester captures a report.</summary>
@@ -109,6 +112,7 @@ public sealed record DiagnosticBootstrapStageRecordDto(
     double? At = null,
     long? UpdateTick = null);
 
+[JsonConverter(typeof(DiagnosticPhysicalZoneOwnershipDtoConverter))]
 public sealed record DiagnosticPhysicalZoneOwnershipDto(
     int ExpectedHandCount = 0,
     int PhysicallyVerifiedHandCount = 0,
@@ -116,6 +120,54 @@ public sealed record DiagnosticPhysicalZoneOwnershipDto(
     int RepairedHandCount = 0,
     int NilZoneCount = 0,
     int WrongSeatCount = 0);
+
+/// <summary>
+/// TTS serializes an empty Lua table as an array. Accept that legacy empty
+/// diagnostic shape so a report request cannot fail merely because no hand
+/// ownership audit has run yet.
+/// </summary>
+public sealed class DiagnosticPhysicalZoneOwnershipDtoConverter : JsonConverter<DiagnosticPhysicalZoneOwnershipDto>
+{
+    public override DiagnosticPhysicalZoneOwnershipDto? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Null)
+            return null;
+
+        if (reader.TokenType == JsonTokenType.StartArray)
+        {
+            reader.Skip();
+            return new DiagnosticPhysicalZoneOwnershipDto();
+        }
+
+        if (reader.TokenType != JsonTokenType.StartObject)
+            throw new JsonException("Expected an object or an empty array for snapshot physical zone ownership.");
+
+        using var document = JsonDocument.ParseValue(ref reader);
+        var root = document.RootElement;
+        return new DiagnosticPhysicalZoneOwnershipDto(
+            ExpectedHandCount: ReadInt(root, "expectedHandCount"),
+            PhysicallyVerifiedHandCount: ReadInt(root, "physicallyVerifiedHandCount"),
+            InternallyMappedHandCount: ReadInt(root, "internallyMappedHandCount"),
+            RepairedHandCount: ReadInt(root, "repairedHandCount"),
+            NilZoneCount: ReadInt(root, "nilZoneCount"),
+            WrongSeatCount: ReadInt(root, "wrongSeatCount"));
+    }
+
+    public override void Write(Utf8JsonWriter writer, DiagnosticPhysicalZoneOwnershipDto value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WriteNumber("expectedHandCount", value.ExpectedHandCount);
+        writer.WriteNumber("physicallyVerifiedHandCount", value.PhysicallyVerifiedHandCount);
+        writer.WriteNumber("internallyMappedHandCount", value.InternallyMappedHandCount);
+        writer.WriteNumber("repairedHandCount", value.RepairedHandCount);
+        writer.WriteNumber("nilZoneCount", value.NilZoneCount);
+        writer.WriteNumber("wrongSeatCount", value.WrongSeatCount);
+        writer.WriteEndObject();
+    }
+
+    private static int ReadInt(JsonElement root, string propertyName)
+        => root.TryGetProperty(propertyName, out var property) && property.TryGetInt32(out var value) ? value : 0;
+}
 
 public sealed record DiagnosticPhysicalQueueStateDto(
     bool LibraryExtractionActive = false,

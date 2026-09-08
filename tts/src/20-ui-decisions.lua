@@ -635,9 +635,15 @@ function BridgeCollectSeatStartingInventory(deck, seatId)
     local counts = {}
     local libraryCount = 0
     local handCount = 0
+    local rawLibraryCount = 0
+    local rawHandCount = 0
+    local unreadableEntries = {}
     local function addName(rawName, source)
         local name = BridgeImportedCardName(rawName or "")
-        if BridgeNormalizeCardName(name) == "" then return end
+        if BridgeNormalizeCardName(name) == "" then
+            table.insert(unreadableEntries, tostring(source) .. ":empty-name")
+            return
+        end
         counts[name] = (counts[name] or 0) + 1
         if source == "hand" then handCount = handCount + 1 else libraryCount = libraryCount + 1 end
     end
@@ -645,9 +651,11 @@ function BridgeCollectSeatStartingInventory(deck, seatId)
     if deck ~= nil and BridgeObjectIsUsable(deck) then
         if deck.tag == "Deck" then
             for _, contained in ipairs(deck.getObjects() or {}) do
+                rawLibraryCount = rawLibraryCount + 1
                 addName(contained.nickname or contained.name, "library")
             end
         elseif deck.tag == "Card" then
+            rawLibraryCount = 1
             addName(BridgeSafeObjectName(deck), "library")
         end
     end
@@ -658,10 +666,15 @@ function BridgeCollectSeatStartingInventory(deck, seatId)
     end
     for _, object in ipairs(handObjects or {}) do
         if BridgeObjectIsUsable(object) and object.tag == "Card" then
+            rawHandCount = rawHandCount + 1
             addName(BridgeSafeObjectName(object), "hand")
         end
     end
-    return counts, libraryCount + handCount, libraryCount, handCount
+    return counts, libraryCount + handCount, libraryCount, handCount, {
+        rawLibraryCount = rawLibraryCount,
+        rawHandCount = rawHandCount,
+        unreadableEntries = unreadableEntries
+    }
 end
 
 function BridgeBuildDeckGuidManifest(deck)
@@ -767,8 +780,12 @@ end
 -- TTS's imported library piles are the deck chooser.  We send printed
 -- identities and explicit format provenance so Bridge-side validation never
 -- falls back to an implicit format assumption.
-function BridgeConfigureDecks(callback)
+function BridgeConfigureDecks(callback, attempt)
+    attempt = tonumber(attempt or 0) or 0
     local seats = {}
+    local shouldSettle = false
+    local settleDetail = {}
+    local minimum = BridgeDeckMinimumForFormat(BridgeNormalizedDeckFormat()) or 0
     for _, seatId in ipairs({"forge-player-1", "forge-player-2"}) do
         BridgeSetupTrace("DECK_PILE_SCAN_BEGIN", "seat=" .. tostring(seatId))
         local deck, _, deckError = BridgeResolveSeatLibraryDeck(seatId)
@@ -776,17 +793,28 @@ function BridgeConfigureDecks(callback)
             BridgeSetupTrace("DECK_PILE_SCAN_RESULT", "seat=" .. tostring(seatId) .. " pileGuid=nil objectType=nil cardCount=0 detectedFormat=unknown error=" .. tostring(deckError))
             callback(false, nil, "cannot load TTS library for " .. tostring(seatId) .. ": " .. tostring(deckError)); return
         end
-        local counts, totalCards, libraryCards, handCards = BridgeCollectSeatStartingInventory(deck, seatId)
+        local counts, totalCards, libraryCards, handCards, inventory = BridgeCollectSeatStartingInventory(deck, seatId)
         local cards = {}
         for name, count in pairs(counts) do table.insert(cards, {cardName = name, count = count}) end
         BridgeSetupTrace("DECK_PILE_SCAN_RESULT", string.format(
             "seat=%s pileGuid=%s objectType=%s cardCount=%s libraryCards=%s handCards=%s detectedFormat=%s uniqueNames=%s",
             tostring(seatId), tostring(BridgeSafeObjectGuid(deck)), tostring(deck.tag), tostring(totalCards),
             tostring(libraryCards), tostring(handCards), tostring(BridgeState.selectedFormat or "unknown"), tostring(#cards)))
+        if #inventory.unreadableEntries > 0 or totalCards < minimum then
+            shouldSettle = true
+            table.insert(settleDetail, string.format("seat=%s total=%d rawLibrary=%d rawHand=%d unreadable=%d",
+                tostring(seatId), totalCards, inventory.rawLibraryCount, inventory.rawHandCount,
+                #inventory.unreadableEntries))
+        end
         if #cards == 0 then callback(false, nil, "TTS library is empty for " .. tostring(seatId)); return end
         BridgeLog(string.format("[Bridge] TTS deck inventory seat=%s uniqueNames=%d totalCards=%d revision=%s",
             tostring(seatId), #cards, totalCards, tostring(BRIDGE_SCRIPT_REVISION)))
         table.insert(seats, {seatId = seatId, cards = cards})
+    end
+    if shouldSettle and attempt < 12 then
+        BridgeSetupTrace("DECK_PILE_SETTLING", "attempt=" .. tostring(attempt + 1) .. " " .. table.concat(settleDetail, "; "))
+        BridgeWaitFrames(function() BridgeConfigureDecks(callback, attempt + 1) end, 1)
+        return
     end
     local selectedFormat = BridgeNormalizedDeckFormat()
     local formatProvenance = tostring(BridgeState.selectedFormatProvenance or "")

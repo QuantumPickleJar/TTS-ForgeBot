@@ -505,6 +505,19 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public void DiagnosticRequest_AcceptsLegacyEmptyLuaZoneOwnershipArray()
+    {
+        var request = JsonSerializer.Deserialize<DiagnosticReportRequestDto>("""
+            {"eventDrainDiagnostics":{"snapshotPhysicalZoneOwnership":[]}}
+            """);
+
+        var ownership = Assert.IsType<DiagnosticPhysicalZoneOwnershipDto>(
+            request!.EventDrainDiagnostics!.SnapshotPhysicalZoneOwnership);
+        Assert.Equal(0, ownership.ExpectedHandCount);
+        Assert.Equal(0, ownership.NilZoneCount);
+    }
+
+    [Fact]
     public async Task DiagnosticEndpoint_ReturnsIdentityAndPath()
     {
         using var factory = new TestWebApplicationFactory();
