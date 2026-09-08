@@ -29,6 +29,33 @@ public sealed class BridgeApiTests
     }
 
     [Fact]
+    public async Task CurrentBridgeAndCurrentGlobalAreCompatible()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+        var response = await client.PostAsJsonAsync("/api/v1/runtime/compatibility",
+            new RuntimeCompatibilityRequestDto("current-runtime", RuntimeBuildContract.ExpectedGeneratedGlobalLuaSha256));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<RuntimeCompatibilityResponseDto>();
+        Assert.NotNull(body);
+        Assert.Equal("MATCH", body.RuntimeCompatibilityState);
+        Assert.Equal(RuntimeBuildContract.ExpectedGeneratedGlobalLuaSha256, body.ExpectedGeneratedGlobalLuaSha256);
+    }
+
+    [Fact]
+    public async Task RuntimeCompatibilityRejectsStaleGlobal()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+        var response = await client.PostAsJsonAsync("/api/v1/runtime/compatibility",
+            new RuntimeCompatibilityRequestDto("old-global", new string('0', 64)));
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<RuntimeCompatibilityResponseDto>();
+        Assert.NotNull(body);
+        Assert.Equal("MISMATCH", body.RuntimeCompatibilityState);
+    }
+
+    [Fact]
     public async Task TtsLibraryDeckInventory_IsAcceptedWithoutDeckPathsOrCardWhitelist()
     {
         using var factory = new TestWebApplicationFactory();

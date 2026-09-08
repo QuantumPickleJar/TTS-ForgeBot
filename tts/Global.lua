@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 1494c4fef78994e70baa4b8570a270964e8d47c1a37abed1af8e475804729aa9
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "1494c4fef78994e70baa4b8570a270964e8d47c1a37abed1af8e475804729aa9"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 208d39433cb503b5678fbb57ec0fec52e3664e80946ae0ae250b131dba919ded
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "208d39433cb503b5678fbb57ec0fec52e3664e80946ae0ae250b131dba919ded"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -5913,6 +5913,36 @@ function BridgeGetHealth(callback)
     end)
 end
 
+-- Compatibility is a build contract, not a gameplay/desync condition.  The
+-- Bridge has the generated Lua artifact compiled into its assembly; compare
+-- against that immutable expectation before any command can start Forge or
+-- rebuild physical embodiment.
+function BridgeEnsureRuntimeCompatibility(callback)
+    BridgeHttp.requestJson("POST", "/api/v1/runtime/compatibility", {
+        clientRuntimeId = BRIDGE_CLIENT_RUNTIME_ID,
+        clientGeneratedGlobalLuaSha256 = BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256
+    }, function(ok, body, err)
+        local matched = ok and body ~= nil and body.runtimeCompatibilityState == "MATCH"
+        BridgeState.runtimeCompatibility = body or {
+            runtimeCompatibilityState = "UNAVAILABLE",
+            message = tostring(err or "compatibility handshake failed")
+        }
+        BridgeState.runtimeCompatibilityState = matched and "MATCH" or tostring(
+            BridgeState.runtimeCompatibility.runtimeCompatibilityState or "MISMATCH")
+        BridgeLog("[Bridge] RUNTIME_COMPATIBILITY state=" .. tostring(BridgeState.runtimeCompatibilityState)
+            .. " runtime=" .. tostring(BRIDGE_CLIENT_RUNTIME_ID)
+            .. " clientGeneratedGlobalLuaSha256=" .. tostring(BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256)
+            .. " expectedGeneratedGlobalLuaSha256=" .. tostring(BridgeState.runtimeCompatibility.expectedGeneratedGlobalLuaSha256)
+            .. " bridgeRevision=" .. tostring(BridgeState.runtimeCompatibility.bridgeRevision)
+            .. " bridgeBuildIdentity=" .. tostring(BridgeState.runtimeCompatibility.bridgeBuildIdentity))
+        if not matched then
+            BridgeSetStatus("RUNTIME BUILD MISMATCH", "TTS script is older/newer than the running Bridge. Reload TTS Save & Play and/or restart Start-ForgeBot.")
+            BridgeShowError("RUNTIME BUILD MISMATCH. Reload TTS Save & Play and/or restart Start-ForgeBot.")
+        end
+        callback(matched, BridgeState.runtimeCompatibility, err)
+    end)
+end
+
 function BridgeStartSession(callback)
     BridgeSetupTrace("SESSION_START_REQUEST_SENT", "POST /api/v1/session/start")
     BridgeHttp.requestJson("POST", "/api/v1/session/start", nil, callback)
@@ -8887,7 +8917,7 @@ function BridgePressStartMatch(object, playerColor, altClick)
     end, 1)
 end
 
-function BridgeDoPressStartMatch(playerColor, altClick)
+function BridgeDoPressStartMatchCore(playerColor, altClick)
     BridgeTraceStart("START-02 deferred-handler")
     if BridgeState.setupBusy then
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
@@ -8941,6 +8971,16 @@ function BridgeDoPressStartMatch(playerColor, altClick)
     end)
 end
 
+function BridgeDoPressStartMatch(playerColor, altClick)
+    if BridgeState.setupBusy then
+        BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
+        return
+    end
+    BridgeEnsureRuntimeCompatibility(function(compatible)
+        if compatible then BridgeDoPressStartMatchCore(playerColor, altClick) end
+    end)
+end
+
 function BridgePressResume(object, playerColor, altClick)
     local color = playerColor
     local alt = altClick == true
@@ -8949,7 +8989,7 @@ function BridgePressResume(object, playerColor, altClick)
     end, 1)
 end
 
-function BridgeDoPressResume(playerColor, altClick)
+function BridgeDoPressResumeCore(playerColor, altClick)
     if BridgeState.setupBusy then
         BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
         return
@@ -8969,6 +9009,16 @@ function BridgeDoPressResume(playerColor, altClick)
         return
     end
     BridgeShowError("RESUME requires an already-paused local session. Use START MATCH from clean setup or NEW MATCH for explicit teardown.")
+end
+
+function BridgeDoPressResume(playerColor, altClick)
+    if BridgeState.setupBusy then
+        BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
+        return
+    end
+    BridgeEnsureRuntimeCompatibility(function(compatible)
+        if compatible then BridgeDoPressResumeCore(playerColor, altClick) end
+    end)
 end
 
 function BridgeClassifyResumeState()
@@ -20922,6 +20972,9 @@ function BridgeHudSubmitReport(category, summary)
         decisionId = BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
         clientRuntimeId = BRIDGE_CLIENT_RUNTIME_ID,
         clientRevision = BRIDGE_SCRIPT_REVISION,
+        clientGeneratedGlobalLuaSha256 = BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256,
+        expectedGeneratedGlobalLuaSha256 = BridgeState.runtimeCompatibility and BridgeState.runtimeCompatibility.expectedGeneratedGlobalLuaSha256 or nil,
+        runtimeCompatibilityState = BridgeState.runtimeCompatibilityState,
         lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
         turn = BridgeState.tableTurnCount,
         phase = BridgeState.currentPhase,
@@ -20990,10 +21043,13 @@ function BridgeHudResyncFromForge(player, value, id)
         BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=core-resync-in-flight")
         return
     end
-    local started = BridgeResyncFromAuthoritativeSnapshot("hud")
-    if started ~= true then
-        BridgeLog("[Bridge] RESYNC_DEFERRED reason=local-recovery-path")
-    end
+    BridgeEnsureRuntimeCompatibility(function(compatible)
+        if not compatible then return end
+        local started = BridgeResyncFromAuthoritativeSnapshot("hud")
+        if started ~= true then
+            BridgeLog("[Bridge] RESYNC_DEFERRED reason=local-recovery-path")
+        end
+    end)
 end
 
 function BridgeHudPhaseElementId(phase)

@@ -75,6 +75,24 @@ app.MapGet("/health", async (IForgeAdapter adapter, BridgeProcessIdentity identi
 		ProcessStartUtc: identity.ProcessStartUtc));
 });
 
+// This is deliberately a separate, side-effect-free handshake. TTS must call
+// it before any operation that can start Forge or change physical embodiment.
+app.MapPost("/api/v1/runtime/compatibility", (RuntimeCompatibilityRequestDto request, BridgeProcessIdentity identity) =>
+{
+	var compatible = RuntimeBuildContract.IsCompatible(request.ClientGeneratedGlobalLuaSha256);
+	var response = new RuntimeCompatibilityResponseDto(
+		compatible ? "MATCH" : "MISMATCH",
+		BridgeProcessIdentity.Revision,
+		BridgeProcessIdentity.BuildIdentity,
+		identity.ProcessInstanceId,
+		identity.ProcessStartUtc,
+		request.ClientRuntimeId,
+		request.ClientGeneratedGlobalLuaSha256,
+		RuntimeBuildContract.ExpectedGeneratedGlobalLuaSha256,
+		compatible ? null : "RUNTIME BUILD MISMATCH: reload TTS Save & Play and/or restart Start-ForgeBot.");
+	return compatible ? Results.Ok(response) : Results.Json(response, statusCode: StatusCodes.Status409Conflict);
+});
+
 app.MapPost("/api/v1/session/start", async (IForgeAdapter adapter, ILogger<Program> logger, CancellationToken cancellationToken) =>
 {
 	logger.LogInformation("Bridge SESSION_START_RECEIVED adapterState={AdapterState}", (await adapter.GetStateAsync(cancellationToken)).State);

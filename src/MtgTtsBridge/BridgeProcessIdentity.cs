@@ -9,8 +9,7 @@ public sealed class BridgeProcessIdentity
     public static readonly string Revision = ReadGit("rev-parse HEAD") ?? "git-unavailable";
     private static readonly string? GitStatus = ReadGit("status --porcelain");
     public static readonly bool? IsDirty = GitStatus is null ? null : GitStatus.Length > 0;
-    public static readonly string BuildIdentity = typeof(BridgeProcessIdentity).Assembly.GetName().Version?.ToString()
-        + ":" + File.GetLastWriteTimeUtc(typeof(BridgeProcessIdentity).Assembly.Location).ToString("O");
+    public static readonly string BuildIdentity = RuntimeBuildContract.BuildIdentity;
 
     public BridgeProcessIdentity()
     {

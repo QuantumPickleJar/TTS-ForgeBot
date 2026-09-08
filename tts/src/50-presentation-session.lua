@@ -2319,6 +2319,9 @@ function BridgeHudSubmitReport(category, summary)
         decisionId = BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
         clientRuntimeId = BRIDGE_CLIENT_RUNTIME_ID,
         clientRevision = BRIDGE_SCRIPT_REVISION,
+        clientGeneratedGlobalLuaSha256 = BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256,
+        expectedGeneratedGlobalLuaSha256 = BridgeState.runtimeCompatibility and BridgeState.runtimeCompatibility.expectedGeneratedGlobalLuaSha256 or nil,
+        runtimeCompatibilityState = BridgeState.runtimeCompatibilityState,
         lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
         turn = BridgeState.tableTurnCount,
         phase = BridgeState.currentPhase,
@@ -2387,10 +2390,13 @@ function BridgeHudResyncFromForge(player, value, id)
         BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=core-resync-in-flight")
         return
     end
-    local started = BridgeResyncFromAuthoritativeSnapshot("hud")
-    if started ~= true then
-        BridgeLog("[Bridge] RESYNC_DEFERRED reason=local-recovery-path")
-    end
+    BridgeEnsureRuntimeCompatibility(function(compatible)
+        if not compatible then return end
+        local started = BridgeResyncFromAuthoritativeSnapshot("hud")
+        if started ~= true then
+            BridgeLog("[Bridge] RESYNC_DEFERRED reason=local-recovery-path")
+        end
+    end)
 end
 
 function BridgeHudPhaseElementId(phase)

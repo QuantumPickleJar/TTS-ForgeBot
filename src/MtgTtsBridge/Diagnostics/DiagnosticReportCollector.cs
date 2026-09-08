@@ -41,7 +41,11 @@ public sealed record DiagnosticReportManifest(
     IReadOnlyDictionary<string, string> MissingFiles,
     DiagnosticSelfTestSummary SelfTests,
     bool Truncated = false,
-    long RecordsDropped = 0);
+    long RecordsDropped = 0,
+    string? BridgeBuildIdentity = null,
+    string? ClientGeneratedGlobalLuaSha256 = null,
+    string? ExpectedGeneratedGlobalLuaSha256 = null,
+    string? RuntimeCompatibilityState = null);
 
 public sealed record DiagnosticSelfTestSummary(
     int Pass,
@@ -123,6 +127,7 @@ public sealed class DiagnosticReportCollector
                 sessionId = state?.SessionId,
                 diagnostic = state?.Diagnostic,
                 bridgeRevision = BridgeProcessIdentity.Revision,
+                bridgeBuildIdentity = BridgeProcessIdentity.BuildIdentity,
                 bridgeProcessInstanceId = _identity.ProcessInstanceId,
                 processId = _identity.ProcessId,
                 processStartUtc = _identity.ProcessStartUtc,
@@ -179,7 +184,11 @@ public sealed class DiagnosticReportCollector
                 state?.State,
                 included,
                 missing,
-                new DiagnosticSelfTestSummary(selfTest.PassCount, selfTest.WarningCount, selfTest.FailCount, selfTest.UnavailableCount));
+                new DiagnosticSelfTestSummary(selfTest.PassCount, selfTest.WarningCount, selfTest.FailCount, selfTest.UnavailableCount),
+                BridgeBuildIdentity: BridgeProcessIdentity.BuildIdentity,
+                ClientGeneratedGlobalLuaSha256: CleanText(request.ClientGeneratedGlobalLuaSha256),
+                ExpectedGeneratedGlobalLuaSha256: CleanText(request.ExpectedGeneratedGlobalLuaSha256),
+                RuntimeCompatibilityState: CleanText(request.RuntimeCompatibilityState));
 
             WriteRequiredJson(staging, "report.json", manifest, included, "report.json");
             WriteRequiredText(staging, "report.txt", FormatReportText(manifest, selfTest), included, "report.txt");
@@ -247,13 +256,15 @@ public sealed class DiagnosticReportCollector
             events?.LatestSequence, request.LastAppliedEventSequence, _adapter.Name, state?.State,
             included, missing,
             new DiagnosticSelfTestSummary(selfTest.PassCount, selfTest.WarningCount, selfTest.FailCount, selfTest.UnavailableCount),
-            truncated, dropped);
+            truncated, dropped,
+            BridgeProcessIdentity.BuildIdentity, CleanText(request.ClientGeneratedGlobalLuaSha256),
+            CleanText(request.ExpectedGeneratedGlobalLuaSha256), CleanText(request.RuntimeCompatibilityState));
         var reportText = FormatPerformanceReportText(manifest, summary, processSamples, canary);
         var health = new
         {
             status = state is null ? "unavailable" : state.State == "failed" ? "failed" : "ok",
             adapter = _adapter.Name, adapterState = state?.State, sessionId = state?.SessionId,
-            bridgeRevision = BridgeProcessIdentity.Revision, bridgeProcessInstanceId = _identity.ProcessInstanceId,
+            bridgeRevision = BridgeProcessIdentity.Revision, bridgeBuildIdentity = BridgeProcessIdentity.BuildIdentity, bridgeProcessInstanceId = _identity.ProcessInstanceId,
             processId = _identity.ProcessId, capturedAtUtc = capturedAt, truncated, recordsDropped = dropped
         };
         var currentDecision = state?.CurrentDecision;
@@ -519,6 +530,10 @@ public sealed class DiagnosticReportCollector
         builder.AppendLine($"Summary: {manifest.Summary ?? "(none supplied)"}");
         builder.AppendLine($"Category: {manifest.Category ?? "(none supplied)"}");
         builder.AppendLine($"Adapter: {manifest.AdapterName} / {manifest.AdapterState ?? "unavailable"}");
+        builder.AppendLine($"Bridge revision/build: {manifest.BridgeRevision} / {manifest.BridgeBuildIdentity ?? "(unavailable)"}");
+        builder.AppendLine($"Bridge process: {manifest.BridgeProcessInstanceId} started {manifest.BridgeProcessStartUtc:O}");
+        builder.AppendLine($"TTS runtime/Lua: {manifest.ClientRuntimeId ?? "(unavailable)"} / {manifest.ClientGeneratedGlobalLuaSha256 ?? "(unavailable)"}");
+        builder.AppendLine($"Expected Lua/compatibility: {manifest.ExpectedGeneratedGlobalLuaSha256 ?? "(unavailable)"} / {manifest.RuntimeCompatibilityState ?? "(unavailable)"}");
         builder.AppendLine($"Session: {manifest.SessionId ?? "(unavailable)"}");
         builder.AppendLine($"Decision: {manifest.CurrentDecisionId ?? "(none)"} ({manifest.CurrentDecisionKind ?? "n/a"})");
         builder.AppendLine($"Turn/phase: {manifest.Turn?.ToString() ?? "?"} / {manifest.Phase ?? "?"}");

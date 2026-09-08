@@ -2,6 +2,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MtgTtsBridge.Contracts\MtgTtsBridge.Contracts.csproj" />
+    <!-- The generated TTS artifact is part of the runtime build contract.  It
+         is embedded so compatibility checks never consult a developer checkout. -->
+    <EmbeddedResource Include="..\..\tts\Global.lua" LogicalName="MtgTtsBridge.GeneratedGlobalLua" />
   </ItemGroup>
 
   <PropertyGroup>
