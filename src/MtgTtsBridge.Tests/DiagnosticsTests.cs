@@ -151,7 +151,25 @@ public sealed class DiagnosticsTests
                 ClientRevision: "tts-test",
                 LastAppliedEventSequence: 0,
                 Turn: 6,
-                Phase: "Combat"), CancellationToken.None);
+                Phase: "Combat",
+                EventDrainDiagnostics: new DiagnosticEventDrainDiagnosticsDto(
+                    EmbodimentEpoch: 7,
+                    EmbodimentTransactionToken: 12,
+                    EmbodimentActive: true,
+                    EmbodimentReason: "hud",
+                    EmbodimentTargetCursor: 54,
+                    EmbodimentPhase: "VERIFY",
+                    EmbodimentJournal:
+                    [
+                        new DiagnosticEmbodimentJournalRecordDto(
+                            EmbodimentEpoch: 7, Token: 12, Reason: "hud", TargetCursor: 54,
+                            Phase: "VERIFY", OperationType: "POSTCONDITION_SATISFIED",
+                            OperationToken: "7:12:0:1", Precondition: "one owner",
+                            NativeAction: "snapshot adapter", Postcondition: "fully verified", UpdateTick: 300)
+                    ],
+                    BootstrapStage: "physical-validation",
+                    LastSnapshotReconcileFailureStage: "hand-materialization",
+                    LastSnapshotReconcileFailureReason: "hand API lag")), CancellationToken.None);
 
             Assert.True(result.Success, result.Message);
             Assert.StartsWith(Path.GetFullPath(root), result.ReportPath!, StringComparison.OrdinalIgnoreCase);
@@ -178,6 +196,21 @@ public sealed class DiagnosticsTests
             Assert.Contains("report.json", manifest.RootElement.GetProperty("includedFiles").EnumerateArray().Select(item => item.GetString()));
             Assert.Contains("report.txt", manifest.RootElement.GetProperty("includedFiles").EnumerateArray().Select(item => item.GetString()));
             Assert.True(manifest.RootElement.GetProperty("missingFiles").TryGetProperty("state/forge-snapshot.json", out _));
+
+            var ttsStateEntry = zip.GetEntry("state/tts-state.json");
+            Assert.NotNull(ttsStateEntry);
+            using var ttsStateStream = ttsStateEntry!.Open();
+            using var ttsState = JsonDocument.Parse(ttsStateStream);
+            var diagnostics = ttsState.RootElement.GetProperty("eventDrainDiagnostics");
+            Assert.Equal(7, diagnostics.GetProperty("embodimentEpoch").GetInt32());
+            Assert.Equal("VERIFY", diagnostics.GetProperty("embodimentPhase").GetString());
+            Assert.Equal(54, diagnostics.GetProperty("embodimentTargetCursor").GetInt64());
+            Assert.Equal("POSTCONDITION_SATISFIED",
+                diagnostics.GetProperty("embodimentJournal")[0].GetProperty("operationType").GetString());
+            Assert.Equal("7:12:0:1",
+                diagnostics.GetProperty("embodimentJournal")[0].GetProperty("operationToken").GetString());
+            Assert.Equal("hand-materialization",
+                diagnostics.GetProperty("lastSnapshotReconcileFailureStage").GetString());
         }
         finally { TryDelete(root); }
     }

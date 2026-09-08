@@ -61,7 +61,61 @@ public sealed record DiagnosticEventDrainDiagnosticsDto(
     bool ResyncInFlight = false,
     bool Bootstrapping = false,
     bool TerminalRecoveryError = false,
-    IReadOnlyDictionary<string, DiagnosticPhysicalQueueStateDto>? PhysicalQueues = null);
+    IReadOnlyDictionary<string, DiagnosticPhysicalQueueStateDto>? PhysicalQueues = null,
+    int? EmbodimentEpoch = null,
+    int? EmbodimentTransactionToken = null,
+    bool EmbodimentActive = false,
+    string? EmbodimentReason = null,
+    string? EmbodimentSessionId = null,
+    long? EmbodimentTargetCursor = null,
+    string? EmbodimentPhase = null,
+    int? EmbodimentOperationIndex = null,
+    int? EmbodimentReplanCount = null,
+    long? EmbodimentLastProgressUpdateTick = null,
+    string? EmbodimentLastBlockingPredicate = null,
+    IReadOnlyList<DiagnosticEmbodimentJournalRecordDto>? EmbodimentJournal = null,
+    string? BootstrapStage = null,
+    double? BootstrapStageChangedAt = null,
+    double? BootstrapLastProgressAt = null,
+    string? LastSnapshotReconcileFailureStage = null,
+    string? LastSnapshotReconcileFailureReason = null,
+    IReadOnlyList<DiagnosticBootstrapStageRecordDto>? BootstrapStageTrace = null,
+    DiagnosticPhysicalZoneOwnershipDto? SnapshotPhysicalZoneOwnership = null);
+
+public sealed record DiagnosticEmbodimentJournalRecordDto(
+    int? RuntimeEpoch = null,
+    int? EmbodimentEpoch = null,
+    int? Token = null,
+    string? Reason = null,
+    string? SessionId = null,
+    long? TargetCursor = null,
+    string? Phase = null,
+    int? OperationIndex = null,
+    string? OperationType = null,
+    string? OperationToken = null,
+    string? Precondition = null,
+    string? NativeAction = null,
+    string? Postcondition = null,
+    string? Detail = null,
+    long? UpdateTick = null,
+    long? LastProgressUpdateTick = null,
+    int? ReplanCount = null,
+    string? LastBlockingPredicate = null);
+
+public sealed record DiagnosticBootstrapStageRecordDto(
+    string? Stage = null,
+    string? State = null,
+    string? Detail = null,
+    double? At = null,
+    long? UpdateTick = null);
+
+public sealed record DiagnosticPhysicalZoneOwnershipDto(
+    int ExpectedHandCount = 0,
+    int PhysicallyVerifiedHandCount = 0,
+    int InternallyMappedHandCount = 0,
+    int RepairedHandCount = 0,
+    int NilZoneCount = 0,
+    int WrongSeatCount = 0);
 
 public sealed record DiagnosticPhysicalQueueStateDto(
     bool LibraryExtractionActive = false,
