@@ -1692,18 +1692,21 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                 function BridgeRetirePendingCastForInstance(seatId, instanceId, guid, reason) end
                 function BridgeClearCardDesignationPresentation(instanceId, object, clearAll) end
 
-                function BridgeTakeTopCardFromLibrary(deck, expectedName, position, faceDown, callback)
+                local function bridgeHarnessTakeFromLibrary(cardInstanceId, expectedName, position, faceDown, callback)
                     bridgeTest.extractionIndex = bridgeTest.extractionIndex + 1
                     local index = bridgeTest.extractionIndex
                     local card = nil
                     -- A physical retry must not advance the simulated library
                     -- merely because TTS re-entered the extraction callback.
-                    -- Resolve the exact authoritative instance by expected
-                    -- card identity, then mark that instance consumed.
+                    -- Resolve the exact authoritative instance first, then
+                    -- fall back to name matching for legacy tests.
                     bridgeTest.forEachArrayEntry(bridgeTest.extractionCards, function(candidate)
                         if card == nil and candidate ~= nil and candidate._extracted ~= true
+                            and (cardInstanceId == nil
+                                or tostring(candidate._instanceId or '') == tostring(cardInstanceId))
                             and (expectedName == nil or expectedName == ''
-                                or BridgeCardNameMatches(candidate.name, expectedName)) then
+                                or BridgeCardNameMatches(candidate.name, expectedName)
+                                or tostring(candidate._instanceId or '') == tostring(cardInstanceId or '')) then
                             card = candidate
                         end
                     end)
@@ -1725,6 +1728,15 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     card._inHand = faceDown == true
                     card._lastPosition = position
                     callback(card, nil)
+                end
+
+                function BridgeTakeContainedLibraryCardByIdentity(cardInstanceId, position, smooth, callback)
+                    local expectedName = BridgeState.cardNameByInstanceId[cardInstanceId] or nil
+                    bridgeHarnessTakeFromLibrary(cardInstanceId, expectedName, position, smooth, callback)
+                end
+
+                function BridgeTakeTopCardFromLibrary(deck, expectedName, position, faceDown, callback)
+                    bridgeHarnessTakeFromLibrary(nil, expectedName, position, faceDown, callback)
                 end
 
                 local bridgeWaitQueue = {}

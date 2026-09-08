@@ -1957,7 +1957,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function moveFromLibraryDeckToBattlefield(deck)", Script);
         Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"battlefield\"", Script);
         Assert.Contains("BridgeQueueLibraryExtraction(event.seatId", Script);
-        Assert.Contains("BridgeTakeTopCardFromLibrary(liveDeck, expectedName", Script);
+        Assert.Contains("BridgeTakeContainedLibraryCardByIdentity(event.cardInstanceId", Script);
     }
 
     [Fact]
@@ -1972,26 +1972,27 @@ public sealed class TtsGlobalLuaContractTests
 
         Assert.Contains("function moveFromLibraryDeckToGraveyard(deck)", moveBody);
         Assert.Contains("BridgeQueueLibraryExtraction(event.seatId", moveBody);
-        Assert.Contains("BridgeTakeTopCardFromLibrary(liveDeck, expectedName", moveBody);
+        Assert.Contains("BridgeTakeContainedLibraryCardByIdentity(event.cardInstanceId", moveBody);
         Assert.Contains("BridgeMoveToGraveyard(event, taken, function", moveBody);
         Assert.DoesNotContain("BridgeCompletePendingGraveyardMerge(function", moveBody);
         Assert.Contains("BridgeVerifyFinalPhysicalRepresentation(", moveBody);
         Assert.Contains("event.sourceZone == \"library\" and event.destinationZone == \"graveyard\"", moveBody);
         Assert.DoesNotContain("resolved object is a deck for non-library->hand move", moveBody);
-        Assert.Contains("BridgeRecoverFromLibraryOrderMismatch(takeError)", moveBody);
+        Assert.DoesNotContain("BridgeRecoverFromLibraryOrderMismatch(takeError)", moveBody);
     }
 
     [Fact]
-    public void AuthoritativeLibraryTransitions_ExtractTheTopCardRatherThanSelectingByName()
+    public void AuthoritativeLibraryTransitions_ExtractExactContainedGuidByForgeInstance()
     {
-        var topStart = Script.IndexOf("function BridgeTakeTopCardFromLibrary", StringComparison.Ordinal);
-        var topEnd = Script.IndexOf("function BridgeTakeNamedCardFromDeck", topStart, StringComparison.Ordinal);
-        var topBody = Script[topStart..topEnd];
+        var takeStart = Script.IndexOf("function BridgeTakeContainedLibraryCardByIdentity", StringComparison.Ordinal);
+        var takeEnd = Script.IndexOf("function BridgeReturnCombatPreviewCard", takeStart, StringComparison.Ordinal);
+        var takeBody = Script[takeStart..takeEnd];
 
-        Assert.Contains("local top = containedCards[1]", topBody);
-        Assert.Contains("index = top.index", topBody);
-        Assert.Contains("top order mismatched authoritative transition", topBody);
-        Assert.DoesNotContain("for _, contained in ipairs(containedCards) do", topBody);
+        Assert.Contains("BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, \"library\"", takeBody);
+        Assert.Contains("BridgeFindContainedCardEntry(cardInstanceId, expectedZone)", Script);
+        Assert.Contains("guid = expectedGuid", Script);
+        Assert.DoesNotContain("physical library top order mismatched authoritative transition", takeBody);
+        Assert.DoesNotContain("BridgeTakeTopCardFromLibrary(", takeBody);
     }
 
     [Fact]
@@ -2007,21 +2008,22 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void BootstrapAlignsThePhysicalLibraryToForgeSnapshotOrderBeforeLiveDraws()
+    public void BootstrapBindsLibraryMappingsWithoutWholeDeckReorder()
     {
-        var alignmentStart = Script.IndexOf("function BridgeAlignLibraryOrderForSnapshot", StringComparison.Ordinal);
-        var alignmentEnd = Script.IndexOf("function BridgeTryBootstrapSeatSnapshot", alignmentStart, StringComparison.Ordinal);
-        var alignment = Script[alignmentStart..alignmentEnd];
+        var bindingStart = Script.IndexOf("function BridgeBindLibraryMappingsForSnapshot", StringComparison.Ordinal);
+        var bindingEnd = Script.IndexOf("function BridgeAlignLibraryOrderForSnapshot", bindingStart, StringComparison.Ordinal);
+        var binding = Script[bindingStart..bindingEnd];
 
-        Assert.Contains("table.sort(libraryCards", alignment);
-        Assert.Contains("local nextIndex = #libraryCards", alignment);
-        Assert.Contains("BridgeTakeCardFromDeckByIdentity", alignment);
-        Assert.Contains("current.putObject(taken, 0)", alignment);
+        Assert.Contains("BridgeRecordContainedCardIdentity", binding);
+        Assert.Contains("library binding count mismatch", binding);
+        Assert.DoesNotContain("BridgeTakeCardFromDeckByIdentity", binding);
+        Assert.DoesNotContain("putObject(taken, 0)", binding);
         var bootstrapStart = Script.IndexOf("function BridgeTryBootstrapSeatSnapshot", StringComparison.Ordinal);
         var bootstrapEnd = Script.IndexOf("function BridgeCollectSeatAssets", bootstrapStart, StringComparison.Ordinal);
         var bootstrap = Script[bootstrapStart..bootstrapEnd];
         Assert.Contains("BridgeMaterializeSeatSnapshot", bootstrap);
-        Assert.Contains("BridgeAlignLibraryOrderForSnapshot(seatSnapshot", bootstrap);
+        Assert.Contains("BridgeBindLibraryMappingsForSnapshot(seatSnapshot", Script);
+        Assert.DoesNotContain("BridgeAlignLibraryOrderForSnapshot(seatSnapshot", bootstrap);
     }
 
     [Fact]

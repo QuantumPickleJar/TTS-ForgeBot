@@ -2735,6 +2735,186 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void OrderlessBootstrapLibraryBinding_AssignsContainedMappingsWithoutDeckMutation()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            local entries = {
+                {guid='guid-swamp', nickname='Swamp', index=1},
+                {guid='guid-note', nickname='Mental Note', index=2},
+                {guid='guid-strix', nickname='Baleful Strix', index=3}
+            }
+            local deck = {
+                tag='Deck',
+                getGUID=function() return 'library-deck' end,
+                getObjects=function() return entries end,
+                takeObject=function(_) takeCalls = (takeCalls or 0) + 1 end,
+                putObject=function(_) putCalls = (putCalls or 0) + 1 end
+            }
+            function getObjectFromGUID(guid)
+                if guid == 'library-deck' then return deck end
+                return nil
+            end
+            BridgeState.eventSessionId = 'session'
+            takeCalls = 0
+            putCalls = 0
+            function BridgeResolveSeatLibraryDeck(_) return deck, {'library-deck'}, nil end
+            seatSnapshot = {
+                seatId='forge-player-1',
+                zones={{
+                    name='library',
+                    cards={
+                        {cardInstanceId='forge:session:37', cardName='Baleful Strix', zonePosition=0},
+                        {cardInstanceId='forge:session:28', cardName='Mental Note', zonePosition=1},
+                        {cardInstanceId='forge:session:20', cardName='Swamp', zonePosition=6}
+                    }
+                }}
+            }
+            bindingOk = nil
+            bindingErr = nil
+            BridgeBindLibraryMappingsForSnapshot(seatSnapshot, function(ok, err)
+                bindingOk = ok
+                bindingErr = err
+            end)
+            stats = BridgeState.bootstrapLibraryMappingBySeatId['forge-player-1']
+            mapped37 = BridgeState.physicalContainerByInstanceId['forge:session:37']
+            mapped28 = BridgeState.physicalContainerByInstanceId['forge:session:28']
+            mapped20 = BridgeState.physicalContainerByInstanceId['forge:session:20']
+        ");
+
+        Assert.True(lua.Globals.Get("bindingOk").Boolean, lua.Globals.Get("bindingErr").ToPrintString());
+        Assert.Equal(0, lua.Globals.Get("takeCalls").Number);
+        Assert.Equal(0, lua.Globals.Get("putCalls").Number);
+        Assert.Equal(3, lua.Globals.Get("stats").Table.Get("expectedLibraryMappings").Number);
+        Assert.Equal(3, lua.Globals.Get("stats").Table.Get("verifiedLibraryMappings").Number);
+        Assert.Equal(0, lua.Globals.Get("stats").Table.Get("missingLibraryMappings").Number);
+        Assert.Equal("guid-strix", lua.Globals.Get("mapped37").Table.Get("cardGuid").String);
+        Assert.Equal("guid-note", lua.Globals.Get("mapped28").Table.Get("cardGuid").String);
+        Assert.Equal("guid-swamp", lua.Globals.Get("mapped20").Table.Get("cardGuid").String);
+    }
+
+    [Fact]
+    public void LibraryContainedExtraction_UsesExactBoundInstanceEvenWhenNativeTopDiffers()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            local entries = {
+                {guid='guid-top-b', nickname='Swamp', index=1},
+                {guid='guid-second-a', nickname='Baleful Strix', index=2}
+            }
+            local cards = {
+                ['guid-top-b'] = {tag='Card', name='Swamp', getGUID=function() return 'guid-top-b' end},
+                ['guid-second-a'] = {tag='Card', name='Baleful Strix', getGUID=function() return 'guid-second-a' end}
+            }
+            local deck = {
+                tag='Deck',
+                getGUID=function() return 'library-deck' end,
+                getObjects=function() return entries end,
+                takeObject=function(options)
+                    takeCalls = (takeCalls or 0) + 1
+                    local wanted = tostring(options.guid or '')
+                    local selected = nil
+                    local selectedIndex = nil
+                    for index, entry in ipairs(entries) do
+                        if tostring(entry.guid or '') == wanted then
+                            selected = entry
+                            selectedIndex = index
+                            break
+                        end
+                    end
+                    if selected == nil then
+                        if options.callback_function then options.callback_function(nil) end
+                        return
+                    end
+                    table.remove(entries, selectedIndex)
+                    if options.callback_function then options.callback_function(cards[wanted]) end
+                end,
+                putObject=function(object)
+                    putCalls = (putCalls or 0) + 1
+                    table.insert(entries, {guid = object.getGUID(), nickname = object.name, index = #entries + 1})
+                end
+            }
+            function getObjectFromGUID(guid)
+                if guid == 'library-deck' then return deck end
+                return cards[guid]
+            end
+            BridgeState.eventSessionId = 'session'
+            takeCalls = 0
+            putCalls = 0
+            BridgeRecordContainedCardIdentity('forge:session:A', 'library-deck', 'guid-second-a', 'forge-player-1', 'library', 'Baleful Strix')
+            BridgeRecordContainedCardIdentity('forge:session:B', 'library-deck', 'guid-top-b', 'forge-player-1', 'library', 'Swamp')
+            takenGuid = nil
+            takeErr = nil
+            BridgeTakeContainedLibraryCardByIdentity('forge:session:A', {x=0,y=2,z=0}, false, function(card, err)
+                takenGuid = card and card.getGUID() or nil
+                takeErr = err
+            end)
+            remainingTopGuid = entries[1] and entries[1].guid or nil
+            remainingGuidByScan = nil
+            for _, entry in pairs(entries) do
+                if entry ~= nil and remainingGuidByScan == nil then
+                    remainingGuidByScan = entry.guid
+                end
+            end
+        ");
+
+        Assert.Equal(1, lua.Globals.Get("takeCalls").Number);
+        Assert.Equal(0, lua.Globals.Get("putCalls").Number);
+        Assert.True(lua.Globals.Get("takeErr").IsNil(), lua.Globals.Get("takeErr").ToPrintString());
+        Assert.Equal("guid-second-a", lua.Globals.Get("takenGuid").String);
+        var remainingTopGuid = lua.Globals.Get("remainingTopGuid");
+        var remainingGuidByScan = lua.Globals.Get("remainingGuidByScan");
+        Assert.True(
+            (remainingTopGuid.Type == DataType.String && remainingTopGuid.String == "guid-top-b")
+            || (remainingGuidByScan.Type == DataType.String && remainingGuidByScan.String == "guid-top-b"));
+    }
+
+    [Fact]
+    public void OrderlessBootstrapLibraryBinding_HandlesDuplicateNamesDeterministically()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            local entries = {
+                {guid='guid-swamp-a', nickname='Swamp', index=1},
+                {guid='guid-swamp-b', nickname='Swamp', index=2}
+            }
+            local deck = {
+                tag='Deck',
+                getGUID=function() return 'library-deck' end,
+                getObjects=function() return entries end
+            }
+            function getObjectFromGUID(guid)
+                if guid == 'library-deck' then return deck end
+                return nil
+            end
+            function BridgeResolveSeatLibraryDeck(_) return deck, {'library-deck'}, nil end
+            BridgeState.eventSessionId = 'session'
+            seatSnapshot = {
+                seatId='forge-player-1',
+                zones={{
+                    name='library',
+                    cards={
+                        {cardInstanceId='forge:session:swamp-low', cardName='Swamp', zonePosition=0},
+                        {cardInstanceId='forge:session:swamp-high', cardName='Swamp', zonePosition=1}
+                    }
+                }}
+            }
+            bindingOk = nil
+            bindingErr = nil
+            BridgeBindLibraryMappingsForSnapshot(seatSnapshot, function(ok, err)
+                bindingOk = ok
+                bindingErr = err
+            end)
+            low = BridgeState.physicalContainerByInstanceId['forge:session:swamp-low']
+            high = BridgeState.physicalContainerByInstanceId['forge:session:swamp-high']
+        ");
+
+        Assert.True(lua.Globals.Get("bindingOk").Boolean, lua.Globals.Get("bindingErr").ToPrintString());
+        Assert.Equal("guid-swamp-a", lua.Globals.Get("low").Table.Get("cardGuid").String);
+        Assert.Equal("guid-swamp-b", lua.Globals.Get("high").Table.Get("cardGuid").String);
+    }
+
+    [Fact]
     public void FinalPhysicalRepresentationRejectsStaleContainedDeckMapping()
     {
         var lua = NewQueueProbe();
