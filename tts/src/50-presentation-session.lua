@@ -1746,7 +1746,7 @@ end
 -- Extract a graveyard card by its contained GUID, never by printed name. The
 -- containing Deck is re-resolved at dispatch time because TTS replaces a Deck
 -- when it collapses from two cards to one.
-function BridgeTakeContainedCardByIdentity(cardInstanceId, position, smooth, callback)
+local function BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, expectedZone, position, smooth, callback)
     local finished = false
     local function finish(...)
         if finished then
@@ -1756,13 +1756,14 @@ function BridgeTakeContainedCardByIdentity(cardInstanceId, position, smooth, cal
         finished = true
         callback(...)
     end
-    local deck, entry, resolveError = BridgeFindContainedCardEntry(cardInstanceId, "graveyard")
+    local deck, entry, resolveError = BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
     if deck == nil or entry == nil then
-        finish(nil, resolveError or "contained graveyard card is unavailable")
+        finish(nil, resolveError or ("contained " .. tostring(expectedZone or "unknown") .. " card is unavailable"))
         return
     end
     local expectedGuid = entry.guid or entry.GUID
     local deckGuid = BridgeSafeObjectGuid(deck)
+    BridgeStartupPerfCounter("deckTakeObjectCalls", 1)
     local ok, takeError = pcall(function()
         deck.takeObject({
             guid = expectedGuid,
@@ -1777,8 +1778,11 @@ function BridgeTakeContainedCardByIdentity(cardInstanceId, position, smooth, cal
                 local actualGuid = BridgeSafeObjectGuid(taken)
                 if actualGuid ~= expectedGuid then
                     local liveDeck = BridgeGetLiveObjectByGuid(deckGuid)
-                    if liveDeck ~= nil then BridgeSafeObjectCall(liveDeck, function(d) d.putObject(taken, 0) end) end
-                    finish(nil, "contained graveyard extraction returned the wrong physical GUID")
+                    if liveDeck ~= nil then
+                        BridgeStartupPerfCounter("deckPutObjectCalls", 1)
+                        BridgeSafeObjectCall(liveDeck, function(d) d.putObject(taken, 0) end)
+                    end
+                    finish(nil, "contained extraction returned the wrong physical GUID")
                     return
                 end
                 BridgeRefreshContainedMappingsAfterDeckMutation(deckGuid)
@@ -1786,7 +1790,18 @@ function BridgeTakeContainedCardByIdentity(cardInstanceId, position, smooth, cal
             end
         })
     end)
-    if not ok then finish(nil, "contained graveyard takeObject failed: " .. tostring(takeError)) end
+    if not ok then finish(nil, "contained takeObject failed: " .. tostring(takeError)) end
+end
+
+-- Graveyard extractions must follow the contained GUID exactly.
+function BridgeTakeContainedCardByIdentity(cardInstanceId, position, smooth, callback)
+    BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, "graveyard", position, smooth, callback)
+end
+
+-- Library-to-public transitions must extract the exact Forge CardInstanceId
+-- binding rather than assuming native top order.
+function BridgeTakeContainedLibraryCardByIdentity(cardInstanceId, position, smooth, callback)
+    BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, "library", position, smooth, callback)
 end
 
 function BridgeReturnCombatPreviewCard(seatId, object)

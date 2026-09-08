@@ -1,15 +1,15 @@
 ﻿            if not materialized then callback(false, materializeError); return end
-            -- Materialization removes the snapshot hand and public-zone cards
-            -- from the imported deck first. Only then does the remaining deck
-            -- exactly correspond to Forge's library and become safe to order.
+            -- Materialization removes snapshot hand/public cards first. The
+            -- remaining native Deck is then bound to Forge library instances
+            -- by exact contained GUID without destructive reordering.
             if BridgeRecordBootstrapStage ~= nil then
                 BridgeRecordBootstrapStage(stagePrefix .. "-materialization",
                     materialized and "OBSERVED" or "FAILED", materializeError)
             end
-            if BridgeRecordBootstrapStage ~= nil then BridgeRecordBootstrapStage(stagePrefix .. "-library-alignment", "EXPECTED") end
-            BridgeAlignLibraryOrderForSnapshot(seatSnapshot, function(aligned, alignmentError)
+            if BridgeRecordBootstrapStage ~= nil then BridgeRecordBootstrapStage(stagePrefix .. "-library-binding", "EXPECTED") end
+            BridgeBindLibraryMappingsForSnapshot(seatSnapshot, function(aligned, alignmentError)
                 if BridgeRecordBootstrapStage ~= nil then
-                    BridgeRecordBootstrapStage(stagePrefix .. "-library-alignment",
+                    BridgeRecordBootstrapStage(stagePrefix .. "-library-binding",
                         aligned and "OBSERVED" or "FAILED", alignmentError)
                 end
                 if not aligned then callback(false, alignmentError); return end
@@ -4424,23 +4424,20 @@ local function BridgeApplyStructuredCardMoveCore(event)
     local function moveFromLibraryDeckToHand(deck)
         local hand, handError = BridgeTryGetSeatHandTransform(event.seatId)
         if hand == nil then return false, handError end
-        local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
         local transactionSessionId = BridgeState.eventSessionId
         local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_ENTER", "library_extraction", event, "event:" .. tostring(event.sequence))
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
             if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
-            local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
-            if liveDeck == nil then
+            if BridgeFindLibraryDeckForSeat(event.seatId) == nil then
                 BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued extraction"))
                 complete()
                 return
             end
-            BridgeTakeTopCardFromLibrary(liveDeck, expectedName, hand.position, true, function(drawn, takeError)
+            BridgeTakeContainedLibraryCardByIdentity(event.cardInstanceId, hand.position, true, function(drawn, takeError)
                 if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
                 if drawn == nil then
-                    if BridgeRecoverFromLibraryOrderMismatch(takeError) then complete(); return end
-                    BridgeStopOnDesync(libraryDrawError(takeError))
+                    BridgeStopOnDesync(libraryDrawError("contained extraction failed: " .. tostring(takeError)))
                     complete()
                     return
                 end
@@ -4501,13 +4498,12 @@ local function BridgeApplyStructuredCardMoveCore(event)
                 end
                 verifyHandMembership()
             end)
-        end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
+        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName})
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
         return true, nil
     end
 
     local function moveFromLibraryDeckToBattlefield(deck)
-        local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
         local libraryZone = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
         if libraryZone == nil then
             return false, "library zone is unavailable for authoritative library-to-battlefield move"
@@ -4518,18 +4514,16 @@ local function BridgeApplyStructuredCardMoveCore(event)
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_ENTER", "library_extraction", event, "event:" .. tostring(event.sequence))
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
             if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
-            local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
-            if liveDeck == nil then
+            if BridgeFindLibraryDeckForSeat(event.seatId) == nil then
                 BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued extraction"))
                 complete()
                 return
             end
-            BridgeTakeTopCardFromLibrary(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
+            BridgeTakeContainedLibraryCardByIdentity(event.cardInstanceId, {staging.x + 4, staging.y + 2, staging.z}, false,
                 function(taken, takeError)
                 if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
                     if taken == nil then
-                        if BridgeRecoverFromLibraryOrderMismatch(takeError) then complete(); return end
-                        BridgeStopOnDesync(libraryDrawError(takeError))
+                        BridgeStopOnDesync(libraryDrawError("contained extraction failed: " .. tostring(takeError)))
                         complete()
                         return
                     end
@@ -4543,7 +4537,7 @@ local function BridgeApplyStructuredCardMoveCore(event)
                     if not moved then BridgeStopOnDesync(libraryDrawError(moveError)) end
                     BridgeWaitFrames(complete, 1)
                 end)
-        end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
+        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName})
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
         return true, nil
     end
@@ -4554,7 +4548,6 @@ local function BridgeApplyStructuredCardMoveCore(event)
     -- graveyard before a later queued draw can present the next hand card.
     -- A Deck handle is never itself a card move.
     local function moveFromLibraryDeckToGraveyard(deck)
-        local expectedName = BridgeState.cardNameByInstanceId[event.cardInstanceId] or event.cardName
         local libraryZone = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
         if libraryZone == nil then
             return false, "library zone is unavailable for authoritative library-to-graveyard move"
@@ -4566,18 +4559,16 @@ local function BridgeApplyStructuredCardMoveCore(event)
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_ENTER", "library_extraction", event, "event:" .. tostring(event.sequence))
         BridgeQueueLibraryExtraction(event.seatId, function(complete)
             if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
-            local liveDeck = BridgeFindLibraryDeckForSeat(event.seatId)
-            if liveDeck == nil then
+            if BridgeFindLibraryDeckForSeat(event.seatId) == nil then
                 BridgeStopOnDesync(libraryDrawError("physical library deck not found while processing queued graveyard extraction"))
                 complete()
                 return
             end
-            BridgeTakeTopCardFromLibrary(liveDeck, expectedName, {staging.x + 4, staging.y + 2, staging.z}, false,
+            BridgeTakeContainedLibraryCardByIdentity(event.cardInstanceId, {staging.x + 4, staging.y + 2, staging.z}, false,
                 function(taken, takeError)
                 if not BridgePhysicalPresentationIsCurrent(transactionSessionId, transactionGeneration) then complete("stale-presentation"); return end
                     if taken == nil then
-                        if BridgeRecoverFromLibraryOrderMismatch(takeError) then complete(); return end
-                        BridgeStopOnDesync(libraryDrawError(takeError))
+                        BridgeStopOnDesync(libraryDrawError("contained extraction failed: " .. tostring(takeError)))
                         complete()
                         return
                     end
@@ -4621,7 +4612,7 @@ local function BridgeApplyStructuredCardMoveCore(event)
                     -- Completion is owned by the asynchronous settlement
                     -- callback above; no synchronous success is assumed.
                 end)
-        end, {cardInstanceId = event.cardInstanceId, expectedCardName = expectedName})
+        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName})
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
         return true, nil
     end
