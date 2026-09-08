@@ -1499,17 +1499,36 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             return false;
         }
 
+        var validationStopwatch = Stopwatch.StartNew();
+        _logger.LogInformation(
+            "STARTUP_PERF stage=stable-deck-validation-begin elapsedMs=0 totalMs=0 detail=decision={DecisionId} reason={Reason} snapshotSequence={SnapshotSequence}",
+            decisionId,
+            reason,
+            snapshot.ForgeSequence);
         var inventory = ForgeDeckInventoryValidator.Validate(_configuredDeckInventoryBySeat, snapshot);
         if (!inventory.IsValid)
         {
             _initialDeckInventoryValidationPending = false;
             _initialDeckInventoryValidationState = InitialDeckInventoryValidationState.Failed;
+            _logger.LogInformation(
+                "STARTUP_PERF stage=stable-deck-validation-end elapsedMs={ElapsedMs} totalMs={TotalMs} detail=failed seat={SeatId} expected={Expected} actual={Actual}",
+                validationStopwatch.ElapsedMilliseconds,
+                validationStopwatch.ElapsedMilliseconds,
+                inventory.SeatId,
+                inventory.ExpectedCount,
+                inventory.ActualCount);
             Fail("forge_deck_inventory_mismatch", inventory.ErrorMessage!);
             return false;
         }
 
         _initialDeckInventoryValidationPending = false;
         _initialDeckInventoryValidationState = InitialDeckInventoryValidationState.Validated;
+        _logger.LogInformation(
+            "STARTUP_PERF stage=stable-deck-validation-end elapsedMs={ElapsedMs} totalMs={TotalMs} detail=ok seats={SeatCount} snapshotSequence={SnapshotSequence}",
+            validationStopwatch.ElapsedMilliseconds,
+            validationStopwatch.ElapsedMilliseconds,
+            _configuredDeckInventoryBySeat.Count,
+            snapshot.ForgeSequence);
         _logger.LogInformation(
             "Forge authoritative deck inventory matches TTS inventory at stable barrier: decision={DecisionId} reason={Reason} seats={SeatCount} snapshotSequence={SnapshotSequence} snapshotReason={SnapshotReason}",
             decisionId,

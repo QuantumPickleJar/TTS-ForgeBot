@@ -987,6 +987,7 @@ function BridgeCreateResourceCounter(seatId, kind, definition, position)
         end, 2)
         return counter
     end
+    BridgeStartupPerfCounter("deckTakeObjectCalls", 1)
     source.takeObject({position = position, smooth = false, callback_function = function(taken)
         if BridgeState.resourceCounterSpawnInFlightBySeatId[seatId] ~= nil then
             BridgeState.resourceCounterSpawnInFlightBySeatId[seatId][kind] = nil
@@ -1165,6 +1166,7 @@ function BridgeReturnMonarchHelper()
     local helper = BridgeState.monarchHelperGuid and BridgeGetLiveObjectByGuid(BridgeState.monarchHelperGuid) or nil
     local utilityDeck = BridgeGetLiveObjectByGuid("946716")
     if helper ~= nil and utilityDeck ~= nil and utilityDeck.tag == "Deck" then
+        BridgeStartupPerfCounter("deckPutObjectCalls", 1)
         BridgeSafeObjectCall(utilityDeck, function(deck) deck.putObject(helper) end)
         BridgeUnregisterPresentationObject(helper)
         BridgeState.monarchHelperGuid = nil
@@ -1200,6 +1202,7 @@ function BridgeSetMonarchSeat(seatId)
     end
     BridgeState.monarchSpawnInFlight = true
     local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    BridgeStartupPerfCounter("deckTakeObjectCalls", 1)
     utilityDeck.takeObject({
         index = entry.index,
         position = BRIDGE_SEATS[seatId].monarchAnchor,
@@ -2524,6 +2527,7 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
                     "staged object unavailable index=" .. tostring(index))
                 return
             end
+            BridgeStartupPerfCounter("deckPutObjectCalls", 1)
             local putOk, putResult = pcall(function() return target.putObject(staged.object, 0) end)
             if not putOk then
                 BridgeAbortAtomicGraveyardMutation(tx, batch,

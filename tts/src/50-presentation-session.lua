@@ -77,6 +77,7 @@ function BridgeTakeCardFromDeckByIdentity(deck, expectedName, position, smooth, 
     end
 
     local deckGuid = BridgeSafeObjectGuid(deck)
+    BridgeStartupPerfCounter("deckTakeObjectCalls", 1)
     deck.takeObject({
         index = matched.index,
         position = position,
@@ -89,6 +90,7 @@ function BridgeTakeCardFromDeckByIdentity(deck, expectedName, position, smooth, 
             if expectedName ~= nil and expectedName ~= "" and not BridgeCardNameMatches(taken.getName(), expectedName) then
                 local liveDeck = BridgeGetLiveObjectByGuid(deckGuid)
                 if liveDeck ~= nil then
+                    BridgeStartupPerfCounter("deckPutObjectCalls", 1)
                     BridgeSafeObjectCall(liveDeck, function(d) d.putObject(taken) end)
                 end
                 callback(nil, "physical library extraction mismatched authoritative identity")
@@ -163,6 +165,7 @@ function BridgeTakeTopCardFromLibrary(deck, expectedName, position, smooth, call
     end
 
     BridgeTtsExecutionBreadcrumb("TAKE_OBJECT_DISPATCH_ENTER", "library_take_object", nil)
+    BridgeStartupPerfCounter("deckTakeObjectCalls", 1)
     deck.takeObject({
         index = top.index,
         position = position,

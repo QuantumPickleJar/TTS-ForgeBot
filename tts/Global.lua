@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 298abe54b0d5786a3cd432cd1fca58f87291450cd4679dac8c9f56fb650b28bb
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "298abe54b0d5786a3cd432cd1fca58f87291450cd4679dac8c9f56fb650b28bb"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: b9575795ac6aca848975eabaeb6e832d9108075065ea9b80eb40565f161eb778
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "b9575795ac6aca848975eabaeb6e832d9108075065ea9b80eb40565f161eb778"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -480,6 +480,111 @@ function BridgePresentationMetric(name)
     BridgeState.presentationMetrics[name] = (BridgeState.presentationMetrics[name] or 0) + 1
 end
 
+function BridgeStartupPerfNowSeconds()
+    local wall = BridgePerformanceWallNow()
+    if wall ~= nil then return wall end
+    return BridgePerformanceNow()
+end
+
+function BridgeStartupPerfEnsure()
+    local startup = BridgeState.startupPerf
+    if startup ~= nil then return startup end
+    startup = {
+        active = false,
+        origin = nil,
+        baseWallSeconds = nil,
+        baseCpuSeconds = nil,
+        baseUpdateTick = 0,
+        stageTokens = {},
+        stageRecords = {},
+        counters = {}
+    }
+    BridgeState.startupPerf = startup
+    return startup
+end
+
+function BridgeStartupPerfReset(origin)
+    local startup = BridgeStartupPerfEnsure()
+    startup.active = true
+    startup.origin = tostring(origin or "unknown")
+    startup.baseWallSeconds = BridgeStartupPerfNowSeconds()
+    startup.baseCpuSeconds = BridgePerformanceNow()
+    startup.baseUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+    startup.stageTokens = {}
+    startup.stageRecords = {}
+    startup.counters = {}
+    BridgeLog(string.format(
+        "[Bridge] STARTUP_PERF stage=startup-reset origin=%s elapsedMs=0 totalMs=0 ticks=0",
+        startup.origin))
+end
+
+function BridgeStartupPerfCounter(name, delta)
+    local startup = BridgeState.startupPerf
+    if startup == nil or startup.active ~= true then return end
+    local key = tostring(name or "unknown")
+    startup.counters[key] = (tonumber(startup.counters[key] or 0) or 0) + (tonumber(delta or 1) or 1)
+end
+
+function BridgeStartupPerfStageBegin(stage, detail)
+    local startup = BridgeState.startupPerf
+    if startup == nil or startup.active ~= true then return end
+    local key = tostring(stage or "unknown")
+    startup.stageTokens[key] = {
+        wallStartedAt = BridgeStartupPerfNowSeconds(),
+        cpuStartedAt = BridgePerformanceNow(),
+        updateTick = tonumber(BridgeState.updateTick or 0) or 0,
+        detail = detail
+    }
+end
+
+function BridgeStartupPerfStageEnd(stage, detail)
+    local startup = BridgeState.startupPerf
+    if startup == nil or startup.active ~= true then return end
+    local key = tostring(stage or "unknown")
+    local token = startup.stageTokens[key]
+    if token == nil then
+        token = {
+            wallStartedAt = BridgeStartupPerfNowSeconds(),
+            cpuStartedAt = BridgePerformanceNow(),
+            updateTick = tonumber(BridgeState.updateTick or 0) or 0
+        }
+    end
+    startup.stageTokens[key] = nil
+    local endedWall = BridgeStartupPerfNowSeconds()
+    local elapsedMs = math.max(0, (endedWall - (token.wallStartedAt or endedWall)) * 1000)
+    local totalMs = startup.baseWallSeconds ~= nil and math.max(0, (endedWall - startup.baseWallSeconds) * 1000) or elapsedMs
+    local updateTick = tonumber(BridgeState.updateTick or 0) or 0
+    local tickDelta = math.max(0, updateTick - (token.updateTick or updateTick))
+    startup.stageRecords[key] = {
+        stage = key,
+        elapsedMs = elapsedMs,
+        totalMs = totalMs,
+        ticks = tickDelta,
+        detail = detail or token.detail
+    }
+    BridgeLog(string.format(
+        "[Bridge] STARTUP_PERF stage=%s elapsedMs=%.0f totalMs=%.0f ticks=%d detail=%s",
+        key,
+        elapsedMs,
+        totalMs,
+        tickDelta,
+        tostring(detail or token.detail or "")))
+end
+
+function BridgeStartupPerfEvent(stage, detail)
+    local startup = BridgeState.startupPerf
+    if startup == nil or startup.active ~= true then return end
+    local nowWall = BridgeStartupPerfNowSeconds()
+    local totalMs = startup.baseWallSeconds ~= nil and math.max(0, (nowWall - startup.baseWallSeconds) * 1000) or 0
+    local ticks = math.max(0, (tonumber(BridgeState.updateTick or 0) or 0) - (startup.baseUpdateTick or 0))
+    BridgeLog(string.format(
+        "[Bridge] STARTUP_PERF stage=%s elapsedMs=0 totalMs=%.0f ticks=%d detail=%s",
+        tostring(stage or "event"),
+        totalMs,
+        ticks,
+        tostring(detail or "")))
+end
+
 -- Automated pass/yield is presentation convenience, so it must not let Forge
 -- outrun a TTS event backlog created by local rendering work. Manual choices
 -- remain unaffected and the next authoritative decision resumes automation.
@@ -910,7 +1015,8 @@ function BridgeEventDrainQueueState()
         bootstrapStageTrace = BridgeDiagnosticSnapshot(BridgeState.bootstrapStageTrace or {}),
         lastSnapshotReconcileFailureStage = BridgeState.lastSnapshotReconcileFailureStage,
         lastSnapshotReconcileFailureReason = BridgeState.lastSnapshotReconcileFailureReason,
-        snapshotPhysicalZoneOwnership = BridgeDiagnosticSnapshot(zoneOwnership)
+        snapshotPhysicalZoneOwnership = BridgeDiagnosticSnapshot(zoneOwnership),
+        lastSnapshotRepresentationFailure = BridgeDiagnosticSnapshot(BridgeState.lastSnapshotRepresentationFailure)
     }
 end
 
@@ -1218,6 +1324,9 @@ end
 
 function BridgeEmbodimentJournal(tx, phase, operationType, detail)
     if tx == nil then return end
+    if operationType ~= nil and string.find(tostring(operationType), "REPLAN", 1, true) ~= nil then
+        BridgeStartupPerfCounter("embodimentReplanCount", 1)
+    end
     local record = {
         runtimeEpoch = tx.runtimeEpoch,
         embodimentEpoch = tx.epoch,
@@ -1550,6 +1659,8 @@ function BridgeBeginEmbodimentTransaction(sessionId, reason, resumeFromSnapshotC
     tx.candidatePhysicalLedger = BridgeDiagnosticSnapshot(tx.committedPhysicalLedger)
     BridgeActivatePhysicalLedger(tx.candidatePhysicalLedger)
     BridgeState.embodimentTransaction = tx
+    BridgeStartupPerfEvent("embodiment-transaction-begin",
+        "reason=" .. tostring(tx.reason) .. " session=" .. tostring(sessionId))
     BridgeEmbodimentJournal(tx, "OBSERVE", "BEGIN", nil)
     return tx, true
 end
@@ -1864,6 +1975,16 @@ function BridgePerformanceDiagnosticPayload()
     summary.startupUiDurationMs = startup.uiDurationMs
     summary.startupObjectDiscoveryDurationMs = startup.objectDiscoveryDurationMs
     summary.startupHealthDispatchDurationMs = startup.healthDispatchDurationMs
+    local startupPerf = BridgeState.startupPerf or {}
+    local startupCounters = startupPerf.counters or {}
+    summary.startupGetAllObjectsCalls = tonumber(startupCounters.getAllObjectsCalls or 0) or 0
+    summary.startupResolveSeatLibraryDeckCalls = tonumber(startupCounters.resolveSeatLibraryDeckCalls or 0) or 0
+    summary.startupDeckGetObjectsCalls = tonumber(startupCounters.deckGetObjectsCalls or 0) or 0
+    summary.startupDeckTakeObjectCalls = tonumber(startupCounters.deckTakeObjectCalls or 0) or 0
+    summary.startupDeckPutObjectCalls = tonumber(startupCounters.deckPutObjectCalls or 0) or 0
+    summary.startupWaitFramesCalls = tonumber(startupCounters.waitFramesCalls or 0) or 0
+    summary.startupWaitTimeCalls = tonumber(startupCounters.waitTimeCalls or 0) or 0
+    summary.startupEmbodimentReplanCount = tonumber(startupCounters.embodimentReplanCount or 0) or 0
     return {
         performanceSummary = summary,
         recentTtsTrace = BridgeDiagnosticSnapshot(BridgePerformanceTraceSnapshot()),
@@ -1885,6 +2006,7 @@ function BridgePerformanceDiagnosticPayload()
         },
         resyncLifecycle = BridgeDiagnosticSnapshot(BridgeState.resyncLifecycle or {}),
         eventDrainDiagnostics = BridgeEventDrainQueueState(),
+        startupPerf = BridgeDiagnosticSnapshot(BridgeState.startupPerf or {}),
         recoveryStateInvariants = BridgeComputeRecoveryStateInvariants()
     }
 end
@@ -1925,6 +2047,7 @@ end
 
 function BridgeWaitTime(callback, delay)
     local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    BridgeStartupPerfCounter("waitTimeCalls", 1)
     Wait.time(function()
         if not BridgeRuntimeIsCurrent(epoch) then return end
         callback()
@@ -1933,6 +2056,7 @@ end
 
 function BridgeWaitFrames(callback, frames)
     local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    BridgeStartupPerfCounter("waitFramesCalls", 1)
     Wait.frames(function()
         if not BridgeRuntimeIsCurrent(epoch) then return end
         callback()
@@ -2012,7 +2136,18 @@ BRIDGE_SEATS = {
 }
 
 local _obj = getObjectFromGUID
-local _all = getAllObjects
+local _rawAllObjects = getAllObjects
+local function BridgeAllObjectsSnapshot()
+    if BridgeStartupPerfCounter ~= nil then
+        BridgeStartupPerfCounter("getAllObjectsCalls", 1)
+    end
+    if type(_rawAllObjects) ~= "function" then
+        return {}
+    end
+    return _rawAllObjects()
+end
+getAllObjects = BridgeAllObjectsSnapshot
+local _all = BridgeAllObjectsSnapshot
 local _spawn = spawnObject
 local _ip = ipairs
 local _pairs = pairs
@@ -2220,6 +2355,14 @@ BridgeState = {
         worstActionMatchingDurationMs = 0,
         worstUiFlushDurationMs = 0,
         worstSnapshotReconcileDurationMs = 0,
+        startupGetAllObjectsCalls = 0,
+        startupResolveSeatLibraryDeckCalls = 0,
+        startupDeckGetObjectsCalls = 0,
+        startupDeckTakeObjectCalls = 0,
+        startupDeckPutObjectCalls = 0,
+        startupWaitFramesCalls = 0,
+        startupWaitTimeCalls = 0,
+        startupEmbodimentReplanCount = 0,
         ttsRepresentedPlayLandCount = 0,
         ttsRepresentedCastSpellCount = 0
     },
@@ -2232,6 +2375,16 @@ BridgeState = {
         uiDurationMs = nil,
         objectDiscoveryDurationMs = nil,
         healthDispatchDurationMs = nil
+    },
+    startupPerf = {
+        active = false,
+        origin = nil,
+        baseWallSeconds = nil,
+        baseCpuSeconds = nil,
+        baseUpdateTick = 0,
+        stageTokens = {},
+        stageRecords = {},
+        counters = {}
     },
     physicalSeatByGuid = {},
     physicalZoneByGuid = {},
@@ -2450,6 +2603,10 @@ function BridgeSetupTrace(marker, detail)
 end
 
 function BridgeSetupStage(stage, detail)
+    local priorStage = BridgeState.setupStage
+    if priorStage ~= nil and priorStage ~= stage then
+        BridgeStartupPerfStageEnd("setup-" .. tostring(priorStage), "next=" .. tostring(stage))
+    end
     BridgeState.setupStage = stage
     BridgeSetupTrace(stage, detail)
     local labels = {
@@ -2457,9 +2614,18 @@ function BridgeSetupStage(stage, detail)
         CONTACTING_BRIDGE = "Contacting Bridge…",
         VALIDATING_DECKS = "Validating decks…",
         STARTING_FORGE = "Starting Forge…",
+        WAITING_FOR_FORGE = "Waiting for Forge…",
+        RECONCILING_HUMAN_SNAPSHOT = "Reconciling human snapshot…",
+        RECONCILING_HUMAN_LIBRARY = "Reconciling human library…",
+        RECONCILING_AI_SNAPSHOT = "Reconciling AI snapshot…",
+        RECONCILING_AI_LIBRARY = "Reconciling AI library…",
+        VERIFYING_PHYSICAL_SNAPSHOT = "Verifying physical snapshot…",
+        READY = "Ready",
         SETUP_STATE_VALIDATED = "Validating setup…"
     }
     if BridgeSetStatus ~= nil and labels[stage] ~= nil then BridgeSetStatus(labels[stage], detail or "") end
+    BridgeStartupPerfStageBegin("setup-" .. tostring(stage), detail)
+    if stage == "READY" then BridgeStartupPerfEvent("decision-presentation-ready", tostring(detail or "")) end
     BridgeUiMarkDirty("setup-stage-" .. tostring(stage))
 end
 
@@ -3516,6 +3682,7 @@ function BridgeSelectNearestDeckCandidate(seat, candidates)
 end
 
 function BridgeResolveSeatLibraryDeck(seatId, objectSnapshot)
+    BridgeStartupPerfCounter("resolveSeatLibraryDeckCalls", 1)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then return nil, {}, "unknown seat" end
     local candidates = BridgeFindLibraryDeckCandidatesForSeat(seatId, objectSnapshot)
@@ -3976,6 +4143,7 @@ end
 function BridgeDeckContainsTrackedCardForSeat(deck, seatId)
     if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then return false end
     local entries = {}
+    BridgeStartupPerfCounter("deckGetObjectsCalls", 1)
     local ok = pcall(function() entries = deck.getObjects() or {} end)
     if not ok then return false end
     for _, entry in ipairs(entries) do
@@ -3989,6 +4157,7 @@ end
 function BridgeLibraryEntries(deck)
     if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then return nil end
     local entries = {}
+    BridgeStartupPerfCounter("deckGetObjectsCalls", 1)
     local ok = pcall(function() entries = deck.getObjects() or {} end)
     if not ok then return nil end
     return entries
@@ -5903,6 +6072,11 @@ local BRIDGE_DECK_VALIDATION_REQUEST_TIMEOUT_SECONDS = 20.0
 -- falls back to an implicit format assumption.
 function BridgeConfigureDecks(callback, attempt)
     attempt = tonumber(attempt or 0) or 0
+    local scanToken = nil
+    if attempt == 0 then
+        scanToken = "tts-starting-inventory-scan"
+        BridgeStartupPerfStageBegin(scanToken, "both-seats")
+    end
     local seats = {}
     local shouldSettle = false
     local settleDetail = {}
@@ -5937,15 +6111,22 @@ function BridgeConfigureDecks(callback, attempt)
         BridgeWaitFrames(function() BridgeConfigureDecks(callback, attempt + 1) end, 1)
         return
     end
+    if scanToken ~= nil then
+        BridgeStartupPerfStageEnd(scanToken,
+            "attempts=" .. tostring(attempt + 1) .. " seats=" .. tostring(#seats))
+    end
     local selectedFormat = BridgeNormalizedDeckFormat()
     local formatProvenance = tostring(BridgeState.selectedFormatProvenance or "")
     local allowMinimumOverride = BridgeState.allowDeckMinimumOverride == true
     BridgeSetupStage("VALIDATING_DECKS", "posting TTS deck inventory")
+    BridgeStartupPerfStageBegin("post-decks", "/api/v1/decks")
+    BridgeStartupPerfEvent("post-decks-begin", "path=/api/v1/decks")
     BridgeLog("[Bridge] posting TTS deck inventory to /api/v1/decks")
     local completed = false
     local function complete(ok, body, err, request)
         if completed then return end
         completed = true
+        BridgeStartupPerfStageEnd("post-decks", "ok=" .. tostring(ok) .. " err=" .. tostring(err))
         callback(ok, body, err, request)
     end
     BridgeWaitTime(function()
@@ -8525,6 +8706,7 @@ function BridgeSetSetupBusy(busy, message)
     -- Some table states surface a Unity-side object-reference fault during editButton.
     if busy and message ~= nil then broadcastToAll("[Bridge] " .. message, {1.0, 0.8, 0.2}) end
     if busy then BridgeSetStatus("FORGE INITIALIZING", message or "Please wait") end
+    if not busy then BridgeStartupPerfEvent("setupBusy-released", tostring(message or "")) end
 end
 
 function BridgeEnsureSetupControls()
@@ -8666,6 +8848,8 @@ end
 function BridgePressStartMatch(object, playerColor, altClick)
     local color = playerColor
     local alt = altClick == true
+    BridgeStartupPerfReset("start-match-click")
+    BridgeStartupPerfEvent("tts-start-match-click", "player=" .. tostring(color or "unknown"))
     BridgeTraceStart("START-01 click", tostring(color or "unknown"))
     BridgeWaitFrames(function()
         BridgeRunTraced("START-02 deferred-handler", function()
@@ -8805,6 +8989,7 @@ end
 function BridgePressNewMatch(object, playerColor, altClick)
     local color = playerColor
     local alt = altClick == true
+    BridgeStartupPerfEvent("tts-new-match-click", "player=" .. tostring(color or "unknown") .. " confirmed=" .. tostring(alt))
     BridgeSetupTrace("TTS_NEW_MATCH_CLICKED", "player=" .. tostring(color or "unknown") .. " confirmed=" .. tostring(alt))
     BridgeSetStatus("NEW MATCH", alt and "Preparing match..." or "Click again to confirm")
     BridgeLog("setup-click:new-match")
@@ -8967,6 +9152,7 @@ function BridgeWaitForForgeInitialization(attempt, done)
             return
         end
         if body.adapterState == "starting" then
+            BridgeSetupStage("WAITING_FOR_FORGE", "adapter is still starting")
             BridgeSetStatus("FORGE INITIALIZING", "Loading Forge card database (" .. tostring(attempt * 2) .. "s)")
             if attempt == 1 or attempt % 10 == 0 then
                 BridgeLog("[Bridge] Forge is initializing... (" .. tostring(attempt * 2) .. "s)")
@@ -9037,6 +9223,7 @@ function BridgeStartSessionIfNone(done)
         end
         BridgeSetupTrace("SESSION_START_REQUEST_BEGIN", "POST /api/v1/session/start")
         BridgeSetupStage("STARTING_FORGE", "requesting Forge session")
+        BridgeStartupPerfEvent("forge-process-requested", "POST /api/v1/session/start")
         BridgeTraceStart("START-07 session-start-request")
         BridgeStartSession(function(ok, body, err)
         BridgeRunTraced("START-08 session-start-response", function()
@@ -9058,6 +9245,7 @@ function BridgeStartSessionIfNone(done)
                 BridgeRunTraced("START bootstrap-callback", function()
                     if not bootstrapOk then if done then done() end; BridgeStopOnDesync(bootstrapError); return end
                     BridgeTraceStart("START-18 event-poll-start")
+                    BridgeStartupPerfEvent("event-polling-start", "session=" .. tostring(body.sessionId))
                     BridgeStartEventPolling(body.sessionId, true)
                     BridgeTraceStart("START-19 decision-poll-start")
                     if body ~= nil and body.currentDecision ~= nil then
@@ -9332,6 +9520,10 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     end
 
     BridgeState.lastDecision = decision
+    BridgeStartupPerfEvent("decision-presentation", "decision=" .. tostring(decision.decisionId))
+    if BridgeState.setupStage ~= "READY" and BridgeSetupStage ~= nil then
+        BridgeSetupStage("READY", "first decision " .. tostring(decision.decisionId))
+    end
     BridgeRecordDecisionLifecycle(decision, origin, "ACCEPTED", "authoritative-current")
     if BridgeCheckProjectionCoherence ~= nil then
         BridgeCheckProjectionCoherence(decision, "decision-accepted")
@@ -11320,6 +11512,36 @@ end
 
 function BridgeRecordBootstrapStage(stage, state, detail)
     local now = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+    local stageKey = tostring(stage or "unknown")
+    local stateKey = tostring(state or "UNKNOWN")
+    if stateKey == "EXPECTED" then
+        BridgeStartupPerfStageBegin("bootstrap-" .. stageKey, detail)
+    elseif stateKey == "OBSERVED" or stateKey == "COMPLETED" or stateKey == "FAILED" then
+        BridgeStartupPerfStageEnd("bootstrap-" .. stageKey,
+            "state=" .. stateKey .. (detail ~= nil and (" detail=" .. tostring(detail)) or ""))
+    elseif stateKey == "DEFERRED" then
+        BridgeStartupPerfEvent("bootstrap-" .. stageKey,
+            "state=" .. stateKey .. (detail ~= nil and (" detail=" .. tostring(detail)) or ""))
+    end
+
+    local setupStageByBootstrapStage = {
+        ["snapshot-http"] = "WAITING_FOR_FORGE",
+        ["seat-forge-player-1-assets"] = "RECONCILING_HUMAN_SNAPSHOT",
+        ["seat-forge-player-1-materialization"] = "RECONCILING_HUMAN_SNAPSHOT",
+        ["seat-forge-player-1-library-alignment"] = "RECONCILING_HUMAN_LIBRARY",
+        ["seat-forge-player-2-assets"] = "RECONCILING_AI_SNAPSHOT",
+        ["seat-forge-player-2-materialization"] = "RECONCILING_AI_SNAPSHOT",
+        ["seat-forge-player-2-library-alignment"] = "RECONCILING_AI_LIBRARY",
+        ["hand-ownership"] = "VERIFYING_PHYSICAL_SNAPSHOT",
+        ["physical-validation"] = "VERIFYING_PHYSICAL_SNAPSHOT",
+        ["checkpoint"] = "READY"
+    }
+    local setupStage = setupStageByBootstrapStage[stageKey]
+    if setupStage ~= nil and BridgeState.setupBusy == true
+        and stateKey ~= "FAILED" and BridgeSetupStage ~= nil then
+        BridgeSetupStage(setupStage, detail)
+    end
+
     BridgeState.bootstrapStage = tostring(stage)
     BridgeState.bootstrapStageChangedAt = now
     BridgeState.bootstrapLastProgressAt = now
@@ -11883,6 +12105,62 @@ function BridgeValidateAuthoritativeSnapshotPhysicalState(snapshot)
                     local represented, representationError = BridgeVerifyFinalPhysicalRepresentation(
                         card.cardInstanceId, seatId, zone.name)
                     if not represented then
+                        local deck, _, deckError = BridgeResolveSeatLibraryDeck(seatId)
+                        local deckGuid = BridgeSafeObjectGuid(deck)
+                        local normalizedName = BridgeNormalizeCardName(card.cardName)
+                        local candidates = {}
+                        if deck ~= nil and deck.tag == "Deck" then
+                            for _, entry in ipairs(BridgeLibraryEntries(deck) or {}) do
+                                local entryName = entry and (entry.nickname or entry.name or entry.Name) or ""
+                                if BridgeNormalizeCardName(entryName) == normalizedName then
+                                    table.insert(candidates, {
+                                        guid = entry.guid or entry.GUID,
+                                        index = entry.index,
+                                        nickname = entryName
+                                    })
+                                end
+                            end
+                        elseif deck ~= nil and deck.tag == "Card" then
+                            local singleName = BridgePhysicalCanonicalCardName(deck)
+                            if BridgeNormalizeCardName(singleName) == normalizedName then
+                                table.insert(candidates, {
+                                    guid = BridgeSafeObjectGuid(deck),
+                                    index = 1,
+                                    nickname = singleName
+                                })
+                            end
+                        end
+                        local mapping = BridgeState.physicalContainerByInstanceId[card.cardInstanceId]
+                        BridgeState.lastSnapshotRepresentationFailure = {
+                            cardInstanceId = card.cardInstanceId,
+                            cardName = card.cardName,
+                            authoritativeZone = zone.name,
+                            expectedZonePosition = card.zonePosition,
+                            seatId = seatId,
+                            libraryDeckGuid = deckGuid,
+                            libraryDeckTag = deck and deck.tag or nil,
+                            libraryDeckResolveError = deckError,
+                            candidateContainedEntries = candidates,
+                            selectedMappingGuid = mapping and mapping.cardGuid or nil,
+                            selectedMappingDeckGuid = mapping and mapping.deckGuid or nil,
+                            selectedMappingSeatId = mapping and mapping.seatId or nil,
+                            selectedMappingZoneName = mapping and mapping.zoneName or nil,
+                            mappingPresentAtFailure = mapping ~= nil,
+                            inverseMappingInstanceId = mapping and mapping.cardGuid and BridgeState.physicalContainedInstanceIdByGuid[mapping.cardGuid] or nil,
+                            validationError = representationError,
+                            updateTick = tonumber(BridgeState.updateTick or 0) or 0
+                        }
+                        BridgeLog(string.format(
+                            "[Bridge] SNAPSHOT_REPRESENTATION_FAILURE instance=%s card=%s seat=%s zone=%s expectedZonePosition=%s deck=%s candidateContained=%d mappingGuid=%s error=%s",
+                            tostring(card.cardInstanceId),
+                            tostring(card.cardName),
+                            tostring(seatId),
+                            tostring(zone.name),
+                            tostring(card.zonePosition),
+                            tostring(deckGuid),
+                            #(candidates or {}),
+                            tostring(mapping and mapping.cardGuid or nil),
+                            tostring(representationError)))
                         return false, tostring(representationError)
                     end
                 end
@@ -12555,6 +12833,7 @@ function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
                 end
                 local inserted = BridgeSafeObjectCall(target, function(current)
                     current.setLock(false)
+                    BridgeStartupPerfCounter("deckPutObjectCalls", 1)
                     current.putObject(taken, 0)
                 end)
                 if not inserted then
@@ -13591,6 +13870,7 @@ function BridgeCreateResourceCounter(seatId, kind, definition, position)
         end, 2)
         return counter
     end
+    BridgeStartupPerfCounter("deckTakeObjectCalls", 1)
     source.takeObject({position = position, smooth = false, callback_function = function(taken)
         if BridgeState.resourceCounterSpawnInFlightBySeatId[seatId] ~= nil then
             BridgeState.resourceCounterSpawnInFlightBySeatId[seatId][kind] = nil
@@ -13769,6 +14049,7 @@ function BridgeReturnMonarchHelper()
     local helper = BridgeState.monarchHelperGuid and BridgeGetLiveObjectByGuid(BridgeState.monarchHelperGuid) or nil
     local utilityDeck = BridgeGetLiveObjectByGuid("946716")
     if helper ~= nil and utilityDeck ~= nil and utilityDeck.tag == "Deck" then
+        BridgeStartupPerfCounter("deckPutObjectCalls", 1)
         BridgeSafeObjectCall(utilityDeck, function(deck) deck.putObject(helper) end)
         BridgeUnregisterPresentationObject(helper)
         BridgeState.monarchHelperGuid = nil
@@ -13804,6 +14085,7 @@ function BridgeSetMonarchSeat(seatId)
     end
     BridgeState.monarchSpawnInFlight = true
     local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    BridgeStartupPerfCounter("deckTakeObjectCalls", 1)
     utilityDeck.takeObject({
         index = entry.index,
         position = BRIDGE_SEATS[seatId].monarchAnchor,
@@ -15128,6 +15410,7 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
                     "staged object unavailable index=" .. tostring(index))
                 return
             end
+            BridgeStartupPerfCounter("deckPutObjectCalls", 1)
             local putOk, putResult = pcall(function() return target.putObject(staged.object, 0) end)
             if not putOk then
                 BridgeAbortAtomicGraveyardMutation(tx, batch,
@@ -18308,6 +18591,7 @@ function BridgeTakeCardFromDeckByIdentity(deck, expectedName, position, smooth, 
     end
 
     local deckGuid = BridgeSafeObjectGuid(deck)
+    BridgeStartupPerfCounter("deckTakeObjectCalls", 1)
     deck.takeObject({
         index = matched.index,
         position = position,
@@ -18320,6 +18604,7 @@ function BridgeTakeCardFromDeckByIdentity(deck, expectedName, position, smooth, 
             if expectedName ~= nil and expectedName ~= "" and not BridgeCardNameMatches(taken.getName(), expectedName) then
                 local liveDeck = BridgeGetLiveObjectByGuid(deckGuid)
                 if liveDeck ~= nil then
+                    BridgeStartupPerfCounter("deckPutObjectCalls", 1)
                     BridgeSafeObjectCall(liveDeck, function(d) d.putObject(taken) end)
                 end
                 callback(nil, "physical library extraction mismatched authoritative identity")
@@ -18394,6 +18679,7 @@ function BridgeTakeTopCardFromLibrary(deck, expectedName, position, smooth, call
     end
 
     BridgeTtsExecutionBreadcrumb("TAKE_OBJECT_DISPATCH_ENTER", "library_take_object", nil)
+    BridgeStartupPerfCounter("deckTakeObjectCalls", 1)
     deck.takeObject({
         index = top.index,
         position = position,

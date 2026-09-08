@@ -211,6 +211,41 @@ public sealed class TtsDiagnosticCaptureLuaTests
     }
 
     [Fact]
+    public void DiagnosticPayload_IncludesStartupNativeOperationCounters()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.performanceSummary = {}
+            BridgeState.presentationMetrics = {}
+            BridgeState.startupTrace = {}
+            BridgeState.startupPerf = {
+                active = true,
+                counters = {
+                    getAllObjectsCalls = 11,
+                    resolveSeatLibraryDeckCalls = 7,
+                    deckGetObjectsCalls = 13,
+                    deckTakeObjectCalls = 5,
+                    deckPutObjectCalls = 5,
+                    waitFramesCalls = 23,
+                    waitTimeCalls = 9,
+                    embodimentReplanCount = 4
+                }
+            }
+            payload = BridgePerformanceDiagnosticPayload()
+        ");
+
+        var summary = lua.Globals.Get("payload").Table.Get("performanceSummary").Table;
+        Assert.Equal(11, summary.Get("startupGetAllObjectsCalls").Number);
+        Assert.Equal(7, summary.Get("startupResolveSeatLibraryDeckCalls").Number);
+        Assert.Equal(13, summary.Get("startupDeckGetObjectsCalls").Number);
+        Assert.Equal(5, summary.Get("startupDeckTakeObjectCalls").Number);
+        Assert.Equal(5, summary.Get("startupDeckPutObjectCalls").Number);
+        Assert.Equal(23, summary.Get("startupWaitFramesCalls").Number);
+        Assert.Equal(9, summary.Get("startupWaitTimeCalls").Number);
+        Assert.Equal(4, summary.Get("startupEmbodimentReplanCount").Number);
+    }
+
+    [Fact]
     public void StaleCaptureCallback_CannotStartRecoveryForNewerToken()
     {
         var lua = NewProbe();

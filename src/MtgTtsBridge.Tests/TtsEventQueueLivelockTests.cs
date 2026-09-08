@@ -2114,6 +2114,34 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void BootstrapStage_AdvancesSetupStageBeyondValidatingDecks()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.setupBusy = true
+            BridgeState.setupStage = 'VALIDATING_DECKS'
+            BridgeState.statusHeadline = 'Validating decks…'
+            BridgeState.statusDetail = ''
+            BridgeRecordBootstrapStage('seat-forge-player-1-assets', 'EXPECTED', 'attempt=1')
+            stageAfterAssets = BridgeState.setupStage
+            statusAfterAssets = BridgeState.statusHeadline
+            BridgeRecordBootstrapStage('physical-validation', 'EXPECTED', 'seat-bootstrap-callback')
+            stageAfterValidation = BridgeState.setupStage
+            statusAfterValidation = BridgeState.statusHeadline
+            BridgeRecordBootstrapStage('checkpoint', 'OBSERVED', nil)
+            stageAfterCheckpoint = BridgeState.setupStage
+            statusAfterCheckpoint = BridgeState.statusHeadline
+        ");
+
+        Assert.Equal("RECONCILING_HUMAN_SNAPSHOT", lua.Globals.Get("stageAfterAssets").String);
+        Assert.Equal("Reconciling human snapshot…", lua.Globals.Get("statusAfterAssets").String);
+        Assert.Equal("VERIFYING_PHYSICAL_SNAPSHOT", lua.Globals.Get("stageAfterValidation").String);
+        Assert.Equal("Verifying physical snapshot…", lua.Globals.Get("statusAfterValidation").String);
+        Assert.Equal("READY", lua.Globals.Get("stageAfterCheckpoint").String);
+        Assert.Equal("Ready", lua.Globals.Get("statusAfterCheckpoint").String);
+    }
+
+    [Fact]
     public void ConfigureDecks_TimeoutCompletesCallbackWhenDeckValidationRequestStalls()
     {
         var lua = NewQueueProbe();

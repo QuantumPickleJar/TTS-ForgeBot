@@ -2654,6 +2654,28 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void StartupPerformanceAndStatusStages_AreExposedInLuaContracts()
+    {
+        Assert.Contains("function BridgeStartupPerfReset", Script);
+        Assert.Contains("function BridgeStartupPerfStageBegin", Script);
+        Assert.Contains("function BridgeStartupPerfStageEnd", Script);
+        Assert.Contains("STARTUP_PERF stage=", Script);
+        Assert.Contains("WAITING_FOR_FORGE = \"Waiting for Forge…\"", Script);
+        Assert.Contains("RECONCILING_HUMAN_SNAPSHOT = \"Reconciling human snapshot…\"", Script);
+        Assert.Contains("RECONCILING_HUMAN_LIBRARY = \"Reconciling human library…\"", Script);
+        Assert.Contains("RECONCILING_AI_SNAPSHOT = \"Reconciling AI snapshot…\"", Script);
+        Assert.Contains("RECONCILING_AI_LIBRARY = \"Reconciling AI library…\"", Script);
+        Assert.Contains("VERIFYING_PHYSICAL_SNAPSHOT = \"Verifying physical snapshot…\"", Script);
+        Assert.Contains("READY = \"Ready\"", Script);
+        Assert.Contains("startupGetAllObjectsCalls", Script);
+        Assert.Contains("startupResolveSeatLibraryDeckCalls", Script);
+        Assert.Contains("startupDeckGetObjectsCalls", Script);
+        Assert.Contains("startupDeckTakeObjectCalls", Script);
+        Assert.Contains("startupDeckPutObjectCalls", Script);
+        Assert.Contains("lastSnapshotRepresentationFailure", Script);
+    }
+
+    [Fact]
     public void AuthoritativeResync_RebuildsFromSnapshotAndResumesAtItsEventCursor()
     {
         var start = Script.IndexOf("function BridgeResyncFromAuthoritativeSnapshot", StringComparison.Ordinal);

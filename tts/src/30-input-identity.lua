@@ -1629,6 +1629,36 @@ end
 
 function BridgeRecordBootstrapStage(stage, state, detail)
     local now = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+    local stageKey = tostring(stage or "unknown")
+    local stateKey = tostring(state or "UNKNOWN")
+    if stateKey == "EXPECTED" then
+        BridgeStartupPerfStageBegin("bootstrap-" .. stageKey, detail)
+    elseif stateKey == "OBSERVED" or stateKey == "COMPLETED" or stateKey == "FAILED" then
+        BridgeStartupPerfStageEnd("bootstrap-" .. stageKey,
+            "state=" .. stateKey .. (detail ~= nil and (" detail=" .. tostring(detail)) or ""))
+    elseif stateKey == "DEFERRED" then
+        BridgeStartupPerfEvent("bootstrap-" .. stageKey,
+            "state=" .. stateKey .. (detail ~= nil and (" detail=" .. tostring(detail)) or ""))
+    end
+
+    local setupStageByBootstrapStage = {
+        ["snapshot-http"] = "WAITING_FOR_FORGE",
+        ["seat-forge-player-1-assets"] = "RECONCILING_HUMAN_SNAPSHOT",
+        ["seat-forge-player-1-materialization"] = "RECONCILING_HUMAN_SNAPSHOT",
+        ["seat-forge-player-1-library-alignment"] = "RECONCILING_HUMAN_LIBRARY",
+        ["seat-forge-player-2-assets"] = "RECONCILING_AI_SNAPSHOT",
+        ["seat-forge-player-2-materialization"] = "RECONCILING_AI_SNAPSHOT",
+        ["seat-forge-player-2-library-alignment"] = "RECONCILING_AI_LIBRARY",
+        ["hand-ownership"] = "VERIFYING_PHYSICAL_SNAPSHOT",
+        ["physical-validation"] = "VERIFYING_PHYSICAL_SNAPSHOT",
+        ["checkpoint"] = "READY"
+    }
+    local setupStage = setupStageByBootstrapStage[stageKey]
+    if setupStage ~= nil and BridgeState.setupBusy == true
+        and stateKey ~= "FAILED" and BridgeSetupStage ~= nil then
+        BridgeSetupStage(setupStage, detail)
+    end
+
     BridgeState.bootstrapStage = tostring(stage)
     BridgeState.bootstrapStageChangedAt = now
     BridgeState.bootstrapLastProgressAt = now
@@ -2192,6 +2222,62 @@ function BridgeValidateAuthoritativeSnapshotPhysicalState(snapshot)
                     local represented, representationError = BridgeVerifyFinalPhysicalRepresentation(
                         card.cardInstanceId, seatId, zone.name)
                     if not represented then
+                        local deck, _, deckError = BridgeResolveSeatLibraryDeck(seatId)
+                        local deckGuid = BridgeSafeObjectGuid(deck)
+                        local normalizedName = BridgeNormalizeCardName(card.cardName)
+                        local candidates = {}
+                        if deck ~= nil and deck.tag == "Deck" then
+                            for _, entry in ipairs(BridgeLibraryEntries(deck) or {}) do
+                                local entryName = entry and (entry.nickname or entry.name or entry.Name) or ""
+                                if BridgeNormalizeCardName(entryName) == normalizedName then
+                                    table.insert(candidates, {
+                                        guid = entry.guid or entry.GUID,
+                                        index = entry.index,
+                                        nickname = entryName
+                                    })
+                                end
+                            end
+                        elseif deck ~= nil and deck.tag == "Card" then
+                            local singleName = BridgePhysicalCanonicalCardName(deck)
+                            if BridgeNormalizeCardName(singleName) == normalizedName then
+                                table.insert(candidates, {
+                                    guid = BridgeSafeObjectGuid(deck),
+                                    index = 1,
+                                    nickname = singleName
+                                })
+                            end
+                        end
+                        local mapping = BridgeState.physicalContainerByInstanceId[card.cardInstanceId]
+                        BridgeState.lastSnapshotRepresentationFailure = {
+                            cardInstanceId = card.cardInstanceId,
+                            cardName = card.cardName,
+                            authoritativeZone = zone.name,
+                            expectedZonePosition = card.zonePosition,
+                            seatId = seatId,
+                            libraryDeckGuid = deckGuid,
+                            libraryDeckTag = deck and deck.tag or nil,
+                            libraryDeckResolveError = deckError,
+                            candidateContainedEntries = candidates,
+                            selectedMappingGuid = mapping and mapping.cardGuid or nil,
+                            selectedMappingDeckGuid = mapping and mapping.deckGuid or nil,
+                            selectedMappingSeatId = mapping and mapping.seatId or nil,
+                            selectedMappingZoneName = mapping and mapping.zoneName or nil,
+                            mappingPresentAtFailure = mapping ~= nil,
+                            inverseMappingInstanceId = mapping and mapping.cardGuid and BridgeState.physicalContainedInstanceIdByGuid[mapping.cardGuid] or nil,
+                            validationError = representationError,
+                            updateTick = tonumber(BridgeState.updateTick or 0) or 0
+                        }
+                        BridgeLog(string.format(
+                            "[Bridge] SNAPSHOT_REPRESENTATION_FAILURE instance=%s card=%s seat=%s zone=%s expectedZonePosition=%s deck=%s candidateContained=%d mappingGuid=%s error=%s",
+                            tostring(card.cardInstanceId),
+                            tostring(card.cardName),
+                            tostring(seatId),
+                            tostring(zone.name),
+                            tostring(card.zonePosition),
+                            tostring(deckGuid),
+                            #(candidates or {}),
+                            tostring(mapping and mapping.cardGuid or nil),
+                            tostring(representationError)))
                         return false, tostring(representationError)
                     end
                 end
@@ -2864,6 +2950,7 @@ function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
                 end
                 local inserted = BridgeSafeObjectCall(target, function(current)
                     current.setLock(false)
+                    BridgeStartupPerfCounter("deckPutObjectCalls", 1)
                     current.putObject(taken, 0)
                 end)
                 if not inserted then

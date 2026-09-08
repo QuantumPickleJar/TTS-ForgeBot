@@ -784,6 +784,11 @@ local BRIDGE_DECK_VALIDATION_REQUEST_TIMEOUT_SECONDS = 20.0
 -- falls back to an implicit format assumption.
 function BridgeConfigureDecks(callback, attempt)
     attempt = tonumber(attempt or 0) or 0
+    local scanToken = nil
+    if attempt == 0 then
+        scanToken = "tts-starting-inventory-scan"
+        BridgeStartupPerfStageBegin(scanToken, "both-seats")
+    end
     local seats = {}
     local shouldSettle = false
     local settleDetail = {}
@@ -818,15 +823,22 @@ function BridgeConfigureDecks(callback, attempt)
         BridgeWaitFrames(function() BridgeConfigureDecks(callback, attempt + 1) end, 1)
         return
     end
+    if scanToken ~= nil then
+        BridgeStartupPerfStageEnd(scanToken,
+            "attempts=" .. tostring(attempt + 1) .. " seats=" .. tostring(#seats))
+    end
     local selectedFormat = BridgeNormalizedDeckFormat()
     local formatProvenance = tostring(BridgeState.selectedFormatProvenance or "")
     local allowMinimumOverride = BridgeState.allowDeckMinimumOverride == true
     BridgeSetupStage("VALIDATING_DECKS", "posting TTS deck inventory")
+    BridgeStartupPerfStageBegin("post-decks", "/api/v1/decks")
+    BridgeStartupPerfEvent("post-decks-begin", "path=/api/v1/decks")
     BridgeLog("[Bridge] posting TTS deck inventory to /api/v1/decks")
     local completed = false
     local function complete(ok, body, err, request)
         if completed then return end
         completed = true
+        BridgeStartupPerfStageEnd("post-decks", "ok=" .. tostring(ok) .. " err=" .. tostring(err))
         callback(ok, body, err, request)
     end
     BridgeWaitTime(function()
@@ -3406,6 +3418,7 @@ function BridgeSetSetupBusy(busy, message)
     -- Some table states surface a Unity-side object-reference fault during editButton.
     if busy and message ~= nil then broadcastToAll("[Bridge] " .. message, {1.0, 0.8, 0.2}) end
     if busy then BridgeSetStatus("FORGE INITIALIZING", message or "Please wait") end
+    if not busy then BridgeStartupPerfEvent("setupBusy-released", tostring(message or "")) end
 end
 
 function BridgeEnsureSetupControls()
@@ -3547,6 +3560,8 @@ end
 function BridgePressStartMatch(object, playerColor, altClick)
     local color = playerColor
     local alt = altClick == true
+    BridgeStartupPerfReset("start-match-click")
+    BridgeStartupPerfEvent("tts-start-match-click", "player=" .. tostring(color or "unknown"))
     BridgeTraceStart("START-01 click", tostring(color or "unknown"))
     BridgeWaitFrames(function()
         BridgeRunTraced("START-02 deferred-handler", function()
@@ -3686,6 +3701,7 @@ end
 function BridgePressNewMatch(object, playerColor, altClick)
     local color = playerColor
     local alt = altClick == true
+    BridgeStartupPerfEvent("tts-new-match-click", "player=" .. tostring(color or "unknown") .. " confirmed=" .. tostring(alt))
     BridgeSetupTrace("TTS_NEW_MATCH_CLICKED", "player=" .. tostring(color or "unknown") .. " confirmed=" .. tostring(alt))
     BridgeSetStatus("NEW MATCH", alt and "Preparing match..." or "Click again to confirm")
     BridgeLog("setup-click:new-match")
@@ -3848,6 +3864,7 @@ function BridgeWaitForForgeInitialization(attempt, done)
             return
         end
         if body.adapterState == "starting" then
+            BridgeSetupStage("WAITING_FOR_FORGE", "adapter is still starting")
             BridgeSetStatus("FORGE INITIALIZING", "Loading Forge card database (" .. tostring(attempt * 2) .. "s)")
             if attempt == 1 or attempt % 10 == 0 then
                 BridgeLog("[Bridge] Forge is initializing... (" .. tostring(attempt * 2) .. "s)")
@@ -3918,6 +3935,7 @@ function BridgeStartSessionIfNone(done)
         end
         BridgeSetupTrace("SESSION_START_REQUEST_BEGIN", "POST /api/v1/session/start")
         BridgeSetupStage("STARTING_FORGE", "requesting Forge session")
+        BridgeStartupPerfEvent("forge-process-requested", "POST /api/v1/session/start")
         BridgeTraceStart("START-07 session-start-request")
         BridgeStartSession(function(ok, body, err)
         BridgeRunTraced("START-08 session-start-response", function()
@@ -3939,6 +3957,7 @@ function BridgeStartSessionIfNone(done)
                 BridgeRunTraced("START bootstrap-callback", function()
                     if not bootstrapOk then if done then done() end; BridgeStopOnDesync(bootstrapError); return end
                     BridgeTraceStart("START-18 event-poll-start")
+                    BridgeStartupPerfEvent("event-polling-start", "session=" .. tostring(body.sessionId))
                     BridgeStartEventPolling(body.sessionId, true)
                     BridgeTraceStart("START-19 decision-poll-start")
                     if body ~= nil and body.currentDecision ~= nil then
@@ -4213,6 +4232,10 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     end
 
     BridgeState.lastDecision = decision
+    BridgeStartupPerfEvent("decision-presentation", "decision=" .. tostring(decision.decisionId))
+    if BridgeState.setupStage ~= "READY" and BridgeSetupStage ~= nil then
+        BridgeSetupStage("READY", "first decision " .. tostring(decision.decisionId))
+    end
     BridgeRecordDecisionLifecycle(decision, origin, "ACCEPTED", "authoritative-current")
     if BridgeCheckProjectionCoherence ~= nil then
         BridgeCheckProjectionCoherence(decision, "decision-accepted")

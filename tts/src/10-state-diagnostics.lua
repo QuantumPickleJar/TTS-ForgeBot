@@ -293,6 +293,7 @@ function BridgeSelectNearestDeckCandidate(seat, candidates)
 end
 
 function BridgeResolveSeatLibraryDeck(seatId, objectSnapshot)
+    BridgeStartupPerfCounter("resolveSeatLibraryDeckCalls", 1)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then return nil, {}, "unknown seat" end
     local candidates = BridgeFindLibraryDeckCandidatesForSeat(seatId, objectSnapshot)
@@ -753,6 +754,7 @@ end
 function BridgeDeckContainsTrackedCardForSeat(deck, seatId)
     if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then return false end
     local entries = {}
+    BridgeStartupPerfCounter("deckGetObjectsCalls", 1)
     local ok = pcall(function() entries = deck.getObjects() or {} end)
     if not ok then return false end
     for _, entry in ipairs(entries) do
@@ -766,6 +768,7 @@ end
 function BridgeLibraryEntries(deck)
     if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then return nil end
     local entries = {}
+    BridgeStartupPerfCounter("deckGetObjectsCalls", 1)
     local ok = pcall(function() entries = deck.getObjects() or {} end)
     if not ok then return nil end
     return entries
