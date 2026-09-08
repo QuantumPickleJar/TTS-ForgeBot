@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 208d39433cb503b5678fbb57ec0fec52e3664e80946ae0ae250b131dba919ded
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "208d39433cb503b5678fbb57ec0fec52e3664e80946ae0ae250b131dba919ded"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: c523d96830adf6a81bc820dddf9c934ea555f5e36044a24e36557566a4c176e8
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "c523d96830adf6a81bc820dddf9c934ea555f5e36044a24e36557566a4c176e8"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -2694,6 +2694,7 @@ local BRIDGE_LIFECYCLE_COMMAND_RULES = {
     NEW_MATCH = {
         [BRIDGE_LIFECYCLE_DISCONNECTED] = true,
         [BRIDGE_LIFECYCLE_READY_NO_SESSION] = true,
+        [BRIDGE_LIFECYCLE_STARTING] = true,
         [BRIDGE_LIFECYCLE_ACTIVE] = true,
         [BRIDGE_LIFECYCLE_RECOVERING] = true,
         [BRIDGE_LIFECYCLE_START_FAILED] = true
@@ -2701,6 +2702,7 @@ local BRIDGE_LIFECYCLE_COMMAND_RULES = {
     CONFIRM_NEW_MATCH = {
         [BRIDGE_LIFECYCLE_DISCONNECTED] = true,
         [BRIDGE_LIFECYCLE_READY_NO_SESSION] = true,
+        [BRIDGE_LIFECYCLE_STARTING] = true,
         [BRIDGE_LIFECYCLE_ACTIVE] = true,
         [BRIDGE_LIFECYCLE_RECOVERING] = true,
         [BRIDGE_LIFECYCLE_START_FAILED] = true
@@ -9079,10 +9081,9 @@ end
 
 function BridgeDoPressNewMatch(playerColor, altClick)
     BridgeLog("setup-deferred:new-match")
-    if BridgeState.setupBusy then
-        BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
-        return
-    end
+    -- NEW MATCH is the explicit escape hatch from a stale or still-starting
+    -- Forge session.  Do not let setupBusy hide the destructive confirmation
+    -- control; confirmation owns teardown through BridgeResetSession().
     if not BridgeGuardLifecycleCommand("NEW_MATCH") then return end
     BridgeSetupStage("SETUP_STATE_VALIDATED", "new-match confirmation path ready")
     BridgeState.resetConfirmationArmed = true
@@ -9160,10 +9161,9 @@ end
 
 function BridgeDoPressConfirmNewMatch(playerColor, altClick)
     BridgeLog("setup-deferred:confirm")
-    if BridgeState.setupBusy then
-        BridgeShowError("Forge is still initializing; wait for the loading controls to finish")
-        return
-    end
+    -- Confirmation is intentionally allowed while Forge is initializing.  The
+    -- reset transaction fences local callbacks, stops polling, and asks the
+    -- Bridge to replace the old Forge process/session.
     if not BridgeGuardLifecycleCommand("CONFIRM_NEW_MATCH") then return end
     if not BridgeState.resetConfirmationArmed then
         BridgeShowError("NEW MATCH confirmation expired; click NEW MATCH again")

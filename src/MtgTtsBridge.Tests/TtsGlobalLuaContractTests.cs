@@ -452,6 +452,22 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void NewMatchConfirmation_IsAvailableDuringForgeInitialization()
+    {
+        var newMatchStart = Script.IndexOf("function BridgeDoPressNewMatch", StringComparison.Ordinal);
+        var confirmStart = Script.IndexOf("function BridgeDoPressConfirmNewMatch", StringComparison.Ordinal);
+        var resetStart = Script.IndexOf("function BridgeResetSession()", StringComparison.Ordinal);
+        Assert.True(newMatchStart >= 0 && confirmStart > newMatchStart && resetStart > confirmStart);
+        var newMatchBody = Script[newMatchStart..confirmStart];
+        var confirmBody = Script[confirmStart..resetStart];
+        Assert.DoesNotContain("if BridgeState.setupBusy then", newMatchBody);
+        Assert.DoesNotContain("if BridgeState.setupBusy then", confirmBody);
+        Assert.Contains("[BRIDGE_LIFECYCLE_STARTING] = true", Script);
+        Assert.Contains("BridgeResetSession()", confirmBody);
+        Assert.Contains("BridgeBeginNewMatchCleanupTransaction", Script);
+    }
+
+    [Fact]
     public void StartPath_EmitsOrderedMarkersAndUsesSeatPlayerGuards()
     {
         Assert.Contains("START-01 click", Script);
