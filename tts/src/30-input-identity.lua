@@ -1627,6 +1627,25 @@ function BridgeRollbackPendingIntent()
     end
 end
 
+function BridgeRecordBootstrapStage(stage, state, detail)
+    local now = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+    BridgeState.bootstrapStage = tostring(stage)
+    BridgeState.bootstrapStageChangedAt = now
+    BridgeState.bootstrapLastProgressAt = now
+    BridgeState.bootstrapStageTrace = BridgeState.bootstrapStageTrace or {}
+    table.insert(BridgeState.bootstrapStageTrace, {
+        stage = tostring(stage), state = tostring(state), detail = detail ~= nil and tostring(detail) or nil,
+        at = now, updateTick = BridgeState.resyncUpdateTick
+    })
+    while #BridgeState.bootstrapStageTrace > 24 do table.remove(BridgeState.bootstrapStageTrace, 1) end
+    if state == "FAILED" and BridgeState.lastSnapshotReconcileFailureStage == nil then
+        BridgeState.lastSnapshotReconcileFailureStage = tostring(stage)
+        BridgeState.lastSnapshotReconcileFailureReason = tostring(detail or "unspecified")
+    end
+    BridgeLog("[Bridge] SNAPSHOT_BOOTSTRAP_STAGE stage=" .. tostring(stage)
+        .. " state=" .. tostring(state) .. (detail ~= nil and (" detail=" .. tostring(detail)) or ""))
+end
+
 function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotCursor, resyncOrigin)
     if BridgeState.eventSessionId == sessionId
         and BridgeState.lifecycleState == BRIDGE_LIFECYCLE_ACTIVE
@@ -1655,6 +1674,10 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
     end
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     local bootstrapGeneration = BridgeState.resyncBootstrapGeneration
+    BridgeState.lastSnapshotReconcileFailureStage = nil
+    BridgeState.lastSnapshotReconcileFailureReason = nil
+    BridgeState.bootstrapStageTrace = {}
+    BridgeRecordBootstrapStage("snapshot-http", "EXPECTED", "generation=" .. tostring(bootstrapGeneration))
     BridgeSetResyncStage("FetchingSnapshot", "bootstrap", nil)
     BridgeRecordResyncLifecycle("SNAPSHOT_REQUESTED", resyncOrigin, bootstrapGeneration)
     local function currentBootstrap()
@@ -1664,6 +1687,8 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
     end
     local function finishBootstrap(ok, errorMessage)
         if not currentBootstrap() then return end
+        BridgeRecordBootstrapStage(ok and "checkpoint" or (BridgeState.bootstrapStage or "unknown"),
+            ok and "COMPLETED" or "FAILED", errorMessage)
         BridgeState.bootstrapCompletionInFlight = true
         BridgeState.bootstrapStage = ok and "BOOTSTRAP_COMPLETE" or "BOOTSTRAP_ABORTED"
         local success, callbackError = xpcall(function()
@@ -1712,6 +1737,7 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
     end
     BridgeGetEmbodimentSnapshot(function(ok, snapshot, err)
         if not currentBootstrap() then return end
+        BridgeRecordBootstrapStage("snapshot-http", "OBSERVED", ok and "response" or tostring(err))
         if BridgeState.resyncInFlight == true and BridgeResyncCallbackObserved ~= nil then
             BridgeResyncCallbackObserved("snapshot-http", "embodiment-snapshot-response")
         end
@@ -1781,8 +1807,10 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
             if BridgeState.resyncInFlight == true then
                 BridgeResyncCallbackExpected("library-staging", "stage-seat-cards")
             end
+            BridgeRecordBootstrapStage("library-staging", "EXPECTED")
             BridgeStageSeatCardsForBootstrap(snapshot, function(stagedOk, stagedError, stagedGuids)
                 if not currentBootstrap() then return end
+                BridgeRecordBootstrapStage("library-staging", stagedOk and "OBSERVED" or "FAILED", stagedError)
                 if BridgeState.resyncInFlight == true and BridgeResyncCallbackObserved ~= nil then
                     BridgeResyncCallbackObserved("library-staging", "stage-seat-cards")
                 end
@@ -1798,8 +1826,10 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                 if BridgeState.resyncInFlight == true then
                     BridgeResyncCallbackExpected("library-stability", "verify-library")
                 end
+                BridgeRecordBootstrapStage("library-stability", "EXPECTED")
                 BridgeVerifyLibraryIdentityStability(function(stable, stabilityError)
                     if not currentBootstrap() then return end
+                    BridgeRecordBootstrapStage("library-stability", stable and "OBSERVED" or "FAILED", stabilityError)
                     if BridgeState.resyncInFlight == true and BridgeResyncCallbackObserved ~= nil then
                         BridgeResyncCallbackObserved("library-stability", "verify-library")
                     end
@@ -1813,8 +1843,10 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                     if BridgeState.resyncInFlight == true then
                         BridgeResyncCallbackExpected("battlefield-annotation", "annotate-snapshot")
                     end
+                    BridgeRecordBootstrapStage("snapshot-annotation", "EXPECTED")
                     BridgeAnnotateSnapshotBattlefieldKinds(snapshot, function(annotated, annotationError)
                         if not currentBootstrap() then return end
+                        BridgeRecordBootstrapStage("snapshot-annotation", annotated and "OBSERVED" or "FAILED", annotationError)
                         if BridgeState.resyncInFlight == true and BridgeResyncCallbackObserved ~= nil then
                             BridgeResyncCallbackObserved("battlefield-annotation", "annotate-snapshot")
                         end
@@ -1826,6 +1858,14 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                             end
                             local function completePhysicalReconcile(source)
                                 if not currentBootstrap() then return false end
+                                BridgeRecordBootstrapStage("hand-ownership", "EXPECTED", source)
+                                local handsOk, handsError = BridgeReconcileSnapshotHandOwnership(snapshot)
+                                BridgeRecordBootstrapStage("hand-ownership", handsOk and "OBSERVED" or "FAILED", handsError)
+                                if not handsOk then
+                                    finishBootstrap(false, "snapshot hand ownership validation failed: " .. tostring(handsError))
+                                    return false
+                                end
+                                BridgeRecordBootstrapStage("physical-validation", "EXPECTED", source)
                                 if BridgeState.resyncInFlight == true then
                                     if BridgeState.resyncCandidateSnapshot ~= snapshot
                                         or BridgeState.resyncPhysicalRebuildReady ~= true then
@@ -1844,6 +1884,8 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                                     BridgeRecordResyncLifecycle("PHYSICAL_VALIDATION_STARTED", resyncOrigin,
                                         bootstrapGeneration, snapshot, source)
                                     local physicallyValid, physicalError = BridgeValidateAuthoritativeSnapshotPhysicalState(snapshot)
+                                    BridgeRecordBootstrapStage("physical-validation",
+                                        physicallyValid and "OBSERVED" or "FAILED", physicalError)
                                     if not physicallyValid then
                                         BridgeState.resyncPhysicalValidationPassed = false
                                         BridgeState.resyncLastBlockingPredicate = tostring(physicalError)
@@ -1855,12 +1897,26 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                                     BridgeRecordResyncLifecycle("PHYSICAL_VALIDATED", resyncOrigin,
                                         bootstrapGeneration, snapshot)
                                 end
+                                -- Initial opening snapshots must meet the same exact physical
+                                -- representation contract as a recovery before cursor N is
+                                -- committed. This includes hidden hand ownership internally;
+                                -- nothing is exposed to the table UI.
+                                if BridgeState.resyncInFlight ~= true then
+                                    local physicallyValid, physicalError = BridgeValidateAuthoritativeSnapshotPhysicalState(snapshot)
+                                    BridgeRecordBootstrapStage("physical-validation",
+                                        physicallyValid and "OBSERVED" or "FAILED", physicalError)
+                                    if not physicallyValid then
+                                        finishBootstrap(false, "snapshot physical validation failed: " .. tostring(physicalError))
+                                        return false
+                                    end
+                                end
                                 BridgeState.snapshotForgeSequence = snapshot.forgeSequence or 0
                                 -- The snapshot is coherent through this bridge event cursor.
                                 -- Resume polling after it so no pre-snapshot transition is
                                 -- replayed over the just-rebuilt physical embodiment.
                                 local committed, commitError = BridgeCommitSnapshotCheckpoint(
                                     snapshot, "physical-reconcile-complete")
+                                BridgeRecordBootstrapStage("checkpoint", committed and "OBSERVED" or "FAILED", commitError)
                                 if not committed then finishBootstrap(false, commitError); return false end
                                 BridgeLog(string.format(
                                     "[Bridge] authoritative embodiment bootstrap complete: seats=%d forgeSequence=%s (hidden identities redacted)",
@@ -1872,8 +1928,10 @@ function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotC
                                 BridgeState.resyncCompletionCallback = completePhysicalReconcile
                                 BridgeResyncCallbackExpected("seat-bootstrap", "physical-rebuild")
                             end
+                            BridgeRecordBootstrapStage("seat-bootstrap", "EXPECTED")
                             BridgeBootstrapSeats(snapshot, 1, function(seatsOk, seatsError)
                                 if not currentBootstrap() then return end
+                                BridgeRecordBootstrapStage("seat-bootstrap", seatsOk and "OBSERVED" or "FAILED", seatsError)
                                 BridgeRunTraced("START seat-bootstrap-callback", function()
                                     if not currentBootstrap() then return end
                                     if not seatsOk then finishBootstrap(false, seatsError); return end
@@ -2778,7 +2836,12 @@ function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
 end
 
 function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback, markPhysicalReady)
+    local stagePrefix = "seat-" .. tostring(seatSnapshot and seatSnapshot.seatId or "unknown")
+    if BridgeRecordBootstrapStage ~= nil then BridgeRecordBootstrapStage(stagePrefix .. "-assets", "EXPECTED", "attempt=" .. tostring(attempt)) end
     BridgeCollectSeatAssets(seatSnapshot.seatId, seatSnapshot, function(ok, assets, collectError)
+        if BridgeRecordBootstrapStage ~= nil then
+            BridgeRecordBootstrapStage(stagePrefix .. "-assets", ok and "OBSERVED" or "FAILED", collectError)
+        end
         if not ok then callback(false, collectError); return end
         local reconciled, reconcileError = BridgeReconcileSeatSnapshot(seatSnapshot, assets, attempt >= 4)
         if not reconciled then
@@ -2802,4 +2865,5 @@ function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback, markPhy
             callback(false, reconcileError)
             return
         end
+        if BridgeRecordBootstrapStage ~= nil then BridgeRecordBootstrapStage(stagePrefix .. "-materialization", "EXPECTED") end
         BridgeMaterializeSeatSnapshot(seatSnapshot, 1, 1, function(materialized, materializeError)

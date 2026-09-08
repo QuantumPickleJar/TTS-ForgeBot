@@ -1731,6 +1731,87 @@ function BridgeCheckOpeningHandReadiness(seatId)
     return readyCount == expectedCount, readyCount, expectedCount, table.concat(missing, ",")
 end
 
+-- A snapshot bootstrap can be interrupted after TTS has accepted Cards into a
+-- hand, but before its in-memory seat/zone ledger has been published.  The
+-- Card's Forge instance property is an exact, session-fenced identity written
+-- by this bridge; use it only to restore bookkeeping after independently
+-- proving Player.getHandObjects membership.  This deliberately never matches
+-- a hidden card by printed name.
+function BridgeReconcileSnapshotHandOwnership(snapshot)
+    local expectedCount = 0
+    local physicalCount = 0
+    local repairedCount = 0
+    for _, seatSnapshot in ipairs(snapshot and snapshot.seats or {}) do
+        local seatId = seatSnapshot.seatId
+        local expected = {}
+        for _, zone in ipairs(seatSnapshot.zones or {}) do
+            if string.lower(tostring(zone.name or "")) == "hand" then
+                for _, card in ipairs(zone.cards or {}) do
+                    if card.cardInstanceId ~= nil and tostring(card.cardInstanceId) ~= "" then
+                        expected[tostring(card.cardInstanceId)] = true
+                        expectedCount = expectedCount + 1
+                    end
+                end
+            end
+        end
+        if next(expected) ~= nil then
+            local handObjects, handError = BridgeTryGetSeatHandObjects(seatId)
+            if handObjects == nil then
+                return false, "hand ownership cannot inspect seat=" .. tostring(seatId)
+                    .. ": " .. tostring(handError), expectedCount, physicalCount, repairedCount
+            end
+            local byInstanceId = {}
+            for _, object in ipairs(handObjects) do
+                if BridgeObjectIsUsable(object) and object.tag == "Card" then
+                    local advertisedSession = BridgeReadPhysicalSessionIdentity(object)
+                    local instanceId = BridgeReadPhysicalIdentity(object)
+                    if instanceId ~= nil and expected[instanceId] == true
+                        and (advertisedSession == nil or advertisedSession == tostring(BridgeState.eventSessionId)) then
+                        if byInstanceId[instanceId] ~= nil then
+                            return false, "hand ownership duplicate exact instance=" .. tostring(instanceId)
+                                .. " seat=" .. tostring(seatId), expectedCount, physicalCount, repairedCount
+                        end
+                        byInstanceId[instanceId] = object
+                    end
+                end
+            end
+            for instanceId in pairs(expected) do
+                local object = byInstanceId[instanceId]
+                if object == nil then
+                    return false, "hand ownership missing exact instance=" .. tostring(instanceId)
+                        .. " seat=" .. tostring(seatId), expectedCount, physicalCount, repairedCount
+                end
+                physicalCount = physicalCount + 1
+                local guid = BridgeSafeObjectGuid(object)
+                if guid == nil then
+                    return false, "hand ownership has no live GUID instance=" .. tostring(instanceId)
+                        .. " seat=" .. tostring(seatId), expectedCount, physicalCount, repairedCount
+                end
+                local changed = BridgeState.physicalByInstanceId[instanceId] ~= guid
+                    or BridgeState.physicalInstanceIdByGuid[guid] ~= instanceId
+                    or BridgeState.physicalSeatByGuid[guid] ~= seatId
+                    or BridgeState.physicalZoneByGuid[guid] ~= "hand"
+                local recorded, recordError = BridgeRecordLooseCardIdentity(instanceId, guid, seatId, "hand")
+                if not recorded then
+                    return false, "hand ownership publication failed instance=" .. tostring(instanceId)
+                        .. " seat=" .. tostring(seatId) .. ": " .. tostring(recordError),
+                        expectedCount, physicalCount, repairedCount
+                end
+                if changed then repairedCount = repairedCount + 1 end
+            end
+        end
+    end
+    BridgeState.snapshotPhysicalZoneOwnership = {
+        expectedHandCount = expectedCount,
+        physicallyVerifiedHandCount = physicalCount,
+        internallyMappedHandCount = physicalCount,
+        repairedHandCount = repairedCount,
+        nilZoneCount = 0,
+        wrongSeatCount = 0
+    }
+    return true, nil, expectedCount, physicalCount, repairedCount
+end
+
 -- A resolved permanent can have two independent pieces of state in flight:
 -- Forge's public zone mapping and TTS's last physical transform.  Keep the
 -- diagnostic exact-id based so a stale semantic resolution can never make us

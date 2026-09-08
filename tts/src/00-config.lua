@@ -871,7 +871,14 @@ function BridgeEventDrainQueueState()
         resyncDeferredSince = BridgeState.resyncDeferredSince,
         resyncDeferredRetryScheduled = BridgeState.resyncDeferredRetryScheduled == true,
         resyncWatchdogToken = BridgeState.resyncWatchdogToken,
-        resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration
+        resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration,
+        bootstrapStage = BridgeState.bootstrapStage,
+        bootstrapStageChangedAt = BridgeState.bootstrapStageChangedAt,
+        bootstrapLastProgressAt = BridgeState.bootstrapLastProgressAt,
+        bootstrapStageTrace = BridgeDiagnosticSnapshot(BridgeState.bootstrapStageTrace or {}),
+        lastSnapshotReconcileFailureStage = BridgeState.lastSnapshotReconcileFailureStage,
+        lastSnapshotReconcileFailureReason = BridgeState.lastSnapshotReconcileFailureReason,
+        snapshotPhysicalZoneOwnership = BridgeDiagnosticSnapshot(BridgeState.snapshotPhysicalZoneOwnership or {})
     }
 end
 

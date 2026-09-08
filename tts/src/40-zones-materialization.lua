@@ -2,7 +2,16 @@
             -- Materialization removes the snapshot hand and public-zone cards
             -- from the imported deck first. Only then does the remaining deck
             -- exactly correspond to Forge's library and become safe to order.
+            if BridgeRecordBootstrapStage ~= nil then
+                BridgeRecordBootstrapStage(stagePrefix .. "-materialization",
+                    materialized and "OBSERVED" or "FAILED", materializeError)
+            end
+            if BridgeRecordBootstrapStage ~= nil then BridgeRecordBootstrapStage(stagePrefix .. "-library-alignment", "EXPECTED") end
             BridgeAlignLibraryOrderForSnapshot(seatSnapshot, function(aligned, alignmentError)
+                if BridgeRecordBootstrapStage ~= nil then
+                    BridgeRecordBootstrapStage(stagePrefix .. "-library-alignment",
+                        aligned and "OBSERVED" or "FAILED", alignmentError)
+                end
                 if not aligned then callback(false, alignmentError); return end
                 BridgeWaitFrames(function()
                     BridgeApplySeatSnapshotVisualState(seatSnapshot)
