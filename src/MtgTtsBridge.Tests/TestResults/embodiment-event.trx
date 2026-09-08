@@ -1,0 +1,532 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="53577d4e-ac02-49af-8e50-ca863cce4be2" name="vmorr@DESKTOP-38K4CPI 2026-09-08 13:36:48" runUser="DESKTOP-38K4CPI\vmorr" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-09-08T13:36:48.5824648-05:00" queuing="2026-09-08T13:36:48.5824651-05:00" start="2026-09-08T13:36:46.2905015-05:00" finish="2026-09-08T13:37:05.9114900-05:00" />
+  <TestSettings name="default" id="54f0dbeb-b556-458f-a12d-e85afc5154dc">
+    <Deployment runDeploymentRoot="vmorr_DESKTOP-38K4CPI_2026-09-08_13_36_48" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="e114b919-4561-4bb0-80eb-e655f2ee6a0a" testId="f31a7a9c-4980-387f-ca04-0711b870f81d" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.RepeatedSuccessfulApplyAbortIsReportedAsCommitLivelock" computerName="DESKTOP-38K4CPI" duration="00:00:00.2692982" startTime="2026-09-08T13:36:52.0733792-05:00" endTime="2026-09-08T13:36:52.0733796-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="e114b919-4561-4bb0-80eb-e655f2ee6a0a" />
+    <UnitTestResult executionId="093627d4-d7e3-4a95-911e-fee31c071985" testId="4be9564b-a18a-fd7f-3c36-fe07f3eb654f" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.LostLateResyncCallbackAfterValidatedPhysicalRebuildCanFinalizeCheckpointExactlyOnce" computerName="DESKTOP-38K4CPI" duration="00:00:00.2408633" startTime="2026-09-08T13:36:52.6202941-05:00" endTime="2026-09-08T13:36:52.6202945-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="093627d4-d7e3-4a95-911e-fee31c071985" />
+    <UnitTestResult executionId="3e2db672-6070-4227-93e6-8722a25d085e" testId="47238444-a5c8-9bf5-93c3-ddc479e6a812" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.PhysicalDestinationVerificationPendingCannotCommit" computerName="DESKTOP-38K4CPI" duration="00:00:00.3666120" startTime="2026-09-08T13:37:03.9062481-05:00" endTime="2026-09-08T13:37:03.9062484-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="3e2db672-6070-4227-93e6-8722a25d085e" />
+    <UnitTestResult executionId="a281c1b3-7be1-4a7b-927d-87d8f9df6f5a" testId="66b020b8-bf77-cedc-79ec-8f02efd4df20" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G2B_MentalNoteQueueEntryDoesNotBlockDecisionProgression" computerName="DESKTOP-38K4CPI" duration="00:00:00.2684570" startTime="2026-09-08T13:36:53.6238922-05:00" endTime="2026-09-08T13:36:53.6238926-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="a281c1b3-7be1-4a7b-927d-87d8f9df6f5a" />
+    <UnitTestResult executionId="17f70355-eecf-4371-aaf8-edb5356ef1cc" testId="cbdf8c99-8833-a863-0f75-ce2fc8148c34" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ValidSnapshotCheckpointReattachesTheCurrentDecisionExactlyOnce" computerName="DESKTOP-38K4CPI" duration="00:00:00.3480940" startTime="2026-09-08T13:36:54.5348522-05:00" endTime="2026-09-08T13:36:54.5348529-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="17f70355-eecf-4371-aaf8-edb5356ef1cc" />
+    <UnitTestResult executionId="cfe39913-a483-47f9-9c0e-f15956420aed" testId="dbd2d021-d644-a0b1-e833-01b0cebcb48a" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.NewMatchSnapshotCompositionCommitsCursorAndSupersedesOpeningHistory" computerName="DESKTOP-38K4CPI" duration="00:00:00.3538769" startTime="2026-09-08T13:37:04.7985429-05:00" endTime="2026-09-08T13:37:04.7985432-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="cfe39913-a483-47f9-9c0e-f15956420aed">
+      <Output>
+        <ErrorInfo>
+          <Message>nil</Message>
+          <StackTrace>   at MtgTtsBridge.Tests.TtsEventQueueLivelockTests.NewMatchSnapshotCompositionCommitsCursorAndSupersedesOpeningHistory() in C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\TtsEventQueueLivelockTests.cs:line 1617&#xD;
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="2121bcab-328a-44d4-a4a7-10454076187e" testId="a084c4a0-2989-bb61-8bc2-c88053c6b7b4" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G2E_NewSessionClearsStalePriorSessionResultState" computerName="DESKTOP-38K4CPI" duration="00:00:00.4262182" startTime="2026-09-08T13:36:48.3786109-05:00" endTime="2026-09-08T13:36:48.3786113-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="2121bcab-328a-44d4-a4a7-10454076187e" />
+    <UnitTestResult executionId="e9f0421e-828f-41ef-962c-9d5f8806a3b5" testId="625f8769-4d4b-7159-4a77-de34fd9ccd13" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ResumeOnActiveCoherentSessionDoesNotAttachOrResetCheckpoint" computerName="DESKTOP-38K4CPI" duration="00:00:00.4001951" startTime="2026-09-08T13:36:49.2138056-05:00" endTime="2026-09-08T13:36:49.2138058-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="e9f0421e-828f-41ef-962c-9d5f8806a3b5">
+      <Output>
+        <ErrorInfo>
+          <Message>MoonSharp.Interpreter.ScriptRuntimeException : attempt to index a nil value</Message>
+          <StackTrace>   at MoonSharp.Interpreter.Execution.VM.Processor.ExecIndex(Instruction i, Int32 instructionPtr)&#xD;
+   at MoonSharp.Interpreter.Execution.VM.Processor.Processing_Loop(Int32 instructionPtr)&#xD;
+   at MoonSharp.Interpreter.Execution.VM.Processor.Call(DynValue function, DynValue[] args)&#xD;
+   at MoonSharp.Interpreter.Script.Call(DynValue function, DynValue[] args)&#xD;
+   at MoonSharp.Interpreter.Script.Call(DynValue function)&#xD;
+   at MoonSharp.Interpreter.Script.DoString(String code, Table globalContext, String codeFriendlyName)&#xD;
+   at MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ResumeOnActiveCoherentSessionDoesNotAttachOrResetCheckpoint() in C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\TtsEventQueueLivelockTests.cs:line 1981&#xD;
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="9b71a530-d981-49b9-ab4f-82e5ef944396" testId="3e9b5e7e-0f39-f908-3d9e-b7d05282b0d0" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StructuredCardMoveAsyncDispatchClosesParentAndTracksChildSeparately" computerName="DESKTOP-38K4CPI" duration="00:00:00.4162003" startTime="2026-09-08T13:36:48.7955688-05:00" endTime="2026-09-08T13:36:48.7955690-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="9b71a530-d981-49b9-ab4f-82e5ef944396" />
+    <UnitTestResult executionId="50f9b713-693b-4661-a6f0-e84de4e9d338" testId="228f6690-acef-603c-8492-2d73252801b9" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SupplierAbortAutomaticRecoveryCommitsSnapshot119AndRestartsOnce" computerName="DESKTOP-38K4CPI" duration="00:00:00.2984656" startTime="2026-09-08T13:37:04.4432899-05:00" endTime="2026-09-08T13:37:04.4432901-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="50f9b713-693b-4661-a6f0-e84de4e9d338">
+      <Output>
+        <ErrorInfo>
+          <Message>checkpointCommits=0 bootstrapStage=BOOTSTRAP_COMPLETE resyncStage=PhysicalValidated lastFailure=nil marker=seats traceError=nil desync=nil</Message>
+          <StackTrace>   at MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SupplierAbortAutomaticRecoveryCommitsSnapshot119AndRestartsOnce() in C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\TtsEventQueueLivelockTests.cs:line 1084&#xD;
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="559249c6-2888-4eb3-9fdd-8b48174d83e6" testId="e1e4af6a-8c83-0ba4-9f66-46ad47b18e78" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.LifecycleGuardBlocksStartMatchOutsideReadyOrFailedStates" computerName="DESKTOP-38K4CPI" duration="00:00:00.3209298" startTime="2026-09-08T13:36:56.4317414-05:00" endTime="2026-09-08T13:36:56.4317416-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="559249c6-2888-4eb3-9fdd-8b48174d83e6" />
+    <UnitTestResult executionId="c3762815-badd-437e-99db-fd6c874192de" testId="e4d5522f-c370-d955-be57-25f45ffb63c5" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G7_ManualResyncAndResumeCannotResetStaleDecisionBudget" computerName="DESKTOP-38K4CPI" duration="00:00:00.3760472" startTime="2026-09-08T13:36:52.9966654-05:00" endTime="2026-09-08T13:36:52.9966664-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="c3762815-badd-437e-99db-fd6c874192de" />
+    <UnitTestResult executionId="330aac12-7744-47b6-83c7-5266f2d2b91d" testId="db9d8259-9ca2-fa58-3c37-b345577a346b" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.RepeatedIdenticalRecoverySnapshotsOpenCircuitInsteadOfChurning" computerName="DESKTOP-38K4CPI" duration="00:00:00.3143696" startTime="2026-09-08T13:37:02.0760090-05:00" endTime="2026-09-08T13:37:02.0760095-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="330aac12-7744-47b6-83c7-5266f2d2b91d" />
+    <UnitTestResult executionId="8d201a76-1cc4-4d38-a4aa-0258b82bb5e5" testId="321201bd-de4b-2a4d-768a-5608bd8b1a8d" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ValidMulliganSnapshotSupersedesQueuedIntermediateEvents" computerName="DESKTOP-38K4CPI" duration="00:00:00.3037611" startTime="2026-09-08T13:36:50.2057178-05:00" endTime="2026-09-08T13:36:50.2057180-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="8d201a76-1cc4-4d38-a4aa-0258b82bb5e5" />
+    <UnitTestResult executionId="0567e300-7ff9-444f-9074-1571086da962" testId="e983d1a6-e361-1a9f-9161-c0466c0d6ce4" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.QueueOrderContract_MoonSharpTableInsertBuildsAscendingForThisProbeLayout" computerName="DESKTOP-38K4CPI" duration="00:00:00.3664625" startTime="2026-09-08T13:36:50.8998251-05:00" endTime="2026-09-08T13:36:50.8998254-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="0567e300-7ff9-444f-9074-1571086da962" />
+    <UnitTestResult executionId="ca2fab26-4663-4933-bf89-21da4867b2ac" testId="369f20e7-2840-e2a9-295c-39350c6ef2f3" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StaleLibraryExtractionCallbackCleansUpQueueOwnershipWhenTheGenerationChanges" computerName="DESKTOP-38K4CPI" duration="00:00:00.2824015" startTime="2026-09-08T13:37:05.3143149-05:00" endTime="2026-09-08T13:37:05.3143151-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="ca2fab26-4663-4933-bf89-21da4867b2ac" />
+    <UnitTestResult executionId="1abefff2-87b2-4437-ab58-6d17194ad685" testId="ddb8ae5d-8090-aca9-23f7-4f7060c09734" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StalledAutomaticResyncReleasesItsLocalLatchAndInvalidatesBootstrap" computerName="DESKTOP-38K4CPI" duration="00:00:00.2405683" startTime="2026-09-08T13:37:05.5550426-05:00" endTime="2026-09-08T13:37:05.5550442-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="1abefff2-87b2-4437-ab58-6d17194ad685" />
+    <UnitTestResult executionId="3d31b20f-85a7-412a-a733-79405c4dc9b8" testId="3c21fa36-f93e-b504-e192-1b0bcbae47b3" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SuccessfulEventCommitsWhenPollingStopsWithinTheSameSession" computerName="DESKTOP-38K4CPI" duration="00:00:00.2264561" startTime="2026-09-08T13:36:54.1864933-05:00" endTime="2026-09-08T13:36:54.1864938-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="3d31b20f-85a7-412a-a733-79405c4dc9b8" />
+    <UnitTestResult executionId="c92699e6-8a87-4937-a735-263d2c64af2a" testId="c44dc620-82cd-230d-e86d-cdc654f126c4" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.QueueHeadStallReportsTheActualSchedulerFenceWithoutApplyingTheEvent" computerName="DESKTOP-38K4CPI" duration="00:00:00.2732678" startTime="2026-09-08T13:37:02.8565257-05:00" endTime="2026-09-08T13:37:02.8565260-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="c92699e6-8a87-4937-a735-263d2c64af2a" />
+    <UnitTestResult executionId="04c19304-ab8f-4809-9abc-df3ac9363bb4" testId="18363d9e-3a6d-932e-3558-fb15e1ffb7fd" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G6_ThoughtScourMutationCompletionInstallsCursorCurrentDecisionWithoutResync" computerName="DESKTOP-38K4CPI" duration="00:00:00.3053897" startTime="2026-09-08T13:36:52.3791500-05:00" endTime="2026-09-08T13:36:52.3791503-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="04c19304-ab8f-4809-9abc-df3ac9363bb4" />
+    <UnitTestResult executionId="ee01b4c1-9a46-45ab-8310-1961fe47266f" testId="492fb9c9-6d4e-30a2-bcfa-d5c82106e6fd" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G2F_CurrentSessionIgnoresPriorSessionTerminalRecovery" computerName="DESKTOP-38K4CPI" duration="00:00:00.2755927" startTime="2026-09-08T13:36:55.0946487-05:00" endTime="2026-09-08T13:36:55.0946491-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="ee01b4c1-9a46-45ab-8310-1961fe47266f" />
+    <UnitTestResult executionId="b1fe8f6c-6b8d-4a9a-9ad9-0f3295fe3a5c" testId="e8c93b30-6c55-14d5-d1ab-989a6fb7578f" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SnapshotCheckpointCommitsCursorAndSupersedesFetchlandTailAtomically" computerName="DESKTOP-38K4CPI" duration="00:00:00.2680431" startTime="2026-09-08T13:36:57.8443486-05:00" endTime="2026-09-08T13:36:57.8443488-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="b1fe8f6c-6b8d-4a9a-9ad9-0f3295fe3a5c" />
+    <UnitTestResult executionId="837734a0-20bf-4d87-9b7d-c0519a5226da" testId="505072aa-c8b1-2c5e-25d0-8fc09af12d83" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.DesyncLatchAlwaysSchedulesRecovery" computerName="DESKTOP-38K4CPI" duration="00:00:00.2326108" startTime="2026-09-08T13:36:55.3276085-05:00" endTime="2026-09-08T13:36:55.3276088-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="837734a0-20bf-4d87-9b7d-c0519a5226da" />
+    <UnitTestResult executionId="10d0d924-ff22-4457-aae0-17eac62fbf16" testId="80f682fa-7007-0d14-1823-35ce427aaf2d" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.D4628_SessionReplacementDoesNotWriteTerminalRecoveryForAnOldGenerationFault" computerName="DESKTOP-38K4CPI" duration="00:00:00.2571729" startTime="2026-09-08T13:37:01.4807068-05:00" endTime="2026-09-08T13:37:01.4807073-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="10d0d924-ff22-4457-aae0-17eac62fbf16" />
+    <UnitTestResult executionId="0c7bf59e-1363-485c-a241-cecdf94a9dfd" testId="4507b9bc-ea0f-fff7-ba4e-6ebabc159b6b" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.FinalPhysicalRepresentationRequiresExactLooseCardZoneAndSeat" computerName="DESKTOP-38K4CPI" duration="00:00:00.2596405" startTime="2026-09-08T13:36:58.9044857-05:00" endTime="2026-09-08T13:36:58.9044867-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="0c7bf59e-1363-485c-a241-cecdf94a9dfd" />
+    <UnitTestResult executionId="0e07fdde-c720-4cf8-8661-1c9b57fa8e90" testId="8fc0eed3-a185-bbec-6f4b-9e8f4be3d71c" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SameSessionResyncSupersedesStaleBootstrapOwnershipAndFetchesSnapshot" computerName="DESKTOP-38K4CPI" duration="00:00:00.3185738" startTime="2026-09-08T13:36:59.5116403-05:00" endTime="2026-09-08T13:36:59.5116406-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="0e07fdde-c720-4cf8-8661-1c9b57fa8e90">
+      <Output>
+        <ErrorInfo>
+          <Message>Assert.Equal() Failure: Strings differ&#xD;
+Expected: "authoritative snapshot unavailable: probe"···&#xD;
+Actual:   null</Message>
+          <StackTrace>   at MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SameSessionResyncSupersedesStaleBootstrapOwnershipAndFetchesSnapshot() in C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\TtsEventQueueLivelockTests.cs:line 1922&#xD;
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="dbe1effc-daa1-4840-ba45-aa92dfeadbf6" testId="7504121a-ec06-0c30-f2bc-5043128f6871" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StructuredCardMoveSuccessfulReturnClosesWatchdogOperation" computerName="DESKTOP-38K4CPI" duration="00:00:00.3701240" startTime="2026-09-08T13:36:49.5844291-05:00" endTime="2026-09-08T13:36:49.5844296-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="dbe1effc-daa1-4840-ba45-aa92dfeadbf6" />
+    <UnitTestResult executionId="875aad20-652f-4a25-8046-83afaa26188b" testId="ce1587bf-5f4f-3eb8-3163-9bd402190739" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StartInventoryIncludesAlreadyDealtHandCards" computerName="DESKTOP-38K4CPI" duration="00:00:00.2795758" startTime="2026-09-08T13:36:59.1842904-05:00" endTime="2026-09-08T13:36:59.1842907-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="875aad20-652f-4a25-8046-83afaa26188b" />
+    <UnitTestResult executionId="72d3340c-ea44-4b99-ac82-ddea6deb3452" testId="53947ed2-2ee6-9eed-e5fd-47b920d35b51" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.PhysicalReadinessProbeFailureDoesNotCommitMutation" computerName="DESKTOP-38K4CPI" duration="00:00:00.3168131" startTime="2026-09-08T13:36:49.9016147-05:00" endTime="2026-09-08T13:36:49.9016151-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="72d3340c-ea44-4b99-ac82-ddea6deb3452" />
+    <UnitTestResult executionId="51b5da93-4f5f-4006-823a-20c2e2a8e625" testId="f58dfdf5-6d9e-3f1e-d2fd-4f7f3c8977a2" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ExtractionWorkerPendingCannotCommit" computerName="DESKTOP-38K4CPI" duration="00:00:00.3145499" startTime="2026-09-08T13:36:51.4997914-05:00" endTime="2026-09-08T13:36:51.4997918-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="51b5da93-4f5f-4006-823a-20c2e2a8e625" />
+    <UnitTestResult executionId="df918785-3ff7-499c-8a65-d2687f78bee5" testId="1b9fb852-d0ed-468b-95a5-a27f094ad498" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SessionReplacementAbandonsTheOldQueueWithoutCommittingItsEvent" computerName="DESKTOP-38K4CPI" duration="00:00:00.3082729" startTime="2026-09-08T13:37:00.0837605-05:00" endTime="2026-09-08T13:37:00.0837607-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="df918785-3ff7-499c-8a65-d2687f78bee5" />
+    <UnitTestResult executionId="f4c87ded-1c6f-466f-9371-c515821308bd" testId="b04e4413-dd66-9305-a539-d9cd675cca7a" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.TurnTransitionRetainsNewerPendingDecision" computerName="DESKTOP-38K4CPI" duration="00:00:00.2325807" startTime="2026-09-08T13:37:00.9351817-05:00" endTime="2026-09-08T13:37:00.9351819-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="f4c87ded-1c6f-466f-9371-c515821308bd" />
+    <UnitTestResult executionId="ccbd4c69-6b8c-4668-918b-18d31574b4e7" testId="33b4ccb4-2033-4e46-448c-6792f82c66df" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StalledResyncUsesUpdateFramesWhenBothClocksAreFrozen" computerName="DESKTOP-38K4CPI" duration="00:00:00.3039923" startTime="2026-09-08T13:37:00.7024191-05:00" endTime="2026-09-08T13:37:00.7024193-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="ccbd4c69-6b8c-4668-918b-18d31574b4e7" />
+    <UnitTestResult executionId="2042f1d1-eb50-4218-9917-6db7785ec9da" testId="3955dbe3-f1fb-30e6-d16f-afe5f921c0bb" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.CurrentLibraryExtractionCompletionRemovesItsItemBeforeReleasingTheWorker" computerName="DESKTOP-38K4CPI" duration="00:00:00.2999868" startTime="2026-09-08T13:36:58.1445268-05:00" endTime="2026-09-08T13:36:58.1445270-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="2042f1d1-eb50-4218-9917-6db7785ec9da" />
+    <UnitTestResult executionId="f8d76998-0e62-4fae-b7e6-f19abb2b5278" testId="5e2e08a1-de31-99c4-23dc-d046bbc09e83" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.GraveyardDeckCollapseRebindsOnlyTheExactContainedIdentityToLooseCard" computerName="DESKTOP-38K4CPI" duration="00:00:00.2632948" startTime="2026-09-08T13:36:59.7752610-05:00" endTime="2026-09-08T13:36:59.7752613-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="f8d76998-0e62-4fae-b7e6-f19abb2b5278" />
+    <UnitTestResult executionId="b5b00f11-e4bd-4f86-af36-64c2bedd030f" testId="9c22a340-ff4e-cc3a-8c8a-9f30acbef3bb" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StaleEventDrainContinuationCannotClearNewOwnerOrRunThePumpTwice" computerName="DESKTOP-38K4CPI" duration="00:00:00.4881394" startTime="2026-09-08T13:36:47.9473596-05:00" endTime="2026-09-08T13:36:47.9473932-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="b5b00f11-e4bd-4f86-af36-64c2bedd030f" />
+    <UnitTestResult executionId="29e8b118-0ba4-4929-b4b0-041285de012e" testId="88924aaa-ccd3-a3ac-e300-003165f92bb1" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StaleDecisionAcceptanceDoesNotCrashAndRearmsDecisionPolling" computerName="DESKTOP-38K4CPI" duration="00:00:00.2846610" startTime="2026-09-08T13:36:51.1849511-05:00" endTime="2026-09-08T13:36:51.1849514-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="29e8b118-0ba4-4929-b4b0-041285de012e" />
+    <UnitTestResult executionId="49118710-e1da-4545-8ac5-4637d05d1374" testId="1e7fd832-551b-a14f-4f72-32de20e4c921" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SuccessfulEventCommitsOnceWhenPollingGenerationChangesDuringApply" computerName="DESKTOP-38K4CPI" duration="00:00:00.3398320" startTime="2026-09-08T13:36:57.5758272-05:00" endTime="2026-09-08T13:36:57.5758274-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="49118710-e1da-4545-8ac5-4637d05d1374" />
+    <UnitTestResult executionId="cd496bdc-d9e3-4ac8-89ab-6999fbb309fa" testId="05108735-e4b1-5e35-7a69-e6c60f3e5d70" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.HandPlacementVerificationPendingCannotCommit" computerName="DESKTOP-38K4CPI" duration="00:00:00.3267920" startTime="2026-09-08T13:36:50.5328562-05:00" endTime="2026-09-08T13:36:50.5328566-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="cd496bdc-d9e3-4ac8-89ab-6999fbb309fa" />
+    <UnitTestResult executionId="4462a1cf-8c95-47d9-b4c4-a7293d1c08ba" testId="8e1007a4-2b00-a0dc-97dc-b7f079ccac1a" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ManualResyncFromStrandedStateTakesSingleOwnershipAndBypassesCircuitGate" computerName="DESKTOP-38K4CPI" duration="00:00:00.3036908" startTime="2026-09-08T13:36:51.8037854-05:00" endTime="2026-09-08T13:36:51.8037858-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="4462a1cf-8c95-47d9-b4c4-a7293d1c08ba" />
+    <UnitTestResult executionId="45aea338-03ee-4ae5-8bde-987791e5276c" testId="e11e2ba5-90ac-b23e-c754-2acc49917ca0" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.LogicalBatchStillOpenButPhysicalOperationsSettledCanCommit" computerName="DESKTOP-38K4CPI" duration="00:00:00.2879250" startTime="2026-09-08T13:37:01.2232775-05:00" endTime="2026-09-08T13:37:01.2232779-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="45aea338-03ee-4ae5-8bde-987791e5276c" />
+    <UnitTestResult executionId="065caf5c-56be-4bb1-9792-7e72c0fe3f4b" testId="dac5e38d-7066-37b9-f5b4-1be10491d141" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.FinalPhysicalRepresentationRejectsStaleContainedDeckMapping" computerName="DESKTOP-38K4CPI" duration="00:00:00.2960991" startTime="2026-09-08T13:37:03.5394615-05:00" endTime="2026-09-08T13:37:03.5394617-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="065caf5c-56be-4bb1-9792-7e72c0fe3f4b" />
+    <UnitTestResult executionId="ca0e79b7-0661-4f79-8a3c-632329a0d05f" testId="458e92e4-d5ca-f362-fbda-abee8487de6b" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ForgeMutationGroupComparisonUsesSharedPositiveForgeSequenceOnly" computerName="DESKTOP-38K4CPI" duration="00:00:00.2691975" startTime="2026-09-08T13:37:02.3455052-05:00" endTime="2026-09-08T13:37:02.3455055-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="ca0e79b7-0661-4f79-8a3c-632329a0d05f" />
+    <UnitTestResult executionId="d5b16994-e4cd-418c-abe5-acd429cb9230" testId="bbd3167d-364f-5838-5e08-b75e0109e7ed" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ContainedGraveyardIdentitiesRemainExactWhenPrintedNamesDuplicate" computerName="DESKTOP-38K4CPI" duration="00:00:00.3142989" startTime="2026-09-08T13:37:00.3982312-05:00" endTime="2026-09-08T13:37:00.3982314-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="d5b16994-e4cd-418c-abe5-acd429cb9230" />
+    <UnitTestResult executionId="7ad86cba-2654-4aff-84cc-28a93e52fcc1" testId="a71148b5-4466-2cea-0a4e-7a0f53dede93" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G2C_NullResultIsNotPresentedAsDrawDuringTerminalRecovery" computerName="DESKTOP-38K4CPI" duration="00:00:00.2466981" startTime="2026-09-08T13:36:55.5745058-05:00" endTime="2026-09-08T13:36:55.5745061-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="7ad86cba-2654-4aff-84cc-28a93e52fcc1" />
+    <UnitTestResult executionId="0eae1214-bc2c-4869-84e7-44a2ecc35434" testId="791342c3-dc03-2dd3-d279-6d68d2f2c13d" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.DecisionIsDeferredWhenQueuedEventsShareItsForgeMutationSequence" computerName="DESKTOP-38K4CPI" duration="00:00:00.2672058" startTime="2026-09-08T13:36:56.1105935-05:00" endTime="2026-09-08T13:36:56.1105938-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="0eae1214-bc2c-4869-84e7-44a2ecc35434" />
+    <UnitTestResult executionId="42f9677f-d46f-4f13-9be6-d608b69ea27a" testId="5ffd45ba-4333-9027-dd69-c308e9485a55" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.FinalPhysicalRepresentationAcceptsExactContainedDeckIdentity" computerName="DESKTOP-38K4CPI" duration="00:00:00.2805255" startTime="2026-09-08T13:37:01.7614253-05:00" endTime="2026-09-08T13:37:01.7614259-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="42f9677f-d46f-4f13-9be6-d608b69ea27a" />
+    <UnitTestResult executionId="df445c9f-5923-4cca-a31f-fa86266d19d9" testId="dffddb41-94b3-2a60-1707-51d707adcd73" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.DecisionIsDeferredUntilItsCursorIsPhysicallyAppliedEvenWhenAlreadyObserved" computerName="DESKTOP-38K4CPI" duration="00:00:00.2692397" startTime="2026-09-08T13:37:05.8245743-05:00" endTime="2026-09-08T13:37:05.8245752-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="df445c9f-5923-4cca-a31f-fa86266d19d9" />
+    <UnitTestResult executionId="1fc38f5c-c54d-466e-ad9b-6f097d69a1ff" testId="7d712701-3405-bbce-0dde-63fa1a5ae224" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StructuredCardMoveFailureReturnClosesWatchdogOperation" computerName="DESKTOP-38K4CPI" duration="00:00:00.3356526" startTime="2026-09-08T13:36:53.9597885-05:00" endTime="2026-09-08T13:36:53.9597889-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="1fc38f5c-c54d-466e-ad9b-6f097d69a1ff" />
+    <UnitTestResult executionId="b8d97b3e-fd55-4463-b522-9a8e4e2badb8" testId="8eb9eaaf-8756-2428-8075-9beca3037ebc" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.RetiredLibraryCallbackCannotMutateThePostResyncQueues" computerName="DESKTOP-38K4CPI" duration="00:00:00.2468791" startTime="2026-09-08T13:36:58.6446257-05:00" endTime="2026-09-08T13:36:58.6446259-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="b8d97b3e-fd55-4463-b522-9a8e4e2badb8" />
+    <UnitTestResult executionId="125ec4ee-d577-46d5-bde2-a03925145727" testId="1ce10da5-0120-aec8-13d0-b55760a6b47e" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ManualResyncRetiresWedgeAndSupersedesTheOldEventQueue" computerName="DESKTOP-38K4CPI" duration="00:00:00.2650369" startTime="2026-09-08T13:36:55.8430632-05:00" endTime="2026-09-08T13:36:55.8430637-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="125ec4ee-d577-46d5-bde2-a03925145727">
+      <Output>
+        <ErrorInfo>
+          <Message>MoonSharp.Interpreter.ScriptRuntimeException : attempt to index a nil value</Message>
+          <StackTrace>   at MoonSharp.Interpreter.Execution.VM.Processor.ExecIndex(Instruction i, Int32 instructionPtr)&#xD;
+   at MoonSharp.Interpreter.Execution.VM.Processor.Processing_Loop(Int32 instructionPtr)&#xD;
+   at MoonSharp.Interpreter.Execution.VM.Processor.Call(DynValue function, DynValue[] args)&#xD;
+   at MoonSharp.Interpreter.Script.Call(DynValue function, DynValue[] args)&#xD;
+   at MoonSharp.Interpreter.Script.Call(DynValue function)&#xD;
+   at MoonSharp.Interpreter.Script.DoString(String code, Table globalContext, String codeFriendlyName)&#xD;
+   at MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ManualResyncRetiresWedgeAndSupersedesTheOldEventQueue() in C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\TtsEventQueueLivelockTests.cs:line 916&#xD;
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="b9ee8f30-5329-4e1c-813f-c5cccb143e13" testId="b973fd8c-9c1d-2d37-cb0b-1375a859010f" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.InvalidEventDrainOwnershipRetiresOrphanAndStaleOwnersAndAllowsDrain" computerName="DESKTOP-38K4CPI" duration="00:00:00.2836393" startTime="2026-09-08T13:36:54.8188108-05:00" endTime="2026-09-08T13:36:54.8188111-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="b9ee8f30-5329-4e1c-813f-c5cccb143e13" />
+    <UnitTestResult executionId="7f04953d-e69a-4eec-bad3-1d05035821b6" testId="45430cd8-0670-f175-1d2e-c02381b7b6b2" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.RecoveryOwnsSchedulersAndSuspendsFastForward" computerName="DESKTOP-38K4CPI" duration="00:00:00.3581079" startTime="2026-09-08T13:36:53.3551918-05:00" endTime="2026-09-08T13:36:53.3551921-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="7f04953d-e69a-4eec-bad3-1d05035821b6" />
+    <UnitTestResult executionId="4e47676c-0894-470b-9271-e8a3b9a1f883" testId="1e600fae-29f5-7020-46c9-4b3df5bcda1d" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G2D_ExplicitAuthoritativeDrawIncludesSourceEventMetadata" computerName="DESKTOP-38K4CPI" duration="00:00:00.3192977" startTime="2026-09-08T13:36:56.9867298-05:00" endTime="2026-09-08T13:36:56.9867300-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="4e47676c-0894-470b-9271-e8a3b9a1f883" />
+    <UnitTestResult executionId="587752b8-ecc9-4420-8145-826a7f601efa" testId="89dc4f74-52b4-0298-4918-4fff7c44312f" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SameSessionResyncFailureRestoresTheCommittedCheckpoint" computerName="DESKTOP-38K4CPI" duration="00:00:00.2373755" startTime="2026-09-08T13:37:02.5830556-05:00" endTime="2026-09-08T13:37:02.5830558-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="587752b8-ecc9-4420-8145-826a7f601efa" />
+    <UnitTestResult executionId="33499561-b338-4ca8-a892-5cca9ad76409" testId="5dc5a71c-c6f3-f652-49fc-2e134881c947" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ResumeWithCurrentCursorMappingDefectRequestsScopedRepairWithoutAttach" computerName="DESKTOP-38K4CPI" duration="00:00:00.2330682" startTime="2026-09-08T13:37:04.1419112-05:00" endTime="2026-09-08T13:37:04.1419115-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="33499561-b338-4ca8-a892-5cca9ad76409">
+      <Output>
+        <ErrorInfo>
+          <Message>MoonSharp.Interpreter.ScriptRuntimeException : attempt to index a nil value</Message>
+          <StackTrace>   at MoonSharp.Interpreter.Execution.VM.Processor.ExecIndex(Instruction i, Int32 instructionPtr)&#xD;
+   at MoonSharp.Interpreter.Execution.VM.Processor.Processing_Loop(Int32 instructionPtr)&#xD;
+   at MoonSharp.Interpreter.Execution.VM.Processor.Call(DynValue function, DynValue[] args)&#xD;
+   at MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ResumeWithCurrentCursorMappingDefectRequestsScopedRepairWithoutAttach() in C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\TtsEventQueueLivelockTests.cs:line 2023&#xD;
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="452e3079-f1ff-4232-93ce-76ecb2a73f65" testId="3b3b6e79-49c7-1c7b-6761-09e62713f5d4" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SameSessionResyncStagesMappingsAndRollsThemBackWithoutLosingTheCommittedRegistry" computerName="DESKTOP-38K4CPI" duration="00:00:00.2487467" startTime="2026-09-08T13:36:57.2357056-05:00" endTime="2026-09-08T13:36:57.2357060-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="452e3079-f1ff-4232-93ce-76ecb2a73f65" />
+    <UnitTestResult executionId="91548949-c53c-4445-a39e-5a026ff4304b" testId="7ef84f31-4a7e-1cd5-3706-15209a4b02c0" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.AutomaticResyncBehindPhysicalQueueUsesOneBoundedRetry" computerName="DESKTOP-38K4CPI" duration="00:00:00.2328733" startTime="2026-09-08T13:37:05.0316516-05:00" endTime="2026-09-08T13:37:05.0316519-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="91548949-c53c-4445-a39e-5a026ff4304b" />
+    <UnitTestResult executionId="5b9759f9-946e-4821-930d-6848007bfa86" testId="b76f74c2-94e0-a042-b83d-cec5611f5fbd" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.LostEventDrainContinuationRearmsFromUpdateLivenessWithoutReapplyingCommittedEvent" computerName="DESKTOP-38K4CPI" duration="00:00:00.2352025" startTime="2026-09-08T13:36:56.6671919-05:00" endTime="2026-09-08T13:36:56.6671922-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="5b9759f9-946e-4821-930d-6848007bfa86" />
+    <UnitTestResult executionId="be590cb5-08b4-41f8-9550-bebaebddf92a" testId="b5315190-6c21-9a0f-db6b-021a5c3dbfbd" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.CompletedPhysicalMillDoesNotLetLogicalBatchDeadlockRecovery" computerName="DESKTOP-38K4CPI" duration="00:00:00.2527537" startTime="2026-09-08T13:36:58.3974985-05:00" endTime="2026-09-08T13:36:58.3974988-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="be590cb5-08b4-41f8-9550-bebaebddf92a" />
+    <UnitTestResult executionId="1f09e111-fa6d-4d84-a72b-c0a87b3181de" testId="cb3e8cb1-de09-e06f-8c0a-3c47d6fc2c0a" testName="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.FailedAutomaticRecoveryCannotFetchTheSameSnapshotForever" computerName="DESKTOP-38K4CPI" duration="00:00:00.3863970" startTime="2026-09-08T13:37:03.2431434-05:00" endTime="2026-09-08T13:37:03.2431441-05:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="1f09e111-fa6d-4d84-a72b-c0a87b3181de" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.LifecycleGuardBlocksStartMatchOutsideReadyOrFailedStates" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="e1e4af6a-8c83-0ba4-9f66-46ad47b18e78">
+      <Execution id="559249c6-2888-4eb3-9fdd-8b48174d83e6" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="LifecycleGuardBlocksStartMatchOutsideReadyOrFailedStates" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.LogicalBatchStillOpenButPhysicalOperationsSettledCanCommit" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="e11e2ba5-90ac-b23e-c754-2acc49917ca0">
+      <Execution id="45aea338-03ee-4ae5-8bde-987791e5276c" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="LogicalBatchStillOpenButPhysicalOperationsSettledCanCommit" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SameSessionResyncFailureRestoresTheCommittedCheckpoint" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="89dc4f74-52b4-0298-4918-4fff7c44312f">
+      <Execution id="587752b8-ecc9-4420-8145-826a7f601efa" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="SameSessionResyncFailureRestoresTheCommittedCheckpoint" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.RepeatedSuccessfulApplyAbortIsReportedAsCommitLivelock" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="f31a7a9c-4980-387f-ca04-0711b870f81d">
+      <Execution id="e114b919-4561-4bb0-80eb-e655f2ee6a0a" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="RepeatedSuccessfulApplyAbortIsReportedAsCommitLivelock" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.DesyncLatchAlwaysSchedulesRecovery" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="505072aa-c8b1-2c5e-25d0-8fc09af12d83">
+      <Execution id="837734a0-20bf-4d87-9b7d-c0519a5226da" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="DesyncLatchAlwaysSchedulesRecovery" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.D4628_SessionReplacementDoesNotWriteTerminalRecoveryForAnOldGenerationFault" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="80f682fa-7007-0d14-1823-35ce427aaf2d">
+      <Execution id="10d0d924-ff22-4457-aae0-17eac62fbf16" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="D4628_SessionReplacementDoesNotWriteTerminalRecoveryForAnOldGenerationFault" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StalledAutomaticResyncReleasesItsLocalLatchAndInvalidatesBootstrap" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="ddb8ae5d-8090-aca9-23f7-4f7060c09734">
+      <Execution id="1abefff2-87b2-4437-ab58-6d17194ad685" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="StalledAutomaticResyncReleasesItsLocalLatchAndInvalidatesBootstrap" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SnapshotCheckpointCommitsCursorAndSupersedesFetchlandTailAtomically" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="e8c93b30-6c55-14d5-d1ab-989a6fb7578f">
+      <Execution id="b1fe8f6c-6b8d-4a9a-9ad9-0f3295fe3a5c" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="SnapshotCheckpointCommitsCursorAndSupersedesFetchlandTailAtomically" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StaleLibraryExtractionCallbackCleansUpQueueOwnershipWhenTheGenerationChanges" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="369f20e7-2840-e2a9-295c-39350c6ef2f3">
+      <Execution id="ca2fab26-4663-4933-bf89-21da4867b2ac" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="StaleLibraryExtractionCallbackCleansUpQueueOwnershipWhenTheGenerationChanges" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.DecisionIsDeferredWhenQueuedEventsShareItsForgeMutationSequence" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="791342c3-dc03-2dd3-d279-6d68d2f2c13d">
+      <Execution id="0eae1214-bc2c-4869-84e7-44a2ecc35434" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="DecisionIsDeferredWhenQueuedEventsShareItsForgeMutationSequence" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G6_ThoughtScourMutationCompletionInstallsCursorCurrentDecisionWithoutResync" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="18363d9e-3a6d-932e-3558-fb15e1ffb7fd">
+      <Execution id="04c19304-ab8f-4809-9abc-df3ac9363bb4" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="G6_ThoughtScourMutationCompletionInstallsCursorCurrentDecisionWithoutResync" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.RetiredLibraryCallbackCannotMutateThePostResyncQueues" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="8eb9eaaf-8756-2428-8075-9beca3037ebc">
+      <Execution id="b8d97b3e-fd55-4463-b522-9a8e4e2badb8" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="RetiredLibraryCallbackCannotMutateThePostResyncQueues" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.FailedAutomaticRecoveryCannotFetchTheSameSnapshotForever" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="cb3e8cb1-de09-e06f-8c0a-3c47d6fc2c0a">
+      <Execution id="1f09e111-fa6d-4d84-a72b-c0a87b3181de" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="FailedAutomaticRecoveryCannotFetchTheSameSnapshotForever" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ManualResyncRetiresWedgeAndSupersedesTheOldEventQueue" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="1ce10da5-0120-aec8-13d0-b55760a6b47e">
+      <Execution id="125ec4ee-d577-46d5-bde2-a03925145727" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="ManualResyncRetiresWedgeAndSupersedesTheOldEventQueue" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ValidMulliganSnapshotSupersedesQueuedIntermediateEvents" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="321201bd-de4b-2a4d-768a-5608bd8b1a8d">
+      <Execution id="8d201a76-1cc4-4d38-a4aa-0258b82bb5e5" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="ValidMulliganSnapshotSupersedesQueuedIntermediateEvents" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G2B_MentalNoteQueueEntryDoesNotBlockDecisionProgression" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="66b020b8-bf77-cedc-79ec-8f02efd4df20">
+      <Execution id="a281c1b3-7be1-4a7b-927d-87d8f9df6f5a" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="G2B_MentalNoteQueueEntryDoesNotBlockDecisionProgression" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SuccessfulEventCommitsWhenPollingStopsWithinTheSameSession" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="3c21fa36-f93e-b504-e192-1b0bcbae47b3">
+      <Execution id="3d31b20f-85a7-412a-a733-79405c4dc9b8" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="SuccessfulEventCommitsWhenPollingStopsWithinTheSameSession" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G2E_NewSessionClearsStalePriorSessionResultState" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="a084c4a0-2989-bb61-8bc2-c88053c6b7b4">
+      <Execution id="2121bcab-328a-44d4-a4a7-10454076187e" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="G2E_NewSessionClearsStalePriorSessionResultState" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.TurnTransitionRetainsNewerPendingDecision" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="b04e4413-dd66-9305-a539-d9cd675cca7a">
+      <Execution id="f4c87ded-1c6f-466f-9371-c515821308bd" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="TurnTransitionRetainsNewerPendingDecision" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.PhysicalDestinationVerificationPendingCannotCommit" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="47238444-a5c8-9bf5-93c3-ddc479e6a812">
+      <Execution id="3e2db672-6070-4227-93e6-8722a25d085e" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="PhysicalDestinationVerificationPendingCannotCommit" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G7_ManualResyncAndResumeCannotResetStaleDecisionBudget" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="e4d5522f-c370-d955-be57-25f45ffb63c5">
+      <Execution id="c3762815-badd-437e-99db-fd6c874192de" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="G7_ManualResyncAndResumeCannotResetStaleDecisionBudget" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G2C_NullResultIsNotPresentedAsDrawDuringTerminalRecovery" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="a71148b5-4466-2cea-0a4e-7a0f53dede93">
+      <Execution id="7ad86cba-2654-4aff-84cc-28a93e52fcc1" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="G2C_NullResultIsNotPresentedAsDrawDuringTerminalRecovery" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.FinalPhysicalRepresentationAcceptsExactContainedDeckIdentity" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="5ffd45ba-4333-9027-dd69-c308e9485a55">
+      <Execution id="42f9677f-d46f-4f13-9be6-d608b69ea27a" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="FinalPhysicalRepresentationAcceptsExactContainedDeckIdentity" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.PhysicalReadinessProbeFailureDoesNotCommitMutation" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="53947ed2-2ee6-9eed-e5fd-47b920d35b51">
+      <Execution id="72d3340c-ea44-4b99-ac82-ddea6deb3452" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="PhysicalReadinessProbeFailureDoesNotCommitMutation" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ContainedGraveyardIdentitiesRemainExactWhenPrintedNamesDuplicate" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="bbd3167d-364f-5838-5e08-b75e0109e7ed">
+      <Execution id="d5b16994-e4cd-418c-abe5-acd429cb9230" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="ContainedGraveyardIdentitiesRemainExactWhenPrintedNamesDuplicate" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.NewMatchSnapshotCompositionCommitsCursorAndSupersedesOpeningHistory" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="dbd2d021-d644-a0b1-e833-01b0cebcb48a">
+      <Execution id="cfe39913-a483-47f9-9c0e-f15956420aed" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="NewMatchSnapshotCompositionCommitsCursorAndSupersedesOpeningHistory" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SessionReplacementAbandonsTheOldQueueWithoutCommittingItsEvent" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="1b9fb852-d0ed-468b-95a5-a27f094ad498">
+      <Execution id="df918785-3ff7-499c-8a65-d2687f78bee5" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="SessionReplacementAbandonsTheOldQueueWithoutCommittingItsEvent" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ResumeOnActiveCoherentSessionDoesNotAttachOrResetCheckpoint" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="625f8769-4d4b-7159-4a77-de34fd9ccd13">
+      <Execution id="e9f0421e-828f-41ef-962c-9d5f8806a3b5" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="ResumeOnActiveCoherentSessionDoesNotAttachOrResetCheckpoint" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SameSessionResyncSupersedesStaleBootstrapOwnershipAndFetchesSnapshot" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="8fc0eed3-a185-bbec-6f4b-9e8f4be3d71c">
+      <Execution id="0e07fdde-c720-4cf8-8661-1c9b57fa8e90" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="SameSessionResyncSupersedesStaleBootstrapOwnershipAndFetchesSnapshot" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StalledResyncUsesUpdateFramesWhenBothClocksAreFrozen" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="33b4ccb4-2033-4e46-448c-6792f82c66df">
+      <Execution id="ccbd4c69-6b8c-4668-918b-18d31574b4e7" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="StalledResyncUsesUpdateFramesWhenBothClocksAreFrozen" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.GraveyardDeckCollapseRebindsOnlyTheExactContainedIdentityToLooseCard" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="5e2e08a1-de31-99c4-23dc-d046bbc09e83">
+      <Execution id="f8d76998-0e62-4fae-b7e6-f19abb2b5278" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="GraveyardDeckCollapseRebindsOnlyTheExactContainedIdentityToLooseCard" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StructuredCardMoveAsyncDispatchClosesParentAndTracksChildSeparately" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="3e9b5e7e-0f39-f908-3d9e-b7d05282b0d0">
+      <Execution id="9b71a530-d981-49b9-ab4f-82e5ef944396" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="StructuredCardMoveAsyncDispatchClosesParentAndTracksChildSeparately" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.LostEventDrainContinuationRearmsFromUpdateLivenessWithoutReapplyingCommittedEvent" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="b76f74c2-94e0-a042-b83d-cec5611f5fbd">
+      <Execution id="5b9759f9-946e-4821-930d-6848007bfa86" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="LostEventDrainContinuationRearmsFromUpdateLivenessWithoutReapplyingCommittedEvent" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StaleDecisionAcceptanceDoesNotCrashAndRearmsDecisionPolling" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="88924aaa-ccd3-a3ac-e300-003165f92bb1">
+      <Execution id="29e8b118-0ba4-4929-b4b0-041285de012e" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="StaleDecisionAcceptanceDoesNotCrashAndRearmsDecisionPolling" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.QueueOrderContract_MoonSharpTableInsertBuildsAscendingForThisProbeLayout" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="e983d1a6-e361-1a9f-9161-c0466c0d6ce4">
+      <Execution id="0567e300-7ff9-444f-9074-1571086da962" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="QueueOrderContract_MoonSharpTableInsertBuildsAscendingForThisProbeLayout" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ResumeWithCurrentCursorMappingDefectRequestsScopedRepairWithoutAttach" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="5dc5a71c-c6f3-f652-49fc-2e134881c947">
+      <Execution id="33499561-b338-4ca8-a892-5cca9ad76409" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="ResumeWithCurrentCursorMappingDefectRequestsScopedRepairWithoutAttach" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.DecisionIsDeferredUntilItsCursorIsPhysicallyAppliedEvenWhenAlreadyObserved" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="dffddb41-94b3-2a60-1707-51d707adcd73">
+      <Execution id="df445c9f-5923-4cca-a31f-fa86266d19d9" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="DecisionIsDeferredUntilItsCursorIsPhysicallyAppliedEvenWhenAlreadyObserved" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SuccessfulEventCommitsOnceWhenPollingGenerationChangesDuringApply" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="1e7fd832-551b-a14f-4f72-32de20e4c921">
+      <Execution id="49118710-e1da-4545-8ac5-4637d05d1374" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="SuccessfulEventCommitsOnceWhenPollingGenerationChangesDuringApply" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.CompletedPhysicalMillDoesNotLetLogicalBatchDeadlockRecovery" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="b5315190-6c21-9a0f-db6b-021a5c3dbfbd">
+      <Execution id="be590cb5-08b4-41f8-9550-bebaebddf92a" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="CompletedPhysicalMillDoesNotLetLogicalBatchDeadlockRecovery" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.FinalPhysicalRepresentationRejectsStaleContainedDeckMapping" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="dac5e38d-7066-37b9-f5b4-1be10491d141">
+      <Execution id="065caf5c-56be-4bb1-9792-7e72c0fe3f4b" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="FinalPhysicalRepresentationRejectsStaleContainedDeckMapping" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G2D_ExplicitAuthoritativeDrawIncludesSourceEventMetadata" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="1e600fae-29f5-7020-46c9-4b3df5bcda1d">
+      <Execution id="4e47676c-0894-470b-9271-e8a3b9a1f883" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="G2D_ExplicitAuthoritativeDrawIncludesSourceEventMetadata" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StructuredCardMoveFailureReturnClosesWatchdogOperation" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="7d712701-3405-bbce-0dde-63fa1a5ae224">
+      <Execution id="1fc38f5c-c54d-466e-ad9b-6f097d69a1ff" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="StructuredCardMoveFailureReturnClosesWatchdogOperation" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StructuredCardMoveSuccessfulReturnClosesWatchdogOperation" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="7504121a-ec06-0c30-f2bc-5043128f6871">
+      <Execution id="dbe1effc-daa1-4840-ba45-aa92dfeadbf6" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="StructuredCardMoveSuccessfulReturnClosesWatchdogOperation" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SupplierAbortAutomaticRecoveryCommitsSnapshot119AndRestartsOnce" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="228f6690-acef-603c-8492-2d73252801b9">
+      <Execution id="50f9b713-693b-4661-a6f0-e84de4e9d338" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="SupplierAbortAutomaticRecoveryCommitsSnapshot119AndRestartsOnce" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.FinalPhysicalRepresentationRequiresExactLooseCardZoneAndSeat" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="4507b9bc-ea0f-fff7-ba4e-6ebabc159b6b">
+      <Execution id="0c7bf59e-1363-485c-a241-cecdf94a9dfd" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="FinalPhysicalRepresentationRequiresExactLooseCardZoneAndSeat" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.QueueHeadStallReportsTheActualSchedulerFenceWithoutApplyingTheEvent" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="c44dc620-82cd-230d-e86d-cdc654f126c4">
+      <Execution id="c92699e6-8a87-4937-a735-263d2c64af2a" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="QueueHeadStallReportsTheActualSchedulerFenceWithoutApplyingTheEvent" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.LostLateResyncCallbackAfterValidatedPhysicalRebuildCanFinalizeCheckpointExactlyOnce" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="4be9564b-a18a-fd7f-3c36-fe07f3eb654f">
+      <Execution id="093627d4-d7e3-4a95-911e-fee31c071985" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="LostLateResyncCallbackAfterValidatedPhysicalRebuildCanFinalizeCheckpointExactlyOnce" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ExtractionWorkerPendingCannotCommit" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="f58dfdf5-6d9e-3f1e-d2fd-4f7f3c8977a2">
+      <Execution id="51b5da93-4f5f-4006-823a-20c2e2a8e625" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="ExtractionWorkerPendingCannotCommit" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StartInventoryIncludesAlreadyDealtHandCards" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="ce1587bf-5f4f-3eb8-3163-9bd402190739">
+      <Execution id="875aad20-652f-4a25-8046-83afaa26188b" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="StartInventoryIncludesAlreadyDealtHandCards" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.RepeatedIdenticalRecoverySnapshotsOpenCircuitInsteadOfChurning" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="db9d8259-9ca2-fa58-3c37-b345577a346b">
+      <Execution id="330aac12-7744-47b6-83c7-5266f2d2b91d" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="RepeatedIdenticalRecoverySnapshotsOpenCircuitInsteadOfChurning" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.StaleEventDrainContinuationCannotClearNewOwnerOrRunThePumpTwice" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="9c22a340-ff4e-cc3a-8c8a-9f30acbef3bb">
+      <Execution id="b5b00f11-e4bd-4f86-af36-64c2bedd030f" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="StaleEventDrainContinuationCannotClearNewOwnerOrRunThePumpTwice" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.AutomaticResyncBehindPhysicalQueueUsesOneBoundedRetry" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="7ef84f31-4a7e-1cd5-3706-15209a4b02c0">
+      <Execution id="91548949-c53c-4445-a39e-5a026ff4304b" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="AutomaticResyncBehindPhysicalQueueUsesOneBoundedRetry" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ManualResyncFromStrandedStateTakesSingleOwnershipAndBypassesCircuitGate" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="8e1007a4-2b00-a0dc-97dc-b7f079ccac1a">
+      <Execution id="4462a1cf-8c95-47d9-b4c4-a7293d1c08ba" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="ManualResyncFromStrandedStateTakesSingleOwnershipAndBypassesCircuitGate" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.RecoveryOwnsSchedulersAndSuspendsFastForward" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="45430cd8-0670-f175-1d2e-c02381b7b6b2">
+      <Execution id="7f04953d-e69a-4eec-bad3-1d05035821b6" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="RecoveryOwnsSchedulersAndSuspendsFastForward" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ForgeMutationGroupComparisonUsesSharedPositiveForgeSequenceOnly" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="458e92e4-d5ca-f362-fbda-abee8487de6b">
+      <Execution id="ca0e79b7-0661-4f79-8a3c-632329a0d05f" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="ForgeMutationGroupComparisonUsesSharedPositiveForgeSequenceOnly" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SameSessionResyncStagesMappingsAndRollsThemBackWithoutLosingTheCommittedRegistry" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="3b3b6e79-49c7-1c7b-6761-09e62713f5d4">
+      <Execution id="452e3079-f1ff-4232-93ce-76ecb2a73f65" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="SameSessionResyncStagesMappingsAndRollsThemBackWithoutLosingTheCommittedRegistry" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.G2F_CurrentSessionIgnoresPriorSessionTerminalRecovery" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="492fb9c9-6d4e-30a2-bcfa-d5c82106e6fd">
+      <Execution id="ee01b4c1-9a46-45ab-8310-1961fe47266f" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="G2F_CurrentSessionIgnoresPriorSessionTerminalRecovery" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ValidSnapshotCheckpointReattachesTheCurrentDecisionExactlyOnce" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="cbdf8c99-8833-a863-0f75-ce2fc8148c34">
+      <Execution id="17f70355-eecf-4371-aaf8-edb5356ef1cc" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="ValidSnapshotCheckpointReattachesTheCurrentDecisionExactlyOnce" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.CurrentLibraryExtractionCompletionRemovesItsItemBeforeReleasingTheWorker" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="3955dbe3-f1fb-30e6-d16f-afe5f921c0bb">
+      <Execution id="2042f1d1-eb50-4218-9917-6db7785ec9da" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="CurrentLibraryExtractionCompletionRemovesItsItemBeforeReleasingTheWorker" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.InvalidEventDrainOwnershipRetiresOrphanAndStaleOwnersAndAllowsDrain" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="b973fd8c-9c1d-2d37-cb0b-1375a859010f">
+      <Execution id="b9ee8f30-5329-4e1c-813f-c5cccb143e13" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="InvalidEventDrainOwnershipRetiresOrphanAndStaleOwnersAndAllowsDrain" />
+    </UnitTest>
+    <UnitTest name="MtgTtsBridge.Tests.TtsEventQueueLivelockTests.HandPlacementVerificationPendingCannotCommit" storage="c:\users\vmorr\documents\code\tts-forgebot\tts-forgebot\src\mtgttsbridge.tests\bin\debug\net8.0-windows\mtgttsbridge.tests.dll" id="05108735-e4b1-5e35-7a69-e6c60f3e5d70">
+      <Execution id="cd496bdc-d9e3-4ac8-89ab-6999fbb309fa" />
+      <TestMethod codeBase="C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\bin\Debug\net8.0-windows\MtgTtsBridge.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MtgTtsBridge.Tests.TtsEventQueueLivelockTests" name="HandPlacementVerificationPendingCannotCommit" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="f31a7a9c-4980-387f-ca04-0711b870f81d" executionId="e114b919-4561-4bb0-80eb-e655f2ee6a0a" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="4be9564b-a18a-fd7f-3c36-fe07f3eb654f" executionId="093627d4-d7e3-4a95-911e-fee31c071985" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="47238444-a5c8-9bf5-93c3-ddc479e6a812" executionId="3e2db672-6070-4227-93e6-8722a25d085e" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="66b020b8-bf77-cedc-79ec-8f02efd4df20" executionId="a281c1b3-7be1-4a7b-927d-87d8f9df6f5a" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="cbdf8c99-8833-a863-0f75-ce2fc8148c34" executionId="17f70355-eecf-4371-aaf8-edb5356ef1cc" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="dbd2d021-d644-a0b1-e833-01b0cebcb48a" executionId="cfe39913-a483-47f9-9c0e-f15956420aed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="a084c4a0-2989-bb61-8bc2-c88053c6b7b4" executionId="2121bcab-328a-44d4-a4a7-10454076187e" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="625f8769-4d4b-7159-4a77-de34fd9ccd13" executionId="e9f0421e-828f-41ef-962c-9d5f8806a3b5" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="3e9b5e7e-0f39-f908-3d9e-b7d05282b0d0" executionId="9b71a530-d981-49b9-ab4f-82e5ef944396" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="228f6690-acef-603c-8492-2d73252801b9" executionId="50f9b713-693b-4661-a6f0-e84de4e9d338" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="e1e4af6a-8c83-0ba4-9f66-46ad47b18e78" executionId="559249c6-2888-4eb3-9fdd-8b48174d83e6" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="e4d5522f-c370-d955-be57-25f45ffb63c5" executionId="c3762815-badd-437e-99db-fd6c874192de" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="db9d8259-9ca2-fa58-3c37-b345577a346b" executionId="330aac12-7744-47b6-83c7-5266f2d2b91d" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="321201bd-de4b-2a4d-768a-5608bd8b1a8d" executionId="8d201a76-1cc4-4d38-a4aa-0258b82bb5e5" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="e983d1a6-e361-1a9f-9161-c0466c0d6ce4" executionId="0567e300-7ff9-444f-9074-1571086da962" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="369f20e7-2840-e2a9-295c-39350c6ef2f3" executionId="ca2fab26-4663-4933-bf89-21da4867b2ac" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="ddb8ae5d-8090-aca9-23f7-4f7060c09734" executionId="1abefff2-87b2-4437-ab58-6d17194ad685" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="3c21fa36-f93e-b504-e192-1b0bcbae47b3" executionId="3d31b20f-85a7-412a-a733-79405c4dc9b8" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="c44dc620-82cd-230d-e86d-cdc654f126c4" executionId="c92699e6-8a87-4937-a735-263d2c64af2a" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="18363d9e-3a6d-932e-3558-fb15e1ffb7fd" executionId="04c19304-ab8f-4809-9abc-df3ac9363bb4" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="492fb9c9-6d4e-30a2-bcfa-d5c82106e6fd" executionId="ee01b4c1-9a46-45ab-8310-1961fe47266f" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="e8c93b30-6c55-14d5-d1ab-989a6fb7578f" executionId="b1fe8f6c-6b8d-4a9a-9ad9-0f3295fe3a5c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="505072aa-c8b1-2c5e-25d0-8fc09af12d83" executionId="837734a0-20bf-4d87-9b7d-c0519a5226da" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="80f682fa-7007-0d14-1823-35ce427aaf2d" executionId="10d0d924-ff22-4457-aae0-17eac62fbf16" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="4507b9bc-ea0f-fff7-ba4e-6ebabc159b6b" executionId="0c7bf59e-1363-485c-a241-cecdf94a9dfd" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="8fc0eed3-a185-bbec-6f4b-9e8f4be3d71c" executionId="0e07fdde-c720-4cf8-8661-1c9b57fa8e90" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="7504121a-ec06-0c30-f2bc-5043128f6871" executionId="dbe1effc-daa1-4840-ba45-aa92dfeadbf6" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="ce1587bf-5f4f-3eb8-3163-9bd402190739" executionId="875aad20-652f-4a25-8046-83afaa26188b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="53947ed2-2ee6-9eed-e5fd-47b920d35b51" executionId="72d3340c-ea44-4b99-ac82-ddea6deb3452" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="f58dfdf5-6d9e-3f1e-d2fd-4f7f3c8977a2" executionId="51b5da93-4f5f-4006-823a-20c2e2a8e625" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="1b9fb852-d0ed-468b-95a5-a27f094ad498" executionId="df918785-3ff7-499c-8a65-d2687f78bee5" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="b04e4413-dd66-9305-a539-d9cd675cca7a" executionId="f4c87ded-1c6f-466f-9371-c515821308bd" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="33b4ccb4-2033-4e46-448c-6792f82c66df" executionId="ccbd4c69-6b8c-4668-918b-18d31574b4e7" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="3955dbe3-f1fb-30e6-d16f-afe5f921c0bb" executionId="2042f1d1-eb50-4218-9917-6db7785ec9da" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="5e2e08a1-de31-99c4-23dc-d046bbc09e83" executionId="f8d76998-0e62-4fae-b7e6-f19abb2b5278" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="9c22a340-ff4e-cc3a-8c8a-9f30acbef3bb" executionId="b5b00f11-e4bd-4f86-af36-64c2bedd030f" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="88924aaa-ccd3-a3ac-e300-003165f92bb1" executionId="29e8b118-0ba4-4929-b4b0-041285de012e" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="1e7fd832-551b-a14f-4f72-32de20e4c921" executionId="49118710-e1da-4545-8ac5-4637d05d1374" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="05108735-e4b1-5e35-7a69-e6c60f3e5d70" executionId="cd496bdc-d9e3-4ac8-89ab-6999fbb309fa" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="8e1007a4-2b00-a0dc-97dc-b7f079ccac1a" executionId="4462a1cf-8c95-47d9-b4c4-a7293d1c08ba" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="e11e2ba5-90ac-b23e-c754-2acc49917ca0" executionId="45aea338-03ee-4ae5-8bde-987791e5276c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="dac5e38d-7066-37b9-f5b4-1be10491d141" executionId="065caf5c-56be-4bb1-9792-7e72c0fe3f4b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="458e92e4-d5ca-f362-fbda-abee8487de6b" executionId="ca0e79b7-0661-4f79-8a3c-632329a0d05f" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="bbd3167d-364f-5838-5e08-b75e0109e7ed" executionId="d5b16994-e4cd-418c-abe5-acd429cb9230" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="a71148b5-4466-2cea-0a4e-7a0f53dede93" executionId="7ad86cba-2654-4aff-84cc-28a93e52fcc1" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="791342c3-dc03-2dd3-d279-6d68d2f2c13d" executionId="0eae1214-bc2c-4869-84e7-44a2ecc35434" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="5ffd45ba-4333-9027-dd69-c308e9485a55" executionId="42f9677f-d46f-4f13-9be6-d608b69ea27a" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="dffddb41-94b3-2a60-1707-51d707adcd73" executionId="df445c9f-5923-4cca-a31f-fa86266d19d9" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="7d712701-3405-bbce-0dde-63fa1a5ae224" executionId="1fc38f5c-c54d-466e-ad9b-6f097d69a1ff" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="8eb9eaaf-8756-2428-8075-9beca3037ebc" executionId="b8d97b3e-fd55-4463-b522-9a8e4e2badb8" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="1ce10da5-0120-aec8-13d0-b55760a6b47e" executionId="125ec4ee-d577-46d5-bde2-a03925145727" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="b973fd8c-9c1d-2d37-cb0b-1375a859010f" executionId="b9ee8f30-5329-4e1c-813f-c5cccb143e13" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="45430cd8-0670-f175-1d2e-c02381b7b6b2" executionId="7f04953d-e69a-4eec-bad3-1d05035821b6" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="1e600fae-29f5-7020-46c9-4b3df5bcda1d" executionId="4e47676c-0894-470b-9271-e8a3b9a1f883" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="89dc4f74-52b4-0298-4918-4fff7c44312f" executionId="587752b8-ecc9-4420-8145-826a7f601efa" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="5dc5a71c-c6f3-f652-49fc-2e134881c947" executionId="33499561-b338-4ca8-a892-5cca9ad76409" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="3b3b6e79-49c7-1c7b-6761-09e62713f5d4" executionId="452e3079-f1ff-4232-93ce-76ecb2a73f65" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="7ef84f31-4a7e-1cd5-3706-15209a4b02c0" executionId="91548949-c53c-4445-a39e-5a026ff4304b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="b76f74c2-94e0-a042-b83d-cec5611f5fbd" executionId="5b9759f9-946e-4821-930d-6848007bfa86" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="b5315190-6c21-9a0f-db6b-021a5c3dbfbd" executionId="be590cb5-08b4-41f8-9550-bebaebddf92a" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="cb3e8cb1-de09-e06f-8c0a-3c47d6fc2c0a" executionId="1f09e111-fa6d-4d84-a72b-c0a87b3181de" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Failed">
+    <Counters total="61" executed="61" passed="55" failed="6" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v2.5.3.1+6b60a9e56a (64-bit .NET 8.0.19)&#xD;
+[xUnit.net 00:00:00.15]   Discovering: MtgTtsBridge.Tests&#xD;
+[xUnit.net 00:00:00.35]   Discovered:  MtgTtsBridge.Tests&#xD;
+[xUnit.net 00:00:00.36]   Starting:    MtgTtsBridge.Tests&#xD;
+[xUnit.net 00:00:02.18]       MoonSharp.Interpreter.ScriptRuntimeException : attempt to index a nil value&#xD;
+[xUnit.net 00:00:02.18]       Stack Trace:&#xD;
+[xUnit.net 00:00:02.18]            at MoonSharp.Interpreter.Execution.VM.Processor.ExecIndex(Instruction i, Int32 instructionPtr)&#xD;
+[xUnit.net 00:00:02.18]            at MoonSharp.Interpreter.Execution.VM.Processor.Processing_Loop(Int32 instructionPtr)&#xD;
+[xUnit.net 00:00:02.18]            at MoonSharp.Interpreter.Execution.VM.Processor.Call(DynValue function, DynValue[] args)&#xD;
+[xUnit.net 00:00:02.18]            at MoonSharp.Interpreter.Script.Call(DynValue function, DynValue[] args)&#xD;
+[xUnit.net 00:00:02.18]            at MoonSharp.Interpreter.Script.Call(DynValue function)&#xD;
+[xUnit.net 00:00:02.18]            at MoonSharp.Interpreter.Script.DoString(String code, Table globalContext, String codeFriendlyName)&#xD;
+[xUnit.net 00:00:02.18]         C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\TtsEventQueueLivelockTests.cs(1981,0): at MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ResumeOnActiveCoherentSessionDoesNotAttachOrResetCheckpoint()&#xD;
+[xUnit.net 00:00:02.18]            at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+[xUnit.net 00:00:02.18]            at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)&#xD;
+[xUnit.net 00:00:08.81]       MoonSharp.Interpreter.ScriptRuntimeException : attempt to index a nil value&#xD;
+[xUnit.net 00:00:08.81]       Stack Trace:&#xD;
+[xUnit.net 00:00:08.81]            at MoonSharp.Interpreter.Execution.VM.Processor.ExecIndex(Instruction i, Int32 instructionPtr)&#xD;
+[xUnit.net 00:00:08.81]            at MoonSharp.Interpreter.Execution.VM.Processor.Processing_Loop(Int32 instructionPtr)&#xD;
+[xUnit.net 00:00:08.81]            at MoonSharp.Interpreter.Execution.VM.Processor.Call(DynValue function, DynValue[] args)&#xD;
+[xUnit.net 00:00:08.81]            at MoonSharp.Interpreter.Script.Call(DynValue function, DynValue[] args)&#xD;
+[xUnit.net 00:00:08.81]            at MoonSharp.Interpreter.Script.Call(DynValue function)&#xD;
+[xUnit.net 00:00:08.81]            at MoonSharp.Interpreter.Script.DoString(String code, Table globalContext, String codeFriendlyName)&#xD;
+[xUnit.net 00:00:08.81]         C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\TtsEventQueueLivelockTests.cs(916,0): at MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ManualResyncRetiresWedgeAndSupersedesTheOldEventQueue()&#xD;
+[xUnit.net 00:00:08.81]            at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+[xUnit.net 00:00:08.81]            at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)&#xD;
+[xUnit.net 00:00:12.48]       Assert.Equal() Failure: Strings differ&#xD;
+[xUnit.net 00:00:12.48]       Expected: "authoritative snapshot unavailable: probe"···&#xD;
+[xUnit.net 00:00:12.48]       Actual:   null&#xD;
+[xUnit.net 00:00:12.48]       Stack Trace:&#xD;
+[xUnit.net 00:00:12.48]         C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\TtsEventQueueLivelockTests.cs(1922,0): at MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SameSessionResyncSupersedesStaleBootstrapOwnershipAndFetchesSnapshot()&#xD;
+[xUnit.net 00:00:12.48]            at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+[xUnit.net 00:00:12.48]            at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)&#xD;
+[xUnit.net 00:00:17.11]       MoonSharp.Interpreter.ScriptRuntimeException : attempt to index a nil value&#xD;
+[xUnit.net 00:00:17.11]       Stack Trace:&#xD;
+[xUnit.net 00:00:17.11]            at MoonSharp.Interpreter.Execution.VM.Processor.ExecIndex(Instruction i, Int32 instructionPtr)&#xD;
+[xUnit.net 00:00:17.11]            at MoonSharp.Interpreter.Execution.VM.Processor.Processing_Loop(Int32 instructionPtr)&#xD;
+[xUnit.net 00:00:17.11]            at MoonSharp.Interpreter.Execution.VM.Processor.Call(DynValue function, DynValue[] args)&#xD;
+[xUnit.net 00:00:17.11]         C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\TtsEventQueueLivelockTests.cs(2023,0): at MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ResumeWithCurrentCursorMappingDefectRequestsScopedRepairWithoutAttach()&#xD;
+[xUnit.net 00:00:17.11]            at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+[xUnit.net 00:00:17.11]            at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)&#xD;
+[xUnit.net 00:00:17.41]       checkpointCommits=0 bootstrapStage=BOOTSTRAP_COMPLETE resyncStage=PhysicalValidated lastFailure=nil marker=seats traceError=nil desync=nil&#xD;
+[xUnit.net 00:00:17.41]       Stack Trace:&#xD;
+[xUnit.net 00:00:17.41]         C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\TtsEventQueueLivelockTests.cs(1084,0): at MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SupplierAbortAutomaticRecoveryCommitsSnapshot119AndRestartsOnce()&#xD;
+[xUnit.net 00:00:17.41]            at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+[xUnit.net 00:00:17.41]            at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)&#xD;
+[xUnit.net 00:00:17.76]       nil&#xD;
+[xUnit.net 00:00:17.76]       Stack Trace:&#xD;
+[xUnit.net 00:00:17.76]         C:\Users\vmorr\Documents\code\tts-forgebot\TTS-ForgeBot\src\MtgTtsBridge.Tests\TtsEventQueueLivelockTests.cs(1617,0): at MtgTtsBridge.Tests.TtsEventQueueLivelockTests.NewMatchSnapshotCompositionCommitsCursorAndSupersedesOpeningHistory()&#xD;
+[xUnit.net 00:00:17.76]            at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)&#xD;
+[xUnit.net 00:00:17.76]            at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)&#xD;
+[xUnit.net 00:00:18.80]   Finished:    MtgTtsBridge.Tests&#xD;
+</StdOut>
+    </Output>
+    <RunInfos>
+      <RunInfo computerName="DESKTOP-38K4CPI" outcome="Error" timestamp="2026-09-08T13:36:49.2097726-05:00">
+        <Text>[xUnit.net 00:00:02.18]     MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ResumeOnActiveCoherentSessionDoesNotAttachOrResetCheckpoint [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="DESKTOP-38K4CPI" outcome="Error" timestamp="2026-09-08T13:36:55.8406774-05:00">
+        <Text>[xUnit.net 00:00:08.81]     MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ManualResyncRetiresWedgeAndSupersedesTheOldEventQueue [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="DESKTOP-38K4CPI" outcome="Error" timestamp="2026-09-08T13:36:59.5109315-05:00">
+        <Text>[xUnit.net 00:00:12.48]     MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SameSessionResyncSupersedesStaleBootstrapOwnershipAndFetchesSnapshot [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="DESKTOP-38K4CPI" outcome="Error" timestamp="2026-09-08T13:37:04.1400228-05:00">
+        <Text>[xUnit.net 00:00:17.11]     MtgTtsBridge.Tests.TtsEventQueueLivelockTests.ResumeWithCurrentCursorMappingDefectRequestsScopedRepairWithoutAttach [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="DESKTOP-38K4CPI" outcome="Error" timestamp="2026-09-08T13:37:04.4414971-05:00">
+        <Text>[xUnit.net 00:00:17.41]     MtgTtsBridge.Tests.TtsEventQueueLivelockTests.SupplierAbortAutomaticRecoveryCommitsSnapshot119AndRestartsOnce [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="DESKTOP-38K4CPI" outcome="Error" timestamp="2026-09-08T13:37:04.7979866-05:00">
+        <Text>[xUnit.net 00:00:17.76]     MtgTtsBridge.Tests.TtsEventQueueLivelockTests.NewMatchSnapshotCompositionCommitsCursorAndSupersedesOpeningHistory [FAIL]</Text>
+      </RunInfo>
+    </RunInfos>
+  </ResultSummary>
+</TestRun>
