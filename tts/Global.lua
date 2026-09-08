@@ -15825,12 +15825,32 @@ function BridgeApplyStructuredCardMove(event)
 end
 
 function BridgeFindGraveyardContainer(seatId, excludeGuid)
-    local anchor = BridgeResolveSeatZoneAnchor(seatId, "graveyard")
     local seat = BRIDGE_SEATS[seatId]
-    if anchor == nil or seat == nil then return nil end
+    if seat == nil then return nil end
+    local anchor = BridgeResolveSeatZoneAnchor(seatId, "graveyard")
     local library = BridgeResolveSeatLibraryDeck(seatId)
     local libraryGuid = library and BridgeSafeObjectGuid(library) or nil
     local fallback = nil
+
+    -- A singleton graveyard card can remain authoritative even when the seat
+    -- anchor has not yet been recreated for this turn or the object is still in
+    -- a transient unanchored state. The exact mapping is stronger than a mere
+    -- spatial proximity heuristic.
+    for guid, mappedSeat in pairs(BridgeState.physicalSeatByGuid or {}) do
+        if tostring(mappedSeat) == tostring(seatId)
+            and tostring(BridgeState.physicalZoneByGuid[guid] or "") == "graveyard"
+            and tostring(guid) ~= tostring(excludeGuid)
+            and tostring(guid) ~= tostring(libraryGuid) then
+            local candidate = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
+            if BridgeObjectIsUsable(candidate) and candidate.tag == "Card" then
+                if anchor == nil or BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
+                    return candidate
+                end
+                fallback = candidate
+            end
+        end
+    end
+
     for _, candidate in ipairs(getAllObjects()) do
         if BridgeObjectIsUsable(candidate) and candidate ~= nil then
             local guid = BridgeSafeObjectGuid(candidate)
@@ -15838,14 +15858,16 @@ function BridgeFindGraveyardContainer(seatId, excludeGuid)
                 and not BridgeIsPresentationOnlyObject(candidate) then
                 if candidate.tag == "Deck" then
                     if BridgeDeckContainsTrackedCardForSeat(candidate, seatId)
-                        or BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
+                        or (anchor ~= nil and BridgeObjectNearSeatZone(candidate, seatId, "graveyard")) then
                         return candidate
                     end
                 elseif candidate.tag == "Card"
                     and BridgeState.physicalSeatByGuid[guid] == seatId
-                    and BridgeState.physicalZoneByGuid[guid] == "graveyard"
-                    and BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
-                    fallback = candidate
+                    and BridgeState.physicalZoneByGuid[guid] == "graveyard" then
+                    if anchor == nil or BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
+                        return candidate
+                    end
+                    if fallback == nil then fallback = candidate end
                 end
             end
         end

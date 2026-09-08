@@ -2303,7 +2303,6 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         BridgeMutationJoinInstanceIds(batch.incomingInstanceIds), tostring(tx.physicalTransactionGeneration)))
 
     local target = BridgeFindGraveyardContainer(batch.seatId)
-    local needsNewContainer = target == nil
     local stagedMoves = batch.stagedPhysicalMoves or {}
     local startIndex = 1
     if type(group) == "function" then
@@ -2315,7 +2314,62 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             return
         end
     end
-    if needsNewContainer then
+    local needsNewContainer = target == nil
+    local groupedTarget = target
+    if target ~= nil and target.tag == "Card" and type(group) == "function" then
+        local preGroup = BridgeLogAtomicGraveyardTopology(batch.seatId, batch, "before-group")
+        batch.preGroupContainedGuidSet = BridgeAtomicGraveyardGuidSet(
+            preGroup and preGroup.graveyardEntries or {})
+        local cardsToGroup = {target}
+        for index = 1, (tonumber(batch.stagedCount) or 0) do
+            local staged = stagedMoves[index]
+            if staged == nil or not BridgeObjectIsUsable(staged.object) then
+                BridgeAbortAtomicGraveyardMutation(tx, batch,
+                    "staged object unavailable while grouping index=" .. tostring(index))
+                return
+            end
+            pcall(function()
+                staged.object.setLock(false)
+                staged.object.use_hands = false
+            end)
+            table.insert(cardsToGroup, staged.object)
+        end
+        local groupOk, groupResult = pcall(function() return group(cardsToGroup) end)
+        if not groupOk then
+            BridgeAbortAtomicGraveyardMutation(tx, batch,
+                "native graveyard group failed: " .. tostring(groupResult))
+            return
+        end
+        local groupedCandidate = BridgeDeckFromNativeGroupResult(groupResult)
+        if groupedCandidate ~= nil then
+            target = groupedCandidate
+            groupedTarget = groupedCandidate
+        end
+        BridgeLog(string.format(
+            "[Bridge] MUTATION_DESTINATION_GROUP_REQUESTED token=%s forgeSequence=%s seat=%s cards=%s resultTag=%s generation=%s",
+            tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId), tostring(#cardsToGroup),
+            tostring(groupedCandidate and groupedCandidate.tag), tostring(tx.physicalTransactionGeneration)))
+        local groupShape = {rawType = type(groupResult), resultCount = 0, resultTags = {},
+            deckGuid = groupedCandidate and BridgeSafeObjectGuid(groupedCandidate) or nil,
+            deckEntryCount = nil}
+        if type(groupResult) == "table" and groupedCandidate ~= groupResult then
+            for index, candidate in ipairs(groupResult) do
+                groupShape.resultCount = groupShape.resultCount + 1
+                groupShape.resultTags[index] = candidate and candidate.tag or nil
+            end
+        elseif groupResult ~= nil then
+            groupShape.resultCount = 1
+            groupShape.resultTags[1] = groupResult.tag
+        end
+        if groupedCandidate ~= nil and groupedCandidate.tag == "Deck" then
+            pcall(function() groupShape.deckEntryCount = #(groupedCandidate.getObjects() or {}) end)
+        end
+        local encodedShape = nil
+        pcall(function() encodedShape = JSON.encode(groupShape) end)
+        BridgeLog("[Bridge] MUTATION_GRAVEYARD_GROUP_RESULT " .. tostring(encodedShape or type(groupResult)))
+        BridgeLogAtomicGraveyardTopology(batch.seatId, batch, "after-group")
+        startIndex = (tonumber(batch.stagedCount) or 0) + 1
+    elseif needsNewContainer then
         local first = stagedMoves[1]
         if first == nil or not BridgeObjectIsUsable(first.object) then
             BridgeAbortAtomicGraveyardMutation(tx, batch,
@@ -2385,6 +2439,12 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         end
     end
 
+    if target == nil or (target.tag ~= "Deck" and target.tag ~= "Card") then
+        BridgeAbortAtomicGraveyardMutation(tx, batch,
+            "native graveyard destination is neither Deck nor Card seat=" .. tostring(batch.seatId))
+        return
+    end
+
     if startIndex <= (tonumber(batch.stagedCount) or 0) then
         for index = startIndex, (tonumber(batch.stagedCount) or 0) do
             local staged = stagedMoves[index]
@@ -2400,6 +2460,24 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
                 return
             end
             if putResult ~= nil and putResult.tag == "Deck" then target = putResult end
+        end
+    end
+
+    if BridgeObjectIsUsable(target) and target.tag == "Deck" then
+        local repaired = BridgeEnsureDeckContainsExpectedGraveyardInstances(
+            batch.seatId, target, batch.expectedInstances, stagedMoves)
+        if repaired and target ~= nil and BridgeObjectIsUsable(target) and target.tag == "Deck" then
+            local deckGuid = BridgeSafeObjectGuid(target)
+            for _, expected in ipairs(batch.expectedInstances or {}) do
+                local instanceId = expected and expected.instanceId or nil
+                if instanceId ~= nil then
+                    local guid = BridgeState.physicalByInstanceId[instanceId]
+                    if guid ~= nil and BridgeState.physicalContainerByInstanceId[instanceId] == nil then
+                        BridgeRecordContainedCardIdentity(instanceId, deckGuid, guid,
+                            batch.seatId, "graveyard", BridgeState.cardNameByInstanceId[instanceId])
+                    end
+                end
+            end
         end
     end
 
@@ -4783,12 +4861,32 @@ function BridgeApplyStructuredCardMove(event)
 end
 
 function BridgeFindGraveyardContainer(seatId, excludeGuid)
-    local anchor = BridgeResolveSeatZoneAnchor(seatId, "graveyard")
     local seat = BRIDGE_SEATS[seatId]
-    if anchor == nil or seat == nil then return nil end
+    if seat == nil then return nil end
+    local anchor = BridgeResolveSeatZoneAnchor(seatId, "graveyard")
     local library = BridgeResolveSeatLibraryDeck(seatId)
     local libraryGuid = library and BridgeSafeObjectGuid(library) or nil
     local fallback = nil
+
+    -- A singleton graveyard card can remain authoritative even when the seat
+    -- anchor has not yet been recreated for this turn or the object is still in
+    -- a transient unanchored state. The exact mapping is stronger than a mere
+    -- spatial proximity heuristic.
+    for guid, mappedSeat in pairs(BridgeState.physicalSeatByGuid or {}) do
+        if tostring(mappedSeat) == tostring(seatId)
+            and tostring(BridgeState.physicalZoneByGuid[guid] or "") == "graveyard"
+            and tostring(guid) ~= tostring(excludeGuid)
+            and tostring(guid) ~= tostring(libraryGuid) then
+            local candidate = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
+            if BridgeObjectIsUsable(candidate) and candidate.tag == "Card" then
+                if anchor == nil or BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
+                    return candidate
+                end
+                fallback = candidate
+            end
+        end
+    end
+
     for _, candidate in ipairs(getAllObjects()) do
         if BridgeObjectIsUsable(candidate) and candidate ~= nil then
             local guid = BridgeSafeObjectGuid(candidate)
@@ -4796,14 +4894,16 @@ function BridgeFindGraveyardContainer(seatId, excludeGuid)
                 and not BridgeIsPresentationOnlyObject(candidate) then
                 if candidate.tag == "Deck" then
                     if BridgeDeckContainsTrackedCardForSeat(candidate, seatId)
-                        or BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
+                        or (anchor ~= nil and BridgeObjectNearSeatZone(candidate, seatId, "graveyard")) then
                         return candidate
                     end
                 elseif candidate.tag == "Card"
                     and BridgeState.physicalSeatByGuid[guid] == seatId
-                    and BridgeState.physicalZoneByGuid[guid] == "graveyard"
-                    and BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
-                    fallback = candidate
+                    and BridgeState.physicalZoneByGuid[guid] == "graveyard" then
+                    if anchor == nil or BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
+                        return candidate
+                    end
+                    if fallback == nil then fallback = candidate end
                 end
             end
         end
@@ -5197,6 +5297,62 @@ function BridgeCollectGraveyardExpectedInstances(seatId, container, incomingInst
         expected[expectedCount] = {instanceId=incomingInstanceId, cardName=BridgeState.cardNameByInstanceId[incomingInstanceId]}
     end
     return expected
+end
+
+function BridgeEnsureDeckContainsExpectedGraveyardInstances(seatId, deck, expectedInstances, stagedMoves)
+    if deck == nil or deck.tag ~= "Deck" then return false end
+    local expectedTable = expectedInstances or {}
+    local deckEntries = BridgeLibraryEntries(deck) or {}
+    local deckByInstance = {}
+    for _, entry in ipairs(deckEntries) do
+        local guid = entry and (entry.guid or entry.GUID) or nil
+        local instanceId = guid and (BridgeState.physicalContainedInstanceIdByGuid[guid]
+            or BridgeState.physicalInstanceIdByGuid[guid]) or nil
+        if instanceId ~= nil then deckByInstance[tostring(instanceId)] = true end
+    end
+
+    local missing = {}
+    for _, expected in ipairs(expectedTable) do
+        local instanceId = expected and expected.instanceId or nil
+        if instanceId ~= nil and deckByInstance[tostring(instanceId)] ~= true then
+            table.insert(missing, instanceId)
+        end
+    end
+    if #missing == 0 then return true end
+
+    local candidateLookup = {}
+    for _, staged in ipairs(stagedMoves or {}) do
+        local object = staged and staged.object or nil
+        local instanceId = staged and staged.cardInstanceId or nil
+        if object ~= nil and BridgeObjectIsUsable(object) and object.tag == "Card" and instanceId ~= nil then
+            candidateLookup[tostring(instanceId)] = object
+        end
+    end
+    local looseGuidLookup = {}
+    for _, object in ipairs(getAllObjects() or {}) do
+        if BridgeObjectIsUsable(object) and object.tag == "Card" then
+            local guid = BridgeSafeObjectGuid(object)
+            local instanceId = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+            if instanceId ~= nil then looseGuidLookup[tostring(instanceId)] = object end
+        end
+    end
+    for _, instanceId in ipairs(missing) do
+        local object = candidateLookup[tostring(instanceId)] or looseGuidLookup[tostring(instanceId)]
+        if object ~= nil and BridgeObjectIsUsable(object) and object.tag == "Card" then
+            local ok, result = pcall(function() return deck.putObject(object, 0) end)
+            if ok and result ~= nil and result.tag == "Deck" then
+                deck = result
+                BridgeState.physicalContainerByInstanceId[instanceId] = {
+                    deckGuid = BridgeSafeObjectGuid(deck),
+                    cardGuid = BridgeSafeObjectGuid(object),
+                    seatId = seatId,
+                    zoneName = "graveyard"
+                }
+                BridgeState.physicalContainedInstanceIdByGuid[BridgeSafeObjectGuid(object)] = instanceId
+            end
+        end
+    end
+    return true
 end
 
 function BridgeMoveToGraveyard(event, object, completion)
