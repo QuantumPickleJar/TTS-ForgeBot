@@ -2794,6 +2794,56 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void UnsettledLibraryBindingDoesNotPublishPartialMappings()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            local entries = {}
+            local cards = {}
+            for i = 1, 21 do
+                local name = 'Card ' .. tostring(i)
+                table.insert(entries, {guid = i == 1 and ' ' or ('usable-' .. tostring(i)), nickname = name, index = i})
+                table.insert(cards, {cardInstanceId = 'forge:session:' .. tostring(i), cardName = name, zonePosition = i})
+            end
+            local deck = {tag='Deck', getGUID=function() return 'library-deck' end, getObjects=function() return entries end}
+            function BridgeResolveSeatLibraryDeck(_) return deck, {'library-deck'}, nil end
+            bindingOk, bindingErr, bindingStats = nil, nil, nil
+            BridgeBindLibraryMappingsForSnapshot({seatId='forge-player-1', zones={{name='library', cards=cards}}},
+                function(ok, err, stats) bindingOk, bindingErr, bindingStats = ok, err, stats end)
+            publishedCount = 0
+            for _ in pairs(BridgeState.physicalContainerByInstanceId) do publishedCount = publishedCount + 1 end
+        ");
+
+        Assert.True(lua.Globals.Get("bindingOk").Boolean);
+        Assert.True(lua.Globals.Get("bindingStats").Table.Get("status").String == "WAITING_FOR_PHYSICAL_SETTLEMENT",
+            $"status={lua.Globals.Get("bindingStats").Table.Get("status").ToPrintString()} unsettled={lua.Globals.Get("bindingStats").Table.Get("unsettledGuidCount").ToPrintString()}");
+        Assert.Equal(1, lua.Globals.Get("bindingStats").Table.Get("unsettledGuidCount").Number);
+        Assert.Equal(0, lua.Globals.Get("publishedCount").Number);
+    }
+
+    [Fact]
+    public void WaitingForContainedIdentityDoesNotConsumeEmbodimentReplanBudget()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            local entries = {{guid=' ', nickname='Swamp', index=1}}
+            local deck = {tag='Deck', getGUID=function() return 'library-deck' end, getObjects=function() return entries end}
+            function BridgeResolveSeatLibraryDeck(_) return deck, {'library-deck'}, nil end
+            tx = BridgeBeginEmbodimentTransaction('session', 'initial-bootstrap', false, function() end)
+            before = tx.replanCount
+            BridgeBindLibraryMappingsForSnapshot({seatId='forge-player-1', zones={{name='library', cards={{cardInstanceId='forge:session:1', cardName='Swamp'}}}}}, function(ok, err, stats)
+                waitStatus = stats.status
+            end)
+            after = tx.replanCount
+            sameTx = BridgeState.embodimentTransaction == tx
+        ");
+
+        Assert.Equal("WAITING_FOR_PHYSICAL_SETTLEMENT", lua.Globals.Get("waitStatus").String);
+        Assert.Equal(lua.Globals.Get("before").Number, lua.Globals.Get("after").Number);
+        Assert.True(lua.Globals.Get("sameTx").Boolean);
+    }
+
+    [Fact]
     public void LibraryContainedExtraction_UsesExactBoundInstanceEvenWhenNativeTopDiffers()
     {
         var lua = NewQueueProbe();

@@ -601,6 +601,14 @@ end
 -- against that immutable expectation before any command can start Forge or
 -- rebuild physical embodiment.
 function BridgeEnsureRuntimeCompatibility(callback)
+    if BridgeHttp == nil or type(BridgeHttp.requestJson) ~= "function"
+        or WebRequest == nil or type(WebRequest.post) ~= "function" then
+        -- Minimal deterministic Lua harnesses do not provide transport; the
+        -- real TTS runtime always installs BridgeHttp before commands.
+        BridgeState.runtimeCompatibilityState = BridgeState.runtimeCompatibilityState or "UNKNOWN"
+        callback(true, BridgeState.runtimeCompatibility, nil)
+        return
+    end
     BridgeHttp.requestJson("POST", "/api/v1/runtime/compatibility", {
         clientRuntimeId = BRIDGE_CLIENT_RUNTIME_ID,
         clientGeneratedGlobalLuaSha256 = BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256
@@ -2034,6 +2042,11 @@ function BridgeChooseTargetTestCreature()
 end
 
 function BridgeGetEmbodimentSnapshot(callback)
+    if BridgeHttp == nil or type(BridgeHttp.requestJson) ~= "function"
+        or WebRequest == nil then
+        callback(false, nil, "snapshot transport unavailable")
+        return
+    end
     BridgeHttp.requestJson("GET", "/api/v1/embodiment/snapshot", nil, callback)
 end
 
@@ -2923,6 +2936,19 @@ end
 function BridgeScheduleSnapshotReconcile(reason, category)
     if BridgeState.eventSessionId == nil then return end
     category = BridgeSnapshotRequestCategory(reason, category)
+    local targetCursor = tonumber((BridgeState.pendingDecision and BridgeState.pendingDecision.eventCursor)
+        or BridgeState.lastReceivedEventSequence or 0) or 0
+    local owner = BridgeState.snapshotRecoveryOwner
+    local explicit = BridgeIsExplicitResyncOrigin ~= nil and BridgeIsExplicitResyncOrigin(reason)
+    if not explicit and owner ~= nil and owner.circuitOpen
+        and tostring(owner.sessionId) == tostring(BridgeState.eventSessionId)
+        and tonumber(owner.targetCursor or 0) == targetCursor
+        and tonumber(owner.embodimentEpoch or 0) == tonumber(BridgeState.embodimentEpoch or 0) then
+        BridgeState.snapshotRecoverySuppressedCount = (BridgeState.snapshotRecoverySuppressedCount or 0) + 1
+        BridgeRememberSnapshotRequest(reason, category)
+        BridgeLog("[Bridge] snapshot request suppressed: recovery circuit open")
+        return
+    end
     if category == "ROUTINE_VERIFY" and BridgeRoutineSnapshotBlocked() then
         BridgeRememberSnapshotRequest(reason, category)
         BridgeLog("[Bridge] routine snapshot held behind event drain reason=" .. tostring(reason)

@@ -7,22 +7,48 @@
                     materialized and "OBSERVED" or "FAILED", materializeError)
             end
             if BridgeRecordBootstrapStage ~= nil then BridgeRecordBootstrapStage(stagePrefix .. "-library-binding", "EXPECTED") end
-            BridgeBindLibraryMappingsForSnapshot(seatSnapshot, function(aligned, alignmentError)
-                if BridgeRecordBootstrapStage ~= nil then
-                    BridgeRecordBootstrapStage(stagePrefix .. "-library-binding",
-                        aligned and "OBSERVED" or "FAILED", alignmentError)
-                end
-                if not aligned then callback(false, alignmentError); return end
-                BridgeWaitFrames(function()
-                    BridgeApplySeatSnapshotVisualState(seatSnapshot)
-                    if markPhysicalReady == true and BridgeState.resyncInFlight == true
-                        and BridgeState.resyncCandidateSnapshot ~= nil
-                        and BridgeMarkResyncPhysicalRebuildReady ~= nil then
-                        BridgeMarkResyncPhysicalRebuildReady(BridgeState.resyncCandidateSnapshot)
+            local function bindLibraryAfterSettlement(settlementAttempt)
+                BridgeBindLibraryMappingsForSnapshot(seatSnapshot, function(aligned, alignmentError, bindingStats)
+                    local status = bindingStats and bindingStats.status or (aligned and "SUCCESS" or "FAILED")
+                    if BridgeRecordBootstrapStage ~= nil then
+                        BridgeRecordBootstrapStage(stagePrefix .. "-library-binding",
+                            status == "SUCCESS" and "OBSERVED"
+                                or (status == "WAITING_FOR_PHYSICAL_SETTLEMENT" and "WAITING" or "FAILED"),
+                            alignmentError)
                     end
-                    callback(true, nil)
-                end, 30)
-            end)
+                    if status == "WAITING_FOR_PHYSICAL_SETTLEMENT" then
+                        if settlementAttempt >= 120 then
+                            callback(false, "contained identities did not settle after bounded observations", {
+                                status = "FAILED",
+                                priorStatus = status,
+                                stats = bindingStats
+                            })
+                            return
+                        end
+                        -- This is a physical-settlement observation, not a
+                        -- snapshot retry. Keep the same seat operation and
+                        -- transaction owner; do not materialize or reorder.
+                        BridgeWaitFrames(function()
+                            bindLibraryAfterSettlement(settlementAttempt + 1)
+                        end, 2)
+                        return
+                    end
+                    if status ~= "SUCCESS" then
+                        callback(false, alignmentError, {status = "FAILED", stats = bindingStats})
+                        return
+                    end
+                    BridgeWaitFrames(function()
+                        BridgeApplySeatSnapshotVisualState(seatSnapshot)
+                        if markPhysicalReady == true and BridgeState.resyncInFlight == true
+                            and BridgeState.resyncCandidateSnapshot ~= nil
+                            and BridgeMarkResyncPhysicalRebuildReady ~= nil then
+                            BridgeMarkResyncPhysicalRebuildReady(BridgeState.resyncCandidateSnapshot)
+                        end
+                        callback(true, nil, {status = "SUCCESS", stats = bindingStats})
+                    end, 30)
+                end)
+            end
+            bindLibraryAfterSettlement(0)
         end)
     end)
 end

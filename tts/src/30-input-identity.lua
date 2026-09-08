@@ -2564,6 +2564,8 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         -- into this attempt turns the no-progress guard into a permanent
         -- recovery lockout.
         BridgeState.resyncCircuitOpen = false
+        BridgeState.snapshotRecoveryOwner = nil
+        BridgeState.snapshotRecoverySuppressedCount = 0
         BridgeState.resyncSnapshotFingerprint = nil
         BridgeState.resyncSnapshotRepeatCount = 0
         BridgeState.resyncNoProgressAttempts = 0
@@ -2903,39 +2905,57 @@ end
 function BridgeBindLibraryMappingsForSnapshot(seatSnapshot, callback)
     local seatId = seatSnapshot and seatSnapshot.seatId or nil
     if seatId == nil then callback(false, "library binding snapshot has no seat id"); return end
+    -- Keep the candidate phase total even in the small Lua harnesses used by
+    -- lifecycle tests, which intentionally provide only a partial BridgeState.
+    BridgeState.physicalContainedInstanceIdByGuid = BridgeState.physicalContainedInstanceIdByGuid or {}
+    BridgeState.physicalContainerByInstanceId = BridgeState.physicalContainerByInstanceId or {}
+    BridgeState.physicalByInstanceId = BridgeState.physicalByInstanceId or {}
+    BridgeState.physicalInstanceIdByGuid = BridgeState.physicalInstanceIdByGuid or {}
+    BridgeState.physicalSeatByGuid = BridgeState.physicalSeatByGuid or {}
+    BridgeState.physicalZoneByGuid = BridgeState.physicalZoneByGuid or {}
+    BridgeState.cardNameByInstanceId = BridgeState.cardNameByInstanceId or {}
     local libraryCards = BridgeBuildAuthoritativeLibraryCards(seatSnapshot)
     BridgeState.bootstrapLibraryMappingBySeatId = BridgeState.bootstrapLibraryMappingBySeatId or {}
     local stats = {
         expectedLibraryMappings = #libraryCards,
         verifiedLibraryMappings = 0,
         missingLibraryMappings = 0,
-        duplicateLibraryMappings = 0
+        duplicateLibraryMappings = 0,
+        duplicateRealGuidCount = 0,
+        unsettledGuidCount = 0,
+        status = "PENDING"
     }
     BridgeState.bootstrapLibraryMappingBySeatId[seatId] = stats
-    if #libraryCards == 0 then callback(true, nil); return end
+    local function finish(status, errorMessage)
+        stats.status = status
+        stats.lastError = errorMessage
+        callback(status == "SUCCESS" or status == "WAITING_FOR_PHYSICAL_SETTLEMENT",
+            status == "SUCCESS" and nil or errorMessage, stats)
+    end
+    if #libraryCards == 0 then finish("SUCCESS", nil); return end
 
     local deck, _, deckError = BridgeResolveSeatLibraryDeck(seatId)
     if deck == nil then
         stats.missingLibraryMappings = #libraryCards
-        callback(false, "library binding could not resolve library: " .. tostring(deckError))
+        finish("FAILED", "library binding could not resolve library: " .. tostring(deckError))
         return
     end
     local deckGuid = BridgeSafeObjectGuid(deck)
     if deckGuid == nil then
         stats.missingLibraryMappings = #libraryCards
-        callback(false, "library binding resolved deck with no GUID")
+        finish("FAILED", "library binding resolved deck with no GUID")
         return
     end
 
     local entries = BridgeLibraryEntries(deck)
     if entries == nil then
         stats.missingLibraryMappings = #libraryCards
-        callback(false, "library binding could not inspect library contents")
+        finish("FAILED", "library binding could not inspect library contents")
         return
     end
     if #entries ~= #libraryCards then
         stats.missingLibraryMappings = #libraryCards
-        callback(false, string.format("library binding count mismatch: physical=%d authoritative=%d",
+        finish("FAILED", string.format("library binding count mismatch: physical=%d authoritative=%d",
             #entries, #libraryCards))
         return
     end
@@ -2949,27 +2969,36 @@ function BridgeBindLibraryMappingsForSnapshot(seatSnapshot, callback)
 
     local physicalByName = {}
     local seenEntryGuid = {}
+    local unsettledEntries = {}
     for _, entry in ipairs(entries) do
-        local entryGuid = entry and (entry.guid or entry.GUID) or nil
-        if entryGuid == nil then
-            stats.missingLibraryMappings = #libraryCards
-            callback(false, "library binding encountered a contained entry without GUID")
-            return
-        end
-        if seenEntryGuid[entryGuid] then
+        local rawEntryGuid = entry and (entry.guid or entry.GUID) or nil
+        local entryGuid = rawEntryGuid ~= nil and tostring(rawEntryGuid) or ""
+        local noSpaces = string.gsub(entryGuid, " ", "")
+        local usableGuid = noSpaces ~= "" and string.match(entryGuid, "^%s*$") == nil
+        if usableGuid then entryGuid = string.gsub(entryGuid, "^%s*(.-)%s*$", "%1") end
+        if usableGuid and seenEntryGuid[entryGuid] then
             stats.duplicateLibraryMappings = stats.duplicateLibraryMappings + 1
-            callback(false, "library binding encountered duplicate contained GUID " .. tostring(entryGuid))
+            stats.duplicateRealGuidCount = stats.duplicateRealGuidCount + 1
+            finish("FAILED", "library binding encountered duplicate real contained GUID " .. tostring(entryGuid))
             return
         end
-        seenEntryGuid[entryGuid] = true
+        if usableGuid then
+            seenEntryGuid[entryGuid] = true
+        else
+            stats.unsettledGuidCount = stats.unsettledGuidCount + 1
+        end
         local normalized = BridgeNormalizeCardName(entry.nickname or entry.name or entry.Name)
         physicalByName[normalized] = physicalByName[normalized] or {}
-        table.insert(physicalByName[normalized], {
-            guid = entryGuid,
+        local physicalEntry = {
+            guid = usableGuid and entryGuid or nil,
             index = tonumber(entry.index or -1) or -1
-        })
+        }
+        table.insert(physicalByName[normalized], physicalEntry)
+        if not usableGuid then table.insert(unsettledEntries, physicalEntry) end
     end
 
+    local candidate = {}
+    local candidateCount = 0
     for normalized, expectedCards in pairs(authoritativeByName) do
         local physicalEntries = physicalByName[normalized] or {}
         table.sort(expectedCards, function(left, right)
@@ -2990,41 +3019,83 @@ function BridgeBindLibraryMappingsForSnapshot(seatSnapshot, callback)
         end)
         if #physicalEntries ~= #expectedCards then
             stats.missingLibraryMappings = stats.missingLibraryMappings + math.abs(#expectedCards - #physicalEntries)
-            callback(false, string.format("library binding mismatch for '%s': physical=%d authoritative=%d",
+            finish("FAILED", string.format("library binding mismatch for '%s': physical=%d authoritative=%d",
                 tostring(expectedCards[1] and expectedCards[1].cardName or normalized),
                 #physicalEntries, #expectedCards))
             return
         end
         for index, card in ipairs(expectedCards) do
             local entry = physicalEntries[index]
-            if entry == nil or entry.guid == nil then
+            if entry == nil then
                 stats.missingLibraryMappings = stats.missingLibraryMappings + 1
-                callback(false, "library binding missing contained entry for " .. tostring(card.cardInstanceId))
+                finish("FAILED", "library binding missing contained entry for " .. tostring(card.cardInstanceId))
                 return
             end
-            local recorded = BridgeRecordContainedCardIdentity(
-                card.cardInstanceId,
-                deckGuid,
-                entry.guid,
-                seatId,
-                "library",
-                card.cardName)
-            if not recorded then
-                stats.duplicateLibraryMappings = stats.duplicateLibraryMappings + 1
-                callback(false, "library binding rejected contained identity for " .. tostring(card.cardInstanceId))
-                return
+            if entry.guid ~= nil then
+                candidateCount = candidateCount + 1
+                candidate[candidateCount] = {
+                    cardInstanceId = card.cardInstanceId,
+                    deckGuid = deckGuid,
+                    containedGuid = entry.guid,
+                    seatId = seatId,
+                    zoneName = "library",
+                    cardName = card.cardName
+                }
             end
-            stats.verifiedLibraryMappings = stats.verifiedLibraryMappings + 1
         end
     end
 
-    stats.missingLibraryMappings = math.max(stats.expectedLibraryMappings - stats.verifiedLibraryMappings, 0)
-    if stats.missingLibraryMappings > 0 then
-        callback(false, string.format("library binding incomplete: expected=%d verified=%d missing=%d",
-            stats.expectedLibraryMappings, stats.verifiedLibraryMappings, stats.missingLibraryMappings))
+    if #unsettledEntries > 0 then
+        stats.missingLibraryMappings = math.max(stats.expectedLibraryMappings - (#libraryCards - #unsettledEntries), 0)
+        if BridgeState.embodimentTransaction ~= nil and BridgeEmbodimentRecordBlockingObservation ~= nil then
+            BridgeEmbodimentRecordBlockingObservation(BridgeState.embodimentTransaction,
+                "library contained identities unsettled for seat=" .. tostring(seatId))
+        end
+        finish("WAITING_FOR_PHYSICAL_SETTLEMENT", string.format(
+            "library binding waiting for %d contained identity(ies) to settle",
+            stats.unsettledGuidCount))
         return
     end
-    callback(true, nil)
+
+    local seenCandidateInstance = {}
+    local seenCandidateGuid = {}
+    for index = 1, candidateCount do
+        local mapping = candidate[index]
+        if seenCandidateInstance[mapping.cardInstanceId]
+            or seenCandidateGuid[mapping.containedGuid] then
+            stats.duplicateLibraryMappings = stats.duplicateLibraryMappings + 1
+            stats.duplicateRealGuidCount = stats.duplicateRealGuidCount + 1
+            finish("FAILED", "library binding candidate is not bijective")
+            return
+        end
+        local existing = BridgeState.physicalContainedInstanceIdByGuid[mapping.containedGuid]
+        if existing ~= nil and existing ~= mapping.cardInstanceId then
+            stats.duplicateLibraryMappings = stats.duplicateLibraryMappings + 1
+            stats.duplicateRealGuidCount = stats.duplicateRealGuidCount + 1
+            finish("FAILED", "library binding real contained GUID is already owned by " .. tostring(existing))
+            return
+        end
+        seenCandidateInstance[mapping.cardInstanceId] = true
+        seenCandidateGuid[mapping.containedGuid] = true
+    end
+
+    local priorLedger = BridgeCapturePhysicalLedger()
+    local priorNames = BridgeDiagnosticSnapshot(BridgeState.cardNameByInstanceId or {})
+    for index = 1, candidateCount do
+        local mapping = candidate[index]
+        if not BridgeRecordContainedCardIdentity(mapping.cardInstanceId, mapping.deckGuid,
+            mapping.containedGuid, mapping.seatId, mapping.zoneName, mapping.cardName) then
+            BridgeActivatePhysicalLedger(priorLedger)
+            BridgeState.cardNameByInstanceId = priorNames
+            stats.verifiedLibraryMappings = 0
+            stats.missingLibraryMappings = stats.expectedLibraryMappings
+            finish("FAILED", "library binding candidate publication failed")
+            return
+        end
+    end
+    stats.verifiedLibraryMappings = candidateCount
+    stats.missingLibraryMappings = math.max(stats.expectedLibraryMappings - stats.verifiedLibraryMappings, 0)
+    finish("SUCCESS", nil)
 end
 
 -- Compatibility shim retained for manual diagnostics. Runtime startup now uses

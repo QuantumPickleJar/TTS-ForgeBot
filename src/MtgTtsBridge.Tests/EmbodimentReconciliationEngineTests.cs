@@ -187,6 +187,73 @@ public sealed class EmbodimentReconciliationEngineTests
     }
 
     [Fact]
+    public void LibraryUnsettledStateUsesSeatLibraryReplanNotWholeSnapshot()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            desired = {cardsByInstanceId={
+                a={cardInstanceId='a', seatId='forge-player-1', zone='library'},
+                b={cardInstanceId='b', seatId='forge-player-1', zone='library'}
+            }}
+            observed = {byInstanceId={}, duplicateInstanceIds={}, unsettledContainedEntries={
+                {deckGuid='library-1', seatId='forge-player-1', zone='library'}
+            }}
+            plan = BridgePlanEmbodimentReconciliation(desired, observed)
+            operationCount = #plan.operations
+            _, firstOperation = next(plan.operations)
+            operationScope = firstOperation and firstOperation.scope or nil
+            operationSeat = firstOperation and firstOperation.seatId or nil
+        ");
+
+        var plan = lua.Globals.Get("plan").Table;
+        Assert.Equal(1, lua.Globals.Get("operationCount").Number);
+        Assert.Equal(0, plan.Get("missing").Table.Length);
+        Assert.Equal("SEAT_LIBRARY", lua.Globals.Get("operationScope").String);
+        Assert.Equal("forge-player-1", lua.Globals.Get("operationSeat").String);
+        Assert.Equal("PRESENT_BUT_UNSETTLED", plan.Get("unsettledZones").Table.Get("forge-player-1:library").String);
+    }
+
+    [Fact]
+    public void ZoneObservationRequiresSeatAndZone()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            observed = {byInstanceId={
+                human={instanceId='human', seatId='forge-player-1', zone='hand'},
+                ai={instanceId='ai', seatId='forge-player-2', zone='hand'}
+            }}
+            zone = BridgeObserveZoneState({seatId='forge-player-2', zone='hand'}, observed)
+        ");
+
+        var zone = lua.Globals.Get("zone").Table;
+        Assert.True(zone.Get("instanceIds").Table.Get("ai").Boolean);
+        Assert.True(zone.Get("instanceIds").Table.Get("human").IsNil());
+        Assert.Equal(1, zone.Get("count").Number);
+    }
+
+    [Fact]
+    public void HiddenAiHandCardAbsentFromGetAllObjectsStillObserved()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BRIDGE_SEATS = {['forge-player-1'] = true, ['forge-player-2'] = true}
+            aiCard = {tag='Card', getGUID=function() return 'ai-hand-guid' end}
+            function BridgeTryGetSeatHandObjects(seatId)
+                return seatId == 'forge-player-2' and {aiCard} or {}
+            end
+            function getAllObjects() return {} end
+            function BridgeReadPhysicalIdentity(object) return object == aiCard and 'forge:session:71' or nil end
+            observed = BridgeObservePhysicalState(nil)
+        ");
+
+        var observed = lua.Globals.Get("observed").Table;
+        var card = observed.Get("byInstanceId").Table.Get("forge:session:71").Table;
+        Assert.Equal("forge-player-2", card.Get("seatId").String);
+        Assert.Equal("hand", card.Get("zone").String);
+        Assert.False(observed.Get("duplicateInstanceIds").Table.Get("forge:session:71").Boolean);
+    }
+
+    [Fact]
     public void NewMatchCleanupCompletesFromObservationWhenItsNativeCallbackIsLost()
     {
         var lua = NewProbe();
