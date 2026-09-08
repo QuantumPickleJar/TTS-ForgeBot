@@ -2080,6 +2080,14 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeState.eventDrainTransaction = nil
     BridgeRestoreResyncMappingTransaction("resync-watchdog:" .. tostring(reason or "watchdog"))
     BridgeRestoreResyncCheckpoint("resync-watchdog:" .. tostring(reason or "watchdog"))
+    -- Restoring the pre-resync checkpoint deliberately leaves an authoritative
+    -- event suffix unapplied. That table is desynchronized until an explicit
+    -- retry succeeds; dropping the owner must therefore restore the desync
+    -- latch as well. Without it, polling remains stopped behind that suffix
+    -- while health/status calls report no active recovery or desync.
+    BridgeState.desyncLatched = true
+    BridgeState.presentationState = "DESYNCED"
+    BridgeState.desyncLastMessage = "authoritative recovery stalled: " .. tostring(reason or "watchdog")
     BridgeRecordResyncLifecycle("FAILED", BridgeState.resyncOrigin, token, nil, reason,
         nil, BridgeState.lastReceivedEventSequence, BridgeState.lastAppliedEventSequence)
     if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end

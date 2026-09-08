@@ -2907,12 +2907,19 @@ end
 -- A decision can therefore already describe event N while TTS is still
 -- presenting an older event. Those older events must not erase the current
 -- decision or regress its authoritative phase/turn/priority mirror.
-function BridgeCurrentDecisionOutrunsEvent(event)
-    local decision = BridgeState.lastDecision
+function BridgeDecisionOutrunsEvent(decision, event)
     if decision == nil or event == nil then return false end
     local decisionCursor = tonumber(decision.eventCursor or 0) or 0
     local eventSequence = tonumber(event.sequence or 0) or 0
     return decisionCursor > 0 and eventSequence > 0 and decisionCursor > eventSequence
+end
+
+function BridgeCurrentDecisionOutrunsEvent(event)
+    return BridgeDecisionOutrunsEvent(BridgeState.lastDecision, event)
+end
+
+function BridgePendingDecisionOutrunsEvent(event)
+    return BridgeDecisionOutrunsEvent(BridgeState.pendingDecision, event)
 end
 
 function BridgePhaseEventMatchesCurrentDecision(event)
@@ -3079,12 +3086,15 @@ function BridgeApplyAuthoritativeEvent(event)
                 "[Bridge] applying superseded turn projection while retaining decision event=%s decision=%s",
                 tostring(event.sequence), tostring(BridgeState.lastDecision and BridgeState.lastDecision.decisionId)))
         end
+        local retainPendingDecision = BridgePendingDecisionOutrunsEvent(event)
         local retainCurrentDecision = supersededByDecision or BridgeCurrentDecisionOutrunsEvent(event)
+            or retainPendingDecision
         if retainCurrentDecision then
+            local retainedDecision = BridgeState.lastDecision or BridgeState.pendingDecision
             BridgeLog(string.format(
                 "[Bridge] applying queued turn event while retaining newer decision %s event=%s decisionCursor=%s",
-                tostring(BridgeState.lastDecision.decisionId), tostring(event.sequence),
-                tostring(BridgeState.lastDecision.eventCursor)))
+                tostring(retainedDecision and retainedDecision.decisionId), tostring(event.sequence),
+                tostring(retainedDecision and retainedDecision.eventCursor)))
         end
         local turnSignature = table.concat({
             tostring(event.turnNumber or ""),
@@ -5047,12 +5057,47 @@ function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
                 .. ":expected=" .. tostring(expectedCount)
             return false
         end
+        -- TTS Deck.getObjects() returns a Lua array, but its per-entry
+        -- `index` is the native Deck position and is zero-based in live TTS.
+        -- Treating that value as a Lua array key discards position zero,
+        -- shifts every remaining identity, and can then try to bind a known
+        -- contained GUID to the wrong Forge instance.  Mental Note's
+        -- [library -> graveyard, library -> graveyard, stack -> graveyard]
+        -- mutation exposed exactly that shape: three valid entries, but the
+        -- first native position was skipped during rebind.
+        --
+        -- Either normalize a complete native index set or preserve the Lua
+        -- inventory order when no native indices are available.  A partial or
+        -- ambiguous index set is not identity evidence, so fail closed rather
+        -- than guessing a Forge binding.
         local ordered = {}
-        local fallbackIndex = 0
-        for _, entry in pairs(entries) do
-            fallbackIndex = fallbackIndex + 1
-            local inventoryIndex = tonumber(entry and entry.index or nil) or fallbackIndex
-            ordered[inventoryIndex] = entry
+        local indexedCount = 0
+        local hasZeroIndex = false
+        for _, entry in ipairs(entries) do
+            local inventoryIndex = tonumber(entry and entry.index or nil)
+            if inventoryIndex ~= nil then
+                indexedCount = indexedCount + 1
+                if inventoryIndex == 0 then hasZeroIndex = true end
+            end
+        end
+        if indexedCount ~= 0 and indexedCount ~= #entries then
+            BridgeState.lastGraveyardRebindFailure = "partial-native-index:entries="
+                .. tostring(#entries) .. ":indexed=" .. tostring(indexedCount)
+            return false
+        end
+        for sourceIndex, entry in ipairs(entries) do
+            local orderedIndex = sourceIndex
+            if indexedCount == #entries then
+                local inventoryIndex = tonumber(entry and entry.index or nil)
+                orderedIndex = hasZeroIndex and (inventoryIndex + 1) or inventoryIndex
+            end
+            if orderedIndex == nil or orderedIndex < 1 or orderedIndex > #entries
+                or ordered[orderedIndex] ~= nil then
+                BridgeState.lastGraveyardRebindFailure = "invalid-native-index:source="
+                    .. tostring(sourceIndex) .. ":index=" .. tostring(entry and entry.index or nil)
+                return false
+            end
+            ordered[orderedIndex] = entry
         end
         for index = 1, #entries do
             local entry = ordered[index] or entries[index]
@@ -5209,19 +5254,36 @@ function BridgeEnsureNativeGraveyardContainer(seatId)
 
     local container = BridgeFindGraveyardContainer(seatId)
     if container ~= nil and container.tag == "Deck" then
+        -- A recovery can find an already-valid native Deck plus one or more
+        -- loose Cards from the interrupted mutation.  Reconciliation must
+        -- cover the complete physical destination, not just those loose
+        -- arrivals. Each putObject(..., 0) prepends its exact Forge instance
+        -- before the pre-existing Deck inventory.
+        local expectedInstances = BridgeCollectGraveyardExpectedInstances(
+            seatId, container, nil, false, false)
+        local expectedByInstanceId = {}
+        for _, expected in ipairs(expectedInstances or {}) do
+            local instanceId = expected and expected.instanceId or nil
+            if instanceId ~= nil then expectedByInstanceId[tostring(instanceId)] = true end
+        end
         for _, object in ipairs(loose) do
             local guid = BridgeSafeObjectGuid(object)
             local instanceId = looseInstanceByGuid[guid]
+            if instanceId == nil or expectedByInstanceId[tostring(instanceId)] == true then
+                return false, "cannot recover existing graveyard Deck with untracked or duplicate loose Card guid="
+                    .. tostring(guid) .. " instance=" .. tostring(instanceId)
+            end
+            table.insert(expectedInstances, 1, {
+                instanceId = instanceId,
+                cardName = BridgeState.cardNameByInstanceId[instanceId]
+            })
+            expectedByInstanceId[tostring(instanceId)] = true
             local ok = pcall(function() container.putObject(object, 0) end)
             if not ok then return false, "could not merge loose graveyard card into native Deck" end
-            if instanceId ~= nil then
-                BridgeRecordContainedCardIdentity(instanceId, BridgeSafeObjectGuid(container), guid,
-                    seatId, "graveyard", BridgeState.cardNameByInstanceId[instanceId])
-            end
             BridgeLog(string.format("[Bridge] graveyard container merge seat=%s deckGuid=%s cardGuid=%s",
                 tostring(seatId), tostring(BridgeSafeObjectGuid(container)), tostring(guid)))
         end
-        return BridgeRecordGraveyardContainerEntries(seatId, container, allExpectedInstances), nil
+        return BridgeRecordGraveyardContainerEntries(seatId, container, expectedInstances), nil
     end
     if #loose < 2 then return true, nil end
 
@@ -5298,7 +5360,7 @@ function BridgeEnsureNativeGraveyardContainer(seatId)
     return stable, stable and nil or "native graveyard Deck inventory did not preserve exact identities"
 end
 
-function BridgeCollectGraveyardExpectedInstances(seatId, container, incomingInstanceId)
+function BridgeCollectGraveyardExpectedInstances(seatId, container, incomingInstanceId, incomingAtTop, includeLooseCards)
     local expected = {}
     local expectedCount = 0
     local seen = {}
@@ -5333,18 +5395,40 @@ function BridgeCollectGraveyardExpectedInstances(seatId, container, incomingInst
             addInstance(instanceId)
         end
     end
-    for _, object in ipairs(getAllObjects() or {}) do
-        if BridgeObjectIsUsable(object) and object.tag == "Card"
-            and not BridgeIsPresentationOnlyObject(object) then
-            local guid = BridgeSafeObjectGuid(object)
-            if guid ~= nil
-                and tostring(BridgeState.physicalSeatByGuid[guid] or "") == tostring(seatId)
-                and tostring(BridgeState.physicalZoneByGuid[guid] or "") == "graveyard" then
-                addInstance(BridgeState.physicalInstanceIdByGuid[guid])
+    if includeLooseCards ~= false then
+        for _, object in ipairs(getAllObjects() or {}) do
+            if BridgeObjectIsUsable(object) and object.tag == "Card"
+                and not BridgeIsPresentationOnlyObject(object) then
+                local guid = BridgeSafeObjectGuid(object)
+                if guid ~= nil
+                    and tostring(BridgeState.physicalSeatByGuid[guid] or "") == tostring(seatId)
+                    and tostring(BridgeState.physicalZoneByGuid[guid] or "") == "graveyard" then
+                    addInstance(BridgeState.physicalInstanceIdByGuid[guid])
+                end
             end
         end
     end
-    if incomingInstanceId ~= nil then addInstance(incomingInstanceId) end
+    -- Deck.putObject(card, 0) has a physical ordering contract: the incoming
+    -- Card becomes native position zero.  Preserve that fact in the expected
+    -- identity sequence before contained GUIDs churn. Appending this identity
+    -- after the pre-insert inventory shifts every expected instance during the
+    -- later exact rebind (Mental Note: mill two, then resolve itself).
+    if incomingInstanceId ~= nil then
+        if incomingAtTop == true then
+            local incomingName = BridgeState.cardNameByInstanceId[incomingInstanceId]
+            local alreadyPresent = seen[tostring(incomingInstanceId)] == true
+            if not alreadyPresent then
+                for index = expectedCount, 1, -1 do
+                    expected[index + 1] = expected[index]
+                end
+                expected[1] = {instanceId = incomingInstanceId, cardName = incomingName}
+                expectedCount = expectedCount + 1
+                seen[tostring(incomingInstanceId)] = true
+            end
+        else
+            addInstance(incomingInstanceId)
+        end
+    end
     return expected
 end
 
@@ -5384,7 +5468,11 @@ function BridgeMoveToGraveyard(event, object, completion)
         return true, nil
     end
 
-    local expectedInstances = BridgeCollectGraveyardExpectedInstances(event.seatId, existing, event.cardInstanceId)
+    -- putObject(..., 0) makes the incoming resolving spell the native top
+    -- (Deck entry index zero), so snapshot the expected identity order before
+    -- the merge and include it at that same physical position.
+    local expectedInstances = BridgeCollectGraveyardExpectedInstances(
+        event.seatId, existing, event.cardInstanceId, true)
 
     local target = existing
     BridgeTtsExecutionBreadcrumb("GRAVEYARD_PUT_OBJECT_ENTER", "graveyard_materialization", event,

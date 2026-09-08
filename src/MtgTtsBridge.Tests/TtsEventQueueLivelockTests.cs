@@ -8,6 +8,28 @@ public sealed class TtsEventQueueLivelockTests
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.lua"));
 
     [Fact]
+    public void TurnTransitionRetainsNewerPendingDecision()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "TurnTransitionRetainsNewerPendingDecision.probe.lua", @"
+            BridgeState.currentTurnSeatId = 'forge-player-2'
+            BridgeState.pendingDecision = {
+                decisionId = 'forge-tui-2', sessionId = 'session', eventCursor = 8,
+                forgeSequence = 6, kind = 'main_priority', seatId = 'forge-player-1', actions = {}
+            }
+            local applied, delay = BridgeApplyAuthoritativeEvent(
+                {sequence=7, kind='turn_changed', seatId='forge-player-1', activeSeatId='forge-player-1', turnNumber=1})
+            eventApplied = applied
+            eventDelay = delay
+            remainingPendingDecisionId = BridgeState.pendingDecision and BridgeState.pendingDecision.decisionId or nil
+        ");
+
+        Assert.True(lua.Globals.Get("eventApplied").Boolean);
+        Assert.Equal(0.1, lua.Globals.Get("eventDelay").Number, 3);
+        Assert.Equal("forge-tui-2", lua.Globals.Get("remainingPendingDecisionId").String);
+    }
+
+    [Fact]
     public void SuccessfulEventCommitsOnceWhenPollingGenerationChangesDuringApply()
     {
         var lua = NewQueueProbe();
@@ -1179,6 +1201,8 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Equal(5, state.Get("resyncToken").Number);
         Assert.Equal(1, state.Get("resyncBootstrapGeneration").Number);
         Assert.True(state.Get("resyncCircuitOpen").Boolean);
+        Assert.True(state.Get("desyncLatched").Boolean);
+        Assert.Equal("DESYNCED", state.Get("presentationState").String);
     }
 
     [Fact]
@@ -1206,6 +1230,8 @@ public sealed class TtsEventQueueLivelockTests
         Assert.False(state.Get("resyncInFlight").Boolean);
         Assert.False(state.Get("bootstrapping").Boolean);
         Assert.True(state.Get("resyncStartedUpdateTick").IsNil());
+        Assert.True(state.Get("desyncLatched").Boolean);
+        Assert.Equal("DESYNCED", state.Get("presentationState").String);
     }
 
     [Fact]

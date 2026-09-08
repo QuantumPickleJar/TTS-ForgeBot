@@ -274,6 +274,97 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void MentalNoteThreeCardMillRebindsZeroBasedNativeDeckEntriesWithoutShiftingIdentity()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'mental-note-session'
+            local deck = bridgeTest.graveyardDeck
+            local inventoryPhase = 'before-put'
+            deck.getObjects = function()
+                if inventoryPhase == 'before-put' then
+                    return {
+                        {guid='old-island', nickname='Island', index=0},
+                        {guid='old-supplier', nickname='Stitcher\'s Supplier', index=1}
+                    }
+                end
+                return {
+                    {guid='contained-note', nickname='Mental Note', index=0},
+                    {guid='contained-island', nickname='Island', index=1},
+                    {guid='contained-supplier', nickname='Stitcher\'s Supplier', index=2}
+                }
+            end
+            BridgeRecordContainedCardIdentity(':13', 'grave-deck', 'old-island', 'forge-player-1', 'graveyard', 'Island')
+            BridgeRecordContainedCardIdentity(':9', 'grave-deck', 'old-supplier', 'forge-player-1', 'graveyard', 'Stitcher\'s Supplier')
+            BridgeRecordLooseCardIdentity(':29', 'contained-note', 'forge-player-1', 'stack')
+            local expected = BridgeCollectGraveyardExpectedInstances('forge-player-1', deck, ':29', true)
+            expected1 = expected[1] and expected[1].instanceId or nil
+            expected2 = expected[2] and expected[2].instanceId or nil
+            expected3 = expected[3] and expected[3].instanceId or nil
+            inventoryPhase = 'after-put'
+            rebindOk = BridgeRecordGraveyardContainerEntries('forge-player-1', deck, expected)
+            island = BridgeState.physicalContainerByInstanceId[':13']
+            supplier = BridgeState.physicalContainerByInstanceId[':9']
+            note = BridgeState.physicalContainerByInstanceId[':29']
+            rebindFailure = BridgeState.lastGraveyardRebindFailure
+        ");
+
+        Assert.True(lua.Globals.Get("rebindOk").Boolean,
+            $"rebind={lua.Globals.Get("rebindFailure").ToPrintString()}; logs={CapturedLogsTail(lua)}");
+        Assert.Equal(":29", lua.Globals.Get("expected1").String);
+        Assert.Equal(":13", lua.Globals.Get("expected2").String);
+        Assert.Equal(":9", lua.Globals.Get("expected3").String);
+        Assert.Equal("contained-island", lua.Globals.Get("island").Table.Get("cardGuid").String);
+        Assert.Equal("contained-supplier", lua.Globals.Get("supplier").Table.Get("cardGuid").String);
+        Assert.Equal("contained-note", lua.Globals.Get("note").Table.Get("cardGuid").String);
+    }
+
+    [Fact]
+    public void RecoveryMergesLooseMillCardIntoExistingDeckWithoutDroppingCommittedEntries()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'recovery-session'
+            BridgeState.cardNameByInstanceId[':old-a'] = 'Island'
+            BridgeState.cardNameByInstanceId[':old-b'] = 'Swamp'
+            BridgeState.cardNameByInstanceId[':recovered'] = 'Thought Scour'
+            BridgeTestSeedExistingDeck(
+                {instanceId=':old-a', cardName='Island'},
+                {instanceId=':old-b', cardName='Swamp'}
+            )
+            local recovered = BridgeTestCreateCard(':recovered', 'Thought Scour', 'loose-recovered')
+            recovered._inLibrary = false
+            recovered._lastPosition = {x=0, y=1, z=0}
+            BridgeRecordLooseCardIdentity(':recovered', 'loose-recovered', 'forge-player-1', 'graveyard')
+            local deck = bridgeTest.graveyardDeck
+            local rawPut = deck.putObject
+            deck.putObject = function(object, position)
+                local result = rawPut(object, position)
+                local entries = deck.entries
+                local length = BridgeTestArrayLength(entries)
+                local incoming = entries[length]
+                for index = length, 2, -1 do entries[index] = entries[index - 1] end
+                entries[1] = incoming
+                return result
+            end
+            recoveryOk, recoveryError = BridgeEnsureNativeGraveyardContainer('forge-player-1')
+            oldA = BridgeState.physicalContainerByInstanceId[':old-a']
+            oldB = BridgeState.physicalContainerByInstanceId[':old-b']
+            incoming = BridgeState.physicalContainerByInstanceId[':recovered']
+            entryCount = BridgeTestArrayLength(deck.getObjects() or {})
+        ");
+
+        Assert.True(lua.Globals.Get("recoveryOk").Boolean,
+            $"recovery={lua.Globals.Get("recoveryError").ToPrintString()}; logs={CapturedLogsTail(lua)}");
+        Assert.Equal(3, lua.Globals.Get("entryCount").Number);
+        Assert.Equal("grave-deck", lua.Globals.Get("oldA").Table.Get("deckGuid").String);
+        Assert.Equal("grave-deck", lua.Globals.Get("oldB").Table.Get("deckGuid").String);
+        Assert.Equal("grave-deck", lua.Globals.Get("incoming").Table.Get("deckGuid").String);
+    }
+
+    [Fact]
     public void ArmoredSkaabFourCardMillCommitsAsOneMutation()
     {
         var lua = NewProbe();
@@ -1167,6 +1258,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     forceMissingDeckAfterPromotion = false,
                     forceUnstableSettlement = false,
                     reassignContainedEveryPut = true,
+                    nativeDeckZeroBasedIndices = true,
                     unstableReadCounter = 0,
                     graveyardContainer = nil
                 }
@@ -1256,7 +1348,10 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                         out[outIndex] = {
                             guid = guid,
                             nickname = entry.name,
-                            index = outIndex
+                            -- TTS exposes native Deck positions separately
+                            -- from its Lua result array; production positions
+                            -- begin at zero.
+                            index = bridgeTest.nativeDeckZeroBasedIndices and (outIndex - 1) or outIndex
                         }
                         outIndex = outIndex + 1
                     end)
