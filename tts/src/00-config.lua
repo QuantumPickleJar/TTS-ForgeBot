@@ -1288,6 +1288,8 @@ BridgeState = {
     libraryExtractionActiveBySeatId = {},
     libraryExtractionTransactionBySeatId = {},
     libraryInsertionHandReleaseByGuid = {},
+    newMatchCleanupOwner = nil,
+    lastNewMatchCleanupFailure = nil,
     graveyardExtractionActiveBySeatId = {},
     -- Consecutive library transitions emitted by one Forge mutation are one
     -- physical transaction.  The queue still serializes Deck operations, but
@@ -1559,11 +1561,15 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
         and BridgeState.eventSessionId == nil
         and BridgeState.lastDecision == nil then
         BridgeSetLifecycleState(lifecycleState or BRIDGE_LIFECYCLE_READY_NO_SESSION, reason)
+        BridgeState.newMatchCleanupOwner = nil
+        BridgeState.lastNewMatchCleanupFailure = nil
         if BridgeEnsureSetupControls ~= nil then BridgeEnsureSetupControls() end
         return false
     end
 
     BridgeState.sessionCleanupApplied = true
+    BridgeState.newMatchCleanupOwner = nil
+    BridgeState.lastNewMatchCleanupFailure = nil
     if BridgeStopEventPolling ~= nil then BridgeStopEventPolling("session-boundary:" .. tostring(reason)) end
     if BridgeStopDecisionPolling ~= nil then BridgeStopDecisionPolling() end
     BridgeState.eventSessionGeneration = (BridgeState.eventSessionGeneration or 0) + 1

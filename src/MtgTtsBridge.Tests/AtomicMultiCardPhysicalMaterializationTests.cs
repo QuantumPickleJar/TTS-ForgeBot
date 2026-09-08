@@ -692,7 +692,8 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
             local c9 = BridgeTestCreateCard(':9', 'Swamp', 'loose-9')
             BridgeTestQueueExtractionCards({c16, c33, c38, c9})
             BridgeState.zoneLedgerBySeatAndZone['forge-player-1'] = BridgeState.zoneLedgerBySeatAndZone['forge-player-1'] or {}
-            BridgeState.zoneLedgerBySeatAndZone['forge-player-1']['graveyard'] = {':31'}
+            BridgeState.zoneLedgerBySeatAndZone['forge-player-1']['graveyard'] = {}
+            BridgeState.zoneLedgerBySeatAndZone['forge-player-1']['graveyard'][1] = ':31'
             BridgeTestSetEventQueue(
                 {sequence=211, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':16', cardName='Island', forgeSequence=215},
                 {sequence=212, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':33', cardName='Mountain', forgeSequence=215},
@@ -724,6 +725,51 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Assert.Equal(1, lua.Globals.Get("mutationCommitCount").Number);
         Assert.Equal(0, lua.Globals.Get("mutationAbortCount").Number);
         Assert.Equal("nil", lua.Globals.Get("desyncState").String);
+    }
+
+    [Fact]
+    public void NewMatchCleanupReturnsLiveHandCardsWhenHandApiLagsAfterMove()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.libraryInsertionHandReleaseByGuid = {}
+            local seatId = 'forge-player-1'
+            local cardA = BridgeTestCreateCard(':handA', 'Hand A', 'live-A')
+            local cardB = BridgeTestCreateCard(':handB', 'Hand B', 'live-B')
+            cardA._inHand = true
+            cardB._inHand = true
+            cardA.use_hands = false
+            cardB.use_hands = false
+            cardA.setPosition = function(position)
+                cardA._lastPosition = position
+                cardA._inHand = false
+            end
+            cardB.setPosition = function(position)
+                cardB._lastPosition = position
+                cardB._inHand = false
+            end
+            local rawHandObjects = BridgeTryGetSeatHandObjects
+            BridgeTryGetSeatHandObjects = function()
+                return {cardA, cardB}, nil
+            end
+            local inserted = {}
+            local function finishA(ok, err)
+                inserted[1] = ok
+                insertErrorA = tostring(err or 'nil')
+                BridgeInsertPhysicalCardIntoLibrary(seatId, cardB, 'NORMAL', function(okB, errB)
+                    inserted[2] = okB
+                    insertErrorB = tostring(errB or 'nil')
+                end, ':handB')
+            end
+            BridgeInsertPhysicalCardIntoLibrary(seatId, cardA, 'NORMAL', finishA, ':handA')
+            finalSuccess = inserted[1] == true and inserted[2] == true
+            finalFirstError = tostring(insertErrorA or 'nil')
+            finalSecondError = tostring(insertErrorB or 'nil')
+        ");
+
+        Assert.True(lua.Globals.Get("finalSuccess").Boolean,
+            $"first={lua.Globals.Get("finalFirstError").String} second={lua.Globals.Get("finalSecondError").String} logs={CapturedLogsTail(lua)}");
     }
 
     [Fact]
@@ -1160,7 +1206,31 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                 bridgeTest.libraryDeck = {
                     tag = 'Deck',
                     getGUID = function() return 'library-deck' end,
-                    getObjects = function() return {} end
+                    entries = {},
+                    getObjects = function()
+                        local out = {}
+                        bridgeTest.forEachArrayEntry(bridgeTest.libraryDeck.entries, function(entry)
+                            out[BridgeTestArrayLength(out) + 1] = {
+                                guid = entry and entry.guid or nil,
+                                nickname = entry and entry.nickname or nil,
+                                index = BridgeTestArrayLength(out) + 1
+                            }
+                        end)
+                        return out
+                    end,
+                    putObject = function(object, position)
+                        if object ~= nil then
+                            object._inLibrary = true
+                            object._inDeck = true
+                            object._inHand = false
+                        end
+                        bridgeTest.libraryDeck.entries[BridgeTestArrayLength(bridgeTest.libraryDeck.entries) + 1] = {
+                            guid = object and object.getGUID and object.getGUID() or nil,
+                            nickname = object and object.name or nil,
+                            index = BridgeTestArrayLength(bridgeTest.libraryDeck.entries) + 1
+                        }
+                        return bridgeTest.libraryDeck
+                    end
                 }
                 bridgeTest.graveyardDeck = {
                     tag = 'Deck',
@@ -1249,6 +1319,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     }
                     card.getGUID = function() return card._guid end
                     card.getName = function() return card.name end
+                    card.getPosition = function() return card._lastPosition or {x=0, y=0, z=0} end
                     local function setCardPosition(position)
                         card._lastPosition = position
                         bridgeTest.stagedPositionCount = (bridgeTest.stagedPositionCount or 0) + 1
@@ -1494,7 +1565,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                         if excludeGuid == nil or guid ~= excludeGuid then return container end
                     end
                     for _, card in ipairs(bridgeTest.allCards or {}) do
-                        if card ~= nil and card.tag == 'Card' and card._inDeck ~= true and card._inLibrary ~= true and card._inHand ~= true then
+                        if card ~= nil and card.tag == 'Card' and card._inDeck ~= true then
                             local guid = card.getGUID and card.getGUID() or nil
                             if guid ~= nil and guid ~= excludeGuid
                                 and BridgeState.physicalSeatByGuid[guid] == seatId

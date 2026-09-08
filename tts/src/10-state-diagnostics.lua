@@ -34,12 +34,35 @@ end
 -- this exact GUID to leave the hand before invoking putObject.
 function BridgeSeatHandContainsGuid(seatId, guid)
     if guid == nil then return false, nil end
+    local liveObject = BridgeGetLiveObjectByGuid(guid)
+    if liveObject ~= nil and BridgeObjectIsUsable(liveObject) and liveObject.use_hands == false then
+        local outsideHand, _ = BridgeCardIsOutsideHandVolume(seatId, liveObject)
+        if outsideHand then return false, nil end
+    end
     local handObjects, handError = BridgeTryGetSeatHandObjects(seatId)
     if handObjects == nil then return nil, handError end
     for _, handObject in ipairs(handObjects) do
         if BridgeSafeObjectGuid(handObject) == guid then return true, nil end
     end
     return false, nil
+end
+
+function BridgeCardIsOutsideHandVolume(seatId, object)
+    if not BridgeObjectIsUsable(object) then return false, "object is unusable" end
+    local handTransform, handError = BridgeTryGetSeatHandTransform(seatId)
+    if handTransform == nil or handTransform.position == nil then
+        return false, handError or "hand transform unavailable"
+    end
+    local okPosition, position = pcall(function() return object.getPosition() end)
+    if not okPosition or position == nil then
+        return false, "card position unavailable"
+    end
+    local handPosition = handTransform.position
+    local dx = (position.x or 0) - (handPosition.x or 0)
+    local dy = (position.y or 0) - (handPosition.y or 0)
+    local dz = (position.z or 0) - (handPosition.z or 0)
+    local horizontalDistance = math.sqrt((dx * dx) + (dz * dz))
+    return (object.use_hands == false and (horizontalDistance > 1.0 or dy > 1.75)) or horizontalDistance > 3.5 or dy > 2.5, nil
 end
 
 function BridgeBuildSeatHandGuidSet(seatId)
@@ -931,9 +954,10 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
     -- A Card can still belong to a TTS player's private hand after Forge has
     -- emitted the hand->library transition. Calling putObject immediately can
     -- then leave the card visually in hand or produce an incomplete Deck.
-    -- Eject the exact card first and wait for TTS hand membership to clear.
-    -- The marker prevents the bounded retry from recursively re-entering this
-    -- release phase once the hand has actually let go of the card.
+    -- The hand API is advisory during destructive cleanup and can lag behind
+    -- the card's real position or use_hands state. Treat a stale hand report as
+    -- releasable once the object has already been moved out of the hand volume
+    -- or the hand API has been explicitly disabled.
     local releaseMarkers = BridgeState.libraryInsertionHandReleaseByGuid
     if releaseMarkers[guid] == true then
         releaseMarkers[guid] = nil
@@ -944,19 +968,49 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
                 callback(false, handError or "could not inspect player hand")
                 return
             end
-            if not inHand then
+            local outsideHand = false
+            local outsideReason = nil
+            if object ~= nil and (object.use_hands == false or inHand == true) then
+                outsideHand, outsideReason = BridgeCardIsOutsideHandVolume(seatId, object)
+            end
+            if not inHand or outsideHand then
                 releaseMarkers[guid] = true
                 BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, callback, cardInstanceId)
                 return
             end
             if attempt >= 30 then
+                local library = BridgeResolveSeatLibraryDeck(seatId)
+                local libraryGuid = library and BridgeSafeObjectGuid(library) or nil
+                local libraryTag = library and library.tag or nil
+                local position = nil
+                local okPosition, cardPosition = pcall(function() return object.getPosition() end)
+                if okPosition then position = cardPosition end
+                BridgeState.lastNewMatchCleanupFailure = {
+                    seatId = seatId,
+                    guid = guid,
+                    objectTag = object and object.tag or nil,
+                    live = BridgeObjectIsUsable(object),
+                    inHand = inHand,
+                    useHandsDisabled = object and object.use_hands == false,
+                    position = position,
+                    libraryTag = libraryTag,
+                    libraryGuid = libraryGuid,
+                    handReleaseAttempts = attempt,
+                    error = "card remained in player hand before library insertion",
+                    outerReason = outsideReason,
+                    cleanupOwner = BridgeState.newMatchCleanupOwner,
+                    generation = BridgeState.physicalTransactionGeneration or 0,
+                    sessionId = BridgeState.eventSessionId
+                }
                 callback(false, "card remained in player hand before library insertion")
                 return
             end
             local ok, releaseError = pcall(function()
                 object.setLock(false)
                 object.use_hands = false
-                local position = object.getPosition()
+                local position = nil
+                local okPosition, currentPosition = pcall(function() return object.getPosition() end)
+                if okPosition and currentPosition ~= nil then position = currentPosition end
                 -- A vertical nudge at the hand's existing x/z can remain
                 -- inside TTS's hand volume indefinitely. Stage the card over
                 -- its own library instead: it is outside the private hand,
@@ -966,7 +1020,7 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
                 if BridgeObjectIsUsable(library) then
                     local libraryPosition = library.getPosition()
                     object.setPosition({libraryPosition.x, libraryPosition.y + 3.0, libraryPosition.z})
-                else
+                elseif position ~= nil then
                     object.setPosition({position.x, position.y + 3.0, position.z})
                 end
             end)
@@ -1467,10 +1521,31 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
             local candidate = candidates[index]
             BridgeInsertPhysicalCardIntoLibrary(candidate.seatId, candidate.object, "NORMAL", function(inserted, insertError)
                 if not inserted then
+                    local library = BridgeResolveSeatLibraryDeck(candidate.seatId)
+                    local object = candidate.object
+                    local position = nil
+                    local okPosition, objectPosition = pcall(function() return object and object.getPosition() end)
+                    if okPosition then position = objectPosition end
+                    BridgeState.lastNewMatchCleanupFailure = {
+                        seatId = candidate.seatId,
+                        guid = candidate.guid,
+                        zone = candidate.zone,
+                        objectTag = object and object.tag or nil,
+                        live = BridgeObjectIsUsable(object),
+                        inHand = object and BridgeSeatHandContainsGuid(candidate.seatId, candidate.guid),
+                        useHandsDisabled = object and object.use_hands == false,
+                        position = position,
+                        libraryTag = library and library.tag or nil,
+                        libraryGuid = library and BridgeSafeObjectGuid(library) or nil,
+                        cleanupOwner = BridgeState.newMatchCleanupOwner,
+                        generation = BridgeState.physicalTransactionGeneration or 0,
+                        sessionId = BridgeState.eventSessionId,
+                        error = tostring(insertError or "unknown insert failure")
+                    }
                     BridgeLog("[Bridge] previous-game card return failed guid=" .. tostring(candidate.guid)
                         .. " seat=" .. tostring(candidate.seatId) .. " zone=" .. tostring(candidate.zone)
-                        .. " reason=" .. tostring(insertError))
-                    if callback then callback(false, "could not return previous-game card " .. tostring(candidate.guid) .. " to library") end
+                        .. " reason=" .. tostring(insertError) .. " library=" .. tostring(library and BridgeSafeObjectGuid(library) or "none"))
+                    if callback then callback(false, "could not return previous-game card " .. tostring(candidate.guid) .. " to library: " .. tostring(insertError)) end
                     return
                 end
                 insertCandidate(index + 1)

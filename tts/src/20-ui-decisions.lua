@@ -3942,13 +3942,17 @@ function BridgeResetSession()
     BridgeStopEventPolling("session-reset")
     BridgeClearHighlights()
     BridgeState.lastDecision = nil
+    BridgeState.newMatchCleanupOwner = "NEW_MATCH_CLEANUP"
+    BridgeState.lastNewMatchCleanupFailure = nil
 
     BridgeReturnPreviousGameCardsToLibraries(function(returnOk, returnError)
         if not returnOk then
             BridgeSetSetupBusy(false)
             BridgeShowError("previous game cleanup failed: " .. tostring(returnError))
+            BridgeState.newMatchCleanupOwner = nil
             return
         end
+        BridgeState.newMatchCleanupOwner = nil
         BridgeConfigureDecks(function(deckOk, _, deckError)
             if not deckOk then
                 BridgeSetSetupBusy(false)
