@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
 using MtgTtsBridge;
@@ -15,6 +16,14 @@ internal sealed class ForgeGameEndedException : Exception;
 /// <summary>Supervises a locally configured Forge TUI process. Forge remains authoritative for every game decision.</summary>
 public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 {
+    private enum InitialDeckInventoryValidationState
+    {
+        NotRequired = 0,
+        WaitingForStableForgeInventory = 1,
+        Validated = 2,
+        Failed = 3,
+    }
+
     private readonly object _sync = new();
     private readonly ForgeTuiOptions _options;
     private readonly ILogger<ForgeTuiAdapter> _logger;
@@ -58,6 +67,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private IReadOnlyDictionary<string, IReadOnlyDictionary<string, int>> _configuredDeckInventoryBySeat =
         new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal);
     private bool _initialDeckInventoryValidationPending;
+    private InitialDeckInventoryValidationState _initialDeckInventoryValidationState = InitialDeckInventoryValidationState.NotRequired;
+    private long _deckConfigurationGeneration;
+    private string _configuredDeckInventoryHash = "(none)";
+    private string _humanDeckFileHash = "(none)";
+    private string _aiDeckFileHash = "(none)";
     private string _deckFormat = "unknown";
     private string? _deckFormatProvenance;
     private bool _allowDeckMinimumOverride;
@@ -114,23 +128,38 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         var aiPath = Path.Combine(directory, "tts-ai.dck");
         await WriteDeckAsync(humanPath, human.Cards, cancellationToken).ConfigureAwait(false);
         await WriteDeckAsync(aiPath, ai.Cards, cancellationToken).ConfigureAwait(false);
+        var humanDeckFileHash = ComputeFileSha256(humanPath);
+        var aiDeckFileHash = ComputeFileSha256(aiPath);
         var normalizedFormat = NormalizeDeckFormat(request.Format);
+        var configuredInventoryBySeat = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal)
+        {
+            [human.SeatId] = ForgeDeckInventoryValidator.BuildInventory(human.Cards),
+            [ai.SeatId] = ForgeDeckInventoryValidator.BuildInventory(ai.Cards),
+        };
+        var inventoryHash = ComputeInventoryHash(configuredInventoryBySeat);
+        long deckConfigurationGeneration;
         lock (_sync)
         {
             _humanDeckPath = humanPath;
             _aiDeckPath = aiPath;
-            _configuredDeckInventoryBySeat = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal)
-            {
-                [human.SeatId] = ForgeDeckInventoryValidator.BuildInventory(human.Cards),
-                [ai.SeatId] = ForgeDeckInventoryValidator.BuildInventory(ai.Cards),
-            };
+            _configuredDeckInventoryBySeat = configuredInventoryBySeat;
             _initialDeckInventoryValidationPending = true;
+            _initialDeckInventoryValidationState = InitialDeckInventoryValidationState.WaitingForStableForgeInventory;
             _deckFormat = normalizedFormat;
             _deckFormatProvenance = request.FormatProvenance;
             _allowDeckMinimumOverride = request.AllowDeckMinimumOverride;
+            _deckConfigurationGeneration++;
+            deckConfigurationGeneration = _deckConfigurationGeneration;
+            _configuredDeckInventoryHash = inventoryHash;
+            _humanDeckFileHash = humanDeckFileHash;
+            _aiDeckFileHash = aiDeckFileHash;
         }
         _logger.LogInformation(
-            "Accepted TTS library deck inventories: humanCards={HumanCards} aiCards={AiCards} deckFormat={DeckFormat} formatProvenance={FormatProvenance} deckMinimumOverride={DeckMinimumOverride}",
+            "Accepted TTS library deck inventories: generation={DeckConfigurationGeneration} inventoryHash={InventoryHash} humanDeckFileHash={HumanDeckFileHash} aiDeckFileHash={AiDeckFileHash} humanCards={HumanCards} aiCards={AiCards} deckFormat={DeckFormat} formatProvenance={FormatProvenance} deckMinimumOverride={DeckMinimumOverride}",
+            deckConfigurationGeneration,
+            inventoryHash,
+            humanDeckFileHash,
+            aiDeckFileHash,
             human.Cards.Sum(card => card.Count),
             ai.Cards.Sum(card => card.Count),
             normalizedFormat,
@@ -253,6 +282,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         var cancellation = new CancellationTokenSource();
         TaskCompletionSource<DecisionDto> initialDecision;
         long processGeneration;
+        long deckConfigurationGeneration;
+        string configuredInventoryHash;
+        string humanDeckFileHash;
+        string aiDeckFileHash;
 
         lock (_sync)
         {
@@ -290,16 +323,31 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _lastPresentedDecisionKind = null;
             _lastPresentedAtUtc = DateTimeOffset.MinValue;
             _initialDeckInventoryValidationPending = _configuredDeckInventoryBySeat.Count > 0;
+            _initialDeckInventoryValidationState = _configuredDeckInventoryBySeat.Count > 0
+                ? InitialDeckInventoryValidationState.WaitingForStableForgeInventory
+                : InitialDeckInventoryValidationState.NotRequired;
             _process = process;
             _processCancellation = cancellation;
             processGeneration = ++_processGeneration;
+            deckConfigurationGeneration = _deckConfigurationGeneration;
+            configuredInventoryHash = _configuredDeckInventoryHash;
+            humanDeckFileHash = _humanDeckFileHash;
+            aiDeckFileHash = _aiDeckFileHash;
             initialDecision = NewDecisionWaiter();
         }
 
         startInfo.Environment["FORGEBOT_BRIDGE_SESSION_ID"] = _sessionId;
 
         process.Exited += (_, _) => _ = HandleProcessExitAsync(process, processGeneration, process.ExitCode);
-        _logger.LogInformation("FORGE_PROCESS_LAUNCH_BEGIN sessionId={SessionId} executable={Executable}", _sessionId, _options.Executable);
+        _logger.LogInformation(
+            "FORGE_PROCESS_LAUNCH_BEGIN sessionId={SessionId} processGeneration={ProcessGeneration} deckConfigurationGeneration={DeckConfigurationGeneration} inventoryHash={InventoryHash} humanDeckFileHash={HumanDeckFileHash} aiDeckFileHash={AiDeckFileHash} executable={Executable}",
+            _sessionId,
+            processGeneration,
+            deckConfigurationGeneration,
+            configuredInventoryHash,
+            humanDeckFileHash,
+            aiDeckFileHash,
+            _options.Executable);
         try
         {
             if (!process.Start())
@@ -571,24 +619,6 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                         var current = _structuredState.Current;
                         if (current is not null)
                         {
-                            if (_initialDeckInventoryValidationPending
-                                && ForgeDeckInventoryValidator.IsInitialDeckInventorySnapshot(current))
-                            {
-                                var inventory = ForgeDeckInventoryValidator.Validate(
-                                    _configuredDeckInventoryBySeat, current);
-                                if (!inventory.IsValid)
-                                {
-                                    _initialDeckInventoryValidationPending = false;
-                                    Fail("forge_deck_inventory_mismatch", inventory.ErrorMessage!);
-                                }
-                                else
-                                {
-                                    _initialDeckInventoryValidationPending = false;
-                                    _logger.LogInformation(
-                                        "Forge authoritative deck inventory matches TTS inventory: seats={SeatCount}",
-                                        _configuredDeckInventoryBySeat.Count);
-                                }
-                            }
                             _latestObservedTurnNumber = current.TurnNumber ?? _latestObservedTurnNumber;
                             _latestObservedActiveSeatId = current.ActiveSeatId ?? _latestObservedActiveSeatId;
                             _latestObservedPrioritySeatId = current.PrioritySeatId ?? _latestObservedPrioritySeatId;
@@ -895,6 +925,14 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         if (_pendingDecision is null) return;
         var pending = _pendingDecision.Value;
         if (!PendingDecisionEligible(pending)) return;
+
+        if (!EnsureInitialDeckInventoryValidatedAtStableBarrier(reason, pending.Decision.DecisionId))
+        {
+            _pendingDecision = null;
+            _currentDecision = null;
+            _currentInputs = null;
+            return;
+        }
 
         var published = pending.Decision with
         {
@@ -1440,6 +1478,68 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             throw new FileNotFoundException("Configured Forge executable was not found.", _options.Executable);
         if (!Directory.Exists(_options.WorkingDirectory))
             throw new DirectoryNotFoundException($"Configured Forge working directory was not found: {_options.WorkingDirectory}");
+    }
+
+    private bool EnsureInitialDeckInventoryValidatedAtStableBarrier(string reason, string decisionId)
+    {
+        if (!_initialDeckInventoryValidationPending
+            || _initialDeckInventoryValidationState is InitialDeckInventoryValidationState.NotRequired or InitialDeckInventoryValidationState.Validated)
+        {
+            return true;
+        }
+
+        var snapshot = _structuredState.Current;
+        if (snapshot is null)
+        {
+            _initialDeckInventoryValidationState = InitialDeckInventoryValidationState.WaitingForStableForgeInventory;
+            _logger.LogInformation(
+                "Deck inventory validation is waiting for a structured snapshot at decision barrier decision={DecisionId} reason={Reason}",
+                decisionId,
+                reason);
+            return false;
+        }
+
+        var inventory = ForgeDeckInventoryValidator.Validate(_configuredDeckInventoryBySeat, snapshot);
+        if (!inventory.IsValid)
+        {
+            _initialDeckInventoryValidationPending = false;
+            _initialDeckInventoryValidationState = InitialDeckInventoryValidationState.Failed;
+            Fail("forge_deck_inventory_mismatch", inventory.ErrorMessage!);
+            return false;
+        }
+
+        _initialDeckInventoryValidationPending = false;
+        _initialDeckInventoryValidationState = InitialDeckInventoryValidationState.Validated;
+        _logger.LogInformation(
+            "Forge authoritative deck inventory matches TTS inventory at stable barrier: decision={DecisionId} reason={Reason} seats={SeatCount} snapshotSequence={SnapshotSequence} snapshotReason={SnapshotReason}",
+            decisionId,
+            reason,
+            _configuredDeckInventoryBySeat.Count,
+            snapshot.ForgeSequence,
+            snapshot.Reason);
+        return true;
+    }
+
+    private static string ComputeInventoryHash(IReadOnlyDictionary<string, IReadOnlyDictionary<string, int>> inventoryBySeat)
+    {
+        var lines = new List<string>();
+        foreach (var seat in inventoryBySeat.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            foreach (var card in seat.Value.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                lines.Add($"{seat.Key}|{card.Key}|{card.Value}");
+            }
+        }
+        var text = string.Join("\n", lines);
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(text));
+        return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private static string ComputeFileSha256(string path)
+    {
+        using var stream = File.OpenRead(path);
+        var hash = SHA256.HashData(stream);
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     private string RenderArguments()

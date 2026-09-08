@@ -213,6 +213,239 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
+    public async Task TransientGameStartedInventoryMismatchDoesNotFailBeforeStableBarrier()
+    {
+        await using var adapter = await NewInventoryValidationAdapterAsync(
+            human: [new("Treasure Cruise", 2), new("Island", 38)],
+            ai: [new("Mountain", 40)]);
+        SetPrivateField(adapter, "_sessionId", "session-transient");
+        SetPrivateField(adapter, "_state", "starting");
+
+        ApplyStructuredSnapshot(adapter, "session-transient", BuildSnapshot(
+            1,
+            "GameEventShuffle",
+            humanLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Treasure Cruise"] = 2,
+                ["Island"] = 38,
+            },
+            humanHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+            aiLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+            aiHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)),
+            latestCursor: 1);
+
+        ApplyStructuredSnapshot(adapter, "session-transient", BuildSnapshot(
+            2,
+            "GameEventGameStarted",
+            humanLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Treasure Cruise"] = 1,
+                ["Island"] = 38,
+            },
+            humanHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+            aiLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Mountain"] = 40,
+            },
+            aiHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)),
+            latestCursor: 2);
+
+        var stage = PrivateMethod("StageDecisionCandidate");
+        var marker = PrivateMethod("ApplyDecisionReadyMarker");
+        var publish = PrivateMethod("TryPublishPendingDecision");
+        stage.Invoke(adapter, [PassCandidate("forge-tui-1"), false]);
+        marker.Invoke(adapter, [new ForgeDecisionReadyMarker("session-transient", "forge-tui-1", 3, 15, 1)]);
+
+        publish.Invoke(adapter, ["before-stable-snapshot"]);
+        var pendingState = await adapter.GetStateAsync(CancellationToken.None);
+        Assert.Equal("starting", pendingState.State);
+        Assert.Null(pendingState.CurrentDecision);
+
+        ApplyStructuredSnapshot(adapter, "session-transient", BuildSnapshot(
+            3,
+            "GameEventMulliganPrepared",
+            humanLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Treasure Cruise"] = 1,
+                ["Island"] = 32,
+            },
+            humanHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Treasure Cruise"] = 1,
+                ["Island"] = 6,
+            },
+            aiLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Mountain"] = 34,
+            },
+            aiHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Mountain"] = 6,
+            }),
+            latestCursor: 15);
+
+        publish.Invoke(adapter, ["stable-decision-barrier"]);
+        var state = await adapter.GetStateAsync(CancellationToken.None);
+        Assert.Equal("awaiting_human_decision", state.State);
+        Assert.Equal("forge-tui-1", state.CurrentDecision?.DecisionId);
+        Assert.Null(state.Diagnostic?.Code);
+    }
+
+    [Fact]
+    public async Task StablePersistentInventoryMismatchFailsWithExactDelta()
+    {
+        await using var adapter = await NewInventoryValidationAdapterAsync(
+            human: [new("Treasure Cruise", 2), new("Island", 38)],
+            ai: [new("Mountain", 40)]);
+        SetPrivateField(adapter, "_sessionId", "session-mismatch");
+        SetPrivateField(adapter, "_state", "starting");
+
+        ApplyStructuredSnapshot(adapter, "session-mismatch", BuildSnapshot(
+            3,
+            "GameEventMulliganPrepared",
+            humanLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Treasure Cruise"] = 1,
+                ["Island"] = 32,
+            },
+            humanHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Island"] = 6,
+            },
+            aiLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Mountain"] = 34,
+            },
+            aiHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Mountain"] = 6,
+            }),
+            latestCursor: 15);
+
+        var stage = PrivateMethod("StageDecisionCandidate");
+        var marker = PrivateMethod("ApplyDecisionReadyMarker");
+        var publish = PrivateMethod("TryPublishPendingDecision");
+        stage.Invoke(adapter, [PassCandidate("forge-tui-1"), false]);
+        marker.Invoke(adapter, [new ForgeDecisionReadyMarker("session-mismatch", "forge-tui-1", 3, 15, 1)]);
+        publish.Invoke(adapter, ["stable-decision-barrier"]);
+
+        var state = await adapter.GetStateAsync(CancellationToken.None);
+        Assert.Equal("failed", state.State);
+        Assert.Null(state.CurrentDecision);
+        Assert.Equal("forge_deck_inventory_mismatch", state.Diagnostic?.Code);
+        Assert.Contains("missing=[Treasure Cruise x1]", state.Diagnostic?.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SessionOneAndSessionTwoWithIdenticalDeckInventoryBothValidate()
+    {
+        await using var adapter = await NewInventoryValidationAdapterAsync(
+            human: [new("Treasure Cruise", 2), new("Island", 38)],
+            ai: [new("Mountain", 40)]);
+
+        SetPrivateField(adapter, "_sessionId", "session-one");
+        SetPrivateField(adapter, "_state", "starting");
+        ApplyStructuredSnapshot(adapter, "session-one", BuildSnapshot(
+            3,
+            "GameEventMulliganPrepared",
+            humanLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Treasure Cruise"] = 1,
+                ["Island"] = 32,
+            },
+            humanHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Treasure Cruise"] = 1,
+                ["Island"] = 6,
+            },
+            aiLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Mountain"] = 34,
+            },
+            aiHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Mountain"] = 6,
+            }),
+            latestCursor: 15);
+        PublishDecision(adapter, "session-one", "forge-tui-1", requiredSequence: 3);
+        var first = await adapter.GetStateAsync(CancellationToken.None);
+        Assert.Equal("awaiting_human_decision", first.State);
+
+        await adapter.ConfigureDecksAsync(new DeckLoadRequestDto([
+            new("forge-player-1", [new("Treasure Cruise", 2), new("Island", 38)]),
+            new("forge-player-2", [new("Mountain", 40)])
+        ])
+        {
+            Format = "limited",
+            FormatProvenance = "tts-default-limited",
+            AllowDeckMinimumOverride = false,
+        }, CancellationToken.None);
+
+        SetPrivateField(adapter, "_sessionId", "session-two");
+        SetPrivateField(adapter, "_state", "starting");
+        SetPrivateField(adapter, "_currentDecision", null);
+        SetPrivateField(adapter, "_currentInputs", null);
+        SetPrivateField(adapter, "_pendingDecision", null);
+        SetPrivateField(adapter, "_structuredState", new ForgeStructuredStateReconciler());
+
+        ApplyStructuredSnapshot(adapter, "session-two", BuildSnapshot(
+            1,
+            "GameEventShuffle",
+            humanLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Treasure Cruise"] = 2,
+                ["Island"] = 38,
+            },
+            humanHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+            aiLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+            aiHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)),
+            latestCursor: 1);
+        ApplyStructuredSnapshot(adapter, "session-two", BuildSnapshot(
+            2,
+            "GameEventGameStarted",
+            humanLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Treasure Cruise"] = 1,
+                ["Island"] = 38,
+            },
+            humanHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+            aiLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Mountain"] = 40,
+            },
+            aiHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)),
+            latestCursor: 2);
+        ApplyStructuredSnapshot(adapter, "session-two", BuildSnapshot(
+            3,
+            "GameEventMulliganPrepared",
+            humanLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Treasure Cruise"] = 1,
+                ["Island"] = 32,
+            },
+            humanHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Treasure Cruise"] = 1,
+                ["Island"] = 6,
+            },
+            aiLibrary: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Mountain"] = 34,
+            },
+            aiHand: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Mountain"] = 6,
+            }),
+            latestCursor: 15);
+        PublishDecision(adapter, "session-two", "forge-tui-1", requiredSequence: 3);
+
+        var second = await adapter.GetStateAsync(CancellationToken.None);
+        Assert.Equal("awaiting_human_decision", second.State);
+        Assert.Equal("forge-tui-1", second.CurrentDecision?.DecisionId);
+        Assert.Null(second.Diagnostic?.Code);
+    }
+
+    [Fact]
     public async Task SeedTemplate_IsRenderedAsANewConcreteSeedForEachForgeSession()
     {
         await using var adapter = new ForgeTuiAdapter(
@@ -239,6 +472,13 @@ public sealed class ForgeTuiAdapterTests
         var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(field);
         field!.SetValue(target, value);
+    }
+
+    private static object? GetPrivateField(object target, string fieldName)
+    {
+        var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return field!.GetValue(target);
     }
 
     private static Task WriteForgeScriptAsync(string path, string content)
@@ -286,6 +526,138 @@ public sealed class ForgeTuiAdapterTests
             {
                 [$"{decisionId}-choice-0"] = "0"
             });
+
+    private static async Task<ForgeTuiAdapter> NewInventoryValidationAdapterAsync(
+        IReadOnlyList<DeckCardLoadDto> human,
+        IReadOnlyList<DeckCardLoadDto> ai)
+    {
+        var adapter = new ForgeTuiAdapter(
+            Options.Create(new ForgeTuiOptions { Executable = "unused", Arguments = "noop", WorkingDirectory = Environment.CurrentDirectory }),
+            NullLogger<ForgeTuiAdapter>.Instance);
+        await adapter.ConfigureDecksAsync(new DeckLoadRequestDto([
+            new("forge-player-1", human),
+            new("forge-player-2", ai)
+        ])
+        {
+            Format = "limited",
+            FormatProvenance = "tts-default-limited",
+            AllowDeckMinimumOverride = false,
+        }, CancellationToken.None);
+        return adapter;
+    }
+
+    private static void PublishDecision(ForgeTuiAdapter adapter, string sessionId, string decisionId, long requiredSequence)
+    {
+        var stage = PrivateMethod("StageDecisionCandidate");
+        var marker = PrivateMethod("ApplyDecisionReadyMarker");
+        var publish = PrivateMethod("TryPublishPendingDecision");
+        stage.Invoke(adapter, [PassCandidate(decisionId), false]);
+        marker.Invoke(adapter, [new ForgeDecisionReadyMarker(sessionId, decisionId, requiredSequence, 15, 1)]);
+        publish.Invoke(adapter, ["stable-decision-barrier"]);
+    }
+
+    private static void ApplyStructuredSnapshot(ForgeTuiAdapter adapter, string sessionId, ForgeStructuredSnapshot snapshot, long latestCursor)
+    {
+        var reconciler = Assert.IsType<ForgeStructuredStateReconciler>(GetPrivateField(adapter, "_structuredState"));
+        _ = reconciler.Apply(sessionId, snapshot);
+        SetPrivateField(adapter, "_latestObservedForgeSequence", snapshot.Sequence);
+        SetPrivateField(adapter, "_latestCommittedMutationForgeSequence", snapshot.Sequence);
+        SetPrivateField(adapter, "_latestCommittedMutationCursor", latestCursor);
+        SetPrivateField(adapter, "_latestDecisionEligibleCursor", latestCursor);
+        SetPrivateField(adapter, "_latestEventSequence", latestCursor);
+    }
+
+    private static ForgeStructuredSnapshot BuildSnapshot(
+        long sequence,
+        string reason,
+        IReadOnlyDictionary<string, int> humanLibrary,
+        IReadOnlyDictionary<string, int> humanHand,
+        IReadOnlyDictionary<string, int> aiLibrary,
+        IReadOnlyDictionary<string, int> aiHand)
+    {
+        var nextId = 1;
+        var players = new[]
+        {
+            new ForgeStructuredPlayer(
+                "forge-player-1",
+                1,
+                "Player 1",
+                20,
+                0,
+                new Dictionary<string, int>(),
+                [
+                    new ForgeStructuredZone("library", BuildZoneCards("forge-player-1", "library", humanLibrary, ref nextId)),
+                    new ForgeStructuredZone("hand", BuildZoneCards("forge-player-1", "hand", humanHand, ref nextId)),
+                    new ForgeStructuredZone("graveyard", []),
+                    new ForgeStructuredZone("exile", []),
+                    new ForgeStructuredZone("battlefield", [])
+                ]),
+            new ForgeStructuredPlayer(
+                "forge-player-2",
+                2,
+                "Player 2",
+                20,
+                0,
+                new Dictionary<string, int>(),
+                [
+                    new ForgeStructuredZone("library", BuildZoneCards("forge-player-2", "library", aiLibrary, ref nextId)),
+                    new ForgeStructuredZone("hand", BuildZoneCards("forge-player-2", "hand", aiHand, ref nextId)),
+                    new ForgeStructuredZone("graveyard", []),
+                    new ForgeStructuredZone("exile", []),
+                    new ForgeStructuredZone("battlefield", [])
+                ])
+        };
+
+        return new ForgeStructuredSnapshot(
+            Version: 1,
+            Type: "snapshot",
+            Sequence: sequence,
+            Reason: reason,
+            Players: players,
+            Stack: [],
+            TurnNumber: 1,
+            ActiveSeatId: "forge-player-1",
+            PrioritySeatId: "forge-player-1",
+            Phase: "Mulligan");
+    }
+
+    private static IReadOnlyList<ForgeStructuredCard> BuildZoneCards(
+        string seatId,
+        string zone,
+        IReadOnlyDictionary<string, int> cards,
+        ref int nextId)
+    {
+        var result = new List<ForgeStructuredCard>();
+        var zonePosition = 0;
+        foreach (var pair in cards.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            for (var index = 0; index < pair.Value; index++)
+            {
+                var forgeCardId = nextId++;
+                result.Add(new ForgeStructuredCard(
+                    ForgeCardId: forgeCardId,
+                    CardName: pair.Key,
+                    CurrentCardName: pair.Key,
+                    Zone: zone,
+                    ZonePosition: zonePosition++,
+                    OwnerSeatId: seatId,
+                    ControllerSeatId: seatId,
+                    Tapped: false,
+                    FaceDown: false,
+                    PhasedOut: false,
+                    Counters: new Dictionary<string, int>(),
+                    Keywords: [],
+                    CurrentTypes: [],
+                    AuthoritativeObjectId: $"forge-object:{forgeCardId}",
+                    ObjectKind: "physical-original",
+                    IsCopy: false,
+                    IsVirtual: false,
+                    IsToken: false,
+                    MaterializationPolicy: "physical"));
+            }
+        }
+        return result;
+    }
 
     [Fact]
     public async Task RenderArguments_IncludeConfiguredDeckFormatMetadataWhenRequested()

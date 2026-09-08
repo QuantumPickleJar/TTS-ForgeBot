@@ -25,7 +25,9 @@ public sealed class ForgeDeckInventoryValidatorTests
         Assert.Equal("forge-player-1", result.SeatId);
         Assert.Equal(40, result.ExpectedCount);
         Assert.Equal(38, result.ActualCount);
-        Assert.Contains("unsupported cards", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("missing=[Unsupported Card x2]", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, result.MissingByCard!["Unsupported Card"]);
+        Assert.Empty(result.ExcessByCard!);
     }
 
     [Fact]
@@ -43,16 +45,30 @@ public sealed class ForgeDeckInventoryValidatorTests
     }
 
     [Fact]
-    public void WaitsForGameStartedInsteadOfValidatingTheFirstPlayerShuffle()
+    public void ReportsBothMissingAndExcessCardsWhenInventoryDiffers()
     {
-        var playerOneShuffle = Snapshot(Seat("forge-player-1", Cards("Island", 40))) with
+        var expected = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal)
         {
-            Reason = "GameEventShuffle"
+            ["forge-player-1"] = ForgeDeckInventoryValidator.BuildInventory([
+                new("Treasure Cruise", 2), new("Island", 38)]),
         };
-        var gameStarted = playerOneShuffle with { Reason = "GameEventGameStarted" };
+        var cards = new[]
+        {
+            Card("Treasure Cruise", 1),
+            Card("Island", 2),
+            Card("Island", 3),
+            Card("Unexpected Card", 4),
+        };
+        var seat = Seat("forge-player-1", new GameZoneSnapshotDto("library", cards));
 
-        Assert.False(ForgeDeckInventoryValidator.IsInitialDeckInventorySnapshot(playerOneShuffle));
-        Assert.True(ForgeDeckInventoryValidator.IsInitialDeckInventorySnapshot(gameStarted));
+        var result = ForgeDeckInventoryValidator.Validate(expected, Snapshot(seat));
+
+        Assert.False(result.IsValid);
+        Assert.Equal(1, result.MissingByCard!["Treasure Cruise"]);
+        Assert.Equal(36, result.MissingByCard!["Island"]);
+        Assert.Equal(1, result.ExcessByCard!["Unexpected Card"]);
+        Assert.Contains("missing=[Island x36, Treasure Cruise x1]", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("excess=[Unexpected Card x1]", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     private static GameSnapshotDto Snapshot(params GameSeatSnapshotDto[] seats) =>
