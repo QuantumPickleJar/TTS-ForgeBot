@@ -918,6 +918,28 @@ function BridgeEventDrainQueueState()
             wrongSeatCount = 0
         }
     end
+    local libraryMapping = {}
+    local aggregateExpected = 0
+    local aggregateVerified = 0
+    local aggregateMissing = 0
+    local aggregateDuplicate = 0
+    for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+        local entry = (BridgeState.bootstrapLibraryMappingBySeatId or {})[seatId] or {}
+        local expected = tonumber(entry.expectedLibraryMappings or 0) or 0
+        local verified = tonumber(entry.verifiedLibraryMappings or 0) or 0
+        local missing = tonumber(entry.missingLibraryMappings or math.max(expected - verified, 0)) or 0
+        local duplicate = tonumber(entry.duplicateLibraryMappings or 0) or 0
+        aggregateExpected = aggregateExpected + expected
+        aggregateVerified = aggregateVerified + verified
+        aggregateMissing = aggregateMissing + missing
+        aggregateDuplicate = aggregateDuplicate + duplicate
+        libraryMapping[seatId] = {
+            expectedLibraryMappings = expected,
+            verifiedLibraryMappings = verified,
+            missingLibraryMappings = missing,
+            duplicateLibraryMappings = duplicate
+        }
+    end
     return {
         headSequence = head and head.sequence or nil,
         headKind = head and head.kind or nil,
@@ -1013,6 +1035,11 @@ function BridgeEventDrainQueueState()
         lastSnapshotReconcileFailureStage = BridgeState.lastSnapshotReconcileFailureStage,
         lastSnapshotReconcileFailureReason = BridgeState.lastSnapshotReconcileFailureReason,
         snapshotPhysicalZoneOwnership = BridgeDiagnosticSnapshot(zoneOwnership),
+        bootstrapLibraryMappings = BridgeDiagnosticSnapshot(libraryMapping),
+        expectedLibraryMappings = aggregateExpected,
+        verifiedLibraryMappings = aggregateVerified,
+        missingLibraryMappings = aggregateMissing,
+        duplicateLibraryMappings = aggregateDuplicate,
         lastSnapshotRepresentationFailure = BridgeDiagnosticSnapshot(BridgeState.lastSnapshotRepresentationFailure)
     }
 end
@@ -2312,6 +2339,7 @@ BridgeState = {
     -- Native Deck contained GUIDs are ephemeral TTS implementation details.
     -- Forge instance identity in a deck-like zone is this ordered ledger.
     zoneLedgerBySeatAndZone = {},
+    bootstrapLibraryMappingBySeatId = {},
     cardNameByInstanceId = {},
     canonicalCardNameByGuid = {},
     encoderIdentityLoggedGuids = {},
@@ -2841,6 +2869,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.physicalInstanceIdByGuid = {}
     BridgeState.physicalContainerByInstanceId = {}
     BridgeState.physicalContainedInstanceIdByGuid = {}
+    BridgeState.bootstrapLibraryMappingBySeatId = {}
     BridgeState.physicalSeatByGuid = {}
     BridgeState.physicalZoneByGuid = {}
     BridgeState.cardNameByInstanceId = {}

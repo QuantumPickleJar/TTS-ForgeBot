@@ -1645,9 +1645,11 @@ function BridgeRecordBootstrapStage(stage, state, detail)
         ["snapshot-http"] = "WAITING_FOR_FORGE",
         ["seat-forge-player-1-assets"] = "RECONCILING_HUMAN_SNAPSHOT",
         ["seat-forge-player-1-materialization"] = "RECONCILING_HUMAN_SNAPSHOT",
+        ["seat-forge-player-1-library-binding"] = "RECONCILING_HUMAN_LIBRARY",
         ["seat-forge-player-1-library-alignment"] = "RECONCILING_HUMAN_LIBRARY",
         ["seat-forge-player-2-assets"] = "RECONCILING_AI_SNAPSHOT",
         ["seat-forge-player-2-materialization"] = "RECONCILING_AI_SNAPSHOT",
+        ["seat-forge-player-2-library-binding"] = "RECONCILING_AI_LIBRARY",
         ["seat-forge-player-2-library-alignment"] = "RECONCILING_AI_LIBRARY",
         ["hand-ownership"] = "VERIFYING_PHYSICAL_SNAPSHOT",
         ["physical-validation"] = "VERIFYING_PHYSICAL_SNAPSHOT",
@@ -2879,89 +2881,156 @@ function BridgeSnapshotLibraryOrderAlreadyMatches(seatSnapshot)
     return true
 end
 
-function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
-    local libraryCards = {}
+local function BridgeBuildAuthoritativeLibraryCards(seatSnapshot)
+    local cards = {}
     for _, zone in ipairs(seatSnapshot.zones or {}) do
         if zone.name == "library" then
-            for _, card in ipairs(zone.cards or {}) do table.insert(libraryCards, card) end
+            for _, card in ipairs(zone.cards or {}) do table.insert(cards, card) end
             break
         end
     end
-    if #libraryCards == 0 then callback(true, nil); return end
-    table.sort(libraryCards, function(left, right)
-        return (tonumber(left.zonePosition or 0) or 0) < (tonumber(right.zonePosition or 0) or 0)
+    table.sort(cards, function(left, right)
+        local leftPos = tonumber(left.zonePosition or 0) or 0
+        local rightPos = tonumber(right.zonePosition or 0) or 0
+        if leftPos == rightPos then
+            return tostring(left.cardInstanceId or "") < tostring(right.cardInstanceId or "")
+        end
+        return leftPos < rightPos
     end)
+    return cards
+end
 
-    local deck, _, deckError = BridgeResolveSeatLibraryDeck(seatSnapshot.seatId)
+function BridgeBindLibraryMappingsForSnapshot(seatSnapshot, callback)
+    local seatId = seatSnapshot and seatSnapshot.seatId or nil
+    if seatId == nil then callback(false, "library binding snapshot has no seat id"); return end
+    local libraryCards = BridgeBuildAuthoritativeLibraryCards(seatSnapshot)
+    BridgeState.bootstrapLibraryMappingBySeatId = BridgeState.bootstrapLibraryMappingBySeatId or {}
+    local stats = {
+        expectedLibraryMappings = #libraryCards,
+        verifiedLibraryMappings = 0,
+        missingLibraryMappings = 0,
+        duplicateLibraryMappings = 0
+    }
+    BridgeState.bootstrapLibraryMappingBySeatId[seatId] = stats
+    if #libraryCards == 0 then callback(true, nil); return end
+
+    local deck, _, deckError = BridgeResolveSeatLibraryDeck(seatId)
     if deck == nil then
-        callback(false, "library order alignment could not resolve library: " .. tostring(deckError))
+        stats.missingLibraryMappings = #libraryCards
+        callback(false, "library binding could not resolve library: " .. tostring(deckError))
         return
     end
-    if deck.tag == "Card" then
-        if #libraryCards ~= 1 or not BridgeCardNameMatches(deck.getName(), libraryCards[1].cardName) then
-            callback(false, "library order alignment found a single-card library that disagrees with Forge")
-            return
-        end
-        callback(true, nil)
+    local deckGuid = BridgeSafeObjectGuid(deck)
+    if deckGuid == nil then
+        stats.missingLibraryMappings = #libraryCards
+        callback(false, "library binding resolved deck with no GUID")
         return
     end
-    -- Mulligan recovery often arrives after the final replacement hand and
-    -- library are already physically correct. Avoid re-extracting every
-    -- hidden library card in that case; a mismatch still takes the full
-    -- authoritative repair path below.
-    if BridgeSnapshotLibraryOrderAlreadyMatches(seatSnapshot) then
-        callback(true, nil)
-        return
-    end
+
     local entries = BridgeLibraryEntries(deck)
-    if entries == nil or #entries ~= #libraryCards then
-        callback(false, string.format("library order alignment count mismatch: physical=%d authoritative=%d",
-            #(entries or {}), #libraryCards))
+    if entries == nil then
+        stats.missingLibraryMappings = #libraryCards
+        callback(false, "library binding could not inspect library contents")
         return
     end
-    local seat = BRIDGE_SEATS[seatSnapshot.seatId]
-    local libraryZone = seat and BridgeGetLiveObjectByGuid(seat.libraryZoneGuid) or nil
-    if libraryZone == nil then
-        callback(false, "library order alignment has no library zone")
+    if #entries ~= #libraryCards then
+        stats.missingLibraryMappings = #libraryCards
+        callback(false, string.format("library binding count mismatch: physical=%d authoritative=%d",
+            #entries, #libraryCards))
         return
     end
-    local position = libraryZone.getPosition()
-    local nextIndex = #libraryCards
-    local function reinsertNext()
-        if nextIndex < 1 then callback(true, nil); return end
-        local expected = libraryCards[nextIndex]
-        local liveDeck, _, liveError = BridgeResolveSeatLibraryDeck(seatSnapshot.seatId)
-        if liveDeck == nil then
-            callback(false, "library order alignment lost physical library: " .. tostring(liveError))
+
+    local authoritativeByName = {}
+    for _, card in ipairs(libraryCards) do
+        local normalized = BridgeNormalizeCardName(card.cardName)
+        authoritativeByName[normalized] = authoritativeByName[normalized] or {}
+        table.insert(authoritativeByName[normalized], card)
+    end
+
+    local physicalByName = {}
+    local seenEntryGuid = {}
+    for _, entry in ipairs(entries) do
+        local entryGuid = entry and (entry.guid or entry.GUID) or nil
+        if entryGuid == nil then
+            stats.missingLibraryMappings = #libraryCards
+            callback(false, "library binding encountered a contained entry without GUID")
             return
         end
-        BridgeTakeCardFromDeckByIdentity(liveDeck, expected.cardName,
-            {position.x, position.y + 2, position.z}, false,
-            function(taken, takeError)
-                if taken == nil then
-                    callback(false, "library order alignment could not take " .. tostring(expected.cardName)
-                        .. ": " .. tostring(takeError))
-                    return
-                end
-                local target, _, targetError = BridgeResolveSeatLibraryDeck(seatSnapshot.seatId)
-                if target == nil then
-                    callback(false, "library order alignment lost remaining deck: " .. tostring(targetError))
-                    return
-                end
-                local inserted = BridgeSafeObjectCall(target, function(current)
-                    current.setLock(false)
-                    BridgeStartupPerfCounter("deckPutObjectCalls", 1)
-                    current.putObject(taken, 0)
-                end)
-                if not inserted then
-                    callback(false, "library order alignment could not reinsert " .. tostring(expected.cardName))
-                    return
-                end
-                nextIndex = nextIndex - 1
-                BridgeWaitFrames(reinsertNext, 2)
-            end)
+        if seenEntryGuid[entryGuid] then
+            stats.duplicateLibraryMappings = stats.duplicateLibraryMappings + 1
+            callback(false, "library binding encountered duplicate contained GUID " .. tostring(entryGuid))
+            return
+        end
+        seenEntryGuid[entryGuid] = true
+        local normalized = BridgeNormalizeCardName(entry.nickname or entry.name or entry.Name)
+        physicalByName[normalized] = physicalByName[normalized] or {}
+        table.insert(physicalByName[normalized], {
+            guid = entryGuid,
+            index = tonumber(entry.index or -1) or -1
+        })
     end
-    reinsertNext()
+
+    for normalized, expectedCards in pairs(authoritativeByName) do
+        local physicalEntries = physicalByName[normalized] or {}
+        table.sort(expectedCards, function(left, right)
+            local leftPos = tonumber(left.zonePosition or 0) or 0
+            local rightPos = tonumber(right.zonePosition or 0) or 0
+            if leftPos == rightPos then
+                return tostring(left.cardInstanceId or "") < tostring(right.cardInstanceId or "")
+            end
+            return leftPos < rightPos
+        end)
+        table.sort(physicalEntries, function(left, right)
+            local leftIndex = tonumber(left.index or -1) or -1
+            local rightIndex = tonumber(right.index or -1) or -1
+            if leftIndex == rightIndex then
+                return tostring(left.guid or "") < tostring(right.guid or "")
+            end
+            return leftIndex < rightIndex
+        end)
+        if #physicalEntries ~= #expectedCards then
+            stats.missingLibraryMappings = stats.missingLibraryMappings + math.abs(#expectedCards - #physicalEntries)
+            callback(false, string.format("library binding mismatch for '%s': physical=%d authoritative=%d",
+                tostring(expectedCards[1] and expectedCards[1].cardName or normalized),
+                #physicalEntries, #expectedCards))
+            return
+        end
+        for index, card in ipairs(expectedCards) do
+            local entry = physicalEntries[index]
+            if entry == nil or entry.guid == nil then
+                stats.missingLibraryMappings = stats.missingLibraryMappings + 1
+                callback(false, "library binding missing contained entry for " .. tostring(card.cardInstanceId))
+                return
+            end
+            local recorded = BridgeRecordContainedCardIdentity(
+                card.cardInstanceId,
+                deckGuid,
+                entry.guid,
+                seatId,
+                "library",
+                card.cardName)
+            if not recorded then
+                stats.duplicateLibraryMappings = stats.duplicateLibraryMappings + 1
+                callback(false, "library binding rejected contained identity for " .. tostring(card.cardInstanceId))
+                return
+            end
+            stats.verifiedLibraryMappings = stats.verifiedLibraryMappings + 1
+        end
+    end
+
+    stats.missingLibraryMappings = math.max(stats.expectedLibraryMappings - stats.verifiedLibraryMappings, 0)
+    if stats.missingLibraryMappings > 0 then
+        callback(false, string.format("library binding incomplete: expected=%d verified=%d missing=%d",
+            stats.expectedLibraryMappings, stats.verifiedLibraryMappings, stats.missingLibraryMappings))
+        return
+    end
+    callback(true, nil)
+end
+
+-- Compatibility shim retained for manual diagnostics. Runtime startup now uses
+-- orderless exact binding via BridgeBindLibraryMappingsForSnapshot.
+function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
+    BridgeBindLibraryMappingsForSnapshot(seatSnapshot, callback)
 end
 
 function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback, markPhysicalReady)
