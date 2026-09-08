@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 24912f163f0638a589ea1ba49a009a89224e3d2d27679eed4cfd465814d14836
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "24912f163f0638a589ea1ba49a009a89224e3d2d27679eed4cfd465814d14836"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 298abe54b0d5786a3cd432cd1fca58f87291450cd4679dac8c9f56fb650b28bb
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "298abe54b0d5786a3cd432cd1fca58f87291450cd4679dac8c9f56fb650b28bb"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -5896,6 +5896,8 @@ function BridgeStartMatchPreflight(humanDeck, aiDeck)
     return true, nil
 end
 
+local BRIDGE_DECK_VALIDATION_REQUEST_TIMEOUT_SECONDS = 20.0
+
 -- TTS's imported library piles are the deck chooser.  We send printed
 -- identities and explicit format provenance so Bridge-side validation never
 -- falls back to an implicit format assumption.
@@ -5940,6 +5942,20 @@ function BridgeConfigureDecks(callback, attempt)
     local allowMinimumOverride = BridgeState.allowDeckMinimumOverride == true
     BridgeSetupStage("VALIDATING_DECKS", "posting TTS deck inventory")
     BridgeLog("[Bridge] posting TTS deck inventory to /api/v1/decks")
+    local completed = false
+    local function complete(ok, body, err, request)
+        if completed then return end
+        completed = true
+        callback(ok, body, err, request)
+    end
+    BridgeWaitTime(function()
+        if completed then return end
+        BridgeSetupTrace("DECK_VALIDATION_TIMEOUT", "path=/api/v1/decks timeoutSeconds="
+            .. tostring(BRIDGE_DECK_VALIDATION_REQUEST_TIMEOUT_SECONDS))
+        complete(false,
+            {errorCode = "deck_validation_timeout", message = "Timed out waiting for /api/v1/decks response."},
+            "timed out waiting for /api/v1/decks response")
+    end, BRIDGE_DECK_VALIDATION_REQUEST_TIMEOUT_SECONDS)
     BridgeHttp.requestJson("POST", "/api/v1/decks", {
         seats = seats,
         format = selectedFormat,
@@ -5949,7 +5965,7 @@ function BridgeConfigureDecks(callback, attempt)
         BridgeSetupTrace("DECK_VALIDATION_RESULT", "ok=" .. tostring(ok) .. " error=" .. tostring(err or "none"))
         if ok then BridgeLog("[Bridge] TTS deck inventory accepted by bridge")
         else BridgeLog("[Bridge] TTS deck inventory rejected: " .. tostring(err) .. " body=" .. tostring(body and JSON.encode(body) or "(empty)")) end
-        callback(ok, body, err, request)
+        complete(ok, body, err, request)
     end)
 end
 
@@ -8680,6 +8696,9 @@ function BridgeDoPressStartMatch(playerColor, altClick)
             if body.adapterState == "starting" then
                 BridgeSetSetupBusy(true, "Forge is still initializing; wait for startup to finish before starting a new match.")
                 BridgeSetStatus("FORGE INITIALIZING", "Loading Forge card database")
+                BridgeWaitForForgeInitialization(1, function()
+                    BridgeSetSetupBusy(false)
+                end)
                 return
             end
             local active = body.sessionId ~= nil and body.sessionId ~= "session-not-started"

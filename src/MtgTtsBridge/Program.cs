@@ -1,4 +1,6 @@
 using System.Drawing;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Windows.Forms;
 using MtgTtsBridge;
 using MtgTtsBridge.Contracts.Actions;
@@ -235,8 +237,31 @@ app.MapGet("/api/v1/decision", async (IForgeAdapter adapter, DiagnosticTelemetry
 	return Results.Ok(state.CurrentDecision);
 });
 
-app.MapPost("/api/v1/diagnostics/report", async (DiagnosticReportRequestDto request, DiagnosticReportCollector collector, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
+app.MapPost("/api/v1/diagnostics/report", async (HttpRequest httpRequest, DiagnosticReportCollector collector, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
 {
+	DiagnosticReportRequestDto request;
+	try
+	{
+		var payload = await httpRequest.ReadFromJsonAsync<JsonNode>(cancellationToken);
+		var root = payload as JsonObject;
+		if (root is not null)
+			NormalizeSnapshotPhysicalZoneOwnership(root);
+		request = root?.Deserialize<DiagnosticReportRequestDto>(new JsonSerializerOptions(JsonSerializerDefaults.Web))
+			?? new DiagnosticReportRequestDto();
+	}
+	catch (JsonException exception)
+	{
+		telemetry.RecordProtocol("bridge_to_tts", "/api/v1/diagnostics/report", 400, payload: new
+		{
+			code = "invalid_diagnostic_report_payload",
+			exception.Message
+		});
+		return Results.BadRequest(new ErrorResponseDto(
+			"invalid_diagnostic_report_payload",
+			"Diagnostic report payload could not be parsed as JSON.",
+			null));
+	}
+
 	telemetry.RecordProtocol("tts_to_bridge", "/api/v1/diagnostics/report", sessionId: request.SessionId, decisionId: request.DecisionId, clientRuntimeId: request.ClientRuntimeId, clientRevision: request.ClientRevision, payload: request);
 	var result = await collector.CaptureAsync(request, cancellationToken);
 	if (!result.Success)
@@ -247,6 +272,27 @@ app.MapPost("/api/v1/diagnostics/report", async (DiagnosticReportRequestDto requ
 	telemetry.RecordProtocol("bridge_to_tts", "/api/v1/diagnostics/report", 200, request.SessionId, request.DecisionId, clientRuntimeId: request.ClientRuntimeId, clientRevision: request.ClientRevision, payload: new { result.ReportId, result.ReportPath });
 	return Results.Ok(new DiagnosticReportResponseDto(true, result.ReportId, result.ReportPath!, result.Message));
 });
+
+static void NormalizeSnapshotPhysicalZoneOwnership(JsonObject root)
+{
+	if (root["eventDrainDiagnostics"] is not JsonObject diagnostics)
+		return;
+
+	if (diagnostics["snapshotPhysicalZoneOwnership"] is JsonObject)
+		return;
+
+	diagnostics["snapshotPhysicalZoneOwnership"] = DefaultSnapshotPhysicalZoneOwnership();
+}
+
+static JsonObject DefaultSnapshotPhysicalZoneOwnership() => new()
+{
+	["expectedHandCount"] = 0,
+	["physicallyVerifiedHandCount"] = 0,
+	["internallyMappedHandCount"] = 0,
+	["repairedHandCount"] = 0,
+	["nilZoneCount"] = 0,
+	["wrongSeatCount"] = 0
+};
 
 // Bridge-owned emergency capture. This endpoint intentionally requires no
 // TTS-supplied payload or callback, so an external watchdog can capture a ZIP

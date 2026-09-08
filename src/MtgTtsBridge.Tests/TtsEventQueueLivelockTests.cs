@@ -2077,6 +2077,94 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void StartMatch_WhenForgeIsInitializing_StartsInitializationWaitAndReleasesSetupBusy()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.setupBusy = false
+            BridgeState.eventSessionId = nil
+            waitCalls = 0
+            startSessionCalls = 0
+            statusHeadline = nil
+            function BridgeGuardLifecycleCommand(_) return true end
+            function BridgeSetSetupBusy(value, detail) BridgeState.setupBusy = value end
+            function BridgeSetupStage(stage, detail) end
+            function BridgeTraceStart(marker, detail) end
+            function BridgeRunTraced(_, callback) callback() end
+            function BridgeGetHealth(callback)
+                callback(true, {adapterState='starting', sessionId='session-not-started'}, nil)
+            end
+            function BridgeSetStatus(headline, detail) statusHeadline = headline end
+            function BridgeWaitForForgeInitialization(attempt, done)
+                waitCalls = waitCalls + 1
+                done()
+            end
+            function BridgeShowError(message) startupError = message end
+            function BridgeStartSessionIfNone(done)
+                startSessionCalls = startSessionCalls + 1
+                done()
+            end
+            BridgeDoPressStartMatch(nil, false)
+        ");
+
+        Assert.Equal(1, lua.Globals.Get("waitCalls").Number);
+        Assert.Equal("FORGE INITIALIZING", lua.Globals.Get("statusHeadline").String);
+        Assert.False(lua.Globals.Get("BridgeState").Table.Get("setupBusy").Boolean);
+        Assert.Equal(0, lua.Globals.Get("startSessionCalls").Number);
+    }
+
+    [Fact]
+    public void ConfigureDecks_TimeoutCompletesCallbackWhenDeckValidationRequestStalls()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.selectedFormat = 'limited'
+            BridgeState.selectedFormatProvenance = 'tts-default-limited'
+            BridgeState.allowDeckMinimumOverride = false
+            timeoutCallback = nil
+            callbackCount = 0
+            callbackOk = nil
+            callbackErr = nil
+            callbackMessage = nil
+
+            function BridgeSetupTrace(marker, detail) end
+            function BridgeSetupStage(stage, detail) end
+            function BridgeLog(message) end
+            function BridgeDeckMinimumForFormat(format) return 40 end
+            function BridgeNormalizedDeckFormat() return 'limited' end
+            function BridgeResolveSeatLibraryDeck(seatId)
+                return { tag = 'Deck', getGUID = function() return seatId .. '-deck' end }, { 'candidate' }, nil
+            end
+            function BridgeCollectSeatStartingInventory(deck, seatId)
+                return {['Island'] = 40}, 40, 40, 0, { unreadableEntries = {}, rawLibraryCount = 40, rawHandCount = 0 }
+            end
+            function BridgeSafeObjectGuid(deck)
+                return deck and deck.getGUID and deck.getGUID() or nil
+            end
+            function BridgeWaitTime(callback, delay)
+                timeoutCallback = callback
+            end
+            BridgeHttp.requestJson = function(method, path, payload, callback)
+                -- Intentionally never invoke callback to simulate dropped WebRequest callback.
+            end
+
+            BridgeConfigureDecks(function(ok, body, err)
+                callbackCount = callbackCount + 1
+                callbackOk = ok
+                callbackErr = err
+                callbackMessage = body and body.message or nil
+            end)
+
+            if timeoutCallback ~= nil then timeoutCallback() end
+        ");
+
+        Assert.Equal(1, lua.Globals.Get("callbackCount").Number);
+        Assert.False(lua.Globals.Get("callbackOk").Boolean);
+        Assert.Contains("timed out", lua.Globals.Get("callbackErr").String, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Timed out waiting for /api/v1/decks response", lua.Globals.Get("callbackMessage").String, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void ForgeMutationGroupComparisonUsesSharedPositiveForgeSequenceOnly()
     {
         var lua = NewQueueProbe();

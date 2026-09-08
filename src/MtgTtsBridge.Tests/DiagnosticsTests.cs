@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using MtgTtsBridge.Contracts.Actions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -509,12 +510,36 @@ public sealed class DiagnosticsTests
     {
         var request = JsonSerializer.Deserialize<DiagnosticReportRequestDto>("""
             {"eventDrainDiagnostics":{"snapshotPhysicalZoneOwnership":[]}}
-            """);
+            """, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
         var ownership = Assert.IsType<DiagnosticPhysicalZoneOwnershipDto>(
             request!.EventDrainDiagnostics!.SnapshotPhysicalZoneOwnership);
         Assert.Equal(0, ownership.ExpectedHandCount);
         Assert.Equal(0, ownership.NilZoneCount);
+    }
+
+    [Fact]
+    public async Task DiagnosticEndpoint_NormalizesMalformedSnapshotZoneOwnershipShape()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+        var payload = """
+            {
+              "summary": "shape regression",
+              "eventDrainDiagnostics": {
+                "snapshotPhysicalZoneOwnership": 123
+              }
+            }
+            """;
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        var response = await client.PostAsync("/api/v1/diagnostics/report", content);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<DiagnosticReportResponseDto>();
+        Assert.NotNull(body);
+        Assert.True(body!.Success);
+        Assert.True(File.Exists(body.ReportPath));
     }
 
     [Fact]
