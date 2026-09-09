@@ -1688,6 +1688,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.renderedDecisionPresentationKey = nil
     BridgeState.renderedDecisionPhysicalGeneration = nil
     BridgeState.eventSessionId = sessionId
+    if BridgeRetireStaleTerminalRecoveryError ~= nil then
+        BridgeRetireStaleTerminalRecoveryError("session-prepare")
+    end
     BridgeState.hudResyncPending = false
     -- This is the ownership barrier for all physical CardInstance mappings.
     -- A session id can be announced before bootstrap enters this function;
@@ -3272,6 +3275,7 @@ function BridgeBuildEventMutationTransaction(queue)
         events = events,
         state = "PREPARING",
         queue = queue,
+        pendingPhysicalEvents = {},
         token = tostring(BridgeState.eventSessionId) .. ":" .. tostring(BridgeState.eventSessionGeneration)
             .. ":" .. tostring(BridgeState.physicalTransactionGeneration or 0) .. ":" .. tostring(first.sequence),
         startedAt = os.clock()
@@ -3413,10 +3417,38 @@ function BridgeProcessEventQueue()
             BridgeAbortEventMutationTransaction(tx, "transaction event array missing index " .. tostring(index))
             return
         end
+        -- Every event receives one transaction-owned completion callback.  An
+        -- async adapter (library extraction, graveyard settlement, hand
+        -- movement) completes it through the serialized physical queue; a
+        -- synchronous/idempotent adapter completes it on return.  Cursor
+        -- commit is fenced on this owner, not merely on a visible card.
+        event._bridgePhysicalCompletionPending = false
+        event._bridgePhysicalCompletion = function(ok, reason)
+            if not BridgeEventMutationIsCurrent(tx) then return end
+            if tx.pendingPhysicalEvents[event.sequence] == nil then return end
+            tx.pendingPhysicalEvents[event.sequence] = nil
+            if not ok then
+                tx.physicalCompletionError = tostring(reason or "physical event completion failed")
+                BridgeAbortEventMutationTransaction(tx, tx.physicalCompletionError)
+                return
+            end
+            BridgeRecordPhysicalMutationProgress(tx, "EVENT_PHYSICAL_COMPLETE", tostring(event.sequence))
+            BridgeRecordPhysicalMutationJournal({
+                token = tx.token, forgeSequence = tx.forgeSequence,
+                stage = "EVENT_PHYSICAL_COMPLETE", eventSequence = event.sequence,
+                cardInstanceId = event.cardInstanceId, reason = reason
+            })
+        end
+        tx.pendingPhysicalEvents[event.sequence] = true
+        BridgeState.eventMutationApplyingEvent = event
         local ok, applied, _, err = pcall(BridgeApplyAuthoritativeEvent, event)
+        BridgeState.eventMutationApplyingEvent = nil
         if not ok or not applied then
             BridgeAbortEventMutationTransaction(tx, err or applied or "apply failed")
             return
+        end
+        if event._bridgePhysicalCompletionPending ~= true then
+            event._bridgePhysicalCompletion(true, nil)
         end
     end
     -- Async library extraction/Deck settlement callbacks are fenced by the
@@ -3446,6 +3478,11 @@ function BridgeProcessEventQueue()
         local mutationReady, mutationReason = BridgeMutationPhysicalBatchesReady(tx)
         if not mutationReady then
             BridgeState.resyncLastBlockingPredicate = "mutation-batch-pending:" .. tostring(mutationReason)
+            BridgeWaitFrames(awaitPhysicalSettlement, 1)
+            return
+        end
+        if next(tx.pendingPhysicalEvents or {}) ~= nil then
+            BridgeState.resyncLastBlockingPredicate = "event-physical-completion-pending"
             BridgeWaitFrames(awaitPhysicalSettlement, 1)
             return
         end
@@ -5061,7 +5098,8 @@ local function BridgeApplyStructuredCardMoveCore(event)
                 end
                 verifyHandMembership()
             end)
-        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName})
+        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName,
+            event = event, physicalCompletion = event._bridgePhysicalCompletion})
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
         return true, nil
     end
@@ -5100,7 +5138,8 @@ local function BridgeApplyStructuredCardMoveCore(event)
                     if not moved then BridgeStopOnDesync(libraryDrawError(moveError)) end
                     BridgeWaitFrames(complete, 1)
                 end)
-        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName})
+        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName,
+            event = event, physicalCompletion = event._bridgePhysicalCompletion})
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
         return true, nil
     end
@@ -5175,7 +5214,8 @@ local function BridgeApplyStructuredCardMoveCore(event)
                     -- Completion is owned by the asynchronous settlement
                     -- callback above; no synchronous success is assumed.
                 end)
-        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName})
+        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName,
+            event = event, physicalCompletion = event._bridgePhysicalCompletion})
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
         return true, nil
     end

@@ -359,7 +359,8 @@ function BridgeDiagnosticPresentedResult()
         outcome = result and result.outcome or nil,
         reason = result and result.reason or nil,
         presentationGeneration = result and result.presentationGeneration or nil,
-        terminalRecoveryError = terminal ~= nil
+        terminalRecoveryError = terminal ~= nil,
+        terminalRecovery = terminal and BridgeDiagnosticSnapshot(terminal) or nil
     }
 end
 
@@ -1017,6 +1018,7 @@ function BridgeEventDrainQueueState()
         resyncInFlight = BridgeState.resyncInFlight == true,
         bootstrapping = BridgeState.bootstrapping == true,
         terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
+        terminalRecovery = BridgeDiagnosticSnapshot(BridgeCurrentTerminalRecoveryError() or {}),
         resyncToken = BridgeState.resyncToken,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,
@@ -1448,6 +1450,31 @@ function BridgeDiagnosticSnapshot(value, active)
     return copy
 end
 
+-- Terminal recovery failures belong to the authoritative session/generation
+-- which produced them.  Keep the raw record for diagnostics, but never let a
+-- stale callback make a replacement session look terminal.
+function BridgeRetireStaleTerminalRecoveryError(reason)
+    local error = BridgeState.terminalRecoveryError
+    if error == nil then return false end
+    local session = BridgeState.eventSessionId
+    local generation = BridgeState.eventSessionGeneration
+    local ownerSession = error.sessionId or error.sourceSessionId
+    local ownerGeneration = error.sessionGeneration
+    local stale = (ownerSession ~= nil and session ~= nil and ownerSession ~= session)
+        or (ownerGeneration ~= nil and generation ~= nil and ownerGeneration ~= generation)
+    if stale then
+        BridgeState.terminalRecoveryErrorRetired = {
+            kind = error.kind,
+            sessionId = ownerSession,
+            sessionGeneration = ownerGeneration,
+            reason = reason or "replacement-session"
+        }
+        BridgeState.terminalRecoveryError = nil
+        return true
+    end
+    return false
+end
+
 -- ============================================================
 -- H0 EMBODIMENT RECONCILIATION OWNERSHIP
 --
@@ -1703,7 +1730,7 @@ function BridgeObservePhysicalState(desired)
 end
 
 function BridgePlanEmbodimentReconciliation(desired, observed)
-    local plan = {operations = {}, affectedZones = {}, missing = {}, misplaced = {}, ambiguous = {}, unsettledZones = {}}
+    local plan = {operations = {}, affectedZones = {}, missing = {}, misplaced = {}, ambiguous = {}, unsettledZones = {}, exactMoves = {}}
     if desired == nil then
         table.insert(plan.operations, {type = "FETCH_AND_RECONCILE_SNAPSHOT",
             precondition = "one current embodiment owner",
@@ -1731,6 +1758,20 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
             or tostring(physical.seatId or "") ~= tostring(card.seatId) then
             table.insert(plan.misplaced, instanceId)
             plan.affectedZones[card.seatId .. ":" .. card.zone] = true
+            -- A count mismatch is a physical wrong-zone condition, not a
+            -- library identity observation.  Preserve the exact Forge
+            -- instance so recovery can perform one safe extraction instead
+            -- of repeatedly rebinding an unchanged 33-card Deck.
+            if tostring(card.zone) == "hand" and tostring(physical.zone) == "library"
+                and tostring(physical.seatId or card.seatId) == tostring(card.seatId) then
+                table.insert(plan.exactMoves, {
+                    cardInstanceId = instanceId,
+                    seatId = card.seatId,
+                    sourceZone = "library",
+                    destinationZone = "hand",
+                    cardName = card.cardName
+                })
+            end
         end
     end
     if #plan.ambiguous > 0 then
@@ -1749,6 +1790,23 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
         table.sort(localZones, function(left, right)
             return tostring(left.seatId) .. tostring(left.zone) < tostring(right.seatId) .. tostring(right.zone)
         end)
+        table.sort(plan.exactMoves, function(left, right)
+            return tostring(left.seatId) .. ":" .. tostring(left.cardInstanceId)
+                < tostring(right.seatId) .. ":" .. tostring(right.cardInstanceId)
+        end)
+        for _, move in ipairs(plan.exactMoves) do
+            local exactOperation = {
+                type = "MOVE_EXACT_LIBRARY_TO_HAND",
+                scope = "SEAT_HAND", seatId = move.seatId, zone = "hand",
+                cardInstanceId = move.cardInstanceId, cardName = move.cardName,
+                sourceZone = "library", destinationZone = "hand",
+                precondition = "exact mapped Forge instance is physically contained in this seat library",
+                nativeAction = "BridgeTakeContainedLibraryCardByIdentity",
+                postcondition = "exact Forge instance is observed in the selected seat hand"}
+            -- Append exact repair before the observation-only operations so
+            -- the live pump cannot spend a replan on a non-mutating bind.
+            table.insert(plan.operations, exactOperation)
+        end
         for _, localZone in ipairs(localZones) do
             table.insert(plan.operations, {
                 type = localZone.zone == "library" and "REOBSERVE_SEAT_LIBRARY" or "REOBSERVE_SEAT_HAND",
@@ -1766,6 +1824,54 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
         end
     end
     return plan
+end
+
+-- Recovery-only exact wrong-zone repair.  This is deliberately separate from
+-- normal event application: the authoritative snapshot already owns the
+-- transition, and this operation merely brings one proven physical instance
+-- to that snapshot's destination before final verification.
+function BridgeRecoverExactLibraryCardToHand(seatId, cardInstanceId, expectedName, callback)
+    local hand, handError = BridgeTryGetSeatHandTransform(seatId)
+    if hand == nil then callback(false, handError or "seat hand is unavailable"); return end
+    local sessionId = BridgeState.eventSessionId
+    local generation = BridgeState.physicalTransactionGeneration or 0
+    if BridgeTakeContainedLibraryCardByIdentity == nil then
+        callback(false, "exact library extraction adapter unavailable"); return
+    end
+    BridgeTakeContainedLibraryCardByIdentity(cardInstanceId, hand.position, true, function(card, err)
+        if sessionId ~= BridgeState.eventSessionId
+            or generation ~= (BridgeState.physicalTransactionGeneration or 0) then
+            callback(false, "stale recovery extraction callback")
+            return
+        end
+        if card == nil or not BridgeObjectIsUsable(card) then
+            callback(false, err or "exact recovery extraction returned no usable Card")
+            return
+        end
+        local actualName = BridgeNormalizeCardName(BridgeSafeObjectName(card))
+        if actualName ~= BridgeNormalizeCardName(expectedName) then
+            callback(false, "exact recovery extraction returned wrong card identity")
+            return
+        end
+        local guid = BridgeSafeObjectGuid(card)
+        if guid == nil then callback(false, "exact recovery extraction returned Card without GUID"); return end
+        BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, "hand")
+        card.use_hands = true
+        local retries = 0
+        local function verifyHand()
+            retries = retries + 1
+            local handObjects = BridgeTryGetSeatHandObjects ~= nil and BridgeTryGetSeatHandObjects(seatId) or nil
+            for _, handCard in ipairs(handObjects or {}) do
+                if BridgeSafeObjectGuid(handCard) == guid then callback(true); return end
+            end
+            if retries < 5 and BridgeWaitFrames ~= nil then
+                BridgeWaitFrames(verifyHand, 1)
+            else
+                callback(false, "exact recovery card did not settle in the selected hand")
+            end
+        end
+        verifyHand()
+    end)
 end
 
 -- A successful local binder is not progress if the exact same physical
@@ -2268,6 +2374,27 @@ function BridgePumpEmbodimentTransaction()
                     end
                 end)
             elseif operation.scope == "SEAT_HAND" then
+                if operation.type == "MOVE_EXACT_LIBRARY_TO_HAND" then
+                    local operationToken = operation.token
+                    BridgeRecoverExactLibraryCardToHand(operation.seatId, operation.cardInstanceId,
+                        operation.cardName, function(moved, moveError)
+                        if not BridgeEmbodimentTransactionIsCurrent(tx)
+                            or tx.currentOperation ~= operation
+                            or tx.currentOperation.token ~= operationToken then return end
+                        if not moved then
+                            BridgeEmbodimentRecordActualFailure(tx, moveError or "exact wrong-zone recovery failed")
+                            BridgeEmbodimentOperationCallback(tx, attempt,
+                                BridgeMakeEmbodimentResult("FAILED", tx.snapshot, moveError, nil))
+                            return
+                        end
+                        tx.operationStarted = false
+                        tx.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+                        BridgeEmbodimentJournal(tx, "OBSERVE", "SEAT_HAND_EXACT_MOVE_COMPLETED",
+                            "cardInstanceId=" .. tostring(operation.cardInstanceId))
+                        tx.phase = "OBSERVE"
+                    end)
+                    return
+                end
                 local observed = BridgeObservePhysicalState(tx.desiredState)
                 local exact = true
                 for instanceId, card in pairs(tx.desiredState and tx.desiredState.cardsByInstanceId or {}) do
@@ -2619,6 +2746,18 @@ function BridgeRecordPhysicalMutationProgress(tx, stage, detail)
         fingerprint = tx.progressFingerprint,
         detail = type(detail) == "string" and detail or nil
     }
+    -- A bootstrap adapter and the event pump share the same update-driven
+    -- liveness owner.  Physical progress inside the adapter must keep the
+    -- outer embodiment transaction alive without extending a wall-clock
+    -- timeout or creating a second scheduler.
+    local embodiment = BridgeState.embodimentTransaction
+    if embodiment ~= nil and embodiment ~= tx
+        and BridgeEmbodimentTransactionIsCurrent ~= nil
+        and BridgeEmbodimentTransactionIsCurrent(embodiment)
+        and embodiment.phase == "APPLY" then
+        embodiment.lastProgressUpdateTick = tx.lastProgressUpdateTick
+        embodiment.lastProgressStage = "PHYSICAL_" .. tostring(stage or "unknown")
+    end
     return tx.progressFingerprint
 end
 

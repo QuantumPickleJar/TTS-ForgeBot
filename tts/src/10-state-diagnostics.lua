@@ -1360,6 +1360,12 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         end
         BridgeLogLibraryExtraction(seatId, "COMPLETE", transactionGeneration, item, nil,
             reason or (wasCurrent and "success" or "stale-generation"))
+        if item.physicalCompletion ~= nil then
+            local completion = item.physicalCompletion
+            item.physicalCompletion = nil
+            if item.event ~= nil then item.event._bridgePhysicalCompletionPending = false end
+            pcall(completion, reason == nil or reason == "success", reason)
+        end
         if not ownsTransaction then return end
         if not wasCurrent then
             -- A resync may have retired the old table, or a stale callback may
@@ -1442,6 +1448,25 @@ function BridgeQueueLibraryExtraction(seatId, job, metadata)
     if type(metadata) == "table" then
         item.cardInstanceId = metadata.cardInstanceId
         item.expectedCardName = metadata.expectedCardName
+        -- Event transactions attach a completion owner to the queued physical
+        -- operation.  This is execution-only state and is never projected to
+        -- diagnostics; it prevents a successful asynchronous draw from
+        -- becoming ownerless while lastApplied remains one event behind.
+        item.physicalCompletion = metadata.physicalCompletion
+        item.event = metadata.event
+        if item.event ~= nil and item.event._bridgePhysicalCompletionPending ~= nil then
+            item.event._bridgePhysicalCompletionPending = true
+        end
+    end
+    -- The structured event pump marks the event currently being applied.  Do
+    -- not require every physical adapter to thread a second callback ABI;
+    -- inherit the transaction-local completion owner at this single queue
+    -- boundary when metadata did not provide one explicitly.
+    if item.event == nil and BridgeState.eventMutationApplyingEvent ~= nil then
+        local currentEvent = BridgeState.eventMutationApplyingEvent
+        item.event = currentEvent
+        item.physicalCompletion = currentEvent._bridgePhysicalCompletion
+        currentEvent._bridgePhysicalCompletionPending = true
     end
     table.insert(BridgeState.libraryExtractionQueueBySeatId[seatId], item)
     local _, queuedLibrary = pcall(function() return BridgeFindLibraryDeckForSeat(seatId) end)

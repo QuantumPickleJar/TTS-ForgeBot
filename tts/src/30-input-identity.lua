@@ -1670,6 +1670,18 @@ function BridgeRecordBootstrapStage(stage, state, detail)
         at = now, updateTick = BridgeState.resyncUpdateTick
     })
     while #BridgeState.bootstrapStageTrace > 24 do table.remove(BridgeState.bootstrapStageTrace, 1) end
+    -- Bootstrap is an adapter invoked by the embodiment transaction.  Each
+    -- stage is physical progress owned by that transaction, so refresh its
+    -- update-driven liveness clock as well as the human-facing stage trace.
+    local embodiment = BridgeState.embodimentTransaction
+    if embodiment ~= nil and BridgeEmbodimentTransactionIsCurrent ~= nil
+        and BridgeEmbodimentTransactionIsCurrent(embodiment)
+        and embodiment.phase == "APPLY" then
+        embodiment.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+        embodiment.lastProgressStage = "BOOTSTRAP_" .. stageKey .. "_" .. stateKey
+        embodiment.bootstrapStage = stageKey
+        embodiment.bootstrapStageState = stateKey
+    end
     if state == "FAILED" and BridgeState.lastSnapshotReconcileFailureStage == nil then
         BridgeState.lastSnapshotReconcileFailureStage = tostring(stage)
         BridgeState.lastSnapshotReconcileFailureReason = tostring(detail or "unspecified")
@@ -2563,9 +2575,10 @@ end
 
 function BridgeResyncFromAuthoritativeSnapshot(origin)
     local explicit = BridgeIsExplicitResyncOrigin(origin)
-    if BridgeCurrentTerminalRecoveryError() ~= nil then
+    local terminalError = BridgeCurrentTerminalRecoveryError()
+    if terminalError ~= nil then
         BridgeLog("[Bridge] RESYNC_BLOCKED reason=terminal-recovery-error origin=" .. tostring(origin)
-            .. " kind=" .. tostring(BridgeState.terminalRecoveryError.kind))
+            .. " kind=" .. tostring(terminalError.kind))
         BridgeSetStatus("SYNCHRONIZATION STOPPED", "Forge must publish a replacement decision before recovery can continue.")
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
         BridgeState.resyncInFlight = false

@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: d625799f4e7a723e4d776d6055cc1906b4aefce9df894dac786e259865df7592
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "d625799f4e7a723e4d776d6055cc1906b4aefce9df894dac786e259865df7592"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 0a2c2d8feadd8acd87853368752d97cc8075aef67fd005c9932ca4412bf247db
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "0a2c2d8feadd8acd87853368752d97cc8075aef67fd005c9932ca4412bf247db"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -362,7 +362,8 @@ function BridgeDiagnosticPresentedResult()
         outcome = result and result.outcome or nil,
         reason = result and result.reason or nil,
         presentationGeneration = result and result.presentationGeneration or nil,
-        terminalRecoveryError = terminal ~= nil
+        terminalRecoveryError = terminal ~= nil,
+        terminalRecovery = terminal and BridgeDiagnosticSnapshot(terminal) or nil
     }
 end
 
@@ -1020,6 +1021,7 @@ function BridgeEventDrainQueueState()
         resyncInFlight = BridgeState.resyncInFlight == true,
         bootstrapping = BridgeState.bootstrapping == true,
         terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
+        terminalRecovery = BridgeDiagnosticSnapshot(BridgeCurrentTerminalRecoveryError() or {}),
         resyncToken = BridgeState.resyncToken,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,
@@ -1451,6 +1453,31 @@ function BridgeDiagnosticSnapshot(value, active)
     return copy
 end
 
+-- Terminal recovery failures belong to the authoritative session/generation
+-- which produced them.  Keep the raw record for diagnostics, but never let a
+-- stale callback make a replacement session look terminal.
+function BridgeRetireStaleTerminalRecoveryError(reason)
+    local error = BridgeState.terminalRecoveryError
+    if error == nil then return false end
+    local session = BridgeState.eventSessionId
+    local generation = BridgeState.eventSessionGeneration
+    local ownerSession = error.sessionId or error.sourceSessionId
+    local ownerGeneration = error.sessionGeneration
+    local stale = (ownerSession ~= nil and session ~= nil and ownerSession ~= session)
+        or (ownerGeneration ~= nil and generation ~= nil and ownerGeneration ~= generation)
+    if stale then
+        BridgeState.terminalRecoveryErrorRetired = {
+            kind = error.kind,
+            sessionId = ownerSession,
+            sessionGeneration = ownerGeneration,
+            reason = reason or "replacement-session"
+        }
+        BridgeState.terminalRecoveryError = nil
+        return true
+    end
+    return false
+end
+
 -- ============================================================
 -- H0 EMBODIMENT RECONCILIATION OWNERSHIP
 --
@@ -1706,7 +1733,7 @@ function BridgeObservePhysicalState(desired)
 end
 
 function BridgePlanEmbodimentReconciliation(desired, observed)
-    local plan = {operations = {}, affectedZones = {}, missing = {}, misplaced = {}, ambiguous = {}, unsettledZones = {}}
+    local plan = {operations = {}, affectedZones = {}, missing = {}, misplaced = {}, ambiguous = {}, unsettledZones = {}, exactMoves = {}}
     if desired == nil then
         table.insert(plan.operations, {type = "FETCH_AND_RECONCILE_SNAPSHOT",
             precondition = "one current embodiment owner",
@@ -1734,6 +1761,20 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
             or tostring(physical.seatId or "") ~= tostring(card.seatId) then
             table.insert(plan.misplaced, instanceId)
             plan.affectedZones[card.seatId .. ":" .. card.zone] = true
+            -- A count mismatch is a physical wrong-zone condition, not a
+            -- library identity observation.  Preserve the exact Forge
+            -- instance so recovery can perform one safe extraction instead
+            -- of repeatedly rebinding an unchanged 33-card Deck.
+            if tostring(card.zone) == "hand" and tostring(physical.zone) == "library"
+                and tostring(physical.seatId or card.seatId) == tostring(card.seatId) then
+                table.insert(plan.exactMoves, {
+                    cardInstanceId = instanceId,
+                    seatId = card.seatId,
+                    sourceZone = "library",
+                    destinationZone = "hand",
+                    cardName = card.cardName
+                })
+            end
         end
     end
     if #plan.ambiguous > 0 then
@@ -1752,6 +1793,23 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
         table.sort(localZones, function(left, right)
             return tostring(left.seatId) .. tostring(left.zone) < tostring(right.seatId) .. tostring(right.zone)
         end)
+        table.sort(plan.exactMoves, function(left, right)
+            return tostring(left.seatId) .. ":" .. tostring(left.cardInstanceId)
+                < tostring(right.seatId) .. ":" .. tostring(right.cardInstanceId)
+        end)
+        for _, move in ipairs(plan.exactMoves) do
+            local exactOperation = {
+                type = "MOVE_EXACT_LIBRARY_TO_HAND",
+                scope = "SEAT_HAND", seatId = move.seatId, zone = "hand",
+                cardInstanceId = move.cardInstanceId, cardName = move.cardName,
+                sourceZone = "library", destinationZone = "hand",
+                precondition = "exact mapped Forge instance is physically contained in this seat library",
+                nativeAction = "BridgeTakeContainedLibraryCardByIdentity",
+                postcondition = "exact Forge instance is observed in the selected seat hand"}
+            -- Append exact repair before the observation-only operations so
+            -- the live pump cannot spend a replan on a non-mutating bind.
+            table.insert(plan.operations, exactOperation)
+        end
         for _, localZone in ipairs(localZones) do
             table.insert(plan.operations, {
                 type = localZone.zone == "library" and "REOBSERVE_SEAT_LIBRARY" or "REOBSERVE_SEAT_HAND",
@@ -1769,6 +1827,54 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
         end
     end
     return plan
+end
+
+-- Recovery-only exact wrong-zone repair.  This is deliberately separate from
+-- normal event application: the authoritative snapshot already owns the
+-- transition, and this operation merely brings one proven physical instance
+-- to that snapshot's destination before final verification.
+function BridgeRecoverExactLibraryCardToHand(seatId, cardInstanceId, expectedName, callback)
+    local hand, handError = BridgeTryGetSeatHandTransform(seatId)
+    if hand == nil then callback(false, handError or "seat hand is unavailable"); return end
+    local sessionId = BridgeState.eventSessionId
+    local generation = BridgeState.physicalTransactionGeneration or 0
+    if BridgeTakeContainedLibraryCardByIdentity == nil then
+        callback(false, "exact library extraction adapter unavailable"); return
+    end
+    BridgeTakeContainedLibraryCardByIdentity(cardInstanceId, hand.position, true, function(card, err)
+        if sessionId ~= BridgeState.eventSessionId
+            or generation ~= (BridgeState.physicalTransactionGeneration or 0) then
+            callback(false, "stale recovery extraction callback")
+            return
+        end
+        if card == nil or not BridgeObjectIsUsable(card) then
+            callback(false, err or "exact recovery extraction returned no usable Card")
+            return
+        end
+        local actualName = BridgeNormalizeCardName(BridgeSafeObjectName(card))
+        if actualName ~= BridgeNormalizeCardName(expectedName) then
+            callback(false, "exact recovery extraction returned wrong card identity")
+            return
+        end
+        local guid = BridgeSafeObjectGuid(card)
+        if guid == nil then callback(false, "exact recovery extraction returned Card without GUID"); return end
+        BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, "hand")
+        card.use_hands = true
+        local retries = 0
+        local function verifyHand()
+            retries = retries + 1
+            local handObjects = BridgeTryGetSeatHandObjects ~= nil and BridgeTryGetSeatHandObjects(seatId) or nil
+            for _, handCard in ipairs(handObjects or {}) do
+                if BridgeSafeObjectGuid(handCard) == guid then callback(true); return end
+            end
+            if retries < 5 and BridgeWaitFrames ~= nil then
+                BridgeWaitFrames(verifyHand, 1)
+            else
+                callback(false, "exact recovery card did not settle in the selected hand")
+            end
+        end
+        verifyHand()
+    end)
 end
 
 -- A successful local binder is not progress if the exact same physical
@@ -2271,6 +2377,27 @@ function BridgePumpEmbodimentTransaction()
                     end
                 end)
             elseif operation.scope == "SEAT_HAND" then
+                if operation.type == "MOVE_EXACT_LIBRARY_TO_HAND" then
+                    local operationToken = operation.token
+                    BridgeRecoverExactLibraryCardToHand(operation.seatId, operation.cardInstanceId,
+                        operation.cardName, function(moved, moveError)
+                        if not BridgeEmbodimentTransactionIsCurrent(tx)
+                            or tx.currentOperation ~= operation
+                            or tx.currentOperation.token ~= operationToken then return end
+                        if not moved then
+                            BridgeEmbodimentRecordActualFailure(tx, moveError or "exact wrong-zone recovery failed")
+                            BridgeEmbodimentOperationCallback(tx, attempt,
+                                BridgeMakeEmbodimentResult("FAILED", tx.snapshot, moveError, nil))
+                            return
+                        end
+                        tx.operationStarted = false
+                        tx.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+                        BridgeEmbodimentJournal(tx, "OBSERVE", "SEAT_HAND_EXACT_MOVE_COMPLETED",
+                            "cardInstanceId=" .. tostring(operation.cardInstanceId))
+                        tx.phase = "OBSERVE"
+                    end)
+                    return
+                end
                 local observed = BridgeObservePhysicalState(tx.desiredState)
                 local exact = true
                 for instanceId, card in pairs(tx.desiredState and tx.desiredState.cardsByInstanceId or {}) do
@@ -2622,6 +2749,18 @@ function BridgeRecordPhysicalMutationProgress(tx, stage, detail)
         fingerprint = tx.progressFingerprint,
         detail = type(detail) == "string" and detail or nil
     }
+    -- A bootstrap adapter and the event pump share the same update-driven
+    -- liveness owner.  Physical progress inside the adapter must keep the
+    -- outer embodiment transaction alive without extending a wall-clock
+    -- timeout or creating a second scheduler.
+    local embodiment = BridgeState.embodimentTransaction
+    if embodiment ~= nil and embodiment ~= tx
+        and BridgeEmbodimentTransactionIsCurrent ~= nil
+        and BridgeEmbodimentTransactionIsCurrent(embodiment)
+        and embodiment.phase == "APPLY" then
+        embodiment.lastProgressUpdateTick = tx.lastProgressUpdateTick
+        embodiment.lastProgressStage = "PHYSICAL_" .. tostring(stage or "unknown")
+    end
     return tx.progressFingerprint
 end
 
@@ -5434,6 +5573,12 @@ function BridgeProcessLibraryExtractionQueue(seatId)
         end
         BridgeLogLibraryExtraction(seatId, "COMPLETE", transactionGeneration, item, nil,
             reason or (wasCurrent and "success" or "stale-generation"))
+        if item.physicalCompletion ~= nil then
+            local completion = item.physicalCompletion
+            item.physicalCompletion = nil
+            if item.event ~= nil then item.event._bridgePhysicalCompletionPending = false end
+            pcall(completion, reason == nil or reason == "success", reason)
+        end
         if not ownsTransaction then return end
         if not wasCurrent then
             -- A resync may have retired the old table, or a stale callback may
@@ -5516,6 +5661,25 @@ function BridgeQueueLibraryExtraction(seatId, job, metadata)
     if type(metadata) == "table" then
         item.cardInstanceId = metadata.cardInstanceId
         item.expectedCardName = metadata.expectedCardName
+        -- Event transactions attach a completion owner to the queued physical
+        -- operation.  This is execution-only state and is never projected to
+        -- diagnostics; it prevents a successful asynchronous draw from
+        -- becoming ownerless while lastApplied remains one event behind.
+        item.physicalCompletion = metadata.physicalCompletion
+        item.event = metadata.event
+        if item.event ~= nil and item.event._bridgePhysicalCompletionPending ~= nil then
+            item.event._bridgePhysicalCompletionPending = true
+        end
+    end
+    -- The structured event pump marks the event currently being applied.  Do
+    -- not require every physical adapter to thread a second callback ABI;
+    -- inherit the transaction-local completion owner at this single queue
+    -- boundary when metadata did not provide one explicitly.
+    if item.event == nil and BridgeState.eventMutationApplyingEvent ~= nil then
+        local currentEvent = BridgeState.eventMutationApplyingEvent
+        item.event = currentEvent
+        item.physicalCompletion = currentEvent._bridgePhysicalCompletion
+        currentEvent._bridgePhysicalCompletionPending = true
     end
     table.insert(BridgeState.libraryExtractionQueueBySeatId[seatId], item)
     local _, queuedLibrary = pcall(function() return BridgeFindLibraryDeckForSeat(seatId) end)
@@ -9589,10 +9753,10 @@ function BridgeIgnoreStatusClick(object, playerColor, altClick)
 end
 
 function BridgeSetStatus(headline, detail)
-    if BridgeState.terminalRecoveryError ~= nil then
+    local terminal = BridgeCurrentTerminalRecoveryError ~= nil and BridgeCurrentTerminalRecoveryError() or nil
+    if terminal ~= nil then
         headline = "PROTOCOL RECOVERY ERROR"
-        detail = BridgeState.terminalRecoveryError.detail
-            or "Forge must publish a replacement decision."
+        detail = terminal.detail or "Forge must publish a replacement decision."
     end
     BridgeState.statusHeadline = headline or BridgeState.statusHeadline
     BridgeState.statusDetail = detail or ""
@@ -12611,6 +12775,18 @@ function BridgeRecordBootstrapStage(stage, state, detail)
         at = now, updateTick = BridgeState.resyncUpdateTick
     })
     while #BridgeState.bootstrapStageTrace > 24 do table.remove(BridgeState.bootstrapStageTrace, 1) end
+    -- Bootstrap is an adapter invoked by the embodiment transaction.  Each
+    -- stage is physical progress owned by that transaction, so refresh its
+    -- update-driven liveness clock as well as the human-facing stage trace.
+    local embodiment = BridgeState.embodimentTransaction
+    if embodiment ~= nil and BridgeEmbodimentTransactionIsCurrent ~= nil
+        and BridgeEmbodimentTransactionIsCurrent(embodiment)
+        and embodiment.phase == "APPLY" then
+        embodiment.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+        embodiment.lastProgressStage = "BOOTSTRAP_" .. stageKey .. "_" .. stateKey
+        embodiment.bootstrapStage = stageKey
+        embodiment.bootstrapStageState = stateKey
+    end
     if state == "FAILED" and BridgeState.lastSnapshotReconcileFailureStage == nil then
         BridgeState.lastSnapshotReconcileFailureStage = tostring(stage)
         BridgeState.lastSnapshotReconcileFailureReason = tostring(detail or "unspecified")
@@ -13504,9 +13680,10 @@ end
 
 function BridgeResyncFromAuthoritativeSnapshot(origin)
     local explicit = BridgeIsExplicitResyncOrigin(origin)
-    if BridgeCurrentTerminalRecoveryError() ~= nil then
+    local terminalError = BridgeCurrentTerminalRecoveryError()
+    if terminalError ~= nil then
         BridgeLog("[Bridge] RESYNC_BLOCKED reason=terminal-recovery-error origin=" .. tostring(origin)
-            .. " kind=" .. tostring(BridgeState.terminalRecoveryError.kind))
+            .. " kind=" .. tostring(terminalError.kind))
         BridgeSetStatus("SYNCHRONIZATION STOPPED", "Forge must publish a replacement decision before recovery can continue.")
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
         BridgeState.resyncInFlight = false
@@ -15983,6 +16160,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.renderedDecisionPresentationKey = nil
     BridgeState.renderedDecisionPhysicalGeneration = nil
     BridgeState.eventSessionId = sessionId
+    if BridgeRetireStaleTerminalRecoveryError ~= nil then
+        BridgeRetireStaleTerminalRecoveryError("session-prepare")
+    end
     BridgeState.hudResyncPending = false
     -- This is the ownership barrier for all physical CardInstance mappings.
     -- A session id can be announced before bootstrap enters this function;
@@ -17567,6 +17747,7 @@ function BridgeBuildEventMutationTransaction(queue)
         events = events,
         state = "PREPARING",
         queue = queue,
+        pendingPhysicalEvents = {},
         token = tostring(BridgeState.eventSessionId) .. ":" .. tostring(BridgeState.eventSessionGeneration)
             .. ":" .. tostring(BridgeState.physicalTransactionGeneration or 0) .. ":" .. tostring(first.sequence),
         startedAt = os.clock()
@@ -17708,10 +17889,38 @@ function BridgeProcessEventQueue()
             BridgeAbortEventMutationTransaction(tx, "transaction event array missing index " .. tostring(index))
             return
         end
+        -- Every event receives one transaction-owned completion callback.  An
+        -- async adapter (library extraction, graveyard settlement, hand
+        -- movement) completes it through the serialized physical queue; a
+        -- synchronous/idempotent adapter completes it on return.  Cursor
+        -- commit is fenced on this owner, not merely on a visible card.
+        event._bridgePhysicalCompletionPending = false
+        event._bridgePhysicalCompletion = function(ok, reason)
+            if not BridgeEventMutationIsCurrent(tx) then return end
+            if tx.pendingPhysicalEvents[event.sequence] == nil then return end
+            tx.pendingPhysicalEvents[event.sequence] = nil
+            if not ok then
+                tx.physicalCompletionError = tostring(reason or "physical event completion failed")
+                BridgeAbortEventMutationTransaction(tx, tx.physicalCompletionError)
+                return
+            end
+            BridgeRecordPhysicalMutationProgress(tx, "EVENT_PHYSICAL_COMPLETE", tostring(event.sequence))
+            BridgeRecordPhysicalMutationJournal({
+                token = tx.token, forgeSequence = tx.forgeSequence,
+                stage = "EVENT_PHYSICAL_COMPLETE", eventSequence = event.sequence,
+                cardInstanceId = event.cardInstanceId, reason = reason
+            })
+        end
+        tx.pendingPhysicalEvents[event.sequence] = true
+        BridgeState.eventMutationApplyingEvent = event
         local ok, applied, _, err = pcall(BridgeApplyAuthoritativeEvent, event)
+        BridgeState.eventMutationApplyingEvent = nil
         if not ok or not applied then
             BridgeAbortEventMutationTransaction(tx, err or applied or "apply failed")
             return
+        end
+        if event._bridgePhysicalCompletionPending ~= true then
+            event._bridgePhysicalCompletion(true, nil)
         end
     end
     -- Async library extraction/Deck settlement callbacks are fenced by the
@@ -17741,6 +17950,11 @@ function BridgeProcessEventQueue()
         local mutationReady, mutationReason = BridgeMutationPhysicalBatchesReady(tx)
         if not mutationReady then
             BridgeState.resyncLastBlockingPredicate = "mutation-batch-pending:" .. tostring(mutationReason)
+            BridgeWaitFrames(awaitPhysicalSettlement, 1)
+            return
+        end
+        if next(tx.pendingPhysicalEvents or {}) ~= nil then
+            BridgeState.resyncLastBlockingPredicate = "event-physical-completion-pending"
             BridgeWaitFrames(awaitPhysicalSettlement, 1)
             return
         end
@@ -19356,7 +19570,8 @@ local function BridgeApplyStructuredCardMoveCore(event)
                 end
                 verifyHandMembership()
             end)
-        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName})
+        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName,
+            event = event, physicalCompletion = event._bridgePhysicalCompletion})
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
         return true, nil
     end
@@ -19395,7 +19610,8 @@ local function BridgeApplyStructuredCardMoveCore(event)
                     if not moved then BridgeStopOnDesync(libraryDrawError(moveError)) end
                     BridgeWaitFrames(complete, 1)
                 end)
-        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName})
+        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName,
+            event = event, physicalCompletion = event._bridgePhysicalCompletion})
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
         return true, nil
     end
@@ -19470,7 +19686,8 @@ local function BridgeApplyStructuredCardMoveCore(event)
                     -- Completion is owned by the asynchronous settlement
                     -- callback above; no synchronous success is assumed.
                 end)
-        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName})
+        end, {cardInstanceId = event.cardInstanceId, expectedCardName = event.cardName,
+            event = event, physicalCompletion = event._bridgePhysicalCompletion})
         BridgeTtsExecutionBreadcrumb("LIBRARY_EXTRACTION_DISPATCH_RETURNED", "library_extraction", event, "event:" .. tostring(event.sequence))
         return true, nil
     end

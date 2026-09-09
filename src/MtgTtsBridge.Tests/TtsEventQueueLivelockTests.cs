@@ -2655,6 +2655,85 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void RecoveryPlansExactWrongZoneCardInsteadOfRepeatingLibraryRebind()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "RecoveryPlansExactWrongZoneCardInsteadOfRepeatingLibraryRebind.probe.lua", @"
+            desired = {cardsByInstanceId={['forge:supplier']={cardInstanceId='forge:supplier',
+                cardName=""Stitcher's Supplier"", seatId='forge-player-1', zone='hand'}}}
+            observed = {byInstanceId={['forge:supplier']={guid='supplier-guid',
+                instanceId='forge:supplier', seatId='forge-player-1', zone='library'}},
+                duplicateInstanceIds={}, unsettledContainedEntries={}}
+            plan = BridgePlanEmbodimentReconciliation(desired, observed)
+            firstType = nil
+            firstInstance = nil
+            for _, operation in pairs(plan.operations) do
+                if operation.type == 'MOVE_EXACT_LIBRARY_TO_HAND' then
+                    firstType = operation.type
+                    firstInstance = operation.cardInstanceId
+                end
+            end
+            exactMoveCount = #(plan.exactMoves or {})
+            misplacedCount = #(plan.misplaced or {})
+        ");
+
+        Assert.True(lua.Globals.Get("firstType").String == "MOVE_EXACT_LIBRARY_TO_HAND",
+            $"actual={lua.Globals.Get("firstType").ToPrintString()} exact={lua.Globals.Get("exactMoveCount").ToPrintString()} misplaced={lua.Globals.Get("misplacedCount").ToPrintString()}");
+        Assert.Equal("forge:supplier", lua.Globals.Get("firstInstance").String);
+    }
+
+    [Fact]
+    public void StaleTerminalRecoveryErrorDoesNotOverrideReplacementStatus()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "StaleTerminalRecoveryErrorDoesNotOverrideReplacementStatus.probe.lua", @"
+            BridgeState.eventSessionId = 'new-session'
+            BridgeState.eventSessionGeneration = 2
+            BridgeState.terminalRecoveryError = {sessionId='old-session', sessionGeneration=1,
+                kind='decision_provenance_lag', detail='old failure'}
+            BridgeRefreshStatusPanel = function() end
+            BridgeSetStatus('MATCH ACTIVE', 'new session')
+            current = BridgeCurrentTerminalRecoveryError()
+            headline = BridgeState.statusHeadline
+            BridgeState.terminalRecoveryError = {sessionId='new-session', sessionGeneration=2,
+                kind='decision_provenance_lag', detail='current failure'}
+            BridgeSetStatus('MATCH ACTIVE', 'new session')
+            currentHeadline = BridgeState.statusHeadline
+        ");
+
+        Assert.True(lua.Globals.Get("current").IsNil());
+        Assert.Equal("MATCH ACTIVE", lua.Globals.Get("headline").String);
+        Assert.Equal("PROTOCOL RECOVERY ERROR", lua.Globals.Get("currentHeadline").String);
+    }
+
+    [Fact]
+    public void HudResyncHandlerForwardsExplicitHudOriginExactlyOnce()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "HudResyncHandlerForwardsExplicitHudOriginExactlyOnce.probe.lua", @"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.desyncLatched = true
+            BridgeState.resyncInFlight = false
+            BridgeState.hudResyncPending = false
+            BridgeState.ui = {resyncInFlight=false, fastForwardActive=false, autoPassEmpty=false}
+            BridgeEnsureRuntimeCompatibility = function(callback) callback(true) end
+            BridgeSetStatus = function() end
+            BridgeUiMarkDirty = function() end
+            hudCalls = 0
+            hudOrigin = nil
+            BridgeResyncFromAuthoritativeSnapshot = function(origin)
+                hudCalls = hudCalls + 1
+                hudOrigin = origin
+                return true
+            end
+            BridgeHudResyncFromForge(nil, nil, nil)
+        ");
+
+        Assert.Equal(1, lua.Globals.Get("hudCalls").Number);
+        Assert.Equal("hud", lua.Globals.Get("hudOrigin").String);
+    }
+
+    [Fact]
     public void LifecycleGuardBlocksStartMatchOutsideReadyOrFailedStates()
     {
         var lua = NewQueueProbe();
