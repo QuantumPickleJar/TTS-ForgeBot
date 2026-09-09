@@ -2918,6 +2918,91 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void SupplierThreeCardMillMayRemainUncommittedWhileOwnedPhysicalBatchMakesProgress()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "SupplierThreeCardMillMayRemainUncommittedWhileOwnedPhysicalBatchMakesProgress.probe.lua", @"
+            BridgeState.eventPolling = true
+            BridgeState.eventQueue = {{sequence=69, kind='card_moved', sourceZone='library', destinationZone='graveyard'}}
+            BridgeState.lastAppliedEventSequence = 68
+            BridgeState.updateTick = 1
+            local tx = {token='supplier:13', state='PREPARING', sessionId=BridgeState.eventSessionId,
+                eventSessionGeneration=BridgeState.eventSessionGeneration,
+                physicalTransactionGeneration=BridgeState.physicalTransactionGeneration,
+                graveyardMutationBatchesBySeatId={['forge-player-1']={state='STAGING', stagedCount=1,
+                    requiredCount=3, targetDeckGuid=nil, settlementSampleCount=0}}}
+            BridgeState.eventDrainTransaction = tx
+            BridgeState.animationRunning = true
+            BridgeEventMutationIsCurrent = function(_) return true end
+            BridgePhysicalMutationOperationsIdle = function() return false end
+            BridgeMutationPhysicalBatchesReady = function(_) return false, 'pending' end
+            BridgeRecordPhysicalMutationProgress(tx, 'STAGED', '69')
+            firstFingerprint = tx.progressFingerprint
+            BridgeState.updateTick = 140
+            tx.graveyardMutationBatchesBySeatId['forge-player-1'].stagedCount = 2
+            BridgeRecordPhysicalMutationProgress(tx, 'STAGED', '70')
+            progressChanged = firstFingerprint ~= tx.progressFingerprint
+            exportedProgress = BridgeEventDrainQueueState().physicalMutationProgress
+            cursorBeforeCommit = BridgeState.lastAppliedEventSequence
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.True(lua.Globals.Get("progressChanged").Boolean);
+        Assert.Equal("STAGED", lua.Globals.Get("exportedProgress").Table.Get("stage").String);
+        Assert.Equal(68, lua.Globals.Get("cursorBeforeCommit").Number);
+        Assert.Equal("nil", lua.Globals.Get("desyncState").String);
+    }
+
+    [Fact]
+    public void LibraryInsertionSucceedsWhenContainmentIsProvenDespiteStaleLooseAlias()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "LibraryInsertionSucceedsWhenContainmentIsProvenDespiteStaleLooseAlias.probe.lua", @"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.physicalTransactionGeneration = 7
+            BRIDGE_SEATS['forge-player-1'].libraryZoneGuid = 'library-zone'
+            local entries = {{guid='card-a', nickname='Swamp', index=1}}
+            local library = {tag='Deck', getGUID=function() return 'library-deck' end,
+                getObjects=function() return entries end,
+                putObject=function(_, object) putCalls=(putCalls or 0)+1; return library end,
+                getPosition=function() return {x=0,y=0,z=0} end}
+            local card = {tag='Card', getGUID=function() return 'card-a' end, getName=function() return 'Swamp' end,
+                setLock=function() end, setPosition=function() end, getPosition=function() return {x=0,y=0,z=0} end,
+                setVar=function() end, getVar=function() return nil end}
+            function getAllObjects() return {library, card} end
+            function getObjectFromGUID(guid) if guid=='library-deck' then return library elseif guid=='card-a' then return card end end
+            function BridgeResolveSeatLibraryDeck(_) return library, {'library-deck'}, nil end
+            function BridgeSeatHandContainsGuid() return false, nil end
+            function BridgeRequireArtBearingLibraryCard() return true end
+            function BridgeSetPhysicalFaceDown() end
+            function BridgeCardIsOutsideHandVolume() return true, 'outside' end
+            local owner = {token='cleanup:1', provenContainedGuids={}}
+            BridgeInsertPhysicalCardIntoLibrary('forge-player-1', card, 'NORMAL', function(ok, err) insertOk, insertError=ok,err end, 'forge:session:a', owner)
+            ownedDuplicateCount = BridgeAuditDuplicateLibraryGuids(owner.provenContainedGuids)
+        ");
+
+        Assert.True(lua.Globals.Get("insertOk").Boolean, lua.Globals.Get("insertError").ToPrintString());
+        Assert.Equal(1, lua.Globals.Get("putCalls").Number);
+        Assert.Equal(0, lua.Globals.Get("ownedDuplicateCount").Number);
+    }
+
+    [Fact]
+    public void UnownedLooseContainedCollisionStillFailsAsRealDuplicate()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "UnownedLooseContainedCollisionStillFailsAsRealDuplicate.probe.lua", @"
+            local entries = {{guid='collision', nickname='Swamp', index=1}}
+            local library = {tag='Deck', getGUID=function() return 'library-deck' end,
+                getObjects=function() return entries end}
+            local card = {tag='Card', getGUID=function() return 'collision' end, getName=function() return 'Swamp' end}
+            function getAllObjects() return {library, card} end
+            duplicateCount = BridgeAuditDuplicateLibraryGuids()
+        ");
+
+        Assert.Equal(1, lua.Globals.Get("duplicateCount").Number);
+    }
+
+    [Fact]
     public void LibraryContainedExtraction_UsesExactBoundInstanceEvenWhenNativeTopDiffers()
     {
         var lua = NewQueueProbe();

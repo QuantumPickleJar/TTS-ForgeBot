@@ -2603,6 +2603,16 @@ function BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
             BridgeState.libraryBatchBySeatId[batch.seatId] = nil
         end
     end
+    if tx ~= nil then
+        BridgeRecordPhysicalMutationProgress(tx, "MUTATION_ABORT", tostring(reason))
+        BridgeRecordPhysicalMutationJournal({
+            token = tx.token, forgeSequence = tx.forgeSequence, stage = "MUTATION_ABORT",
+            seatId = batch and batch.seatId or nil,
+            stagedCount = batch and batch.stagedCount or nil,
+            requiredCount = batch and batch.requiredCount or nil,
+            reason = tostring(reason)
+        })
+    end
     BridgeLog(string.format(
         "[Bridge] MUTATION_ABORT token=%s forgeSequence=%s range=%s..%s seat=%s cardInstanceIds=%s generation=%s reason=%s",
         tostring(tx and tx.token), tostring(tx and tx.forgeSequence),
@@ -2711,6 +2721,13 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
     if not BridgeEventMutationIsCurrent(tx) then return end
     if batch.state == "VERIFIED" or batch.state == "FAILED" then return end
     batch.state = "DESTINATION_COMMITTING"
+    batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+    batch.lastProgressStage = "DESTINATION_COMMIT_BEGIN"
+    BridgeRecordPhysicalMutationProgress(tx, "DESTINATION_COMMIT_BEGIN", "graveyard")
+    BridgeRecordPhysicalMutationJournal({
+        token = tx.token, forgeSequence = tx.forgeSequence, stage = "DESTINATION_COMMIT_BEGIN",
+        seatId = batch.seatId, stagedCount = batch.stagedCount, requiredCount = batch.requiredCount
+    })
     BridgeLog(string.format(
         "[Bridge] MUTATION_DESTINATION_COMMIT_BEGIN token=%s forgeSequence=%s range=%s..%s seat=%s cardInstanceIds=%s generation=%s",
         tostring(tx.token), tostring(tx.forgeSequence), tostring(tx.firstEventSequence),
@@ -2834,6 +2851,15 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         end
         local groupedCandidate = BridgeDeckFromNativeGroupResult(groupResult)
         if groupedCandidate ~= nil then target = groupedCandidate end
+        batch.targetDeckGuid = groupedCandidate and BridgeSafeObjectGuid(groupedCandidate) or nil
+        batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+        batch.lastProgressStage = "GROUP_RESULT"
+        BridgeRecordPhysicalMutationProgress(tx, "GROUP_RESULT", "native-group")
+        BridgeRecordPhysicalMutationJournal({
+            token = tx.token, forgeSequence = tx.forgeSequence, stage = "GROUP_RESULT",
+            seatId = batch.seatId, targetDeckGuid = batch.targetDeckGuid,
+            stagedCount = batch.stagedCount, requiredCount = batch.requiredCount
+        })
         BridgeLog(string.format(
             "[Bridge] MUTATION_DESTINATION_GROUP_REQUESTED token=%s forgeSequence=%s seat=%s cards=%s resultTag=%s generation=%s",
             tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId), tostring(groupCardCount),
@@ -2915,6 +2941,17 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         end
         if resolved ~= nil and resolved.tag == "Deck" then
             batch.targetDeck = resolved
+            batch.targetDeckGuid = BridgeSafeObjectGuid(resolved)
+            batch.settlementSampleCount = (batch.settlementSampleCount or 0) + 1
+            batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+            batch.lastProgressStage = "DECK_OBSERVED"
+            BridgeRecordPhysicalMutationProgress(tx, "DECK_OBSERVED", "graveyard-deck")
+            BridgeRecordPhysicalMutationJournal({
+                token = tx.token, forgeSequence = tx.forgeSequence, stage = "DECK_OBSERVED",
+                seatId = batch.seatId, targetDeckGuid = batch.targetDeckGuid,
+                settlementSampleCount = batch.settlementSampleCount,
+                stagedCount = batch.stagedCount, requiredCount = batch.requiredCount
+            })
             BridgeVerifyGraveyardDeckSettlement(resolved, 8, function(settled, settleError)
         if not BridgeEventMutationIsCurrent(tx) then return end
         if not settled then
@@ -2931,6 +2968,14 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
             return
         end
+        BridgeRecordPhysicalMutationProgress(tx, "CONTAINED_REBIND", "graveyard-mappings")
+        batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+        batch.lastProgressStage = "CONTAINED_REBIND"
+        BridgeRecordPhysicalMutationJournal({
+            token = tx.token, forgeSequence = tx.forgeSequence, stage = "CONTAINED_REBIND",
+            seatId = batch.seatId, targetDeckGuid = batch.targetDeckGuid,
+            stagedCount = batch.stagedCount, requiredCount = batch.requiredCount
+        })
         for _, expected in ipairs(batch.expectedInstances or {}) do
             local instanceId = expected and expected.instanceId or nil
             if instanceId ~= nil then
@@ -2948,7 +2993,17 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             BridgeAbortAtomicGraveyardMutation(tx, batch, "graveyard-shape:" .. tostring(shapeReason))
             return
         end
+        BridgeRecordPhysicalMutationProgress(tx, "FINAL_VERIFY", "graveyard-shape")
+        batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+        batch.lastProgressStage = "FINAL_VERIFY"
+        BridgeRecordPhysicalMutationJournal({
+            token = tx.token, forgeSequence = tx.forgeSequence, stage = "FINAL_VERIFY",
+            seatId = batch.seatId, targetDeckGuid = batch.targetDeckGuid,
+            stagedCount = batch.stagedCount, requiredCount = batch.requiredCount
+        })
         batch.state = "VERIFIED"
+        batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+        batch.lastProgressStage = "VERIFIED"
         batch.verifiedAt = os.clock()
         if BridgeState.libraryBatchBySeatId ~= nil then
             BridgeState.libraryBatchBySeatId[batch.seatId] = nil
@@ -2958,6 +3013,12 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             tostring(tx.token), tostring(tx.forgeSequence), tostring(tx.firstEventSequence),
             tostring(tx.lastEventSequence), tostring(batch.seatId),
             BridgeMutationJoinInstanceIds(batch.incomingInstanceIds), tostring(tx.physicalTransactionGeneration)))
+        BridgeRecordPhysicalMutationProgress(tx, "VERIFIED", "graveyard-batch")
+        BridgeRecordPhysicalMutationJournal({
+            token = tx.token, forgeSequence = tx.forgeSequence, stage = "VERIFIED",
+            seatId = batch.seatId, targetDeckGuid = batch.targetDeckGuid,
+            stagedCount = batch.stagedCount, requiredCount = batch.requiredCount
+        })
         if BridgeWakePhysicalReadinessDependency ~= nil then
             BridgeWakePhysicalReadinessDependency(tx.physicalTransactionGeneration, "atomic-graveyard-verified")
         end
@@ -3060,6 +3121,15 @@ function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, comple
     -- on implicit length behavior while asynchronous callbacks are retiring.
     batch.stagedPhysicalMoves[batch.stagedCount] = staged
     batch.state = "STAGING"
+    batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+    batch.lastProgressStage = "STAGED"
+    BridgeRecordPhysicalMutationProgress(tx, "STAGED", "library-extraction")
+    BridgeRecordPhysicalMutationJournal({
+        token = tx.token, forgeSequence = tx.forgeSequence, stage = "STAGED",
+        seatId = batch.seatId, eventSequence = event.sequence,
+        cardInstanceId = event.cardInstanceId, cardGuid = staged.guid,
+        stagedCount = batch.stagedCount, requiredCount = batch.requiredCount
+    })
     BridgeLog(string.format(
         "[Bridge] MUTATION_STAGE_EXTRACTED token=%s forgeSequence=%s range=%s..%s seat=%s sequence=%s cardInstanceId=%s staged=%s/%s generation=%s",
         tostring(tx.token), tostring(tx.forgeSequence), tostring(tx.firstEventSequence),
@@ -3112,7 +3182,14 @@ function BridgeBuildEventMutationTransaction(queue)
             .. ":" .. tostring(BridgeState.physicalTransactionGeneration or 0) .. ":" .. tostring(first.sequence),
         startedAt = os.clock()
     }
+    BridgeRecordPhysicalMutationProgress(tx, "TX_CREATED", "event-transaction")
+    BridgeRecordPhysicalMutationJournal({
+        token = tx.token, forgeSequence = tx.forgeSequence, stage = "TX_CREATED",
+        firstEventSequence = tx.firstEventSequence, lastEventSequence = tx.lastEventSequence,
+        requiredCount = tx.eventCount
+    })
     BridgeBuildAtomicLibraryToGraveyardBatches(tx)
+    BridgeRecordPhysicalMutationProgress(tx, "BATCH_BUILT", "event-transaction")
     return tx
 end
 
@@ -3128,6 +3205,12 @@ end
 function BridgeAbortEventMutationTransaction(tx, reason)
     if tx == nil or tx.state == "ABORTED" then return end
     tx.state = "ABORTED"
+    BridgeRecordPhysicalMutationProgress(tx, "EVENT_ABORT", tostring(reason))
+    BridgeRecordPhysicalMutationJournal({
+        token = tx.token, forgeSequence = tx.forgeSequence, stage = "EVENT_ABORT",
+        firstEventSequence = tx.firstEventSequence, lastEventSequence = tx.lastEventSequence,
+        reason = tostring(reason)
+    })
     if BridgeState.eventDrainTransaction == tx then BridgeState.eventDrainTransaction = nil end
     BridgeState.animationRunning = false
     BridgeState.presentationState = "DESYNCED"
@@ -3144,6 +3227,7 @@ end
 function BridgeCommitEventMutationTransaction(tx)
     if not BridgeEventMutationIsCurrent(tx) then return false end
     tx.state = "COMMITTING"
+    BridgeRecordPhysicalMutationProgress(tx, "EVENT_COMMIT_BEGIN", "event-transaction")
     local queueHead = tx.queue[1]
     local expectedFirst = tonumber(tx.firstEventSequence or 0) or 0
     if queueHead == nil or (tonumber(queueHead.sequence or 0) or 0) ~= expectedFirst then
@@ -3172,6 +3256,12 @@ function BridgeCommitEventMutationTransaction(tx)
         BridgeState.lastAppliedForgeSequence = math.max(tonumber(BridgeState.lastAppliedForgeSequence or 0) or 0, tx.forgeSequence)
     end
     tx.state = "COMMITTED"
+    BridgeRecordPhysicalMutationProgress(tx, "EVENT_COMMIT", "event-transaction")
+    BridgeRecordPhysicalMutationJournal({
+        token = tx.token, forgeSequence = tx.forgeSequence, stage = "EVENT_COMMIT",
+        firstEventSequence = tx.firstEventSequence, lastEventSequence = tx.lastEventSequence,
+        stagedCount = tx.eventCount, requiredCount = tx.eventCount
+    })
     BridgeState.eventDrainTransaction = nil
     BridgeState.animationRunning = false
     BridgeState.presentationState = "RUNNING"

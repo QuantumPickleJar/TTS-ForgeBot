@@ -958,6 +958,28 @@ function BridgeEventDrainQueueState()
             lastError = entry.lastError
         }
     end
+    local mutationProgress = BridgeState.eventDrainTransaction and {
+        token = BridgeState.eventDrainTransaction.token,
+        forgeSequence = BridgeState.eventDrainTransaction.forgeSequence,
+        firstEventSequence = BridgeState.eventDrainTransaction.firstEventSequence,
+        lastEventSequence = BridgeState.eventDrainTransaction.lastEventSequence,
+        state = BridgeState.eventDrainTransaction.state,
+        lastProgressStage = BridgeState.eventDrainTransaction.lastProgressStage,
+        lastProgressUpdateTick = BridgeState.eventDrainTransaction.lastProgressUpdateTick,
+        progressFingerprint = BridgeState.eventDrainTransaction.progressFingerprint,
+        batches = {}
+    } or nil
+    if mutationProgress ~= nil then
+        for seatId, batch in pairs(BridgeState.eventDrainTransaction.graveyardMutationBatchesBySeatId or {}) do
+            mutationProgress.batches[seatId] = {
+                state = batch.state, stagedCount = batch.stagedCount,
+                requiredCount = batch.requiredCount, targetDeckGuid = batch.targetDeckGuid,
+                settlementSampleCount = batch.settlementSampleCount,
+                lastProgressStage = batch.lastProgressStage,
+                lastProgressUpdateTick = batch.lastProgressUpdateTick
+            }
+        end
+    end
     return {
         headSequence = head and head.sequence or nil,
         headKind = head and head.kind or nil,
@@ -983,6 +1005,9 @@ function BridgeEventDrainQueueState()
         continuationLastResult = BridgeState.eventDrainLastContinuation,
         physicalLibraryQueuesIdle = physicalIdle,
         physicalQueues = physical,
+        physicalMutationProgress = BridgeDiagnosticSnapshot(BridgeState.eventDrainPhysicalProgress or {}),
+        physicalMutationJournal = BridgeDiagnosticSnapshot(BridgeState.physicalMutationJournal or {}),
+        ownedMutation = BridgeDiagnosticSnapshot(mutationProgress or {}),
         snapshotReconcilePending = BridgeState.snapshotReconcilePending == true,
         snapshotReconcileInFlight = BridgeState.snapshotReconcileInFlight == true,
         eventPolling = BridgeState.eventPolling == true,
@@ -1115,7 +1140,10 @@ function BridgeObserveEventDrainBlocked(reason)
             blockedSince = now,
             lastBlockReason = reason,
             logged = false,
-            scheduled = false
+            scheduled = false,
+            progressFingerprint = nil,
+            progressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0,
+            busyProgressObservations = 0
         }
         BridgeState.eventDrainWatchdog = watchdog
     else
@@ -1167,6 +1195,32 @@ function BridgeObserveEventDrainBlocked(reason)
                             if not commitOk then
                                 BridgeLog("[Bridge] EVENT_DRAIN_WATCHDOG_RECOVERY commit failed: "
                                     .. tostring(commitResult))
+                            end
+                        end
+                        if txCurrentOk and txIsCurrent then
+                            local progressFingerprint = BridgePhysicalMutationProgressFingerprint ~= nil
+                                and BridgePhysicalMutationProgressFingerprint(tx) or nil
+                            local progress = BridgeState.eventDrainPhysicalProgress
+                            local lastProgressTick = tonumber(tx.lastProgressUpdateTick or
+                                (progress and progress.updateTick) or 0) or 0
+                            local currentTick = tonumber(BridgeState.updateTick or 0) or 0
+                            local changed = progressFingerprint ~= nil
+                                and progressFingerprint ~= current.progressFingerprint
+                            local recent = lastProgressTick > (tonumber(current.progressUpdateTick or 0) or 0)
+                                or (lastProgressTick > 0 and currentTick - lastProgressTick <= 120)
+                            if changed or recent then
+                                current.progressFingerprint = progressFingerprint
+                                current.progressUpdateTick = lastProgressTick
+                                current.busyProgressObservations = (current.busyProgressObservations or 0) + 1
+                                BridgeLog(string.format(
+                                    "[Bridge] EVENT_DRAIN_BUSY_PROGRESS token=%s head=%s stage=%s updateTick=%s observations=%s",
+                                    tostring(tx.token), tostring(sequence), tostring(tx.lastProgressStage),
+                                    tostring(lastProgressTick), tostring(current.busyProgressObservations)))
+                                -- The owned mutation is making physical progress.
+                                -- Re-arm this watchdog; never classify it as a
+                                -- generic drain stall or launch recovery.
+                                BridgeObserveEventDrainBlocked(currentReason)
+                                return
                             end
                         end
                     end
@@ -1934,6 +1988,12 @@ function BridgeBeginNewMatchCleanupTransaction(callback)
         tx.phase = "APPLY"
         tx.operationStarted = false
         tx.cleanupAttempted = false
+        tx.containmentOwner = {
+            token = "cleanup:" .. tostring(tx.token),
+            generation = BridgeState.physicalTransactionGeneration or 0,
+            provenContainedGuids = {}
+        }
+        BridgeState.newMatchCleanupOwner = tx.containmentOwner
         BridgeEmbodimentJournal(tx, "APPLY", "CONVERGE_OLD_CARDS_TO_LIBRARIES", nil)
     end
     return tx, started
@@ -1952,7 +2012,16 @@ function BridgeNewMatchCleanupPhysicalReady()
             local guid = BridgeSafeObjectGuid(object)
             local advertised = BridgeReadPhysicalIdentity(object)
             local trackedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
-            if libraryGuids[guid] ~= true
+            local containedInLibrary = false
+            if guid ~= nil and BridgeFindLibraryDeckContainingGuid ~= nil then
+                for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+                    if BridgeFindLibraryDeckContainingGuid(seatId, guid) ~= nil then
+                        containedInLibrary = true
+                        break
+                    end
+                end
+            end
+            if libraryGuids[guid] ~= true and not containedInLibrary
                 and (advertised ~= nil or (trackedZone ~= nil and trackedZone ~= "library")) then
                 return false, "previous-game loose Card remains outside a native library"
             end
@@ -2498,6 +2567,61 @@ BRIDGE_SEATS = {
     }
 }
 
+-- Physical mutations are asynchronous across TTS's native object callbacks.
+-- Keep a bounded, JSON-safe journal so a capture can distinguish a callback
+-- that is genuinely stalled from an owned batch which is still progressing.
+local BRIDGE_PHYSICAL_MUTATION_JOURNAL_CAPACITY = 256
+
+function BridgeRecordPhysicalMutationJournal(record)
+    if type(record) ~= "table" then return end
+    BridgeState.physicalMutationJournal = BridgeState.physicalMutationJournal or {}
+    local safe = {}
+    for key, value in pairs(record) do
+        local valueType = type(value)
+        if valueType == "string" or valueType == "number" or valueType == "boolean" then
+            safe[tostring(key)] = value
+        elseif value == nil then
+            safe[tostring(key)] = nil
+        end
+    end
+    safe.updateTick = tonumber(BridgeState.updateTick or 0) or 0
+    local journal = BridgeState.physicalMutationJournal
+    table.insert(journal, safe)
+    while #journal > BRIDGE_PHYSICAL_MUTATION_JOURNAL_CAPACITY do
+        table.remove(journal, 1)
+    end
+end
+
+function BridgePhysicalMutationProgressFingerprint(tx)
+    if tx == nil then return nil end
+    local batchParts = {}
+    for seatId, batch in pairs(tx.graveyardMutationBatchesBySeatId or {}) do
+        batchParts[#batchParts + 1] = table.concat({
+            tostring(seatId), tostring(batch.state), tostring(batch.stagedCount or 0),
+            tostring(batch.requiredCount or 0), tostring(batch.targetDeckGuid or ""),
+            tostring(batch.settlementSampleCount or 0)
+        }, ":")
+    end
+    table.sort(batchParts)
+    return table.concat({tostring(tx.token), tostring(tx.state), table.concat(batchParts, "|"),
+        tostring(tx.lastProgressStage or ""), tostring(tx.lastProgressUpdateTick or 0)}, "#")
+end
+
+function BridgeRecordPhysicalMutationProgress(tx, stage, detail)
+    if tx == nil then return nil end
+    tx.lastProgressStage = tostring(stage or "unknown")
+    tx.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+    tx.progressFingerprint = BridgePhysicalMutationProgressFingerprint(tx)
+    BridgeState.eventDrainPhysicalProgress = {
+        token = tx.token,
+        stage = tx.lastProgressStage,
+        updateTick = tx.lastProgressUpdateTick,
+        fingerprint = tx.progressFingerprint,
+        detail = type(detail) == "string" and detail or nil
+    }
+    return tx.progressFingerprint
+end
+
 local _obj = getObjectFromGUID
 local _rawAllObjects = getAllObjects
 local function BridgeAllObjectsSnapshot()
@@ -2663,6 +2787,8 @@ BridgeState = {
         logged = false,
         scheduled = false
     },
+    eventDrainPhysicalProgress = nil,
+    physicalMutationJournal = {},
     currentPhysicalPresentationGeneration = 0,
     physicalTransactionGeneration = 0,
     physicalReadinessDependency = nil,
@@ -2781,6 +2907,7 @@ BridgeState = {
     libraryExtractionTransactionBySeatId = {},
     libraryInsertionHandReleaseByGuid = {},
     newMatchCleanupOwner = nil,
+    physicalContainmentTransitionsByGuid = {},
     lastNewMatchCleanupFailure = nil,
     graveyardExtractionActiveBySeatId = {},
     -- Consecutive library transitions emitted by one Forge mutation are one
@@ -3220,6 +3347,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.physicalByInstanceId = {}
     BridgeState.physicalInstanceIdByGuid = {}
     BridgeState.physicalContainerByInstanceId = {}
+    BridgeState.physicalContainmentTransitionsByGuid = {}
     BridgeState.physicalContainedInstanceIdByGuid = {}
     BridgeState.bootstrapLibraryMappingBySeatId = {}
     BridgeState.physicalSeatByGuid = {}
@@ -3395,6 +3523,11 @@ end
 
 function BridgeAdvancePhysicalTransactionGeneration(reason)
     BridgeState.physicalTransactionGeneration = (BridgeState.physicalTransactionGeneration or 0) + 1
+    -- Native aliases are only meaningful within the generation that proved
+    -- their containment. Never carry a transition across a session/resync
+    -- boundary.
+    BridgeState.physicalContainmentTransitionsByGuid = {}
+    BridgeState.eventDrainPhysicalProgress = nil
     if reason ~= nil then
         BridgeState.lastPhysicalTransactionInvalidationReason = tostring(reason)
     end
@@ -3675,6 +3808,7 @@ end
 -- ordering; Forge CardInstanceId remains the authoritative identity.
 function BridgeRefreshLibrarySlotBindings(deckGuid)
     if deckGuid == nil then return false, "library Deck has no GUID" end
+    BridgeState.libraryBindingGenerationBySeatId = BridgeState.libraryBindingGenerationBySeatId or {}
     local deck = BridgeGetLiveObjectByGuid(deckGuid)
     if deck == nil or deck.tag ~= "Deck" then return false, "library Deck is unavailable" end
     local entries = {}
@@ -3687,11 +3821,16 @@ function BridgeRefreshLibrarySlotBindings(deckGuid)
         table.insert(byName[name], entry)
     end
     local mappings = {}
+    local generationBySeat = {}
     for instanceId, mapping in pairs(BridgeState.physicalSlotByInstanceId or {}) do
         if mapping.deckGuid == deckGuid then
             local name = BridgeNormalizeCardName(mapping.cardName or BridgeState.cardNameByInstanceId[instanceId])
             mappings[name] = mappings[name] or {}
             table.insert(mappings[name], {instanceId = instanceId, mapping = mapping})
+            if generationBySeat[mapping.seatId] == nil then
+                generationBySeat[mapping.seatId] =
+                    (BridgeState.libraryBindingGenerationBySeatId[mapping.seatId] or 0) + 1
+            end
         end
     end
     for name, items in pairs(mappings) do
@@ -3707,8 +3846,11 @@ function BridgeRefreshLibrarySlotBindings(deckGuid)
             if slot < 0 then return false, "library entry has no usable native index" end
             item.mapping.slotIndex = slot
             item.mapping.index = slot
-            item.mapping.bindingGeneration = (item.mapping.bindingGeneration or 0) + 1
+            item.mapping.bindingGeneration = generationBySeat[item.mapping.seatId]
         end
+    end
+    for seatId, generation in pairs(generationBySeat) do
+        BridgeState.libraryBindingGenerationBySeatId[seatId] = generation
     end
     return true, nil
 end

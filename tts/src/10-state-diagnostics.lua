@@ -800,7 +800,7 @@ function BridgeAuditDuplicateLibraryGuids(ignoredGuids)
             -- publishing it in the destination Deck ledger.  The insertion
             -- caller supplies the exact just-inserted GUID(s); all other collisions
             -- remain strict corruption canaries.
-            if guid ~= nil and not BridgeLibraryAuditIgnoresGuid(ignoredGuids, guid) then
+            if guid ~= nil then
                 looseByGuid[guid] = object
             end
         end
@@ -813,8 +813,17 @@ function BridgeAuditDuplicateLibraryGuids(ignoredGuids)
             for index, entry in ipairs(BridgeLibraryEntries(deck) or {}) do
                 local guid = entry and (entry.guid or entry.GUID) or nil
                 local loose = guid and looseByGuid[guid] or nil
-                if loose ~= nil then
+                local ignored = guid and BridgeLibraryAuditIgnoresGuid(ignoredGuids, guid) or false
+                local transition = guid and (BridgeState.physicalContainmentTransitionsByGuid or {})[tostring(guid)] or nil
+                local transitionDeck = transition and transition.destinationDeck or nil
+                local aliasProven = ignored and (transitionDeck == nil or tostring(transitionDeck) == tostring(deckGuid))
+                if loose ~= nil and not aliasProven then
                     duplicates = duplicates + 1
+                    BridgeRecordPhysicalMutationJournal({
+                        operation = "CardToLibrary", cardGuid = guid,
+                        destinationDeck = deckGuid, classification = "real_duplicate",
+                        finalDisposition = "rejected"
+                    })
                     local identity = BridgeLibraryCardIdentity(loose) or {}
                     BridgeLog(string.format(
                         "[Bridge] DUPLICATE_PHYSICAL_GUID seat=%s guid=%s card=%s looseTag=%s looseCardID=%s containingDeck=%s containedIndex=%s forgeCardInstanceId=%s",
@@ -905,14 +914,88 @@ end
 -- as a container-settle window, not as physical corruption.  Keep retrying
 -- the real duplicate audit, and still fail loudly if the loose/contained
 -- collision survives the bounded window.
-function BridgeVerifyLibraryIdentityStability(callback, attempt, expectedGuids)
+function BridgeBeginPhysicalContainmentTransition(guid, seatId, source, destinationDeck, owner)
+    if guid == nil then return nil end
+    BridgeState.physicalContainmentTransitionsByGuid = BridgeState.physicalContainmentTransitionsByGuid or {}
+    local transition = {
+        token = owner and owner.token or ("containment:" .. tostring(guid) .. ":" .. tostring(BridgeState.physicalTransactionGeneration or 0)),
+        generation = BridgeState.physicalTransactionGeneration or 0,
+        guid = tostring(guid), seatId = seatId, source = source,
+        destinationDeck = destinationDeck and BridgeSafeObjectGuid(destinationDeck) or nil,
+        status = "DISPATCHED", looseAliasStillVisible = false,
+        ownerToken = owner and owner.token or nil
+    }
+    BridgeState.physicalContainmentTransitionsByGuid[tostring(guid)] = transition
+    BridgeRecordPhysicalMutationJournal({
+        transitionToken = transition.token, generation = transition.generation,
+        operation = "CardToLibrary", cardGuid = transition.guid, seatId = seatId,
+        source = source, destinationDeck = transition.destinationDeck,
+        classification = "dispatched"
+    })
+    return transition
+end
+
+function BridgeMarkPhysicalContainmentProven(transition, deck, owner)
+    if transition == nil then return end
+    transition.status = "CONTAINMENT_PROVEN"
+    transition.destinationDeck = deck and BridgeSafeObjectGuid(deck) or transition.destinationDeck
+    transition.ownerToken = owner and owner.token or transition.ownerToken
+    if owner ~= nil then
+        owner.provenContainedGuids = owner.provenContainedGuids or {}
+        owner.provenContainedGuids[transition.guid] = true
+    end
+    BridgeRecordPhysicalMutationJournal({
+        transitionToken = transition.token, generation = transition.generation,
+        operation = "CardToLibrary", cardGuid = transition.guid,
+        destinationDeck = transition.destinationDeck, containmentProven = true,
+        classification = "containment_proven"
+    })
+end
+
+local function BridgeOwnedContainmentGuids(expectedGuids, owner)
+    local ignored = {}
+    local function add(values)
+        if type(values) == "table" then
+            for key, value in pairs(values) do
+                if value == true then ignored[tostring(key)] = true
+                elseif type(key) == "number" and value ~= nil then ignored[tostring(value)] = true end
+            end
+        elseif values ~= nil then ignored[tostring(values)] = true end
+    end
+    add(expectedGuids)
+    add(owner and owner.provenContainedGuids or nil)
+    for guid, transition in pairs(BridgeState.physicalContainmentTransitionsByGuid or {}) do
+        if (transition.status == "CONTAINMENT_PROVEN" or transition.status == "SETTLED")
+            and transition.generation == (BridgeState.physicalTransactionGeneration or 0) then
+            ignored[tostring(guid)] = true
+        end
+    end
+    return ignored
+end
+
+function BridgeVerifyLibraryIdentityStability(callback, attempt, expectedGuids, owner)
     attempt = attempt or 1
     -- TTS can retain source Card userdata for a few frames after it has added
     -- a card to a Deck. Suppress only the exact GUIDs just staged during that
     -- bounded window; the terminal check is strict so a persistent duplicate
     -- can never be accepted as a successful insertion/bootstrap.
-    local strictDuplicateCount = BridgeAuditDuplicateLibraryGuids()
+    local ignoredGuids = BridgeOwnedContainmentGuids(expectedGuids, owner)
+    local strictDuplicateCount = BridgeAuditDuplicateLibraryGuids(ignoredGuids)
     if strictDuplicateCount == 0 then
+        for guid in pairs(ignoredGuids) do
+            local transition = (BridgeState.physicalContainmentTransitionsByGuid or {})[guid]
+            if transition ~= nil and transition.status == "CONTAINMENT_PROVEN" then
+                transition.status = "SETTLED"
+                transition.looseAliasStillVisible = true
+                BridgeRecordPhysicalMutationJournal({
+                    transitionToken = transition.token, generation = transition.generation,
+                    operation = "CardToLibrary", cardGuid = transition.guid,
+                    destinationDeck = transition.destinationDeck,
+                    looseAliasStillVisible = true, classification = "transitional_alias",
+                    finalDisposition = "accepted-contained"
+                })
+            end
+        end
         callback(true, nil)
         return
     end
@@ -921,7 +1004,6 @@ function BridgeVerifyLibraryIdentityStability(callback, attempt, expectedGuids)
             .. " loose/contained duplicate GUID(s)")
         return
     end
-    local ignoredGuids = expectedGuids
     local unexpectedDuplicateCount = BridgeAuditDuplicateLibraryGuids(ignoredGuids)
     if unexpectedDuplicateCount > 0 then
         callback(false, "library insertion produced " .. tostring(unexpectedDuplicateCount)
@@ -932,14 +1014,14 @@ function BridgeVerifyLibraryIdentityStability(callback, attempt, expectedGuids)
         BridgeLog("[Bridge] waiting for TTS library containment to settle before duplicate audit")
     end
     BridgeWaitFrames(function()
-        BridgeVerifyLibraryIdentityStability(callback, attempt + 1, expectedGuids)
+        BridgeVerifyLibraryIdentityStability(callback, attempt + 1, expectedGuids, owner)
     end, 2)
 end
 
 -- Every authoritative library insertion crosses this boundary.  The caller
 -- keeps its exact loose mapping until the callback proves that TTS has put the
 -- card into the physical library container.
-function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, callback, cardInstanceId)
+function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, callback, cardInstanceId, owner)
     callback = callback or function() end
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then callback(false, "unknown seat"); return end
@@ -978,7 +1060,7 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
             end
             if not inHand or outsideHand then
                 releaseMarkers[guid] = true
-                BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, callback, cardInstanceId)
+                BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, callback, cardInstanceId, owner)
                 return
             end
             if attempt >= 30 then
@@ -1089,6 +1171,7 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
     end
     if not inserted then callback(false, insertError or "physical library insertion failed"); return end
 
+    local transition = BridgeBeginPhysicalContainmentTransition(guid, seatId, "previous-zone", resultingLibrary, owner)
     BridgeVerifyLibraryContainment(seatId, guid, function(verified, deck, verifyError)
         if not verified then
             BridgeLog(string.format("[Bridge] LIBRARY_CONTAINMENT_FAILURE seat=%s guid=%s reason=%s",
@@ -1096,6 +1179,7 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
             callback(false, verifyError)
             return
         end
+        BridgeMarkPhysicalContainmentProven(transition, deck, owner)
         BridgeVerifyLibraryIdentityStability(function(stable, stabilityError)
             if not stable then
                 BridgeLog("[Bridge] " .. tostring(stabilityError))
@@ -1103,7 +1187,7 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
                 return
             end
             callback(true, nil, deck, guid)
-        end, 1, guid)
+        end, 1, guid, owner)
     end, 1, resultingLibrary)
 end
 
@@ -1184,6 +1268,17 @@ function BridgeLogLibraryExtraction(seatId, stage, generation, item, library, re
         tostring(active and active.cardInstanceId or itemCardInstanceId),
         tostring(active and active.expectedCardName or itemExpectedCardName),
         tostring(libraryGuid), tostring(libraryTag), tostring(reason or "")))
+    BridgeRecordPhysicalMutationJournal({
+        operation = "LIBRARY_EXTRACTION", stage = tostring(stage), seatId = seatId,
+        generation = generation, cardInstanceId = active and active.cardInstanceId or itemCardInstanceId,
+        expectedCardName = active and active.expectedCardName or itemExpectedCardName,
+        libraryGuid = libraryGuid, libraryTag = libraryTag, reason = reason
+    })
+    local tx = BridgeState.eventDrainTransaction
+    if tx ~= nil then
+        BridgeRecordPhysicalMutationProgress(tx, "LIBRARY_" .. tostring(stage),
+            tostring(itemCardInstanceId or "") .. ":" .. tostring(reason or ""))
+    end
 end
 
 function BridgeProcessLibraryExtractionQueue(seatId)
@@ -1434,7 +1529,7 @@ function BridgeReturnGraveyardPilesToLibraries(callback)
                                 end
                                 drained = drained + 1
                                 BridgeWaitFrames(nextCard, 1)
-                            end, BridgeState.physicalInstanceIdByGuid[cardGuid])
+                            end, BridgeState.physicalInstanceIdByGuid[cardGuid], BridgeState.newMatchCleanupOwner)
                         end, 2)
                         return
                     end
@@ -1468,6 +1563,7 @@ end
 function BridgeReturnPreviousGameCardsToLibraries(callback)
     local candidates = {}
     local seen = {}
+    local cleanupOwner = BridgeState.newMatchCleanupOwner
     local function addCandidate(object)
         if not BridgeObjectIsUsable(object) or object.tag ~= "Card" then return end
         if BridgeIsPresentationOnlyObject(object) then return end
@@ -1481,7 +1577,10 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
         end
         local seatId = BridgeState.physicalSeatByGuid[guid]
         local zoneName = BridgeState.physicalZoneByGuid[guid]
-        if zoneName == "library" then return end
+        -- The durable zone ledger may describe the pre-abort state. A loose
+        -- Card is never treated as safely contained merely because that stale
+        -- ledger says "library"; current native containment is checked when
+        -- the cleanup item is processed.
         -- Older event paths can leave a legitimate battlefield card without
         -- a mapping (for example after a tolerated move error). During the
         -- destructive reset, recover such cards by their physical seat side;
@@ -1522,6 +1621,27 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
                 return
             end
             local candidate = candidates[index]
+            -- Cleanup is driven by current native containment, not the stale
+            -- pre-desync ledger. If an earlier owned insertion already proved
+            -- this GUID in the correct library, the item is complete even if
+            -- getAllObjects still exposes a transitional loose alias.
+            local alreadyContained = BridgeFindLibraryDeckContainingGuid(candidate.seatId, candidate.guid)
+            if alreadyContained ~= nil then
+                if cleanupOwner ~= nil then
+                    cleanupOwner.provenContainedGuids = cleanupOwner.provenContainedGuids or {}
+                    cleanupOwner.provenContainedGuids[candidate.guid] = true
+                end
+                BridgeRecordPhysicalMutationJournal({
+                    transitionToken = cleanupOwner and cleanupOwner.token or nil,
+                    generation = BridgeState.physicalTransactionGeneration or 0,
+                    operation = "CardToLibrary", cardGuid = candidate.guid,
+                    destinationDeck = BridgeSafeObjectGuid(alreadyContained),
+                    containmentProven = true, classification = "already_contained",
+                    finalDisposition = "cleanup_done"
+                })
+                insertCandidate(index + 1)
+                return
+            end
             -- putObject/group/collapse can retire the Card captured during
             -- collection. Re-resolve by the known GUID at every async edge;
             -- a retired object is a cleanup observation failure, never a
@@ -1575,7 +1695,7 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
                     return
                 end
                 insertCandidate(index + 1)
-            end, BridgeState.physicalInstanceIdByGuid[candidate.guid])
+            end, BridgeState.physicalInstanceIdByGuid[candidate.guid], cleanupOwner)
         end
         insertCandidate(1)
     end

@@ -111,8 +111,8 @@ public sealed class DelveAndMulliganLuaContractTests
         var insertionEnd = Script.IndexOf("function BridgeProcessMulliganBottomQueue", insertionStart, StringComparison.Ordinal);
         var insertion = Script[insertionStart..insertionEnd];
 
-        Assert.Contains("local strictDuplicateCount = BridgeAuditDuplicateLibraryGuids()", stability);
-        Assert.Contains("local ignoredGuids = expectedGuids", stability);
+        Assert.Contains("local strictDuplicateCount = BridgeAuditDuplicateLibraryGuids(ignoredGuids)", stability);
+        Assert.Contains("local ignoredGuids = BridgeOwnedContainmentGuids(expectedGuids, owner)", stability);
         Assert.Contains("BridgeAuditDuplicateLibraryGuids(ignoredGuids)", stability);
         Assert.Contains("attempt >= 30", stability);
         Assert.Contains("BridgeWaitFrames(function()", stability);
@@ -130,7 +130,7 @@ public sealed class DelveAndMulliganLuaContractTests
         Assert.Contains("BridgeWaitFrames(function() waitForHandRelease(attempt + 1) end, 2)", Script);
         Assert.Contains("Stage the card over", Script);
         Assert.Contains("object.setPosition({libraryPosition.x, libraryPosition.y + 3.0, libraryPosition.z})", Script);
-        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, callback, cardInstanceId)", Script);
+        Assert.Contains("BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, callback, cardInstanceId, owner)", Script);
     }
 
     [Fact]

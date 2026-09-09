@@ -1757,16 +1757,43 @@ local function BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, expecte
         callback(...)
     end
     local currentMapping = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+    BridgeRecordPhysicalMutationJournal({
+        operation = "LIBRARY_EXTRACTION", stage = "ENQUEUE_DISPATCH",
+        cardInstanceId = cardInstanceId, expectedZone = expectedZone,
+        locatorType = currentMapping and currentMapping.locatorType or "none",
+        deckGuid = currentMapping and currentMapping.deckGuid or nil,
+        cardGuid = currentMapping and currentMapping.cardGuid or nil,
+        bindingGeneration = currentMapping and currentMapping.bindingGeneration or nil,
+        slotIndex = currentMapping and currentMapping.slotIndex or nil
+    })
     if currentMapping ~= nil and currentMapping.locatorType == "SLOT_LOCATOR"
         and currentMapping.zoneName == "library" and BridgeRefreshLibrarySlotBindings ~= nil then
         local refreshed, refreshError = BridgeRefreshLibrarySlotBindings(currentMapping.deckGuid)
         if not refreshed then
+            BridgeRecordPhysicalMutationJournal({
+                operation = "LIBRARY_EXTRACTION", stage = "SLOT_REFRESH_FAILED",
+                cardInstanceId = cardInstanceId, locatorType = "SLOT_LOCATOR",
+                deckGuid = currentMapping.deckGuid, reason = tostring(refreshError)
+            })
             finish(nil, refreshError or "slot locator could not be refreshed")
             return
         end
+        BridgeRecordPhysicalMutationJournal({
+            operation = "LIBRARY_EXTRACTION", stage = "SLOT_REFRESHED",
+            cardInstanceId = cardInstanceId, locatorType = "SLOT_LOCATOR",
+            deckGuid = currentMapping.deckGuid,
+            bindingGeneration = currentMapping.bindingGeneration,
+            slotIndex = currentMapping.slotIndex
+        })
     end
     local deck, entry, resolveError = BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
     if deck == nil or entry == nil then
+        BridgeRecordPhysicalMutationJournal({
+            operation = "LIBRARY_EXTRACTION", stage = "LOCATOR_RESOLVE_FAILED",
+            cardInstanceId = cardInstanceId,
+            locatorType = currentMapping and currentMapping.locatorType or "none",
+            reason = tostring(resolveError)
+        })
         finish(nil, resolveError or ("contained " .. tostring(expectedZone or "unknown") .. " card is unavailable"))
         return
     end
@@ -1776,8 +1803,20 @@ local function BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, expecte
     local slotLocator = mapping ~= nil and mapping.locatorType == "SLOT_LOCATOR"
     if slotLocator then expectedGuid = nil end
     local expectedName = mapping and mapping.cardName or BridgeState.cardNameByInstanceId[cardInstanceId]
+    BridgeRecordPhysicalMutationJournal({
+        operation = "LIBRARY_EXTRACTION", stage = "LOCATOR_RESOLVED",
+        cardInstanceId = cardInstanceId, locatorType = slotLocator and "SLOT_LOCATOR" or "GUID_LOCATOR",
+        deckGuid = deckGuid, cardGuid = expectedGuid,
+        bindingGeneration = mapping and mapping.bindingGeneration or nil,
+        slotIndex = entry.index, expectedCardName = expectedName
+    })
     BridgeStartupPerfCounter("deckTakeObjectCalls", 1)
     local ok, takeError = pcall(function()
+        BridgeRecordPhysicalMutationJournal({
+            operation = "LIBRARY_EXTRACTION", stage = "TAKE_OBJECT_DISPATCH",
+            cardInstanceId = cardInstanceId, locatorType = slotLocator and "SLOT_LOCATOR" or "GUID_LOCATOR",
+            deckGuid = deckGuid, cardGuid = expectedGuid, slotIndex = entry.index
+        })
         deck.takeObject({
             guid = expectedGuid,
             index = expectedGuid == nil and entry.index or nil,
@@ -1785,11 +1824,22 @@ local function BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, expecte
             smooth = smooth == true,
             callback_function = function(taken)
                 if not BridgeObjectIsUsable(taken) then
+                    BridgeRecordPhysicalMutationJournal({
+                        operation = "LIBRARY_EXTRACTION", stage = "TAKE_OBJECT_CALLBACK_INVALID",
+                        cardInstanceId = cardInstanceId, locatorType = slotLocator and "SLOT_LOCATOR" or "GUID_LOCATOR",
+                        deckGuid = deckGuid
+                    })
                     finish(nil, "contained graveyard extraction returned an unusable Card")
                     return
                 end
                 local actualGuid = BridgeSafeObjectGuid(taken)
                 local actualName = BridgeNormalizeCardName(BridgeSafeObjectName(taken))
+                BridgeRecordPhysicalMutationJournal({
+                    operation = "LIBRARY_EXTRACTION", stage = "TAKE_OBJECT_CALLBACK",
+                    cardInstanceId = cardInstanceId, locatorType = slotLocator and "SLOT_LOCATOR" or "GUID_LOCATOR",
+                    deckGuid = deckGuid, cardGuid = actualGuid, expectedCardName = expectedName,
+                    actualCardName = actualName
+                })
                 if slotLocator then
                     if actualGuid == nil or actualName ~= BridgeNormalizeCardName(expectedName) then
                         local liveDeck = BridgeGetLiveObjectByGuid(deckGuid)
@@ -1803,6 +1853,11 @@ local function BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, expecte
                     BridgeRecordLooseCardIdentity(cardInstanceId, actualGuid,
                         mapping.seatId, mapping.zoneName)
                     BridgeRefreshContainedMappingsAfterDeckMutation(deckGuid)
+                    BridgeRecordPhysicalMutationJournal({
+                        operation = "LIBRARY_EXTRACTION", stage = "EXACT_IDENTITY_ASSIGNED",
+                        cardInstanceId = cardInstanceId, locatorType = "SLOT_LOCATOR",
+                        deckGuid = deckGuid, cardGuid = actualGuid
+                    })
                     finish(taken, nil)
                     return
                 end
@@ -1816,6 +1871,11 @@ local function BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, expecte
                     return
                 end
                 BridgeRefreshContainedMappingsAfterDeckMutation(deckGuid)
+                BridgeRecordPhysicalMutationJournal({
+                    operation = "LIBRARY_EXTRACTION", stage = "EXACT_IDENTITY_ASSIGNED",
+                    cardInstanceId = cardInstanceId, locatorType = "GUID_LOCATOR",
+                    deckGuid = deckGuid, cardGuid = actualGuid
+                })
                 finish(taken, nil)
             end
         })

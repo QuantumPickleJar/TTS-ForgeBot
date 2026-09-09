@@ -3046,12 +3046,11 @@ public sealed class TtsGlobalLuaContractTests
 
         Assert.Contains("function BridgeLibraryAuditIgnoresGuid(ignoredGuids, guid)", audit);
         Assert.Contains("ignoredGuids[tostring(guid)] == true", audit);
-        Assert.Contains("not BridgeLibraryAuditIgnoresGuid(ignoredGuids, guid)", audit);
-        Assert.Contains("local strictDuplicateCount = BridgeAuditDuplicateLibraryGuids()", stability);
-        Assert.Contains("local ignoredGuids = expectedGuids", stability);
+        Assert.Contains("local strictDuplicateCount = BridgeAuditDuplicateLibraryGuids(ignoredGuids)", stability);
+        Assert.Contains("local ignoredGuids = BridgeOwnedContainmentGuids(expectedGuids, owner)", stability);
         Assert.Contains("BridgeAuditDuplicateLibraryGuids(ignoredGuids)", stability);
         Assert.Contains("unexpected loose/contained duplicate GUID(s)", stability);
-        Assert.Contains("BridgeVerifyLibraryIdentityStability(callback, attempt + 1, expectedGuids)", stability);
+        Assert.Contains("BridgeVerifyLibraryIdentityStability(callback, attempt + 1, expectedGuids, owner)", stability);
     }
 
     [Fact]

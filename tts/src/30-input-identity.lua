@@ -1838,12 +1838,24 @@ function BridgeLegacyBootstrapCurrentSnapshot(sessionId, callback, resumeFromSna
             BridgeRecordResyncSnapshotProgress(resyncOrigin, snapshot)
             BridgeRecordExpectedHandIdentities(snapshot)
             local duplicateGuidCount = BridgeAuditDuplicateLibraryGuids()
-            if duplicateGuidCount > 0 then
+            local partialGraveyardRecovery = resumeFromSnapshotCursor == true
+                and BridgeSnapshotHasRecoverablePartialGraveyard(snapshot)
+                and BridgeSnapshotDuplicateAliasesAreRepairableGraveyardState(snapshot)
+            if duplicateGuidCount > 0 and not partialGraveyardRecovery then
                 local detail = "physical library identity audit found " .. tostring(duplicateGuidCount)
                     .. " loose/contained duplicate GUID(s)"
                 BridgeLog("[Bridge] " .. detail)
                 finishBootstrap(false, detail)
                 return
+            end
+            if duplicateGuidCount > 0 and partialGraveyardRecovery then
+                BridgeRecordPhysicalMutationJournal({
+                    operation = "SNAPSHOT_RECOVERY", stage = "PARTIAL_GRAVEYARD_ACCEPTED",
+                    sessionId = snapshot.sessionId, targetCursor = snapshot.eventCursor,
+                    duplicateCount = duplicateGuidCount,
+                    reason = "repairable graveyard topology"
+                })
+                BridgeLog("[Bridge] snapshot recovery accepted repairable partial graveyard topology")
             end
             BridgeTraceStart("START-12 physical-bootstrap-begin")
             BridgeSetResyncStage("ReconcilingSnapshot", "snapshot-validated", snapshot)
@@ -3209,6 +3221,87 @@ end
 -- orderless exact binding via BridgeBindLibraryMappingsForSnapshot.
 function BridgeAlignLibraryOrderForSnapshot(seatSnapshot, callback)
     BridgeBindLibraryMappingsForSnapshot(seatSnapshot, callback)
+end
+
+function BridgeSnapshotHasRecoverablePartialGraveyard(snapshot)
+    if snapshot == nil then return false end
+    for _, seatSnapshot in ipairs(snapshot.seats or {}) do
+        local expected = 0
+        for _, zone in ipairs(seatSnapshot.zones or {}) do
+            if tostring(zone.name or "") == "graveyard" then
+                for _, card in ipairs(zone.cards or {}) do
+                    if card.isVirtual ~= true and tostring(card.materializationPolicy or "") ~= "virtual"
+                        and tostring(card.materializationPolicy or "") ~= "virtual-stack" then
+                        expected = expected + 1
+                    end
+                end
+            end
+        end
+        if expected > 0 then
+            local observed = 0
+            for _, object in ipairs((type(getAllObjects) == "function" and getAllObjects()) or {}) do
+                if BridgeObjectIsUsable(object) and not BridgeIsPresentationOnlyObject(object)
+                    and (object.tag == "Card" or object.tag == "Deck")
+                    and BridgeObjectNearSeatZone(object, seatSnapshot.seatId, "graveyard") then
+                    observed = observed + 1
+                end
+            end
+            if observed > 0 then return true end
+        end
+    end
+    return false
+end
+
+function BridgeSnapshotDuplicateAliasesAreRepairableGraveyardState(snapshot)
+    if snapshot == nil or type(getAllObjects) ~= "function" then return false end
+    local expectedNamesBySeat = {}
+    for _, seatSnapshot in ipairs(snapshot.seats or {}) do
+        local names = {}
+        for _, zone in ipairs(seatSnapshot.zones or {}) do
+            if tostring(zone.name or "") == "graveyard" then
+                for _, card in ipairs(zone.cards or {}) do
+                    names[BridgeNormalizeCardName(card.cardName)] = true
+                end
+            end
+        end
+        expectedNamesBySeat[seatSnapshot.seatId] = names
+    end
+    local looseByGuid = {}
+    local deckEntriesByGuid = {}
+    for _, object in ipairs(getAllObjects() or {}) do
+        if BridgeObjectIsUsable(object) and object.tag == "Card" then
+            local guid = BridgeSafeObjectGuid(object)
+            if guid ~= nil then looseByGuid[tostring(guid)] = object end
+        elseif BridgeObjectIsUsable(object) and object.tag == "Deck" then
+            local deckGuid = BridgeSafeObjectGuid(object)
+            for _, entry in ipairs(BridgeLibraryEntries(object) or {}) do
+                local guid = entry and (entry.guid or entry.GUID) or nil
+                if guid ~= nil then
+                    deckEntriesByGuid[tostring(guid)] = {
+                        deckGuid = deckGuid,
+                        name = BridgeNormalizeCardName(entry.nickname or entry.name or entry.Name)
+                    }
+                end
+            end
+        end
+    end
+    local duplicateCount = 0
+    for guid, object in pairs(looseByGuid) do
+        if deckEntriesByGuid[guid] ~= nil then
+            local trackedZone = BridgeState.physicalZoneByGuid[guid]
+            local nearGraveyard = false
+            for seatId, names in pairs(expectedNamesBySeat) do
+                local name = BridgeNormalizeCardName(BridgeSafeObjectName(object))
+                if names[name] == true and BridgeObjectNearSeatZone(object, seatId, "graveyard") then
+                    nearGraveyard = true
+                    break
+                end
+            end
+            if trackedZone ~= "graveyard" and not nearGraveyard then return false end
+            duplicateCount = duplicateCount + 1
+        end
+    end
+    return duplicateCount > 0
 end
 
 function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback, markPhysicalReady)
