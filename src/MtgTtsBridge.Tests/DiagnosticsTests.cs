@@ -150,6 +150,9 @@ public sealed class DiagnosticsTests
                 DecisionId: state.CurrentDecision.DecisionId,
                 ClientRuntimeId: "runtime-1",
                 ClientRevision: "tts-test",
+                ClientGeneratedGlobalLuaSha256: "client-sha",
+                ExpectedGeneratedGlobalLuaSha256: "expected-sha",
+                RuntimeCompatibilityState: "MATCH",
                 LastAppliedEventSequence: 0,
                 Turn: 6,
                 Phase: "Combat",
@@ -170,7 +173,19 @@ public sealed class DiagnosticsTests
                     ],
                     BootstrapStage: "physical-validation",
                     LastSnapshotReconcileFailureStage: "hand-materialization",
-                    LastSnapshotReconcileFailureReason: "hand API lag")), CancellationToken.None);
+                    LastSnapshotReconcileFailureReason: "hand API lag",
+                    BootstrapLibraryMappings: new Dictionary<string, DiagnosticLibraryMappingDto>
+                    {
+                        ["forge-player-1"] = new(ExpectedLibraryMappings: 33, VerifiedLibraryMappings: 32,
+                            MissingLibraryMappings: 1, UnsettledGuidCount: 1)
+                    },
+                    ExpectedLibraryMappings: 66,
+                    VerifiedLibraryMappings: 65,
+                    MissingLibraryMappings: 1,
+                    UnsettledGuidCount: 1,
+                    FirstBlockingObservation: "library contained identity unsettled",
+                    FirstActualFailure: null,
+                    CurrentObservedBlocker: "seat hand pending")), CancellationToken.None);
 
             Assert.True(result.Success, result.Message);
             Assert.StartsWith(Path.GetFullPath(root), result.ReportPath!, StringComparison.OrdinalIgnoreCase);
@@ -212,6 +227,13 @@ public sealed class DiagnosticsTests
                 diagnostics.GetProperty("embodimentJournal")[0].GetProperty("operationToken").GetString());
             Assert.Equal("hand-materialization",
                 diagnostics.GetProperty("lastSnapshotReconcileFailureStage").GetString());
+            Assert.Equal(66, diagnostics.GetProperty("expectedLibraryMappings").GetInt32());
+            Assert.Equal(1, diagnostics.GetProperty("unsettledGuidCount").GetInt32());
+            Assert.Equal("library contained identity unsettled",
+                diagnostics.GetProperty("firstBlockingObservation").GetString());
+            var ttsRoot = ttsState.RootElement;
+            Assert.Equal("expected-sha", ttsRoot.GetProperty("expectedGeneratedGlobalLuaSha256").GetString());
+            Assert.Equal("MATCH", ttsRoot.GetProperty("runtimeCompatibilityState").GetString());
         }
         finally { TryDelete(root); }
     }

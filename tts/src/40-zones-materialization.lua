@@ -6,49 +6,16 @@
                 BridgeRecordBootstrapStage(stagePrefix .. "-materialization",
                     materialized and "OBSERVED" or "FAILED", materializeError)
             end
-            if BridgeRecordBootstrapStage ~= nil then BridgeRecordBootstrapStage(stagePrefix .. "-library-binding", "EXPECTED") end
-            local function bindLibraryAfterSettlement(settlementAttempt)
-                BridgeBindLibraryMappingsForSnapshot(seatSnapshot, function(aligned, alignmentError, bindingStats)
-                    local status = bindingStats and bindingStats.status or (aligned and "SUCCESS" or "FAILED")
-                    if BridgeRecordBootstrapStage ~= nil then
-                        BridgeRecordBootstrapStage(stagePrefix .. "-library-binding",
-                            status == "SUCCESS" and "OBSERVED"
-                                or (status == "WAITING_FOR_PHYSICAL_SETTLEMENT" and "WAITING" or "FAILED"),
-                            alignmentError)
-                    end
-                    if status == "WAITING_FOR_PHYSICAL_SETTLEMENT" then
-                        if settlementAttempt >= 120 then
-                            callback(false, "contained identities did not settle after bounded observations", {
-                                status = "FAILED",
-                                priorStatus = status,
-                                stats = bindingStats
-                            })
-                            return
-                        end
-                        -- This is a physical-settlement observation, not a
-                        -- snapshot retry. Keep the same seat operation and
-                        -- transaction owner; do not materialize or reorder.
-                        BridgeWaitFrames(function()
-                            bindLibraryAfterSettlement(settlementAttempt + 1)
-                        end, 2)
-                        return
-                    end
-                    if status ~= "SUCCESS" then
-                        callback(false, alignmentError, {status = "FAILED", stats = bindingStats})
-                        return
-                    end
-                    BridgeWaitFrames(function()
-                        BridgeApplySeatSnapshotVisualState(seatSnapshot)
-                        if markPhysicalReady == true and BridgeState.resyncInFlight == true
-                            and BridgeState.resyncCandidateSnapshot ~= nil
-                            and BridgeMarkResyncPhysicalRebuildReady ~= nil then
-                            BridgeMarkResyncPhysicalRebuildReady(BridgeState.resyncCandidateSnapshot)
-                        end
-                        callback(true, nil, {status = "SUCCESS", stats = bindingStats})
-                    end, 30)
-                end)
-            end
-            bindLibraryAfterSettlement(0)
+            BridgeWaitFrames(function()
+                BridgeApplySeatSnapshotVisualState(seatSnapshot)
+                if markPhysicalReady == true and BridgeState.resyncInFlight == true
+                    and BridgeState.resyncCandidateSnapshot ~= nil
+                    and BridgeMarkResyncPhysicalRebuildReady ~= nil then
+                    BridgeMarkResyncPhysicalRebuildReady(BridgeState.resyncCandidateSnapshot)
+                end
+                callback(true, nil, {status = "SUCCESS"})
+            end, 30)
+        end)
         end)
     end)
 end
@@ -156,12 +123,22 @@ function BridgeBuildSeatLibraryLedger(seatSnapshot)
 
     local byName = {}
     local countByName = {}
+    local seenContainedGuid = {}
     for _, contained in ipairs(containedCards) do
-        if contained.guid ~= nil then
+        local rawGuid = contained and (contained.guid or contained.GUID) or nil
+        local normalizedGuid = rawGuid ~= nil and tostring(rawGuid) or ""
+        local hasUsableGuid = string.match(normalizedGuid, "%S") ~= nil
+        if hasUsableGuid and seenContainedGuid[normalizedGuid] then
+            return nil, "library ledger found duplicate real contained GUID " .. normalizedGuid
+        end
+        if hasUsableGuid then
+            seenContainedGuid[normalizedGuid] = true
+        end
+        if contained ~= nil then
             local containedName = contained.nickname or contained.name or ""
             local normalizedName = BridgeNormalizeCardName(containedName)
             local entry = {
-                guid = contained.guid,
+                guid = hasUsableGuid and normalizedGuid or nil,
                 deckGuid = deckGuid,
                 normalizedName = normalizedName,
                 cardName = containedName,
@@ -401,6 +378,7 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
                     object = nil,
                     guid = contained.guid,
                     deckGuid = contained.deckGuid,
+                    slotIndex = contained.index,
                     contained = zoneName == "graveyard" or contained.deckGuid ~= nil
                 }
                 assignedContainedByName[normalized] = (assignedContainedByName[normalized] or 0) + 1
@@ -498,12 +476,40 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
 
     -- Publish mappings only after every authoritative card has a physical
     -- counterpart. A retry must never inherit a partially reconciled seat.
+    local priorLedger = BridgeCapturePhysicalLedger()
+    local priorNames = BridgeDiagnosticSnapshot(BridgeState.cardNameByInstanceId or {})
+    for _, mapping in ipairs(mappings) do
+        if mapping.zoneName == "library" and mapping.asset.contained == true
+            and mapping.asset.guid == nil and (tonumber(mapping.asset.slotIndex or -1) or -1) < 0 then
+            if BridgeEmbodimentRecordBlockingObservation ~= nil then
+                BridgeEmbodimentRecordBlockingObservation(BridgeState.embodimentTransaction,
+                    "library contained identity unsettled for seat=" .. tostring(seatSnapshot.seatId))
+            end
+            return false, "library contained identity unsettled", {status = "WAITING_FOR_PHYSICAL_SETTLEMENT"}
+        end
+    end
     for _, mapping in ipairs(mappings) do
         BridgeState.cardNameByInstanceId[mapping.card.cardInstanceId] = mapping.card.cardName
+        if mapping.zoneName == "library" then
+            -- Library identity was atomically committed by the orderless
+            -- binder before this legacy adapter ran.
+        else
         local guid = mapping.asset.guid
         if mapping.asset.contained == true and mapping.asset.deckGuid ~= nil then
-            BridgeRecordContainedCardIdentity(mapping.card.cardInstanceId, mapping.asset.deckGuid,
-                mapping.asset.guid, seatSnapshot.seatId, mapping.zoneName, mapping.card.cardName)
+            local mapped = false
+            if mapping.asset.guid ~= nil then
+                mapped = BridgeRecordContainedCardIdentity(mapping.card.cardInstanceId, mapping.asset.deckGuid,
+                    mapping.asset.guid, seatSnapshot.seatId, mapping.zoneName, mapping.card.cardName)
+            elseif mapping.zoneName == "library" and tonumber(mapping.asset.slotIndex or -1) >= 0 then
+                mapped = BridgeRecordSlotLibraryIdentity(mapping.card.cardInstanceId, mapping.asset.deckGuid,
+                    mapping.asset.slotIndex, seatSnapshot.seatId, mapping.zoneName, mapping.card.cardName,
+                    (BridgeState.libraryBindingGenerationBySeatId[seatSnapshot.seatId] or 0) + 1)
+            end
+            if not mapped then
+                BridgeActivatePhysicalLedger(priorLedger)
+                BridgeState.cardNameByInstanceId = priorNames
+                return false, "library contained identity could not be published", {status = "FAILED"}
+            end
         elseif mapping.zoneName == "library" or guid == nil then
             BridgeRecordLibraryContainedState(mapping.card.cardInstanceId, seatSnapshot.seatId,
                 mapping.card.cardName, ledger.deck, mapping.asset.guid)
@@ -512,6 +518,7 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
             if mapping.asset.object ~= nil then
                 BridgeState.untappedRotationByGuid[guid] = mapping.asset.object.getRotation()
             end
+        end
         end
     end
     BridgeTraceStart("START-17 mapping-complete", tostring(seatSnapshot.seatId))

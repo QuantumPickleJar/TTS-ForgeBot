@@ -125,7 +125,7 @@ public sealed class TtsIdentityHardeningLuaTests
         Assert.True(lua.Globals.Get("ownershipOk").Boolean, lua.Globals.Get("ownershipError").ToPrintString());
         Assert.Equal(14, lua.Globals.Get("expectedCount").Number);
         Assert.Equal(14, lua.Globals.Get("physicalCount").Number);
-        Assert.Equal(12, lua.Globals.Get("repairedCount").Number);
+        Assert.Equal(0, lua.Globals.Get("repairedCount").Number);
         Assert.True(lua.Globals.Get("ready").Boolean);
         Assert.Equal(7, lua.Globals.Get("readyCount").Number);
         Assert.Equal(7, lua.Globals.Get("expectedHuman").Number);

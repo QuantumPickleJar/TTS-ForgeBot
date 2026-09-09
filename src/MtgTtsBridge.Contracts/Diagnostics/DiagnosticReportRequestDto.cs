@@ -86,7 +86,27 @@ public sealed record DiagnosticEventDrainDiagnosticsDto(
     string? LastSnapshotReconcileFailureStage = null,
     string? LastSnapshotReconcileFailureReason = null,
     IReadOnlyList<DiagnosticBootstrapStageRecordDto>? BootstrapStageTrace = null,
-    DiagnosticPhysicalZoneOwnershipDto? SnapshotPhysicalZoneOwnership = null);
+    DiagnosticPhysicalZoneOwnershipDto? SnapshotPhysicalZoneOwnership = null,
+    IReadOnlyDictionary<string, DiagnosticLibraryMappingDto>? BootstrapLibraryMappings = null,
+    int ExpectedLibraryMappings = 0,
+    int VerifiedLibraryMappings = 0,
+    int MissingLibraryMappings = 0,
+    int DuplicateLibraryMappings = 0,
+    int UnsettledGuidCount = 0,
+    int DuplicateRealGuidCount = 0,
+    string? FirstBlockingObservation = null,
+    string? FirstActualFailure = null,
+    string? CurrentObservedBlocker = null);
+
+public sealed record DiagnosticLibraryMappingDto(
+    int ExpectedLibraryMappings = 0,
+    int VerifiedLibraryMappings = 0,
+    int MissingLibraryMappings = 0,
+    int DuplicateLibraryMappings = 0,
+    int UnsettledGuidCount = 0,
+    int DuplicateRealGuidCount = 0,
+    string? Status = null,
+    string? LastError = null);
 
 public sealed record DiagnosticEmbodimentJournalRecordDto(
     int? RuntimeEpoch = null,

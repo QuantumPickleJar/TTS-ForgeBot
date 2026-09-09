@@ -2802,7 +2802,7 @@ public sealed class TtsEventQueueLivelockTests
             local cards = {}
             for i = 1, 21 do
                 local name = 'Card ' .. tostring(i)
-                table.insert(entries, {guid = i == 1 and ' ' or ('usable-' .. tostring(i)), nickname = name, index = i})
+                table.insert(entries, {guid = i == 1 and ' ' or ('usable-' .. tostring(i)), nickname = name, index = i == 1 and -1 or i})
                 table.insert(cards, {cardInstanceId = 'forge:session:' .. tostring(i), cardName = name, zonePosition = i})
             end
             local deck = {tag='Deck', getGUID=function() return 'library-deck' end, getObjects=function() return entries end}
@@ -2826,7 +2826,7 @@ public sealed class TtsEventQueueLivelockTests
     {
         var lua = NewQueueProbe();
         lua.DoString(@"
-            local entries = {{guid=' ', nickname='Swamp', index=1}}
+            local entries = {{guid=' ', nickname='Swamp', index=-1}}
             local deck = {tag='Deck', getGUID=function() return 'library-deck' end, getObjects=function() return entries end}
             function BridgeResolveSeatLibraryDeck(_) return deck, {'library-deck'}, nil end
             tx = BridgeBeginEmbodimentTransaction('session', 'initial-bootstrap', false, function() end)
@@ -2841,6 +2841,80 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Equal("WAITING_FOR_PHYSICAL_SETTLEMENT", lua.Globals.Get("waitStatus").String);
         Assert.Equal(lua.Globals.Get("before").Number, lua.Globals.Get("after").Number);
         Assert.True(lua.Globals.Get("sameTx").Boolean);
+    }
+
+    [Fact]
+    public void LibraryWithPermanentlyBlankContainedGuidsCanBindBySlot()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            local entries = {{guid=' ', nickname='Swamp', index=4}}
+            local deck = {tag='Deck', getGUID=function() return 'library-deck' end, getObjects=function() return entries end}
+            function BridgeResolveSeatLibraryDeck(_) return deck, {'library-deck'}, nil end
+            BridgeBindLibraryMappingsForSnapshot({seatId='forge-player-1', zones={{name='library', cards={{cardInstanceId='forge:session:1', cardName='Swamp', zonePosition=0}}}}},
+                function(ok, err, stats) bindOk, bindErr, bindStats = ok, err, stats end)
+            mapping = BridgeState.physicalContainerByInstanceId['forge:session:1']
+        ");
+
+        Assert.True(lua.Globals.Get("bindOk").Boolean, lua.Globals.Get("bindErr").ToPrintString());
+        Assert.Equal("SUCCESS", lua.Globals.Get("bindStats").Table.Get("status").String);
+        Assert.Equal("SLOT_LOCATOR", lua.Globals.Get("mapping").Table.Get("locatorType").String);
+        Assert.Equal(4, lua.Globals.Get("mapping").Table.Get("slotIndex").Number);
+        Assert.True(lua.Globals.Get("mapping").Table.Get("cardGuid").IsNil());
+    }
+
+    [Fact]
+    public void SlotExtractionReturnsExactForgeInstance()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            local card = {tag='Card', getGUID=function() return 'loose-card-guid' end,
+                getName=function() return 'Swamp' end}
+            local currentIndex = 4
+            local deck = {tag='Deck', getGUID=function() return 'library-deck' end,
+                getObjects=function() return {{guid=' ', nickname='Swamp', index=currentIndex}} end,
+                takeObject=function(options) takenIndex=options.index; options.callback_function(card) end}
+            function BridgeResolveSeatLibraryDeck(_) return deck, {'library-deck'}, nil end
+            function getObjectFromGUID(guid) if guid == 'library-deck' then return deck end if guid == 'loose-card-guid' then return card end end
+            BridgeState.eventSessionId = 'session'
+            BridgeBindLibraryMappingsForSnapshot({seatId='forge-player-1', zones={{name='library', cards={{cardInstanceId='forge:session:1', cardName='Swamp', zonePosition=0}}}}}, function() end)
+            BridgeTakeContainedLibraryCardByIdentity('forge:session:1', {0,0,0}, false, function(object, err) extracted, extractError = object, err end)
+        ");
+
+        Assert.Equal(4, lua.Globals.Get("takenIndex").Number);
+        Assert.Equal("loose-card-guid", lua.Globals.Get("extracted").Table.Get("getGUID").Function.Call().String);
+        Assert.Equal("loose-card-guid", lua.Globals.Get("BridgeState").Table.Get("physicalByInstanceId").Table.Get("forge:session:1").String);
+        Assert.True(lua.Globals.Get("extractError").IsNil());
+    }
+
+    [Fact]
+    public void SlotExtractionRebindsBeforeUsingIndexAfterDeckMutation()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            runOk, runError = pcall(function()
+            local card = {tag='Card', getGUID=function() return 'loose-card-guid' end,
+                getName=function() return 'Swamp' end}
+            local currentIndex = 4
+            local deck = {tag='Deck', getGUID=function() return 'library-deck' end,
+                getObjects=function() return {{guid=' ', nickname='Swamp', index=currentIndex}} end,
+                takeObject=function(options) takenIndex=options.index; options.callback_function(card) end}
+            function BridgeResolveSeatLibraryDeck(_) return deck, {'library-deck'}, nil end
+            function getObjectFromGUID(guid) if guid == 'library-deck' then return deck end if guid == 'loose-card-guid' then return card end end
+            BridgeState.eventSessionId = 'session'
+            BridgeBindLibraryMappingsForSnapshot({seatId='forge-player-1', zones={{name='library', cards={{cardInstanceId='forge:session:1', cardName='Swamp', zonePosition=0}}}}}, function() end)
+            currentIndex = 0
+            extractCallOk, extractCallError = pcall(function()
+                BridgeTakeContainedLibraryCardByIdentity('forge:session:1', {0,0,0}, false, function(object, err) extracted, extractError = object, err end)
+            end)
+            end)
+        ");
+
+        Assert.True(lua.Globals.Get("runOk").Boolean, lua.Globals.Get("runError").ToPrintString());
+        Assert.True(lua.Globals.Get("extractCallOk").Boolean, lua.Globals.Get("extractCallError").ToPrintString());
+        Assert.Equal(0, lua.Globals.Get("takenIndex").Number);
+        Assert.Equal("loose-card-guid", lua.Globals.Get("BridgeState").Table.Get("physicalByInstanceId").Table.Get("forge:session:1").String);
+        Assert.True(lua.Globals.Get("extractError").IsNil());
     }
 
     [Fact]

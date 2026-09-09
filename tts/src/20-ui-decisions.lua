@@ -618,6 +618,18 @@ function BridgeEnsureRuntimeCompatibility(callback)
             runtimeCompatibilityState = "UNAVAILABLE",
             message = tostring(err or "compatibility handshake failed")
         }
+        -- Keep the handshake artifact identity in the long-lived TTS state;
+        -- diagnostic capture can occur after setup has advanced and must not
+        -- lose the successful contract merely because another subsystem reset
+        -- its transient command state.
+        BridgeState.runtimeCompatibility.clientRuntimeId =
+            BridgeState.runtimeCompatibility.clientRuntimeId or BRIDGE_CLIENT_RUNTIME_ID
+        BridgeState.runtimeCompatibility.clientGeneratedGlobalLuaSha256 =
+            BridgeState.runtimeCompatibility.clientGeneratedGlobalLuaSha256
+            or BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256
+        BridgeState.runtimeCompatibility.expectedGeneratedGlobalLuaSha256 =
+            BridgeState.runtimeCompatibility.expectedGeneratedGlobalLuaSha256
+            or BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256
         BridgeState.runtimeCompatibilityState = matched and "MATCH" or tostring(
             BridgeState.runtimeCompatibility.runtimeCompatibilityState or "MISMATCH")
         BridgeLog("[Bridge] RUNTIME_COMPATIBILITY state=" .. tostring(BridgeState.runtimeCompatibilityState)
@@ -3877,11 +3889,14 @@ function BridgeDoPressConfirmNewMatch(playerColor, altClick)
         BridgeClearResetConfirmationControl()
         return
     end
-    BridgeState.resetConfirmationArmed = false
-    BridgeClearResetConfirmationControl()
-    BridgeSetupStage("SETUP_STATE_VALIDATED", "confirmed new-match request")
-    BridgeSetSetupBusy(true, "Replacing the Forge match; setup controls are temporarily disabled.")
-    BridgeResetSession()
+    BridgeEnsureRuntimeCompatibility(function(compatible)
+        if not compatible then return end
+        BridgeState.resetConfirmationArmed = false
+        BridgeClearResetConfirmationControl()
+        BridgeSetupStage("SETUP_STATE_VALIDATED", "confirmed new-match request")
+        BridgeSetSetupBusy(true, "Replacing the Forge match; setup controls are temporarily disabled.")
+        BridgeResetSession()
+    end)
 end
 
 function BridgeAttachToActiveSession(done)

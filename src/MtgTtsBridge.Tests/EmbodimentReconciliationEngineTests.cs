@@ -167,6 +167,38 @@ public sealed class EmbodimentReconciliationEngineTests
     }
 
     [Fact]
+    public void BootstrapWaitingForLibrarySettlementIsNotMisclassifiedAsLostCallback()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            callbackLost = 0
+            function BridgeLegacyBootstrapCurrentSnapshot(sessionId, callback, resume, origin, tx)
+                local snapshot = {sessionId=sessionId, eventCursor=14, forgeSequence=4, seats={}}
+                BridgeEmbodimentSetSnapshot(tx, snapshot)
+                callback(true, nil, snapshot, {status='WAITING_FOR_PHYSICAL_SETTLEMENT', reason='blank contained identity'})
+            end
+            local rawJournal = BridgeEmbodimentJournal
+            BridgeEmbodimentJournal = function(tx, phase, operation, detail)
+                if operation == 'CALLBACK_LOST_REPLAN' then callbackLost = callbackLost + 1 end
+                return rawJournal(tx, phase, operation, detail)
+            end
+            BridgeBootstrapCurrentSnapshot('settlement', function(ok, err) finalOk, finalErr = ok, err end, false, 'initial-bootstrap')
+            tx = BridgeState.embodimentTransaction
+            initialReplans = tx and tx.replanCount or -1
+            for i = 1, 20 do
+                BridgeState.updateTick = BridgeState.updateTick + 1
+                BridgePumpEmbodimentTransaction()
+            end
+            finalTx = BridgeState.embodimentTransaction
+        ");
+
+        Assert.True(lua.Globals.Get("finalOk").IsNil());
+        Assert.Equal(0, lua.Globals.Get("initialReplans").Number);
+        Assert.Equal(0, lua.Globals.Get("callbackLost").Number);
+        Assert.False(lua.Globals.Get("finalTx").IsNil());
+    }
+
+    [Fact]
     public void DesiredZoneStateExposesTheMillMigrationTopologyContract()
     {
         var lua = NewProbe();
@@ -251,6 +283,110 @@ public sealed class EmbodimentReconciliationEngineTests
         Assert.Equal("forge-player-2", card.Get("seatId").String);
         Assert.Equal("hand", card.Get("zone").String);
         Assert.False(observed.Get("duplicateInstanceIds").Table.Get("forge:session:71").Boolean);
+    }
+
+    [Fact]
+    public void UnmappedExistingAiHandCanBindWithoutRedeal()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            aiCard = {tag='Card', getGUID=function() return 'ai-hand-guid' end,
+                getName=function() return 'Goblin Piker' end}
+            function BridgeTryGetSeatHandObjects(_) return {aiCard} end
+            BridgeState.eventSessionId = 'session'
+            BridgeBindHandMappingsForSnapshot({seatId='forge-player-2', zones={{name='hand', cards={{
+                cardInstanceId='forge:session:67', cardName='Goblin Piker', zonePosition=0
+            }}}}}, function(ok, err, outcome) bindOk, bindErr, bindOutcome = ok, err, outcome end)
+            mapping = BridgeState.physicalByInstanceId['forge:session:67']
+        ");
+
+        Assert.True(lua.Globals.Get("bindOk").Boolean, lua.Globals.Get("bindErr").ToPrintString());
+        Assert.Equal("ai-hand-guid", lua.Globals.Get("mapping").String);
+        Assert.Equal("SUCCESS", lua.Globals.Get("bindOutcome").Table.Get("status").String);
+    }
+
+    [Fact]
+    public void HandBindingIsAtomicWhenThePhysicalMultisetDoesNotMatch()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            first = {tag='Card', getGUID=function() return 'hand-1' end,
+                getName=function() return 'Goblin Piker' end}
+            second = {tag='Card', getGUID=function() return 'hand-2' end,
+                getName=function() return 'Wrong Card' end}
+            function BridgeTryGetSeatHandObjects(_) return {first, second} end
+            BridgeState.eventSessionId = 'session'
+            BridgeBindHandMappingsForSnapshot({seatId='forge-player-2', zones={{name='hand', cards={
+                {cardInstanceId='forge:session:67', cardName='Goblin Piker', zonePosition=0},
+                {cardInstanceId='forge:session:68', cardName='Swamp', zonePosition=1}
+            }}}}, function(ok, err, outcome) bindOk, bindErr, bindOutcome = ok, err, outcome end)
+            published = 0
+            for _ in pairs(BridgeState.physicalByInstanceId) do published = published + 1 end
+        ");
+
+        Assert.False(lua.Globals.Get("bindOk").Boolean);
+        Assert.Equal(0, lua.Globals.Get("published").Number);
+        Assert.Equal("FAILED", lua.Globals.Get("bindOutcome").Table.Get("status").String);
+    }
+
+    [Fact]
+    public void OldMatchToNewMatchConvergesAcrossTransientContainedGuidsAndHiddenAiHand()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local humanDeck = {tag='Deck', getGUID=function() return 'human-library' end,
+                getObjects=function() return {{guid=' ', nickname='Swamp', index=0}, {guid=' ', nickname='Mental Note', index=1}} end}
+            local aiDeck = {tag='Deck', getGUID=function() return 'ai-library' end,
+                getObjects=function() return {{guid=' ', nickname='Swamp', index=0}, {guid=' ', nickname='Mental Note', index=1}} end}
+            local function handCard(guid)
+                local card = {tag='Card', bridgeId=nil, bridgeSession=nil,
+                    getGUID=function() return guid end, getName=function() return 'Goblin Piker' end}
+                card.getVar=function(key) return key == 'bridgeCardInstanceId' and card.bridgeId or (key == 'bridgeSessionId' and card.bridgeSession or nil) end
+                card.setVar=function(key, value) if key == 'bridgeCardInstanceId' then card.bridgeId=value elseif key == 'bridgeSessionId' then card.bridgeSession=value end end
+                return card
+            end
+            local humanHand = handCard('human-hand')
+            local aiHand = handCard('ai-hand')
+            function BridgeResolveSeatLibraryDeck(seatId)
+                return seatId == 'forge-player-1' and humanDeck or aiDeck, {}, nil
+            end
+            function BridgeTryGetSeatHandObjects(seatId)
+                return seatId == 'forge-player-1' and {humanHand} or {aiHand}, nil
+            end
+            function getObjectFromGUID(guid)
+                if guid == 'human-library' then return humanDeck end
+                if guid == 'ai-library' then return aiDeck end
+                if guid == 'human-hand' then return humanHand end
+                if guid == 'ai-hand' then return aiHand end
+                return nil
+            end
+            BridgeState.eventSessionId = 'new-session'
+            local humanSnapshot = {seatId='forge-player-1', zones={
+                {name='library', cards={{cardInstanceId='new-session:h1', cardName='Swamp', zonePosition=0}, {cardInstanceId='new-session:h2', cardName='Mental Note', zonePosition=1}}},
+                {name='hand', cards={{cardInstanceId='new-session:hh', cardName='Goblin Piker', zonePosition=0}}}}}
+            local aiSnapshot = {seatId='forge-player-2', zones={
+                {name='library', cards={{cardInstanceId='new-session:a1', cardName='Swamp', zonePosition=0}, {cardInstanceId='new-session:a2', cardName='Mental Note', zonePosition=1}}},
+                {name='hand', cards={{cardInstanceId='new-session:ah', cardName='Goblin Piker', zonePosition=0}}}}}
+            local snapshot = {sessionId='new-session', eventCursor=14, seats={humanSnapshot, aiSnapshot}}
+            BridgeBindLibraryMappingsForSnapshot(humanSnapshot, function(ok, err, outcome) humanLibraryOk, humanLibraryErr, humanLibraryOutcome = ok, err, outcome end)
+            BridgeBindLibraryMappingsForSnapshot(aiSnapshot, function(ok, err, outcome) aiLibraryOk, aiLibraryErr, aiLibraryOutcome = ok, err, outcome end)
+            BridgeBindHandMappingsForSnapshot(humanSnapshot, function(ok, err, outcome) humanHandOk, humanHandErr, humanHandOutcome = ok, err, outcome end)
+            BridgeBindHandMappingsForSnapshot(aiSnapshot, function(ok, err, outcome) aiHandOk, aiHandErr, aiHandOutcome = ok, err, outcome end)
+            BridgeState.lastAppliedEventSequence = 0
+            function BridgeCommitSnapshotCheckpoint(candidate) BridgeState.lastAppliedEventSequence = candidate.eventCursor; return true, nil end
+            committed = BridgeCommitSnapshotCheckpoint(snapshot)
+            function getAllObjects() return {humanDeck, aiDeck} end
+            observed = BridgeObservePhysicalState(BridgeBuildDesiredPhysicalState(snapshot))
+        ");
+
+        Assert.True(lua.Globals.Get("humanLibraryOk").Boolean);
+        Assert.True(lua.Globals.Get("aiLibraryOk").Boolean, lua.Globals.Get("aiLibraryErr").ToPrintString());
+        Assert.True(lua.Globals.Get("humanHandOk").Boolean);
+        Assert.True(lua.Globals.Get("aiHandOk").Boolean);
+        Assert.Equal("SLOT_LOCATOR", lua.Globals.Get("BridgeState").Table.Get("physicalContainerByInstanceId").Table.Get("new-session:a1").Table.Get("locatorType").String);
+        Assert.Equal("ai-hand", lua.Globals.Get("BridgeState").Table.Get("physicalByInstanceId").Table.Get("new-session:ah").String);
+        Assert.Equal(14, lua.Globals.Get("BridgeState").Table.Get("lastAppliedEventSequence").Number);
+        Assert.False(lua.Globals.Get("observed").Table.Get("byInstanceId").Table.Get("new-session:ah").IsNil());
     }
 
     [Fact]

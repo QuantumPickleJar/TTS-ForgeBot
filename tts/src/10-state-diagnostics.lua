@@ -1737,6 +1737,102 @@ function BridgeCheckOpeningHandReadiness(seatId)
     return readyCount == expectedCount, readyCount, expectedCount, table.concat(missing, ",")
 end
 
+function BridgeBindHandMappingsForSnapshot(seatSnapshot, callback)
+    local seatId = seatSnapshot and seatSnapshot.seatId or nil
+    local expected = {}
+    for _, zone in ipairs(seatSnapshot and seatSnapshot.zones or {}) do
+        if string.lower(tostring(zone.name or "")) == "hand" then
+            for _, card in ipairs(zone.cards or {}) do
+                if card.cardInstanceId ~= nil then
+                    local instanceId = tostring(card.cardInstanceId)
+                    local name = BridgeNormalizeCardName(card.cardName)
+                    expected[name] = expected[name] or {}
+                    table.insert(expected[name], {instanceId = instanceId,
+                        zonePosition = tonumber(card.zonePosition or 0) or 0})
+                end
+            end
+        end
+    end
+    local objects, handError = BridgeTryGetSeatHandObjects(seatId)
+    if objects == nil then callback(false, handError or "hand enumeration unavailable", {status="FAILED"}); return end
+    local physicalByName, physicalItems, candidates = {}, {}, {}
+    for _, object in ipairs(objects or {}) do
+        if BridgeObjectIsUsable(object) and object.tag == "Card" then
+            local guid = BridgeSafeObjectGuid(object)
+            if guid == nil then callback(false, "hand card has no live GUID", {status="FAILED"}); return end
+            local name = BridgeNormalizeCardName(BridgePhysicalCanonicalCardName(object) or BridgeSafeObjectName(object))
+            local item = {object = object, guid = guid,
+                instanceId = BridgeReadPhysicalIdentity(object), name = name}
+            physicalByName[name] = physicalByName[name] or {}
+            table.insert(physicalByName[name], item)
+            table.insert(physicalItems, item)
+        end
+    end
+    local expectedByInstanceId = {}
+    for name, expectedCards in pairs(expected) do
+        for _, card in ipairs(expectedCards) do
+            expectedByInstanceId[card.instanceId] = {name = name, card = card}
+        end
+    end
+    local usedPhysical, usedExpected = {}, {}
+    -- Preserve already-valid exact identities before pairing duplicate names.
+    -- A stale identity that is not part of this authoritative hand is unsafe
+    -- to overwrite, so fail closed rather than silently stealing the card.
+    for _, item in ipairs(physicalItems) do
+        if item.instanceId ~= nil then
+            local expectedIdentity = expectedByInstanceId[item.instanceId]
+            if expectedIdentity == nil then
+                callback(false, "hand contains unexpected exact identity seat=" .. tostring(seatId), {status="FAILED"})
+                return
+            end
+            if expectedIdentity.name ~= item.name or usedExpected[item.instanceId] then
+                callback(false, "hand contains conflicting exact identity seat=" .. tostring(seatId), {status="FAILED"})
+                return
+            end
+            usedPhysical[item.guid] = true
+            usedExpected[item.instanceId] = true
+            table.insert(candidates, {instanceId = item.instanceId, guid = item.guid, object = item.object})
+        end
+    end
+    for name, expectedCards in pairs(expected) do
+        table.sort(expectedCards, function(a, b)
+            if a.zonePosition == b.zonePosition then return a.instanceId < b.instanceId end
+            return a.zonePosition < b.zonePosition
+        end)
+        local physical = {}
+        for _, item in ipairs(physicalByName[name] or {}) do
+            if not usedPhysical[item.guid] then table.insert(physical, item) end
+        end
+        table.sort(physical, function(a, b) return tostring(a.guid) < tostring(b.guid) end)
+        local remainingExpected = {}
+        for _, card in ipairs(expectedCards) do
+            if not usedExpected[card.instanceId] then table.insert(remainingExpected, card) end
+        end
+        if #physical ~= #remainingExpected then
+            callback(false, "hand card multiset mismatch seat=" .. tostring(seatId) .. " name=" .. tostring(name), {status="FAILED"})
+            return
+        end
+        for index, card in ipairs(remainingExpected) do
+            local item = physical[index]
+            usedPhysical[item.guid] = true
+            usedExpected[card.instanceId] = true
+            table.insert(candidates, {instanceId = card.instanceId, guid = item.guid, object = item.object})
+        end
+    end
+    local priorLedger = BridgeCapturePhysicalLedger()
+    local published = {}
+    for _, item in ipairs(candidates) do
+        local ok = BridgeRecordLooseCardIdentity(item.instanceId, item.guid, seatId, "hand", item.object)
+        if not ok then
+            BridgeActivatePhysicalLedger(priorLedger)
+            callback(false, "hand candidate publication failed", {status="FAILED"})
+            return
+        end
+        table.insert(published, item)
+    end
+    callback(true, nil, {status="SUCCESS", verifiedHandMappings=#published, expectedHandMappings=#candidates})
+end
+
 -- A snapshot bootstrap can be interrupted after TTS has accepted Cards into a
 -- hand, but before its in-memory seat/zone ledger has been published.  The
 -- Card's Forge instance property is an exact, session-fenced identity written
@@ -1761,6 +1857,14 @@ function BridgeReconcileSnapshotHandOwnership(snapshot)
             end
         end
         if next(expected) ~= nil then
+            local bindOk, bindError, bindOutcome = false, nil, nil
+            BridgeBindHandMappingsForSnapshot(seatSnapshot, function(ok, err, outcome)
+                bindOk, bindError, bindOutcome = ok, err, outcome
+            end)
+            if bindOutcome == nil or bindOutcome.status ~= "SUCCESS" then
+                return false, bindError or "hand binding failed for seat=" .. tostring(seatId),
+                    expectedCount, physicalCount, repairedCount
+            end
             local handObjects, handError = BridgeTryGetSeatHandObjects(seatId)
             if handObjects == nil then
                 return false, "hand ownership cannot inspect seat=" .. tostring(seatId)

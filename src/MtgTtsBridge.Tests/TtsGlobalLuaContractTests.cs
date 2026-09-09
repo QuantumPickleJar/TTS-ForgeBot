@@ -892,8 +892,9 @@ public sealed class TtsGlobalLuaContractTests
     public void SnapshotBootstrap_RetriesIncompleteRuntimeInventoryWithoutPublishingPartialMappings()
     {
         Assert.Contains("function BridgeTryBootstrapSeatSnapshot", Script);
-        Assert.Contains("if attempt < 4 then", Script);
-        Assert.Contains("BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt + 1, callback)", Script);
+        Assert.Contains("WAITING_FOR_PHYSICAL_SETTLEMENT", Script);
+        Assert.DoesNotContain("settlementAttempt", Script);
+        Assert.DoesNotContain("BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt + 1, callback)", Script);
 
         var reconcile = Script.IndexOf("function BridgeReconcileSeatSnapshot", StringComparison.Ordinal);
         var collectMapping = Script.IndexOf("table.insert(mappings", reconcile, StringComparison.Ordinal);

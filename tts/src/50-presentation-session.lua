@@ -1756,6 +1756,15 @@ local function BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, expecte
         finished = true
         callback(...)
     end
+    local currentMapping = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+    if currentMapping ~= nil and currentMapping.locatorType == "SLOT_LOCATOR"
+        and currentMapping.zoneName == "library" and BridgeRefreshLibrarySlotBindings ~= nil then
+        local refreshed, refreshError = BridgeRefreshLibrarySlotBindings(currentMapping.deckGuid)
+        if not refreshed then
+            finish(nil, refreshError or "slot locator could not be refreshed")
+            return
+        end
+    end
     local deck, entry, resolveError = BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
     if deck == nil or entry == nil then
         finish(nil, resolveError or ("contained " .. tostring(expectedZone or "unknown") .. " card is unavailable"))
@@ -1763,6 +1772,10 @@ local function BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, expecte
     end
     local expectedGuid = entry.guid or entry.GUID
     local deckGuid = BridgeSafeObjectGuid(deck)
+    local mapping = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+    local slotLocator = mapping ~= nil and mapping.locatorType == "SLOT_LOCATOR"
+    if slotLocator then expectedGuid = nil end
+    local expectedName = mapping and mapping.cardName or BridgeState.cardNameByInstanceId[cardInstanceId]
     BridgeStartupPerfCounter("deckTakeObjectCalls", 1)
     local ok, takeError = pcall(function()
         deck.takeObject({
@@ -1776,6 +1789,23 @@ local function BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, expecte
                     return
                 end
                 local actualGuid = BridgeSafeObjectGuid(taken)
+                local actualName = BridgeNormalizeCardName(BridgeSafeObjectName(taken))
+                if slotLocator then
+                    if actualGuid == nil or actualName ~= BridgeNormalizeCardName(expectedName) then
+                        local liveDeck = BridgeGetLiveObjectByGuid(deckGuid)
+                        if liveDeck ~= nil then
+                            BridgeStartupPerfCounter("deckPutObjectCalls", 1)
+                            BridgeSafeObjectCall(liveDeck, function(d) d.putObject(taken, 0) end)
+                        end
+                        finish(nil, "slot extraction returned the wrong physical card identity")
+                        return
+                    end
+                    BridgeRecordLooseCardIdentity(cardInstanceId, actualGuid,
+                        mapping.seatId, mapping.zoneName)
+                    BridgeRefreshContainedMappingsAfterDeckMutation(deckGuid)
+                    finish(taken, nil)
+                    return
+                end
                 if actualGuid ~= expectedGuid then
                     local liveDeck = BridgeGetLiveObjectByGuid(deckGuid)
                     if liveDeck ~= nil then

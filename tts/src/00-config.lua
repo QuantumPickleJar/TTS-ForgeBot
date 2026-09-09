@@ -1436,7 +1436,8 @@ function BridgeCapturePhysicalLedger()
         physicalSeatByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalSeatByGuid or {}),
         physicalZoneByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalZoneByGuid or {}),
         physicalContainerByInstanceId = BridgeDiagnosticSnapshot(BridgeState.physicalContainerByInstanceId or {}),
-        physicalContainedInstanceIdByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalContainedInstanceIdByGuid or {})
+        physicalContainedInstanceIdByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalContainedInstanceIdByGuid or {}),
+        physicalSlotByInstanceId = BridgeDiagnosticSnapshot(BridgeState.physicalSlotByInstanceId or {})
     }
 end
 
@@ -1448,6 +1449,7 @@ function BridgeActivatePhysicalLedger(ledger)
     BridgeState.physicalZoneByGuid = ledger.physicalZoneByGuid
     BridgeState.physicalContainerByInstanceId = ledger.physicalContainerByInstanceId
     BridgeState.physicalContainedInstanceIdByGuid = ledger.physicalContainedInstanceIdByGuid
+    BridgeState.physicalSlotByInstanceId = ledger.physicalSlotByInstanceId or {}
     return true
 end
 
@@ -1902,11 +1904,18 @@ function BridgePumpNewMatchCleanupTransaction(tx, updateTick)
     return true
 end
 
-function BridgeEmbodimentOperationCallback(tx, attempt, ok, errorMessage, snapshot)
+function BridgeEmbodimentOperationCallback(tx, attempt, ok, errorMessage, snapshot, outcome)
     if not BridgeEmbodimentTransactionIsCurrent(tx) or tx.operationAttempt ~= attempt then return false end
     if snapshot ~= nil then BridgeEmbodimentSetSnapshot(tx, snapshot) end
     tx.operationStarted = false
     tx.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+    if outcome ~= nil and outcome.status == "WAITING_FOR_PHYSICAL_SETTLEMENT" then
+        tx.waitingForPhysicalSettlement = true
+        tx.phase = "OBSERVE"
+        BridgeEmbodimentRecordBlockingObservation(tx, outcome.reason or "physical settlement pending")
+        BridgeEmbodimentJournal(tx, "OBSERVE", "WAITING_FOR_PHYSICAL_SETTLEMENT", nil)
+        return true
+    end
     if ok then
         tx.phase = "SETTLE"
         BridgeEmbodimentJournal(tx, "SETTLE", "LEGACY_ADAPTER_RETURNED", nil)
@@ -1934,14 +1943,14 @@ function BridgeConfigureEmbodimentFaultInjection(faults)
     BridgeState.embodimentDelayedCallbacks = {}
 end
 
-function BridgeDeliverEmbodimentOperationCallback(tx, attempt, ok, errorMessage, snapshot, callbackKind)
+function BridgeDeliverEmbodimentOperationCallback(tx, attempt, ok, errorMessage, snapshot, callbackKind, outcome)
     local faults = BridgeState.embodimentFaultInjection or {}
     local kind = callbackKind or "operation"
     if faults.dropCallback == kind or faults.dropNextCallback == true then
         faults.dropNextCallback = false
         return false
     end
-    local deliver = function() BridgeEmbodimentOperationCallback(tx, attempt, ok, errorMessage, snapshot) end
+    local deliver = function() BridgeEmbodimentOperationCallback(tx, attempt, ok, errorMessage, snapshot, outcome) end
     if faults.delayCallback == kind then
         table.insert(BridgeState.embodimentDelayedCallbacks, deliver)
         return false
@@ -2055,8 +2064,8 @@ function BridgePumpEmbodimentTransaction()
                     BridgeEmbodimentOperationCallback(tx, attempt, false, "seat hand exact ownership not observed", nil)
                 end
             else
-                BridgeLegacyBootstrapCurrentSnapshot(tx.targetSessionId, function(ok, err, snapshot)
-                    BridgeDeliverEmbodimentOperationCallback(tx, attempt, ok, err, snapshot, "snapshot-reconcile")
+                BridgeLegacyBootstrapCurrentSnapshot(tx.targetSessionId, function(ok, err, snapshot, outcome)
+                    BridgeDeliverEmbodimentOperationCallback(tx, attempt, ok, err, snapshot, "snapshot-reconcile", outcome)
                 end, tx.resumeFromSnapshotCursor, tx.reason, tx)
             end
         elseif updateTick - (tx.lastProgressUpdateTick or updateTick) >= BRIDGE_EMBODIMENT_REOBSERVE_FRAMES then
@@ -2108,7 +2117,8 @@ function BridgePumpEmbodimentTransaction()
             physicalSeatByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalSeatByGuid or {}),
             physicalZoneByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalZoneByGuid or {}),
             physicalContainerByInstanceId = BridgeDiagnosticSnapshot(BridgeState.physicalContainerByInstanceId or {}),
-            physicalContainedInstanceIdByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalContainedInstanceIdByGuid or {})
+            physicalContainedInstanceIdByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalContainedInstanceIdByGuid or {}),
+            physicalSlotByInstanceId = BridgeDiagnosticSnapshot(BridgeState.physicalSlotByInstanceId or {})
         }
         return BridgeFinishEmbodimentTransaction(tx, true, nil)
     end
@@ -2514,6 +2524,8 @@ BridgeState = {
     -- duplicate printed names never become an identity source.
     physicalContainerByInstanceId = {},
     physicalContainedInstanceIdByGuid = {},
+    physicalSlotByInstanceId = {},
+    libraryBindingGenerationBySeatId = {},
     -- Native Deck contained GUIDs are ephemeral TTS implementation details.
     -- Forge instance identity in a deck-like zone is this ordered ledger.
     zoneLedgerBySeatAndZone = {},
@@ -3321,6 +3333,9 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
         end
         BridgeState.physicalContainerByInstanceId[cardInstanceId] = nil
     end
+    if BridgeState.physicalSlotByInstanceId ~= nil then
+        BridgeState.physicalSlotByInstanceId[cardInstanceId] = nil
+    end
     if previousGuid ~= nil and previousGuid ~= guid then
         local previousObject = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(previousGuid) or nil
         if previousObject ~= nil then
@@ -3404,6 +3419,9 @@ function BridgeRecordContainedCardIdentity(cardInstanceId, containingDeckGuid, c
         seatId = seatId,
         zoneName = zoneName
     }
+    if BridgeState.physicalSlotByInstanceId ~= nil then
+        BridgeState.physicalSlotByInstanceId[cardInstanceId] = nil
+    end
     BridgeState.physicalContainedInstanceIdByGuid[containedCardGuid] = cardInstanceId
     BridgeState.physicalSeatByGuid[containedCardGuid] = seatId
     BridgeState.physicalZoneByGuid[containedCardGuid] = zoneName
@@ -3427,6 +3445,22 @@ function BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
     local entries = {}
     local ok = pcall(function() entries = deck.getObjects() or {} end)
     if not ok then return nil, nil, "containing Deck inventory is unavailable" end
+    if mapping.locatorType == "SLOT_LOCATOR" then
+        local targetIndex = tonumber(mapping.slotIndex)
+        local targetName = BridgeNormalizeCardName(mapping.cardName or BridgeState.cardNameByInstanceId[cardInstanceId])
+        local match = nil
+        for _, entry in ipairs(entries) do
+            local entryIndex = tonumber(entry and entry.index or -1)
+            local entryName = BridgeNormalizeCardName(entry and (entry.nickname or entry.name or entry.Name))
+            if entryIndex == targetIndex and entryName == targetName then
+                if match ~= nil then return nil, nil, "slot locator is ambiguous" end
+                match = entry
+            end
+        end
+        if match == nil then return nil, nil, "slot locator no longer matches Deck" end
+        mapping.index = targetIndex
+        return deck, match, nil
+    end
     for _, entry in ipairs(entries) do
         local guid = entry and (entry.guid or entry.GUID) or nil
         if tostring(guid or "") == tostring(mapping.cardGuid) then
@@ -3437,8 +3471,83 @@ function BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
     return nil, nil, "contained card GUID is absent from its Deck"
 end
 
+function BridgeRecordSlotLibraryIdentity(cardInstanceId, deckGuid, slotIndex, seatId, zoneName, cardName, bindingGeneration)
+    if cardInstanceId == nil or deckGuid == nil or tonumber(slotIndex) == nil then return false end
+    BridgeState.physicalContainerByInstanceId = BridgeState.physicalContainerByInstanceId or {}
+    BridgeState.physicalSlotByInstanceId = BridgeState.physicalSlotByInstanceId or {}
+    local previous = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+    BridgeState.physicalContainerByInstanceId[cardInstanceId] = {
+        deckGuid = deckGuid, cardGuid = nil, slotIndex = tonumber(slotIndex),
+        locatorType = "SLOT_LOCATOR", seatId = seatId, zoneName = zoneName,
+        cardName = cardName, bindingGeneration = bindingGeneration
+    }
+    BridgeState.physicalSlotByInstanceId[cardInstanceId] = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+    BridgeState.cardNameByInstanceId[cardInstanceId] = cardName
+    if previous == nil or previous.slotIndex ~= tonumber(slotIndex) or previous.bindingGeneration ~= bindingGeneration then
+        BridgeAdvancePhysicalPresentationGeneration("card-slot-contained")
+    end
+    return true
+end
+
+-- Native Deck indices are only meaningful for the observation that produced
+-- them.  After a Deck mutation, refresh all remaining SLOT locators from one
+-- current inventory observation before allowing another extraction.  Matching
+-- is deliberately by canonical card name and deterministic instance/GUID
+-- ordering; Forge CardInstanceId remains the authoritative identity.
+function BridgeRefreshLibrarySlotBindings(deckGuid)
+    if deckGuid == nil then return false, "library Deck has no GUID" end
+    local deck = BridgeGetLiveObjectByGuid(deckGuid)
+    if deck == nil or deck.tag ~= "Deck" then return false, "library Deck is unavailable" end
+    local entries = {}
+    local ok = pcall(function() entries = deck.getObjects() or {} end)
+    if not ok then return false, "library Deck inventory is unavailable" end
+    local byName = {}
+    for _, entry in ipairs(entries) do
+        local name = BridgeNormalizeCardName(entry and (entry.nickname or entry.name or entry.Name))
+        byName[name] = byName[name] or {}
+        table.insert(byName[name], entry)
+    end
+    local mappings = {}
+    for instanceId, mapping in pairs(BridgeState.physicalSlotByInstanceId or {}) do
+        if mapping.deckGuid == deckGuid then
+            local name = BridgeNormalizeCardName(mapping.cardName or BridgeState.cardNameByInstanceId[instanceId])
+            mappings[name] = mappings[name] or {}
+            table.insert(mappings[name], {instanceId = instanceId, mapping = mapping})
+        end
+    end
+    for name, items in pairs(mappings) do
+        local available = byName[name] or {}
+        table.sort(items, function(a, b) return tostring(a.instanceId) < tostring(b.instanceId) end)
+        table.sort(available, function(a, b)
+            return (tonumber(a and a.index or -1) or -1) < (tonumber(b and b.index or -1) or -1)
+        end)
+        if #items > #available then return false, "slot locator cannot be rebound uniquely" end
+        for index, item in ipairs(items) do
+            local entry = available[index]
+            local slot = tonumber(entry and entry.index or -1) or -1
+            if slot < 0 then return false, "library entry has no usable native index" end
+            item.mapping.slotIndex = slot
+            item.mapping.index = slot
+            item.mapping.bindingGeneration = (item.mapping.bindingGeneration or 0) + 1
+        end
+    end
+    return true, nil
+end
+
 function BridgeRefreshContainedMappingsAfterDeckMutation(deckGuid)
     if deckGuid == nil then return end
+    BridgeState.libraryBindingGenerationBySeatId = BridgeState.libraryBindingGenerationBySeatId or {}
+    for instanceId, mapping in pairs(BridgeState.physicalSlotByInstanceId or {}) do
+        if mapping.deckGuid == deckGuid then
+            BridgeState.libraryBindingGenerationBySeatId[mapping.seatId] =
+                (BridgeState.libraryBindingGenerationBySeatId[mapping.seatId] or 0) + 1
+        end
+    end
+    -- Keep the logical slot bindings, but mark their native indices stale and
+    -- refresh them from the post-mutation Deck inventory when it is still
+    -- addressable.  Extraction also refreshes defensively immediately before
+    -- taking a SLOT locator.
+    BridgeRefreshLibrarySlotBindings(deckGuid)
     local recovered = {}
     for instanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
         if mapping.deckGuid == deckGuid and mapping.cardGuid ~= nil then
@@ -3556,6 +3665,9 @@ function BridgeRecordLibraryContainedState(cardInstanceId, seatId, cardName, con
         BridgeAdvancePhysicalPresentationGeneration("card-contained-library")
     end
     BridgeState.physicalByInstanceId[cardInstanceId] = nil
+    if BridgeState.physicalSlotByInstanceId ~= nil then
+        BridgeState.physicalSlotByInstanceId[cardInstanceId] = nil
+    end
     if cardName ~= nil and cardName ~= "" then
         BridgeState.cardNameByInstanceId[cardInstanceId] = cardName
     end
