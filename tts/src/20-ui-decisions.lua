@@ -3269,6 +3269,21 @@ function BridgeOnLoad()
     BridgeDoctor(function(report)
         if report.companionOk then
             BridgeInitializeInteractiveUi()
+            -- Setup controls are presentation-only and must initialize even
+            -- when this artifact belongs to a different Bridge build.  Probe
+            -- the immutable build contract immediately afterwards so a stale
+            -- executable is reported as a concrete preflight failure instead
+            -- of looking like a Lua/HUD startup stall.
+            local compatibilityToken = BridgeStartupStageBegin("startup_runtime_compatibility_begin")
+            BridgeEnsureRuntimeCompatibility(function(compatible)
+                BridgeStartupStageEnd(compatibilityToken, "startup_runtime_compatibility_end",
+                    "runtimeCompatibilityDurationMs")
+                if compatible then
+                    BridgeLog("[Bridge] startup runtime compatibility MATCH")
+                else
+                    BridgeLog("[Bridge] startup runtime compatibility MISMATCH; setup controls remain available")
+                end
+            end)
         else
             BridgeSetStatus("COMPANION OFFLINE", "Bridge unreachable at 127.0.0.1:43110")
             BridgeLog("[Bridge] companion unavailable on load; skipping bootstrap and waiting for retry.")
@@ -3279,16 +3294,28 @@ function BridgeOnLoad()
 end
 
 function BridgeEnsureObjectButton(object, config)
-    if object == nil or config == nil or not BridgeObjectIsUsable(object) then return end
-    local buttons = object.getButtons and object.getButtons() or {}
+    if object == nil or config == nil or not BridgeObjectIsUsable(object) then return false end
+    local readOk, buttons = pcall(function()
+        return object.getButtons and object.getButtons() or {}
+    end)
+    if not readOk then
+        BridgeLog("[Bridge] setup button read failed label=" .. tostring(config.label))
+        return false
+    end
     if #buttons > 0 then
         -- Avoid editButton here; stale embedded objects can throw Unity-side
         -- object-reference errors during startup hydration.
-        return
+        return false
     end
-    pcall(function()
+    local created, createError = pcall(function()
         if object.createButton ~= nil then object.createButton(config) end
     end)
+    if not created then
+        BridgeLog("[Bridge] setup button create failed label=" .. tostring(config.label)
+            .. " error=" .. tostring(createError))
+        return false
+    end
+    return object.createButton ~= nil
 end
 
 function BridgeEnsureStatusPanel()
@@ -3400,6 +3427,13 @@ function BridgeShowPreparationReadiness()
             BridgeLog("[Bridge] preparation: companion unavailable: " .. tostring(err))
             return
         end
+        if BridgeState.runtimeCompatibilityState ~= nil
+            and BridgeState.runtimeCompatibilityState ~= "UNKNOWN"
+            and BridgeState.runtimeCompatibilityState ~= "MATCH" then
+            BridgeSetStatus("RUNTIME BUILD MISMATCH",
+                "TTS script is older/newer than the running Bridge. Reload TTS Save & Play and/or restart Start-ForgeBot.")
+            return
+        end
         local humanDeck, humanCandidates = BridgeResolveSeatLibraryDeck("forge-player-1")
         local aiDeck, aiCandidates = BridgeResolveSeatLibraryDeck("forge-player-2")
         local humanDeckOk = humanDeck ~= nil and #humanCandidates <= 1
@@ -3428,44 +3462,56 @@ function BridgeFindLibraryDeckForSeat(seatId)
 end
 
 function BridgeEnsureSetupControl(kind, label, x, color, clickFunction, tooltip)
+    local function ensureButton(object)
+        -- A Save & Play reload can leave the old setup BlockSquare alive long
+        -- enough for the new runtime to discover it.  Its native button list
+        -- may be nonempty while its old callback/label is no longer usable.
+        -- Setup objects are bridge-owned and have no gameplay state, so repair
+        -- only an exact expected button instead of treating any native button
+        -- as proof that Lua-side setup completed.
+        local matchesExpectedButton = false
+        local readOk, buttons = pcall(function()
+            return object.getButtons ~= nil and object.getButtons() or {}
+        end)
+        if readOk and buttons ~= nil then
+            for _, button in ipairs(buttons) do
+                if tostring(button.label or "") == tostring(label)
+                    and tostring(button.click_function or "") == tostring(clickFunction) then
+                    matchesExpectedButton = true
+                    break
+                end
+            end
+        end
+        if matchesExpectedButton then return true end
+        BridgeSetupTrace("SETUP_CONTROL_REHYDRATE", "kind=" .. tostring(kind)
+            .. " existingButtons=" .. tostring(readOk and #buttons or "unreadable"))
+        BridgeSafeObjectCall(object, function(o)
+            if o.clearButtons ~= nil then o.clearButtons() end
+        end)
+        BridgeEnsureObjectButton(object, {
+            click_function = clickFunction,
+            function_owner = Global,
+            label = label,
+            position = {0, 0.6, 0},
+            width = 900,
+            height = 420,
+            font_size = 145,
+            color = color,
+            font_color = {1, 1, 1, 1},
+            tooltip = tooltip
+        })
+        return true
+    end
     local existingGuid = BridgeState.setupObjectGuidByKind[kind]
     local existing = BridgeGetLiveObjectByGuid(existingGuid)
     if existing ~= nil then
-        local buttons = existing.getButtons and existing.getButtons() or {}
-        if #buttons == 0 then
-            BridgeEnsureObjectButton(existing, {
-                click_function = clickFunction,
-                function_owner = Global,
-                label = label,
-                position = {0, 0.6, 0},
-                width = 900,
-                height = 420,
-                font_size = 145,
-                color = color,
-                font_color = {1, 1, 1, 1},
-                tooltip = tooltip
-            })
-        end
+        ensureButton(existing)
         return
     end
     for _, object in ipairs(getAllObjects()) do
         if BridgeObjectIsUsable(object) and BridgeSafeObjectName(object) == BRIDGE_SETUP_CONTROL_PREFIX .. kind then
             BridgeState.setupObjectGuidByKind[kind] = BridgeSafeObjectGuid(object)
-            local buttons = object.getButtons and object.getButtons() or {}
-            if #buttons == 0 then
-                BridgeEnsureObjectButton(object, {
-                    click_function = clickFunction,
-                    function_owner = Global,
-                    label = label,
-                    position = {0, 0.6, 0},
-                    width = 900,
-                    height = 420,
-                    font_size = 145,
-                    color = color,
-                    font_color = {1, 1, 1, 1},
-                    tooltip = tooltip
-                })
-            end
+            ensureButton(object)
             return
         end
     end
@@ -3479,18 +3525,7 @@ function BridgeEnsureSetupControl(kind, label, x, color, clickFunction, tooltip)
             object.setLock(true)
             object.setColorTint(color)
             object.setRotation({0, 180, 0})
-            BridgeEnsureObjectButton(object, {
-                click_function = clickFunction,
-                function_owner = Global,
-                label = label,
-                position = {0, 0.6, 0},
-                width = 900,
-                height = 420,
-                font_size = 145,
-                color = color,
-                font_color = {1, 1, 1, 1},
-                tooltip = tooltip
-            })
+            ensureButton(object)
             BridgeState.setupObjectGuidByKind[kind] = object.getGUID()
         end
     })
