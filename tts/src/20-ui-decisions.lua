@@ -995,6 +995,13 @@ function BridgeStopOnDecisionProvenanceLag(detail, fault)
             tostring(fault.sessionGeneration), tostring(BridgeState.eventSessionGeneration)))
         return
     end
+    if BridgeState.bootstrapping == true or BridgeState.embodimentTransaction ~= nil
+        or BridgeState.resyncInFlight == true then
+        BridgeState.staleDecisionFault = fault or BridgeState.staleDecisionFault
+        BridgeState.lastDecisionPollOutcome = "decision_provenance_waiting_for_bootstrap"
+        BridgeLog("[Bridge] deferring decision provenance terminal while physical bootstrap owns state")
+        return
+    end
     BridgeState.terminalRecoveryError = {
         sessionId = BridgeState.eventSessionId,
         sessionGeneration = BridgeState.eventSessionGeneration,
@@ -1004,7 +1011,9 @@ function BridgeStopOnDecisionProvenanceLag(detail, fault)
         decisionId = fault and fault.decisionId or nil,
         eventCursor = fault and fault.eventCursor or nil,
         appliedEventCursor = fault and fault.appliedEventCursor or nil,
-        payloadHash = fault and fault.payloadHash or nil
+        payloadHash = fault and fault.payloadHash or nil,
+        createdAt = os.clock(),
+        creationStage = BridgeState.bootstrapStage or BridgeState.resyncStage or "decision-poll"
     }
     BridgeState.gameEnded = nil
     BridgeState.resultSourceEventId = nil

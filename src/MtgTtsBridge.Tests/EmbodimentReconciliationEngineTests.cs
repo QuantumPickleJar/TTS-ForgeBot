@@ -570,10 +570,59 @@ public sealed class EmbodimentReconciliationEngineTests
             local tx = {targetCursor=14, lastBlockingPredicate='validator rejects representation'}
             local operation = {scope='SEAT_LIBRARY', seatId='forge-player-1', zone='library'}
             first = BridgeLocalReplanProgressFingerprint(tx, operation)
+            -- A successful identity rebind can advance this bookkeeping
+            -- generation without changing the physical Deck at all.  That
+            -- must not masquerade as progress for a permanently rejected
+            -- representation.
+            BridgeState.libraryBindingGenerationBySeatId['forge-player-1'] = 8
             second = BridgeLocalReplanProgressFingerprint(tx, operation)
         ");
 
         Assert.Equal(lua.Globals.Get("first").String, lua.Globals.Get("second").String);
+    }
+
+    [Fact]
+    public void LondonMulliganSourceAssignmentRequiresCanonicalIdentityMetadata()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local deck = {tag='Deck', getGUID=function() return 'ai-library' end,
+                getObjects=function() return {{index=1, nickname='Mountain', guid='mountain-guid'}} end}
+            function BridgeResolveSeatLibraryDeck(seatId) return deck end
+            local seat = {seatId='forge-player-2', zones={
+                {name='library', cards={}},
+                {name='hand', cards={{cardInstanceId='forge:ai:62'}}}}}
+            sourcePlan, sourceError = BridgeBuildSeatSourceAssignment(seat, {})
+        ");
+
+        Assert.True(lua.Globals.Get("sourcePlan").IsNil());
+        Assert.Contains("canonical card name", lua.Globals.Get("sourceError").String);
+        Assert.DoesNotContain("physical card nil", lua.Globals.Get("sourceError").String);
+    }
+
+    [Fact]
+    public void LondonMulliganSourceAssignmentPreservesDuplicateNamesByExactInstance()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local deck = {tag='Deck', getGUID=function() return 'ai-library' end,
+                getObjects=function() return {
+                    {index=1, nickname='Mountain', guid='mountain-a'},
+                    {index=2, nickname='Mountain', guid='mountain-b'}} end}
+            function BridgeResolveSeatLibraryDeck(seatId) return deck end
+            local seat = {seatId='forge-player-2', zones={
+                {name='library', cards={}},
+                {name='hand', cards={
+                    {cardInstanceId='forge:ai:62', cardName='Mountain', zonePosition=1},
+                    {cardInstanceId='forge:ai:63', cardName='Mountain', zonePosition=2}}}}}
+            sourcePlan, sourceError = BridgeBuildSeatSourceAssignment(seat, {})
+        ");
+
+        Assert.False(lua.Globals.Get("sourcePlan").IsNil(), lua.Globals.Get("sourceError").ToPrintString());
+        var assignments = lua.Globals.Get("sourcePlan").Table.Get("assignments").Table;
+        var first = assignments.Get("forge:ai:62").Table.Get("source").Table;
+        var second = assignments.Get("forge:ai:63").Table.Get("source").Table;
+        Assert.NotEqual(first.Get("guid").String, second.Get("guid").String);
     }
 
     private static Script NewProbe()

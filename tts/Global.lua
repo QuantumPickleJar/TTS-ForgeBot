@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 0a2c2d8feadd8acd87853368752d97cc8075aef67fd005c9932ca4412bf247db
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "0a2c2d8feadd8acd87853368752d97cc8075aef67fd005c9932ca4412bf247db"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 9b5639e843242e13502c95ed205f38c200dd86cae4af3fbdf3dd51be6cfa97f2
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "9b5639e843242e13502c95ed205f38c200dd86cae4af3fbdf3dd51be6cfa97f2"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -1620,6 +1620,7 @@ function BridgeBuildDesiredPhysicalState(snapshot)
                     zoneState.instanceIds[instanceId] = true
                     desired.cardsByInstanceId[instanceId] = {
                         cardInstanceId = instanceId,
+                        cardName = card.cardName or card.currentCardName or card.name or card.Name,
                         seatId = seatId,
                         zone = zoneName,
                         private = zoneName == "hand" or zoneName == "library",
@@ -1836,6 +1837,11 @@ end
 function BridgeRecoverExactLibraryCardToHand(seatId, cardInstanceId, expectedName, callback)
     local hand, handError = BridgeTryGetSeatHandTransform(seatId)
     if hand == nil then callback(false, handError or "seat hand is unavailable"); return end
+    expectedName = expectedName or BridgeState.cardNameByInstanceId[cardInstanceId]
+    if expectedName == nil or BridgeNormalizeCardName(expectedName) == "" then
+        callback(false, "exact recovery card has no canonical card name: " .. tostring(cardInstanceId))
+        return
+    end
     local sessionId = BridgeState.eventSessionId
     local generation = BridgeState.physicalTransactionGeneration or 0
     if BridgeTakeContainedLibraryCardByIdentity == nil then
@@ -1889,8 +1895,6 @@ function BridgeLocalReplanProgressFingerprint(tx, operation)
         if tostring(mapping.seatId or "") == tostring(seatId)
             and tostring(mapping.zoneName or "") == tostring(zone) then mappingCount = mappingCount + 1 end
     end
-    local generation = BridgeState.libraryBindingGenerationBySeatId
-        and BridgeState.libraryBindingGenerationBySeatId[seatId] or ""
     local topology = {}
     local deck = BridgeResolveSeatLibraryDeck ~= nil and BridgeResolveSeatLibraryDeck(seatId) or nil
     if deck ~= nil and deck.tag == "Deck" then
@@ -1904,7 +1908,7 @@ function BridgeLocalReplanProgressFingerprint(tx, operation)
     end
     table.sort(topology)
     return table.concat({tostring(operation and operation.scope or ""), tostring(seatId), tostring(zone),
-        tostring(tx.targetCursor or ""), tostring(mappingCount), tostring(generation),
+        tostring(tx.targetCursor or ""), tostring(mappingCount),
         table.concat(topology, ","), tostring(tx.lastBlockingPredicate or "")}, "|")
 end
 
@@ -7406,6 +7410,13 @@ function BridgeStopOnDecisionProvenanceLag(detail, fault)
             tostring(fault.sessionGeneration), tostring(BridgeState.eventSessionGeneration)))
         return
     end
+    if BridgeState.bootstrapping == true or BridgeState.embodimentTransaction ~= nil
+        or BridgeState.resyncInFlight == true then
+        BridgeState.staleDecisionFault = fault or BridgeState.staleDecisionFault
+        BridgeState.lastDecisionPollOutcome = "decision_provenance_waiting_for_bootstrap"
+        BridgeLog("[Bridge] deferring decision provenance terminal while physical bootstrap owns state")
+        return
+    end
     BridgeState.terminalRecoveryError = {
         sessionId = BridgeState.eventSessionId,
         sessionGeneration = BridgeState.eventSessionGeneration,
@@ -7415,7 +7426,9 @@ function BridgeStopOnDecisionProvenanceLag(detail, fault)
         decisionId = fault and fault.decisionId or nil,
         eventCursor = fault and fault.eventCursor or nil,
         appliedEventCursor = fault and fault.appliedEventCursor or nil,
-        payloadHash = fault and fault.payloadHash or nil
+        payloadHash = fault and fault.payloadHash or nil,
+        createdAt = os.clock(),
+        creationStage = BridgeState.bootstrapStage or BridgeState.resyncStage or "decision-poll"
     }
     BridgeState.gameEnded = nil
     BridgeState.resultSourceEventId = nil
@@ -14586,9 +14599,17 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
     for _, zone in ipairs(seatSnapshot.zones or {}) do
         for _, card in ipairs(zone.cards or {}) do
             if card.isVirtual ~= true and tostring(card.materializationPolicy or "") ~= "virtual" then
+                local cardInstanceId = card.cardInstanceId or card.instanceId
+                local cardName = card.cardName or card.currentCardName or card.name or card.Name
+                if cardInstanceId == nil or tostring(cardInstanceId) == "" then
+                    return nil, "source assignment missing Forge CardInstanceId"
+                end
+                if cardName == nil or BridgeNormalizeCardName(cardName) == "" then
+                    return nil, "source assignment missing canonical card name for " .. tostring(cardInstanceId)
+                end
                 table.insert(desired, {
-                    card = card, cardInstanceId = card.cardInstanceId, zone = zone.name,
-                    zonePosition = card.zonePosition, normalizedName = BridgeNormalizeCardName(card.cardName)
+                    card = card, cardInstanceId = tostring(cardInstanceId), cardName = tostring(cardName), zone = zone.name,
+                    zonePosition = card.zonePosition, normalizedName = BridgeNormalizeCardName(cardName)
                 })
             end
         end
@@ -14656,7 +14677,7 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
     local sourceAssignments = {}
     for _, assignment in pairs(assignments) do table.insert(sourceAssignments, {
         cardInstanceId = assignment.desired.cardInstanceId,
-        cardName = assignment.desired.card.cardName,
+        cardName = assignment.desired.cardName,
         desiredZone = assignment.desired.zone,
         sourceZone = assignment.source.sourceZone,
         locatorType = assignment.source.locatorType,
@@ -14741,7 +14762,7 @@ function BridgeApplySeatSourceAssignment(plan, seatSnapshot, moveIndex, callback
     if source.sourceZone == "library" and destination == "hand" then
         local hand, handError = BridgeTryGetSeatHandTransform(seatSnapshot.seatId)
         if hand == nil then callback(BridgeMakeEmbodimentResult("FAILED", nil, handError, nil)); return end
-        BridgeTakeSeatSourceCard(source, move.desired.card.cardName, hand.position, function(taken, errorMessage)
+        BridgeTakeSeatSourceCard(source, move.desired.cardName, hand.position, function(taken, errorMessage)
             if taken == nil then callback(BridgeMakeEmbodimentResult("FAILED", nil, errorMessage, nil)); return end
             -- The extracted loose Card receives the exact Forge identity that
             -- drove this source move.  The committed bridge ledger is still
@@ -23143,6 +23164,9 @@ function BridgeHudSubmitReport(category, summary)
         mappedCardInstanceIds = BridgeHudReportMappedCardInstanceIds(),
         physicalMappings = BridgeHudReportPhysicalMappings(),
         status = BridgeState.statusHeadline,
+        terminalRecovery = BridgeDiagnosticSnapshot(BridgeCurrentTerminalRecoveryError ~= nil
+            and BridgeCurrentTerminalRecoveryError() or {}),
+        retiredTerminalRecovery = BridgeDiagnosticSnapshot(BridgeState.terminalRecoveryErrorRetired or {}),
         presentedResult = BridgeDiagnosticPresentedResult ~= nil and BridgeDiagnosticPresentedResult() or nil,
         performanceSummary = performance.performanceSummary,
         recentTtsTrace = performance.recentTtsTrace,

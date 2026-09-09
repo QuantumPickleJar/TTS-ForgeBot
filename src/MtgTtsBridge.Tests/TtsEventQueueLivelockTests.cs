@@ -2655,6 +2655,34 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void ActiveReplacementBootstrapDefersDecisionTerminalUntilPhysicalOwnershipIsReleased()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'replacement-session'
+            BridgeState.eventSessionGeneration = 4
+            BridgeState.bootstrapping = true
+            BridgeState.resyncInFlight = true
+            BridgeState.embodimentTransaction = {token='bootstrap-token'}
+            BridgeState.eventPolling = false
+            fault = {
+                sessionId='replacement-session', sessionGeneration=4,
+                decisionId='forge-tui-1', eventCursor=19, appliedEventCursor=0,
+                key='replacement-stale-decision', payloadHash='hash'
+            }
+            BridgeStopOnDecisionProvenanceLag('decision arrived before bootstrap release', fault)
+            terminalDuringBootstrap = BridgeCurrentTerminalRecoveryError()
+            waitingOutcome = BridgeState.lastDecisionPollOutcome
+            BridgeState.bootstrapping = false
+            BridgeState.resyncInFlight = false
+            BridgeState.embodimentTransaction = nil
+        ");
+
+        Assert.True(lua.Globals.Get("terminalDuringBootstrap").IsNil());
+        Assert.Equal("decision_provenance_waiting_for_bootstrap", lua.Globals.Get("waitingOutcome").String);
+    }
+
+    [Fact]
     public void RecoveryPlansExactWrongZoneCardInsteadOfRepeatingLibraryRebind()
     {
         var lua = NewQueueProbe();

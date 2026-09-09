@@ -2439,6 +2439,9 @@ function BridgeHudSubmitReport(category, summary)
         mappedCardInstanceIds = BridgeHudReportMappedCardInstanceIds(),
         physicalMappings = BridgeHudReportPhysicalMappings(),
         status = BridgeState.statusHeadline,
+        terminalRecovery = BridgeDiagnosticSnapshot(BridgeCurrentTerminalRecoveryError ~= nil
+            and BridgeCurrentTerminalRecoveryError() or {}),
+        retiredTerminalRecovery = BridgeDiagnosticSnapshot(BridgeState.terminalRecoveryErrorRetired or {}),
         presentedResult = BridgeDiagnosticPresentedResult ~= nil and BridgeDiagnosticPresentedResult() or nil,
         performanceSummary = performance.performanceSummary,
         recentTtsTrace = performance.recentTtsTrace,

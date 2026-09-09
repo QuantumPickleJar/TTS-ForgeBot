@@ -114,9 +114,17 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
     for _, zone in ipairs(seatSnapshot.zones or {}) do
         for _, card in ipairs(zone.cards or {}) do
             if card.isVirtual ~= true and tostring(card.materializationPolicy or "") ~= "virtual" then
+                local cardInstanceId = card.cardInstanceId or card.instanceId
+                local cardName = card.cardName or card.currentCardName or card.name or card.Name
+                if cardInstanceId == nil or tostring(cardInstanceId) == "" then
+                    return nil, "source assignment missing Forge CardInstanceId"
+                end
+                if cardName == nil or BridgeNormalizeCardName(cardName) == "" then
+                    return nil, "source assignment missing canonical card name for " .. tostring(cardInstanceId)
+                end
                 table.insert(desired, {
-                    card = card, cardInstanceId = card.cardInstanceId, zone = zone.name,
-                    zonePosition = card.zonePosition, normalizedName = BridgeNormalizeCardName(card.cardName)
+                    card = card, cardInstanceId = tostring(cardInstanceId), cardName = tostring(cardName), zone = zone.name,
+                    zonePosition = card.zonePosition, normalizedName = BridgeNormalizeCardName(cardName)
                 })
             end
         end
@@ -184,7 +192,7 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
     local sourceAssignments = {}
     for _, assignment in pairs(assignments) do table.insert(sourceAssignments, {
         cardInstanceId = assignment.desired.cardInstanceId,
-        cardName = assignment.desired.card.cardName,
+        cardName = assignment.desired.cardName,
         desiredZone = assignment.desired.zone,
         sourceZone = assignment.source.sourceZone,
         locatorType = assignment.source.locatorType,
@@ -269,7 +277,7 @@ function BridgeApplySeatSourceAssignment(plan, seatSnapshot, moveIndex, callback
     if source.sourceZone == "library" and destination == "hand" then
         local hand, handError = BridgeTryGetSeatHandTransform(seatSnapshot.seatId)
         if hand == nil then callback(BridgeMakeEmbodimentResult("FAILED", nil, handError, nil)); return end
-        BridgeTakeSeatSourceCard(source, move.desired.card.cardName, hand.position, function(taken, errorMessage)
+        BridgeTakeSeatSourceCard(source, move.desired.cardName, hand.position, function(taken, errorMessage)
             if taken == nil then callback(BridgeMakeEmbodimentResult("FAILED", nil, errorMessage, nil)); return end
             -- The extracted loose Card receives the exact Forge identity that
             -- drove this source move.  The committed bridge ledger is still

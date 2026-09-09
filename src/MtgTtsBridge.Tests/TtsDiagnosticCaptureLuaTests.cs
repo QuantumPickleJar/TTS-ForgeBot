@@ -319,6 +319,43 @@ public sealed class TtsDiagnosticCaptureLuaTests
     }
 
     [Fact]
+    public void DiagnosticCaptureExportsCurrentStructuredTerminalRecoveryOwner()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'replacement-session'
+            BridgeState.eventSessionGeneration = 9
+            BridgeState.ui = {reportCaptureInFlight = false, reportCaptureToken = 0, reportCategoryIndex = 1}
+            BridgeState.terminalRecoveryError = {
+                sessionId='replacement-session', sessionGeneration=9,
+                kind='decision_provenance_lag', detail='decision cursor did not converge',
+                decisionId='forge-tui-1', eventCursor=19, creationStage='decision-poll'
+            }
+            function BridgeWaitTime(callback, delay) end
+            function BridgeHudReportSummaryText() return 'probe' end
+            function BridgeHudReportMappedCardInstanceIds() return {} end
+            function BridgeHudReportPhysicalMappings() return {} end
+            function BridgeUiMarkDirty(reason) end
+            function BridgePerformanceDiagnosticPayload()
+                return {performanceSummary={}, recentTtsTrace={}, diagnosticCaptureLifecycle={}, eventDrainDiagnostics={}}
+            end
+            JSON.encode = function(value) return '{}' end
+            submissions = 0
+            BridgeHttp.requestJson = function(method, path, payload, callback)
+                if method == 'POST' then submissions = submissions + 1; submittedPayload = payload; callback(true, {success=true, reportId='terminal'}, nil) end
+            end
+            BridgeHudSubmitReport('Gameplay sync', 'probe')
+        ");
+
+        var terminal = lua.Globals.Get("submittedPayload").Table.Get("terminalRecovery").Table;
+        Assert.Equal(1, lua.Globals.Get("submissions").Number);
+        Assert.Equal("decision_provenance_lag", terminal.Get("kind").String);
+        Assert.Equal("replacement-session", terminal.Get("sessionId").String);
+        Assert.Equal(9, terminal.Get("sessionGeneration").Number);
+        Assert.Equal("decision-poll", terminal.Get("creationStage").String);
+    }
+
+    [Fact]
     public void OnUpdateDoesNotStartResyncWhileStartupEmbodimentOwnsPhysicalState()
     {
         var lua = NewProbe();

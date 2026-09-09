@@ -1617,6 +1617,7 @@ function BridgeBuildDesiredPhysicalState(snapshot)
                     zoneState.instanceIds[instanceId] = true
                     desired.cardsByInstanceId[instanceId] = {
                         cardInstanceId = instanceId,
+                        cardName = card.cardName or card.currentCardName or card.name or card.Name,
                         seatId = seatId,
                         zone = zoneName,
                         private = zoneName == "hand" or zoneName == "library",
@@ -1833,6 +1834,11 @@ end
 function BridgeRecoverExactLibraryCardToHand(seatId, cardInstanceId, expectedName, callback)
     local hand, handError = BridgeTryGetSeatHandTransform(seatId)
     if hand == nil then callback(false, handError or "seat hand is unavailable"); return end
+    expectedName = expectedName or BridgeState.cardNameByInstanceId[cardInstanceId]
+    if expectedName == nil or BridgeNormalizeCardName(expectedName) == "" then
+        callback(false, "exact recovery card has no canonical card name: " .. tostring(cardInstanceId))
+        return
+    end
     local sessionId = BridgeState.eventSessionId
     local generation = BridgeState.physicalTransactionGeneration or 0
     if BridgeTakeContainedLibraryCardByIdentity == nil then
@@ -1886,8 +1892,6 @@ function BridgeLocalReplanProgressFingerprint(tx, operation)
         if tostring(mapping.seatId or "") == tostring(seatId)
             and tostring(mapping.zoneName or "") == tostring(zone) then mappingCount = mappingCount + 1 end
     end
-    local generation = BridgeState.libraryBindingGenerationBySeatId
-        and BridgeState.libraryBindingGenerationBySeatId[seatId] or ""
     local topology = {}
     local deck = BridgeResolveSeatLibraryDeck ~= nil and BridgeResolveSeatLibraryDeck(seatId) or nil
     if deck ~= nil and deck.tag == "Deck" then
@@ -1901,7 +1905,7 @@ function BridgeLocalReplanProgressFingerprint(tx, operation)
     end
     table.sort(topology)
     return table.concat({tostring(operation and operation.scope or ""), tostring(seatId), tostring(zone),
-        tostring(tx.targetCursor or ""), tostring(mappingCount), tostring(generation),
+        tostring(tx.targetCursor or ""), tostring(mappingCount),
         table.concat(topology, ","), tostring(tx.lastBlockingPredicate or "")}, "|")
 end
 
