@@ -255,7 +255,16 @@ function BridgeApplySeatSourceAssignment(plan, seatSnapshot, moveIndex, callback
     local source = move.source
     local function nextMove()
         plan.completedMoves = (plan.completedMoves or 0) + 1
-        BridgeApplySeatSourceAssignment(plan, seatSnapshot, moveIndex + 1, callback)
+        -- A Deck mutation invalidates every native slot observed before it.
+        -- Retain the logical desired assignment, but rebuild its ephemeral
+        -- physical locators before issuing another native mutation.
+        BridgeWaitFrames(function()
+            local refreshed, refreshError = BridgeBuildSeatSourceAssignment(seatSnapshot, plan.assets or {})
+            if refreshed == nil then callback(BridgeMakeEmbodimentResult("FAILED", nil, refreshError, nil)); return end
+            refreshed.assets = plan.assets
+            refreshed.completedMoves = plan.completedMoves
+            BridgeApplySeatSourceAssignment(refreshed, seatSnapshot, 1, callback)
+        end, 1)
     end
     if source.sourceZone == "library" and destination == "hand" then
         local hand, handError = BridgeTryGetSeatHandTransform(seatSnapshot.seatId)
@@ -320,6 +329,7 @@ end
 function BridgePrepareSeatSourceAssignment(seatSnapshot, assets, callback)
     local plan, planError = BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
     if plan == nil then callback(BridgeMakeEmbodimentResult("FAILED", nil, planError, nil)); return end
+    plan.assets = assets
     for _, zone in ipairs(seatSnapshot.zones or {}) do
         if zone.name == "library" then plan.desiredLibraryCount = #(zone.cards or {}) end
         if zone.name == "hand" then plan.desiredHandCount = #(zone.cards or {}) end
