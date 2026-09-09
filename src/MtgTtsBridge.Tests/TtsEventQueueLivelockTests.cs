@@ -3195,6 +3195,7 @@ public sealed class TtsEventQueueLivelockTests
             BridgeState.eventPolling = true
             BridgeState.eventPollGeneration = 4
             BridgeState.eventSessionId = 'session'
+            BridgeState.physicalOwnershipSessionId = 'session'
             BridgeState.eventSessionGeneration = 1
             BridgeState.lastAppliedEventSequence = 7
             BridgeState.lastReceivedEventSequence = 9

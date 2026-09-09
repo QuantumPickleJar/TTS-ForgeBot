@@ -2667,7 +2667,8 @@ public sealed class TtsGlobalLuaContractTests
     public void ResyncControl_RemainsAvailableWhenSessionIsStopped()
     {
         Assert.Contains("BridgeStopOnDesync", Script);
-        Assert.Contains("BridgeUiSet(\"BridgeHudResyncFromForge\", \"active\", devEnabled and not BridgeState.resyncInFlight", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudResyncFromForge\", \"active\", devEnabled", Script);
+        Assert.Contains("not BridgeState.hudResyncPending", Script);
         Assert.Contains("if sessionId == nil then", Script);
         Assert.Contains("cannot resync before Forge has started a session", Script);
     }

@@ -133,4 +133,72 @@ public sealed class TtsIdentityHardeningLuaTests
         Assert.Equal("forge-player-2", state.Get("physicalSeatByGuid").Table.Get("ai-7").String);
     }
 
+    [Fact]
+    public void NewSessionFencesOldPhysicalMappingsAndCallbacks()
+    {
+        var lua = new Script();
+        lua.DoString(@"
+            function log(message) end
+            function broadcastToAll(message, color) end
+            function printToAll(message, color) end
+            local objects = {}
+            local function object(guid, instanceId)
+                local value = {tag='Card', bridgeId=instanceId, bridgeSession='old'}
+                value.getGUID = function() return guid end
+                value.getVar = function(key)
+                    if key == 'bridgeCardInstanceId' then return value.bridgeId end
+                    if key == 'bridgeSessionId' then return value.bridgeSession end
+                    return nil
+                end
+                value.setVar = function(key, id)
+                    if key == 'bridgeCardInstanceId' then value.bridgeId = id end
+                    if key == 'bridgeSessionId' then value.bridgeSession = id end
+                end
+                return value
+            end
+            objects['old-guid'] = object('old-guid', 'forge:old:1')
+            objects['new-guid'] = object('new-guid', 'forge:new:1')
+            objects['new-guid'].bridgeSession = 'new'
+            function getObjectFromGUID(guid) return objects[guid] end
+            function getAllObjects() return {} end
+            JSON = {encode = function(value) return '{}' end, decode = function(value) return {} end}
+            os = {time = function() return 1 end, clock = function() return 0 end}
+            math.random = function(minimum, maximum) return 123456 end
+            math.randomseed(1)
+            table.concat = function(values, separator)
+                local result = ''
+                for index, value in ipairs(values or {}) do
+                    if value ~= nil then
+                        if result ~= '' then result = result .. (separator or '') end
+                        result = result .. tostring(value)
+                    end
+                end
+                return result
+            end
+        ");
+        lua.DoString(Script);
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'old'
+            BridgeState.physicalOwnershipSessionId = 'old'
+            BridgeState.physicalByInstanceId = {['forge:old:1']='old-guid'}
+            BridgeState.physicalInstanceIdByGuid = {['old-guid']='forge:old:1'}
+            BridgeState.physicalSeatByGuid = {['old-guid']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['old-guid']='hand'}
+            BridgeState.physicalContainerByInstanceId = {}
+            BridgeState.physicalContainedInstanceIdByGuid = {}
+            oldBeforeReplace = BridgeState.physicalByInstanceId['forge:old:1']
+            BridgePrepareEventSession('new', true, false)
+            oldCallbackAccepted = BridgeRecordLooseCardIdentity('forge:old:1', 'old-guid', 'forge-player-1', 'hand')
+            newCallbackAccepted = BridgeRecordLooseCardIdentity('forge:new:1', 'new-guid', 'forge-player-1', 'hand')
+            oldAfterReplace = BridgeState.physicalByInstanceId['forge:old:1']
+            newAfterReplace = BridgeState.physicalByInstanceId['forge:new:1']
+        ");
+
+        Assert.Equal("old-guid", lua.Globals.Get("oldBeforeReplace").String);
+        Assert.False(lua.Globals.Get("oldCallbackAccepted").Boolean);
+        Assert.True(lua.Globals.Get("newCallbackAccepted").Boolean);
+        Assert.True(lua.Globals.Get("oldAfterReplace").IsNil());
+        Assert.Equal("new-guid", lua.Globals.Get("newAfterReplace").String);
+    }
+
 }

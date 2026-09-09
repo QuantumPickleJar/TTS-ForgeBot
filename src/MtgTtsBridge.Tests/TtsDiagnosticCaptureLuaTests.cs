@@ -192,6 +192,39 @@ public sealed class TtsDiagnosticCaptureLuaTests
     }
 
     [Fact]
+    public void HudResyncInDesyncStateInvokesExplicitRecoveryExactlyOnce()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'hud-session'
+            BridgeState.eventSessionGeneration = 4
+            BridgeState.desyncLatched = true
+            BridgeState.resyncInFlight = false
+            BridgeState.ui = {mounted = false, resyncInFlight = false}
+            hudCallCount = 0
+            function BridgeEnsureRuntimeCompatibility(callback) callback(true, nil) end
+            function BridgeResyncFromAuthoritativeSnapshot(origin)
+                lastOrigin = origin
+                hudCallCount = hudCallCount + 1
+                BridgeState.resyncInFlight = true
+                return true
+            end
+            function BridgeUiMarkDirty(reason) end
+            function BridgeSetStatus(title, detail) lastHudStatus = title .. ':' .. tostring(detail) end
+            function BridgeEventDrainQueueState() return {
+                physicalLibraryQueuesIdle = true, headSequence = 17, queueLength = 2,
+                desyncLatched = true, bootstrapping = false
+            } end
+            BridgeHudResyncFromForge(nil, nil, nil)
+            BridgeHudResyncFromForge(nil, nil, nil)
+        ");
+
+        Assert.Equal(1, lua.Globals.Get("hudCallCount").Number);
+        Assert.Equal("hud", lua.Globals.Get("lastOrigin").String);
+        Assert.Contains("already running", lua.Globals.Get("lastHudStatus").String);
+    }
+
+    [Fact]
     public void DiagnosticPayload_UsesDetachedCopiesInsteadOfMutatingLiveSummary()
     {
         var lua = NewProbe();

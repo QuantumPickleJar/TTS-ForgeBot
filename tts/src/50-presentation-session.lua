@@ -2530,14 +2530,48 @@ function BridgeHudResyncFromForge(player, value, id)
         tostring(queueState.bootstrapping), tostring(BRIDGE_RUNTIME_EPOCH_LOCAL)))
     if BridgeState.resyncInFlight == true then
         BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=core-resync-in-flight")
+        BridgeSetStatus("RESYNCING FROM FORGE", "An explicit recovery is already running.")
         return
     end
+    if BridgeState.hudResyncPending == true then
+        BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=hud-recovery-handshake-pending")
+        BridgeSetStatus("RESYNCING FROM FORGE", "The recovery request is still being established.")
+        return
+    end
+    if BridgeState.eventSessionId == nil then
+        ui.resyncInFlight = false
+        BridgeSetStatus("RESYNC UNAVAILABLE", "No active Forge session is available for recovery.")
+        BridgeLog("[Bridge] RESYNC_CLICK_REJECTED origin=hud reason=no-active-session")
+        BridgeUiMarkDirty("resync-rejected")
+        return
+    end
+    -- Claim the UI side before the asynchronous compatibility check so a
+    -- second click cannot create a second recovery owner while the first is
+    -- waiting for its handshake.
+    BridgeState.hudResyncPending = true
+    ui.resyncInFlight = true
+    BridgeSetStatus("RESYNCING FROM FORGE", "Request accepted; checking runtime compatibility...")
+    BridgeUiMarkDirty("resync-click-pending")
     BridgeEnsureRuntimeCompatibility(function(compatible)
-        if not compatible then return end
+        BridgeState.hudResyncPending = false
+        if not compatible then
+            ui.resyncInFlight = false
+            BridgeSetStatus("RESYNC REJECTED", "Runtime compatibility did not match; reload the current Global.lua.")
+            BridgeLog("[Bridge] RESYNC_CLICK_REJECTED origin=hud reason=runtime-incompatible")
+            BridgeUiMarkDirty("resync-rejected")
+            return
+        end
         local started = BridgeResyncFromAuthoritativeSnapshot("hud")
         if started ~= true then
-            BridgeLog("[Bridge] RESYNC_DEFERRED reason=local-recovery-path")
+            ui.resyncInFlight = BridgeState.resyncInFlight == true
+            BridgeSetStatus("RESYNC REJECTED", "The current recovery owner did not accept the explicit retry.")
+            BridgeLog("[Bridge] RESYNC_CLICK_REJECTED origin=hud reason=core-rejected")
+            BridgeUiMarkDirty("resync-rejected")
+            return
         end
+        BridgeLog("[Bridge] RESYNC_CLICK_ACCEPTED origin=hud coreResyncInFlight="
+            .. tostring(BridgeState.resyncInFlight == true))
+        BridgeUiMarkDirty("resync-click-accepted")
     end)
 end
 
@@ -2667,7 +2701,8 @@ function BridgeUiFlush()
     -- Keep recovery available after BridgeStopOnDesync.  The handler gives a
     -- diagnostic error if no Forge session exists; hiding it here made the
     -- recovery control disappear exactly when a library mismatch needed it.
-    BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled and not BridgeState.resyncInFlight and "true" or "false")
+    BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled
+        and not BridgeState.resyncInFlight and not BridgeState.hudResyncPending and "true" or "false")
     BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
     -- Some TTS clients render Dropdown as a non-interactive checkbox. The
     -- adjacent previous/current buttons use ordinary Button callbacks and are

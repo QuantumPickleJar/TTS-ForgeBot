@@ -1905,7 +1905,7 @@ function BridgeBindHandMappingsForSnapshot(seatSnapshot, callback)
             if guid == nil then callback(false, "hand card has no live GUID", {status="FAILED"}); return end
             local name = BridgeNormalizeCardName(BridgePhysicalCanonicalCardName(object) or BridgeSafeObjectName(object))
             local item = {object = object, guid = guid,
-                instanceId = BridgeReadPhysicalIdentity(object), name = name}
+                instanceId = BridgeReadCurrentSessionPhysicalIdentity(object), name = name}
             physicalByName[name] = physicalByName[name] or {}
             table.insert(physicalByName[name], item)
             table.insert(physicalItems, item)

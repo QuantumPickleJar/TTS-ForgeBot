@@ -3083,7 +3083,7 @@ BridgeState = {
         gameLog = {},
         diagnosticsVisible = false, reportPanelVisible = false, reportCategoryIndex = 1,
         creatureTypeDecisionId = nil, creatureTypeDraftActionId = nil, creatureTypeOptions = {},
-        reportStatus = "", reportCaptureInFlight = false, reportCaptureToken = 0, resyncInFlight = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
+        reportStatus = "", reportCaptureInFlight = false, reportCaptureToken = 0, resyncInFlight = false, hudResyncPending = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
         uiAttributeCache = {}, uiAttributeAttemptCount = 0, uiAttributeWriteCount = 0,
         uiAttributeSkippedCount = 0,
         actionPanelRenderCount = 0, candidatePanelRenderCount = 0, ephemeralPhysicalControlSpawnCount = 0},
@@ -3508,6 +3508,32 @@ function BridgeWritePhysicalSessionIdentity(object, sessionId)
     pcall(function() object.setVar(BRIDGE_PHYSICAL_SESSION_KEY, tostring(sessionId)) end)
 end
 
+-- A TTS Card can physically survive a Forge session replacement. Its custom
+-- variables are historical provenance, not proof that the old CardInstanceId
+-- belongs to the current session. Never let stale identity metadata participate
+-- in a new-session assignment or repopulate the new physical ledger.
+function BridgeCardInstanceBelongsToSession(cardInstanceId, sessionId)
+    if cardInstanceId == nil or sessionId == nil then return true end
+    local encodedSession = string.match(tostring(cardInstanceId), "^forge:([^:]+):")
+    if encodedSession == nil then return true end
+    return tostring(encodedSession) == tostring(sessionId)
+end
+
+function BridgeReadCurrentSessionPhysicalIdentity(object)
+    local instanceId = BridgeReadPhysicalIdentity(object)
+    if instanceId == nil then return nil end
+    local activeSessionId = BridgeState.eventSessionId
+    local advertisedSession = BridgeReadPhysicalSessionIdentity(object)
+    if advertisedSession ~= nil and activeSessionId ~= nil
+        and tostring(advertisedSession) ~= tostring(activeSessionId) then
+        return nil
+    end
+    if not BridgeCardInstanceBelongsToSession(instanceId, activeSessionId) then
+        return nil
+    end
+    return instanceId
+end
+
 function BridgeAdvancePhysicalPresentationGeneration(reason)
     BridgeState.currentPhysicalPresentationGeneration =
         (BridgeState.currentPhysicalPresentationGeneration or 0) + 1
@@ -3593,6 +3619,11 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
         BridgeLog("[Bridge] refusing Forge mapping without an active session")
         return false
     end
+    if not BridgeCardInstanceBelongsToSession(cardInstanceId, activeSessionId) then
+        BridgeLog("[Bridge] refusing stale-session Forge mapping instance=" .. tostring(cardInstanceId)
+            .. " activeSession=" .. tostring(activeSessionId))
+        return false
+    end
     if BridgeIsPresentationOnlyObject(guid) then
         BridgeLog("[Bridge] refusing Forge mapping for presentation object " .. tostring(guid))
         return false
@@ -3676,6 +3707,11 @@ function BridgeRecordContainedCardIdentity(cardInstanceId, containingDeckGuid, c
     local activeSessionId = BridgeState.eventSessionId
     if activeSessionId == nil or activeSessionId == "session-not-started" then
         BridgeLog("[Bridge] refusing contained Forge mapping without an active session")
+        return false
+    end
+    if not BridgeCardInstanceBelongsToSession(cardInstanceId, activeSessionId) then
+        BridgeLog("[Bridge] refusing stale-session contained mapping instance=" .. tostring(cardInstanceId)
+            .. " activeSession=" .. tostring(activeSessionId))
         return false
     end
     local existingInstanceId = BridgeState.physicalContainedInstanceIdByGuid[containedCardGuid]
@@ -3785,6 +3821,9 @@ end
 
 function BridgeRecordSlotLibraryIdentity(cardInstanceId, deckGuid, slotIndex, seatId, zoneName, cardName, bindingGeneration)
     if cardInstanceId == nil or deckGuid == nil or tonumber(slotIndex) == nil then return false end
+    if not BridgeCardInstanceBelongsToSession(cardInstanceId, BridgeState.eventSessionId) then
+        return false
+    end
     BridgeState.physicalContainerByInstanceId = BridgeState.physicalContainerByInstanceId or {}
     BridgeState.physicalSlotByInstanceId = BridgeState.physicalSlotByInstanceId or {}
     local previous = BridgeState.physicalContainerByInstanceId[cardInstanceId]

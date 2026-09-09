@@ -1753,6 +1753,7 @@ function BridgeLegacyBootstrapCurrentSnapshot(sessionId, callback, resumeFromSna
     -- each retry, which was the source of the longitudinal recovery churn.
     local sameSessionRecovery = resumeFromSnapshotCursor == true
         and BridgeState.eventSessionId == sessionId
+        and BridgeState.physicalOwnershipSessionId == sessionId
     BridgeTraceStart("START-09 event-session-prepare", sameSessionRecovery and "preserved" or "required")
     if not sameSessionRecovery then
         BridgePrepareEventSession(sessionId, true, resumeFromSnapshotCursor == true)

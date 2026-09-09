@@ -683,6 +683,76 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void MentalNoteCompoundLibraryBatchDefersStackArrivalUntilOwnedGraveyardIsReady()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.lastAppliedEventSequence = 95
+            BridgeState.cardNameByInstanceId[':island'] = 'Island'
+            BridgeState.cardNameByInstanceId[':ashiok'] = 'Ashiok'
+            BridgeState.cardNameByInstanceId[':note'] = 'Mental Note'
+            BridgeState.cardNameByInstanceId[':swamp'] = 'Swamp'
+            local island = BridgeTestCreateCard(':island', 'Island', 'loose-island')
+            local ashiok = BridgeTestCreateCard(':ashiok', 'Ashiok', 'loose-ashiok')
+            local swamp = BridgeTestCreateCard(':swamp', 'Swamp', 'loose-swamp')
+            local note = BridgeTestCreateCard(':note', 'Mental Note', 'loose-note')
+            note._inLibrary = false
+            note._inHand = false
+            note._lastPosition = {x=2, y=1, z=0}
+            BridgeRecordLooseCardIdentity(':note', 'loose-note', 'forge-player-1', 'stack')
+            BridgeTestQueueExtractionCards({island, ashiok, swamp})
+            local rawApply = BridgeApplyStructuredCardMove
+            BridgeApplyStructuredCardMove = function(event)
+                if event ~= nil and event.sequence == 98 then
+                    stackApplyCount = (stackApplyCount or 0) + 1
+                end
+                return rawApply(event)
+            end
+            local rawStartDeferred = BridgeStartDeferredGraveyardEvents
+            BridgeStartDeferredGraveyardEvents = function(tx, batch)
+                deferredStartCount = (deferredStartCount or 0) + 1
+                deferredEventCount = BridgeTestArrayLength(batch and batch.deferredEvents or {})
+                return rawStartDeferred(tx, batch)
+            end
+            BridgeTestSetEventQueue(
+                {sequence=96, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':island', cardName='Island', forgeSequence=19},
+                {sequence=97, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':ashiok', cardName='Ashiok', forgeSequence=19},
+                {sequence=98, kind='card_moved', seatId='forge-player-1', sourceZone='stack', destinationZone='graveyard', cardInstanceId=':note', cardName='Mental Note', forgeSequence=19},
+                {sequence=99, kind='draw', seatId='forge-player-1', sourceZone='library', destinationZone='hand', cardInstanceId=':swamp', cardName='Swamp', forgeSequence=19}
+            )
+            BridgeProcessEventQueue()
+            local ledger = BridgeZoneLedger('forge-player-1', 'graveyard')
+            finalApplied = BridgeState.lastAppliedEventSequence
+            graveyardCount = BridgeTestArrayLength(ledger or {})
+            graveyard1 = ledger[1]
+            graveyard2 = ledger[2]
+            graveyardDeckCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries or {})
+            deckEntry1 = bridgeTest.graveyardDeck.entries[1] and bridgeTest.graveyardDeck.entries[1].instanceId or 'nil'
+            deckEntry2 = bridgeTest.graveyardDeck.entries[2] and bridgeTest.graveyardDeck.entries[2].instanceId or 'nil'
+            deckEntry3 = bridgeTest.graveyardDeck.entries[3] and bridgeTest.graveyardDeck.entries[3].instanceId or 'nil'
+            swampGuid = BridgeState.physicalByInstanceId[':swamp']
+            swampZone = swampGuid and BridgeState.physicalZoneByGuid[swampGuid] or nil
+            mutationAbortCount = BridgeTestCountLogToken('MUTATION_ABORT')
+            stackApplyCount = stackApplyCount or 0
+            deferredStartCount = deferredStartCount or 0
+            deferredEventCount = deferredEventCount or 0
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.True(lua.Globals.Get("finalApplied").Number == 99,
+            $"finalApplied={lua.Globals.Get("finalApplied").ToPrintString()} graveyard={lua.Globals.Get("graveyardCount").ToPrintString()} deck={lua.Globals.Get("graveyardDeckCount").ToPrintString()} entries={lua.Globals.Get("deckEntry1").ToPrintString()},{lua.Globals.Get("deckEntry2").ToPrintString()},{lua.Globals.Get("deckEntry3").ToPrintString()} stackApply={lua.Globals.Get("stackApplyCount").ToPrintString()} deferredStart={lua.Globals.Get("deferredStartCount").ToPrintString()} deferredEvents={lua.Globals.Get("deferredEventCount").ToPrintString()} swamp={lua.Globals.Get("swampZone").ToPrintString()} aborts={lua.Globals.Get("mutationAbortCount").ToPrintString()} desync={lua.Globals.Get("desyncState").ToPrintString()}");
+        Assert.Equal(3, lua.Globals.Get("graveyardCount").Number);
+        Assert.True(lua.Globals.Get("graveyardDeckCount").Number == 3,
+            $"deck={lua.Globals.Get("graveyardDeckCount").ToPrintString()} entries={lua.Globals.Get("deckEntry1").ToPrintString()},{lua.Globals.Get("deckEntry2").ToPrintString()},{lua.Globals.Get("deckEntry3").ToPrintString()} stackApply={lua.Globals.Get("stackApplyCount").ToPrintString()} deferredStart={lua.Globals.Get("deferredStartCount").ToPrintString()} deferredEvents={lua.Globals.Get("deferredEventCount").ToPrintString()} desync={lua.Globals.Get("desyncState").ToPrintString()}");
+        Assert.Equal(":island", lua.Globals.Get("graveyard1").String);
+        Assert.Equal(":ashiok", lua.Globals.Get("graveyard2").String);
+        Assert.Equal("hand", lua.Globals.Get("swampZone").String);
+        Assert.Equal(0, lua.Globals.Get("mutationAbortCount").Number);
+        Assert.True(lua.Globals.Get("stackApplyCount").Number >= 2);
+    }
+
+    [Fact]
     public void ThoughtScourTwoCardMillAndDrawPreservesPhysicalAtomicity()
     {
         var lua = NewProbe();

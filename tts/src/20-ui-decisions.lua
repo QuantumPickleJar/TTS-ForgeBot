@@ -2657,6 +2657,16 @@ end
 -- racing the exact queued mill/draw operations.  Keep snapshot mutation
 -- deferred until every seat's ordered library queue is idle.
 function BridgePhysicalLibraryQueuesIdle()
+    -- The event-drain transaction is the owner of the physical cards while a
+    -- same-forgeSequence mutation is staging, grouping, or settling.  A
+    -- snapshot/recovery worker must not observe or rewrite that intermediate
+    -- topology; wait for the transaction to commit or abort instead.
+    local eventTransaction = BridgeState.eventDrainTransaction
+    if eventTransaction ~= nil
+        and eventTransaction.state ~= "COMMITTED"
+        and eventTransaction.state ~= "ABORTED" then
+        return false
+    end
     for seatId, _ in pairs(BRIDGE_SEATS or {}) do
         -- libraryBatchBySeatId is logical bookkeeping for the Forge mutation,
         -- not an outstanding TTS operation.  It is retired only after the
