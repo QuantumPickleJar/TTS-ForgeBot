@@ -211,6 +211,128 @@ public sealed class TtsDiagnosticCaptureLuaTests
     }
 
     [Fact]
+    public void SeatReconciliationDiagnosticsDoNotRetainLiveTtsObjects()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local deck = {tag = 'Deck', getObjects = function() return {} end}
+            local card = {tag = 'Card', getGUID = function() return 'card-guid' end}
+            local plan = {
+                seatId = 'forge-player-2', deck = deck,
+                observedTotalInventory = 40, desiredTotalInventory = 40,
+                assignments = {x = {source = {object = card, deck = deck}}},
+                moves = {{source = {object = card, deck = deck}}},
+                sourceAssignments = {{cardInstanceId = ':71', desiredZone = 'hand', sourceZone = 'library', locatorType = 'SLOT_LOCATOR', deckGuid = 'deck-guid', slotIndex = 3}}
+            }
+            projected = BridgeSeatReconciliationDiagnostic(plan)
+            BridgeState.seatReconciliationDiagnosticsBySeatId = {['forge-player-2'] = projected}
+        ");
+
+        var projected = lua.Globals.Get("projected").Table;
+        Assert.True(projected.Get("deck").IsNil());
+        Assert.True(projected.Get("assignments").IsNil());
+        Assert.True(projected.Get("moves").IsNil());
+        Assert.Equal(1, projected.Get("sourceAssignments").Table.Length);
+    }
+
+    [Fact]
+    public void DiagnosticSnapshotSanitizesUnsupportedRuntimeValues()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local cyclic = {}; cyclic.self = cyclic
+            sanitized = BridgeDiagnosticSnapshot({callback = function() end, cyclic = cyclic, [function() end] = 'bad-key'})
+            encoded = JSON.encode(sanitized)
+        ");
+
+        var sanitized = lua.Globals.Get("sanitized").Table;
+        Assert.Equal("<diagnostic-function>", sanitized.Get("callback").String);
+        Assert.Equal("<diagnostic-cycle>", sanitized.Get("cyclic").Table.Get("self").String);
+        Assert.False(lua.Globals.Get("encoded").IsNil());
+    }
+
+    [Fact]
+    public void DiagnosticCaptureStillSubmitsWhenOptionalSectionIsUnserializable()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'capture-session'
+            BridgeState.ui = {reportCaptureInFlight = false, reportCaptureToken = 0, reportCategoryIndex = 1}
+            function BridgeWaitTime(callback, delay) end
+            function BridgeHudReportSummaryText() return 'probe' end
+            function BridgeHudReportMappedCardInstanceIds() return {} end
+            function BridgeHudReportPhysicalMappings() return {} end
+            function BridgeUiMarkDirty(reason) end
+            function BridgeCheckDiagnosticCapturePurity() return true end
+            function BridgePerformanceDiagnosticPayload()
+                return {performanceSummary = {bad = function() end}, recentTtsTrace = {}, diagnosticCaptureLifecycle = {}, eventDrainDiagnostics = {}}
+            end
+            JSON.encode = function(value)
+                if value.performanceSummary ~= nil then error('optional section rejected') end
+                return '{}'
+            end
+            submissions = 0
+            BridgeHttp.requestJson = function(method, path, payload, callback)
+                submissions = submissions + 1
+                submittedPayload = payload
+                callback(true, {success = true, reportId = 'safe'}, nil)
+            end
+            BridgeHudSubmitReport('Gameplay sync', 'probe')
+        ");
+
+        Assert.Equal(1, lua.Globals.Get("submissions").Number);
+        Assert.False(lua.Globals.Get("BridgeState").Table.Get("ui").Table.Get("reportCaptureInFlight").Boolean);
+        Assert.True(lua.Globals.Get("submittedPayload").Table.Get("performanceSummary").IsNil());
+    }
+
+    [Fact]
+    public void OnUpdateDoesNotStartResyncWhileStartupEmbodimentOwnsPhysicalState()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.desyncLatched = true
+            BridgeState.resyncInFlight = false
+            BridgeState.resyncScheduled = false
+            BridgeState.resyncCircuitOpen = false
+            local tx = BridgeBeginEmbodimentTransaction('s', 'initial-bootstrap', nil, nil)
+            tx.lastBlockingPredicate = 'library settlement'
+            resyncStarts = 0
+            function BridgeEnsureDesyncRecovery(reason) resyncStarts = resyncStarts + 1 end
+            for index = 1, 5 do BridgeEnforceDesyncRecovery('onUpdate') end
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(0, lua.Globals.Get("resyncStarts").Number);
+        Assert.Equal("onUpdate", state.Get("recoveryTrigger").String);
+        Assert.Equal("library settlement", state.Get("recoveryCause").String);
+    }
+
+    [Fact]
+    public void FailedStartupEmbodimentHandsOffToAtMostOneAuthoritativeRecovery()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.desyncLatched = true
+            BridgeState.resyncInFlight = false
+            BridgeState.resyncScheduled = false
+            BridgeState.resyncCircuitOpen = false
+            local tx = BridgeBeginEmbodimentTransaction('s', 'initial-bootstrap', nil, nil)
+            tx.targetCursor = 11
+            tx.firstActualFailure = 'seat hand binding failed'
+            BridgeFinishEmbodimentTransaction(tx, false, 'seat hand binding failed')
+            recoveryStarts = 0
+            function BridgeEnsureDesyncRecovery(reason) recoveryStarts = recoveryStarts + 1; BridgeState.resyncScheduled = true end
+            BridgeEnforceDesyncRecovery('onUpdate')
+            BridgeEnforceDesyncRecovery('onUpdate')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(1, lua.Globals.Get("recoveryStarts").Number);
+        Assert.True(state.Get("embodimentTransaction").IsNil());
+        Assert.Equal("seat hand binding failed", state.Get("recoveryCause").String);
+    }
+
+    [Fact]
     public void DiagnosticPayload_IncludesStartupNativeOperationCounters()
     {
         var lua = NewProbe();

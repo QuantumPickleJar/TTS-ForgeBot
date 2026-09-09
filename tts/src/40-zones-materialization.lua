@@ -1,4 +1,3 @@
-﻿            if not materialized then callback(false, materializeError); return end
             if not materialized then callback(BridgeMakeEmbodimentResult("FAILED", nil, materializeError, nil)); return end
             -- Materialization removes snapshot hand/public cards first. The
             -- remaining native Deck is then bound to Forge library instances
@@ -15,8 +14,6 @@
                     BridgeMarkResyncPhysicalRebuildReady(BridgeState.resyncCandidateSnapshot)
                 end
                 callback(BridgeMakeEmbodimentResult("SUCCESS", nil, nil, {status = "SUCCESS"}))
-                return
-                callback(true, nil, {status = "SUCCESS"})
             end, 30)
         end)
         end)
@@ -283,6 +280,43 @@ function BridgeApplySeatSourceAssignment(plan, seatSnapshot, moveIndex, callback
     end
 end
 
+-- Keep the execution plan transaction-local.  This projection is deliberately
+-- boring: it is durable diagnostic state and must remain JSON-safe even when
+-- a source locator contains live Deck/Card userdata.
+function BridgeSeatReconciliationDiagnostic(plan)
+    local result = {
+        seatId = plan and plan.seatId or nil,
+        observedTotalInventory = plan and plan.observedTotalInventory or 0,
+        desiredTotalInventory = plan and plan.desiredTotalInventory or 0,
+        observedLibraryCount = plan and plan.observedLibraryCount or 0,
+        observedHandCount = plan and plan.observedHandCount or 0,
+        desiredLibraryCount = plan and plan.desiredLibraryCount or 0,
+        desiredHandCount = plan and plan.desiredHandCount or 0,
+        sourceAssignmentCount = plan and #(plan.sourceAssignments or {}) or 0,
+        alreadyCorrectZoneCount = plan and plan.alreadyCorrectZoneCount or 0,
+        plannedLibraryToHand = plan and plan.plannedLibraryToHand or 0,
+        plannedHandToLibrary = plan and plan.plannedHandToLibrary or 0,
+        completedMoves = plan and plan.completedMoves or 0,
+        finalLibraryBindings = plan and plan.finalLibraryBindings or 0,
+        finalHandBindings = plan and plan.finalHandBindings or 0,
+        sourceAssignments = {}
+    }
+    for index, assignment in ipairs(plan and plan.sourceAssignments or {}) do
+        if index > 32 then break end
+        table.insert(result.sourceAssignments, {
+            cardInstanceId = assignment.cardInstanceId,
+            desiredZone = assignment.desiredZone,
+            sourceZone = assignment.sourceZone,
+            locatorType = assignment.locatorType,
+            deckGuid = assignment.deckGuid,
+            containedGuid = assignment.containedGuid,
+            slotIndex = assignment.slotIndex,
+            physicalGuid = assignment.physicalGuid
+        })
+    end
+    return result
+end
+
 function BridgePrepareSeatSourceAssignment(seatSnapshot, assets, callback)
     local plan, planError = BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
     if plan == nil then callback(BridgeMakeEmbodimentResult("FAILED", nil, planError, nil)); return end
@@ -295,7 +329,7 @@ function BridgePrepareSeatSourceAssignment(seatSnapshot, assets, callback)
         if move.source.sourceZone == "hand" and move.desired.zone == "library" then plan.plannedHandToLibrary = plan.plannedHandToLibrary + 1 end
     end
     BridgeState.seatReconciliationDiagnosticsBySeatId = BridgeState.seatReconciliationDiagnosticsBySeatId or {}
-    BridgeState.seatReconciliationDiagnosticsBySeatId[seatSnapshot.seatId] = plan
+    BridgeState.seatReconciliationDiagnosticsBySeatId[seatSnapshot.seatId] = BridgeSeatReconciliationDiagnostic(plan)
     BridgeApplySeatSourceAssignment(plan, seatSnapshot, 1, callback)
 end
 

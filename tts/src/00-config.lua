@@ -995,6 +995,8 @@ function BridgeEventDrainQueueState()
         resyncToken = BridgeState.resyncToken,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,
+        recoveryTrigger = BridgeState.recoveryTrigger,
+        recoveryCause = BridgeState.recoveryCause,
         resyncLastFailureReason = BridgeState.resyncLastFailureReason,
         resyncCircuitOpen = BridgeState.resyncCircuitOpen == true,
         snapshotRecoveryOwner = BridgeDiagnosticSnapshot(BridgeState.snapshotRecoveryOwner or {}),
@@ -1352,15 +1354,41 @@ function BridgeComputeRecoveryStateInvariants()
     return result
 end
 
+-- Diagnostics cross JSON's primitive/table boundary.  Never let a live TTS
+-- object (or an accidental callback/coroutine) escape that boundary.
 function BridgeDiagnosticSnapshot(value, active)
-    if type(value) ~= "table" then return value end
+    local valueType = type(value)
+    if valueType == "nil" or valueType == "boolean" or valueType == "number" or valueType == "string" then return value end
+    if valueType == "userdata" then return "<tts-userdata>" end
+    if valueType == "function" then return "<diagnostic-function>" end
+    if valueType == "thread" then return "<diagnostic-thread>" end
+    if valueType ~= "table" then return "<diagnostic-unsupported>" end
     active = active or {}
     if active[value] then return "<diagnostic-cycle>" end
     active[value] = true
+    local isArray, count, maxIndex = true, 0, 0
+    for key, _ in pairs(value) do
+        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then isArray = false; break end
+        count = count + 1
+        if key > maxIndex then maxIndex = key end
+    end
+    if count ~= maxIndex then isArray = false end
     local copy = {}
-    for key, item in pairs(value) do
-        local copiedKey = type(key) == "table" and tostring(key) or key
-        copy[copiedKey] = BridgeDiagnosticSnapshot(item, active)
+    if isArray then
+        for index = 1, maxIndex do copy[index] = BridgeDiagnosticSnapshot(value[index], active) end
+    else
+        local droppedKey = false
+        for key, item in pairs(value) do
+            local keyType = type(key)
+            if keyType == "string" then
+                copy[key] = BridgeDiagnosticSnapshot(item, active)
+            elseif keyType == "number" then
+                copy[tostring(key)] = BridgeDiagnosticSnapshot(item, active)
+            else
+                droppedKey = true
+            end
+        end
+        if droppedKey then copy.diagnosticSerializationWarning = "unsupported diagnostic table key dropped" end
     end
     active[value] = nil
     return copy
@@ -1804,6 +1832,16 @@ function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
     end
     BridgeState.lastEmbodimentTransaction = BridgeDiagnosticSnapshot(tx)
     BridgeState.embodimentTransaction = nil
+    if not ok then
+        -- Retire the physical writer before any liveness scheduler can own a
+        -- recovery.  The next scheduler pass carries a concrete cause rather
+        -- than treating its own trigger (usually onUpdate) as the cause.
+        BridgeState.recoveryCause = tx.firstActualFailure or errorMessage or tx.currentObservedBlocker
+        BridgeState.failedEmbodimentRecoveryPending = {
+            token = tx.token, sessionId = tx.targetSessionId, cursor = tx.targetCursor,
+            cause = BridgeState.recoveryCause
+        }
+    end
     -- Retire every callback belonging to the operation adapter. Physics is
     -- already observed; only callback ownership is discarded.
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
@@ -2818,6 +2856,8 @@ BridgeState = {
     resyncCandidateSnapshot = nil,
     resyncAttempt = 0,
     resyncRootCause = nil,
+    recoveryTrigger = nil,
+    recoveryCause = nil,
     resyncLastFailureReason = nil,
     resyncLastProgressAt = nil,
     resyncNoProgressAttempts = 0,
@@ -3059,6 +3099,8 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.prioritySourceEventSequence = 0
     BridgeState.desyncLatched = false
     BridgeState.desyncLastMessage = nil
+    BridgeState.recoveryTrigger = nil
+    BridgeState.recoveryCause = nil
     BridgeState.desyncFailureCount = 0
     BridgeState.terminalRecoveryError = nil
     BridgeState.staleDecisionFault = nil

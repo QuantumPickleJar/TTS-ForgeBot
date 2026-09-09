@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 51525c3441d5af0ddd7c4528257fcc38bedd09d69dfd0a664d0810d47bad2f12
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "51525c3441d5af0ddd7c4528257fcc38bedd09d69dfd0a664d0810d47bad2f12"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 433289a4604c84a405fc4083b1bc8ce598714d8649db8c29ca3f6edce0adbaa9
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "433289a4604c84a405fc4083b1bc8ce598714d8649db8c29ca3f6edce0adbaa9"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -998,6 +998,8 @@ function BridgeEventDrainQueueState()
         resyncToken = BridgeState.resyncToken,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,
+        recoveryTrigger = BridgeState.recoveryTrigger,
+        recoveryCause = BridgeState.recoveryCause,
         resyncLastFailureReason = BridgeState.resyncLastFailureReason,
         resyncCircuitOpen = BridgeState.resyncCircuitOpen == true,
         snapshotRecoveryOwner = BridgeDiagnosticSnapshot(BridgeState.snapshotRecoveryOwner or {}),
@@ -1355,15 +1357,41 @@ function BridgeComputeRecoveryStateInvariants()
     return result
 end
 
+-- Diagnostics cross JSON's primitive/table boundary.  Never let a live TTS
+-- object (or an accidental callback/coroutine) escape that boundary.
 function BridgeDiagnosticSnapshot(value, active)
-    if type(value) ~= "table" then return value end
+    local valueType = type(value)
+    if valueType == "nil" or valueType == "boolean" or valueType == "number" or valueType == "string" then return value end
+    if valueType == "userdata" then return "<tts-userdata>" end
+    if valueType == "function" then return "<diagnostic-function>" end
+    if valueType == "thread" then return "<diagnostic-thread>" end
+    if valueType ~= "table" then return "<diagnostic-unsupported>" end
     active = active or {}
     if active[value] then return "<diagnostic-cycle>" end
     active[value] = true
+    local isArray, count, maxIndex = true, 0, 0
+    for key, _ in pairs(value) do
+        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then isArray = false; break end
+        count = count + 1
+        if key > maxIndex then maxIndex = key end
+    end
+    if count ~= maxIndex then isArray = false end
     local copy = {}
-    for key, item in pairs(value) do
-        local copiedKey = type(key) == "table" and tostring(key) or key
-        copy[copiedKey] = BridgeDiagnosticSnapshot(item, active)
+    if isArray then
+        for index = 1, maxIndex do copy[index] = BridgeDiagnosticSnapshot(value[index], active) end
+    else
+        local droppedKey = false
+        for key, item in pairs(value) do
+            local keyType = type(key)
+            if keyType == "string" then
+                copy[key] = BridgeDiagnosticSnapshot(item, active)
+            elseif keyType == "number" then
+                copy[tostring(key)] = BridgeDiagnosticSnapshot(item, active)
+            else
+                droppedKey = true
+            end
+        end
+        if droppedKey then copy.diagnosticSerializationWarning = "unsupported diagnostic table key dropped" end
     end
     active[value] = nil
     return copy
@@ -1807,6 +1835,16 @@ function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
     end
     BridgeState.lastEmbodimentTransaction = BridgeDiagnosticSnapshot(tx)
     BridgeState.embodimentTransaction = nil
+    if not ok then
+        -- Retire the physical writer before any liveness scheduler can own a
+        -- recovery.  The next scheduler pass carries a concrete cause rather
+        -- than treating its own trigger (usually onUpdate) as the cause.
+        BridgeState.recoveryCause = tx.firstActualFailure or errorMessage or tx.currentObservedBlocker
+        BridgeState.failedEmbodimentRecoveryPending = {
+            token = tx.token, sessionId = tx.targetSessionId, cursor = tx.targetCursor,
+            cause = BridgeState.recoveryCause
+        }
+    end
     -- Retire every callback belonging to the operation adapter. Physics is
     -- already observed; only callback ownership is discarded.
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
@@ -2821,6 +2859,8 @@ BridgeState = {
     resyncCandidateSnapshot = nil,
     resyncAttempt = 0,
     resyncRootCause = nil,
+    recoveryTrigger = nil,
+    recoveryCause = nil,
     resyncLastFailureReason = nil,
     resyncLastProgressAt = nil,
     resyncNoProgressAttempts = 0,
@@ -3062,6 +3102,8 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.prioritySourceEventSequence = 0
     BridgeState.desyncLatched = false
     BridgeState.desyncLastMessage = nil
+    BridgeState.recoveryTrigger = nil
+    BridgeState.recoveryCause = nil
     BridgeState.desyncFailureCount = 0
     BridgeState.terminalRecoveryError = nil
     BridgeState.staleDecisionFault = nil
@@ -13747,17 +13789,10 @@ function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback, markPhy
                                 nil, reconcileError, reconcileOutcome)); return
                         end
                         if BridgeRecordBootstrapStage ~= nil then BridgeRecordBootstrapStage(stagePrefix .. "-materialization", "EXPECTED") end
-                        local structuredSeatCallback = callback
-                        callback = function(first, second, third)
-                            if type(first) == "table" then structuredSeatCallback(first); return end
-                            structuredSeatCallback(BridgeMakeEmbodimentResult(first and "SUCCESS" or "FAILED",
-                                nil, second, third))
-                        end
                         BridgeMaterializeSeatSnapshot(seatSnapshot, 1, 1, function(materialized, materializeError)
                             if not materialized then callback(BridgeMakeEmbodimentResult("FAILED", nil, materializeError, nil)); return end
 -- END GENERATED SOURCE: 30-input-identity.lua
 -- BEGIN GENERATED SOURCE: 40-zones-materialization.lua
-            if not materialized then callback(false, materializeError); return end
             if not materialized then callback(BridgeMakeEmbodimentResult("FAILED", nil, materializeError, nil)); return end
             -- Materialization removes snapshot hand/public cards first. The
             -- remaining native Deck is then bound to Forge library instances
@@ -13774,8 +13809,6 @@ function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback, markPhy
                     BridgeMarkResyncPhysicalRebuildReady(BridgeState.resyncCandidateSnapshot)
                 end
                 callback(BridgeMakeEmbodimentResult("SUCCESS", nil, nil, {status = "SUCCESS"}))
-                return
-                callback(true, nil, {status = "SUCCESS"})
             end, 30)
         end)
         end)
@@ -14042,6 +14075,43 @@ function BridgeApplySeatSourceAssignment(plan, seatSnapshot, moveIndex, callback
     end
 end
 
+-- Keep the execution plan transaction-local.  This projection is deliberately
+-- boring: it is durable diagnostic state and must remain JSON-safe even when
+-- a source locator contains live Deck/Card userdata.
+function BridgeSeatReconciliationDiagnostic(plan)
+    local result = {
+        seatId = plan and plan.seatId or nil,
+        observedTotalInventory = plan and plan.observedTotalInventory or 0,
+        desiredTotalInventory = plan and plan.desiredTotalInventory or 0,
+        observedLibraryCount = plan and plan.observedLibraryCount or 0,
+        observedHandCount = plan and plan.observedHandCount or 0,
+        desiredLibraryCount = plan and plan.desiredLibraryCount or 0,
+        desiredHandCount = plan and plan.desiredHandCount or 0,
+        sourceAssignmentCount = plan and #(plan.sourceAssignments or {}) or 0,
+        alreadyCorrectZoneCount = plan and plan.alreadyCorrectZoneCount or 0,
+        plannedLibraryToHand = plan and plan.plannedLibraryToHand or 0,
+        plannedHandToLibrary = plan and plan.plannedHandToLibrary or 0,
+        completedMoves = plan and plan.completedMoves or 0,
+        finalLibraryBindings = plan and plan.finalLibraryBindings or 0,
+        finalHandBindings = plan and plan.finalHandBindings or 0,
+        sourceAssignments = {}
+    }
+    for index, assignment in ipairs(plan and plan.sourceAssignments or {}) do
+        if index > 32 then break end
+        table.insert(result.sourceAssignments, {
+            cardInstanceId = assignment.cardInstanceId,
+            desiredZone = assignment.desiredZone,
+            sourceZone = assignment.sourceZone,
+            locatorType = assignment.locatorType,
+            deckGuid = assignment.deckGuid,
+            containedGuid = assignment.containedGuid,
+            slotIndex = assignment.slotIndex,
+            physicalGuid = assignment.physicalGuid
+        })
+    end
+    return result
+end
+
 function BridgePrepareSeatSourceAssignment(seatSnapshot, assets, callback)
     local plan, planError = BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
     if plan == nil then callback(BridgeMakeEmbodimentResult("FAILED", nil, planError, nil)); return end
@@ -14054,7 +14124,7 @@ function BridgePrepareSeatSourceAssignment(seatSnapshot, assets, callback)
         if move.source.sourceZone == "hand" and move.desired.zone == "library" then plan.plannedHandToLibrary = plan.plannedHandToLibrary + 1 end
     end
     BridgeState.seatReconciliationDiagnosticsBySeatId = BridgeState.seatReconciliationDiagnosticsBySeatId or {}
-    BridgeState.seatReconciliationDiagnosticsBySeatId[seatSnapshot.seatId] = plan
+    BridgeState.seatReconciliationDiagnosticsBySeatId[seatSnapshot.seatId] = BridgeSeatReconciliationDiagnostic(plan)
     BridgeApplySeatSourceAssignment(plan, seatSnapshot, 1, callback)
 end
 
@@ -21586,6 +21656,7 @@ function BridgeStopOnDesync(message)
         return
     end
     BridgeState.desyncLatched = true
+    BridgeState.recoveryCause = BridgeState.firstActualFailure or BridgeState.currentObservedBlocker or diagnostic
     BridgeState.desyncFailureCount = (BridgeState.desyncFailureCount or 0) + 1
     BridgeState.desyncLastMessage = diagnostic
     BridgeStopEventPolling("desync-latched")
@@ -21614,14 +21685,32 @@ function BridgeStopOnDesync(message)
     BridgeEnsureDesyncRecovery("desync")
 end
 
+function BridgeEmbodimentOwnsPhysicalRecovery()
+    local tx = BridgeState.embodimentTransaction
+    return BridgeEmbodimentTransactionIsCurrent ~= nil and BridgeEmbodimentTransactionIsCurrent(tx)
+        and tx.phase ~= "COMMITTED" and tx.phase ~= "ABORTED"
+end
+
 function BridgeEnforceDesyncRecovery(reason)
+    BridgeState.recoveryTrigger = reason or "liveness-watchdog"
+    if BridgeEmbodimentOwnsPhysicalRecovery() then
+        local tx = BridgeState.embodimentTransaction
+        BridgeState.recoveryCause = tx.firstActualFailure or tx.currentObservedBlocker
+            or tx.lastBlockingPredicate or BridgeState.desyncLastMessage
+        BridgeState.recoverySuppressedReason = "active-embodiment-transaction"
+        return false
+    end
     if BridgeState.desyncLatched == true
         and BridgeState.resyncCircuitOpen ~= true
         and not BridgeState.resyncInFlight
         and not BridgeState.resyncScheduled
         and not BridgeState.recoveryCheckpointCommitInProgress then
+        BridgeState.recoveryCause = BridgeState.recoveryCause or BridgeState.firstActualFailure
+            or BridgeState.currentObservedBlocker or BridgeState.desyncLastMessage
         BridgeEnsureDesyncRecovery(reason or "liveness-watchdog")
+        return true
     end
+    return false
 end
 
 function BridgeCheckRecoveryConvergence(reason)
@@ -22059,6 +22148,39 @@ function BridgeHudSubmitReport(category, summary)
         diagnosticCaptureLifecycle = performance.diagnosticCaptureLifecycle,
         eventDrainDiagnostics = performance.eventDrainDiagnostics
     }
+    -- Make the hand-off independently encodable.  The snapshotter should
+    -- already have removed runtime values, but a report must survive a future
+    -- optional diagnostic accidentally carrying one.
+    local sanitizedRequest = BridgeDiagnosticSnapshot(request)
+    local encodedOk = pcall(function() JSON.encode(sanitizedRequest) end)
+    if not encodedOk then
+        sanitizedRequest.performanceSummary = nil
+        sanitizedRequest.recentTtsTrace = nil
+        sanitizedRequest.diagnosticCaptureLifecycle = nil
+        sanitizedRequest.eventDrainDiagnostics = nil
+        sanitizedRequest.diagnosticSerializationWarnings = {
+            "optional diagnostic sections dropped after JSON encoding failure"
+        }
+        encodedOk = pcall(function() JSON.encode(sanitizedRequest) end)
+    end
+    if not encodedOk then
+        sanitizedRequest = {
+            summary = request.summary, category = request.category,
+            sessionId = request.sessionId, decisionId = request.decisionId,
+            clientRuntimeId = request.clientRuntimeId, clientRevision = request.clientRevision,
+            clientGeneratedGlobalLuaSha256 = request.clientGeneratedGlobalLuaSha256,
+            expectedGeneratedGlobalLuaSha256 = request.expectedGeneratedGlobalLuaSha256,
+            runtimeCompatibilityState = request.runtimeCompatibilityState,
+            lastAppliedEventSequence = request.lastAppliedEventSequence,
+            diagnosticSerializationWarnings = {"diagnostic payload reduced to core after JSON encoding failure"}
+        }
+        encodedOk = pcall(function() JSON.encode(sanitizedRequest) end)
+    end
+    if not encodedOk then
+        finish(false, nil, "diagnostic request failed: minimal core payload is not JSON encodable", "serialization-error", "DIAG_CAPTURE_SERIALIZATION_FAILED")
+        return
+    end
+    request = sanitizedRequest
     -- Purity belongs to the synchronous payload collection owned by this
     -- capture. Once the request is handed off, normal event/resync callbacks
     -- are allowed to advance the match while ZIP creation runs asynchronously;

@@ -3253,11 +3253,5 @@ function BridgeTryBootstrapSeatSnapshot(seatSnapshot, attempt, callback, markPhy
                                 nil, reconcileError, reconcileOutcome)); return
                         end
                         if BridgeRecordBootstrapStage ~= nil then BridgeRecordBootstrapStage(stagePrefix .. "-materialization", "EXPECTED") end
-                        local structuredSeatCallback = callback
-                        callback = function(first, second, third)
-                            if type(first) == "table" then structuredSeatCallback(first); return end
-                            structuredSeatCallback(BridgeMakeEmbodimentResult(first and "SUCCESS" or "FAILED",
-                                nil, second, third))
-                        end
                         BridgeMaterializeSeatSnapshot(seatSnapshot, 1, 1, function(materialized, materializeError)
                             if not materialized then callback(BridgeMakeEmbodimentResult("FAILED", nil, materializeError, nil)); return end

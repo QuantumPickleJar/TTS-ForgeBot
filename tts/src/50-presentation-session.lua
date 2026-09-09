@@ -1893,6 +1893,7 @@ function BridgeStopOnDesync(message)
         return
     end
     BridgeState.desyncLatched = true
+    BridgeState.recoveryCause = BridgeState.firstActualFailure or BridgeState.currentObservedBlocker or diagnostic
     BridgeState.desyncFailureCount = (BridgeState.desyncFailureCount or 0) + 1
     BridgeState.desyncLastMessage = diagnostic
     BridgeStopEventPolling("desync-latched")
@@ -1921,14 +1922,32 @@ function BridgeStopOnDesync(message)
     BridgeEnsureDesyncRecovery("desync")
 end
 
+function BridgeEmbodimentOwnsPhysicalRecovery()
+    local tx = BridgeState.embodimentTransaction
+    return BridgeEmbodimentTransactionIsCurrent ~= nil and BridgeEmbodimentTransactionIsCurrent(tx)
+        and tx.phase ~= "COMMITTED" and tx.phase ~= "ABORTED"
+end
+
 function BridgeEnforceDesyncRecovery(reason)
+    BridgeState.recoveryTrigger = reason or "liveness-watchdog"
+    if BridgeEmbodimentOwnsPhysicalRecovery() then
+        local tx = BridgeState.embodimentTransaction
+        BridgeState.recoveryCause = tx.firstActualFailure or tx.currentObservedBlocker
+            or tx.lastBlockingPredicate or BridgeState.desyncLastMessage
+        BridgeState.recoverySuppressedReason = "active-embodiment-transaction"
+        return false
+    end
     if BridgeState.desyncLatched == true
         and BridgeState.resyncCircuitOpen ~= true
         and not BridgeState.resyncInFlight
         and not BridgeState.resyncScheduled
         and not BridgeState.recoveryCheckpointCommitInProgress then
+        BridgeState.recoveryCause = BridgeState.recoveryCause or BridgeState.firstActualFailure
+            or BridgeState.currentObservedBlocker or BridgeState.desyncLastMessage
         BridgeEnsureDesyncRecovery(reason or "liveness-watchdog")
+        return true
     end
+    return false
 end
 
 function BridgeCheckRecoveryConvergence(reason)
@@ -2366,6 +2385,39 @@ function BridgeHudSubmitReport(category, summary)
         diagnosticCaptureLifecycle = performance.diagnosticCaptureLifecycle,
         eventDrainDiagnostics = performance.eventDrainDiagnostics
     }
+    -- Make the hand-off independently encodable.  The snapshotter should
+    -- already have removed runtime values, but a report must survive a future
+    -- optional diagnostic accidentally carrying one.
+    local sanitizedRequest = BridgeDiagnosticSnapshot(request)
+    local encodedOk = pcall(function() JSON.encode(sanitizedRequest) end)
+    if not encodedOk then
+        sanitizedRequest.performanceSummary = nil
+        sanitizedRequest.recentTtsTrace = nil
+        sanitizedRequest.diagnosticCaptureLifecycle = nil
+        sanitizedRequest.eventDrainDiagnostics = nil
+        sanitizedRequest.diagnosticSerializationWarnings = {
+            "optional diagnostic sections dropped after JSON encoding failure"
+        }
+        encodedOk = pcall(function() JSON.encode(sanitizedRequest) end)
+    end
+    if not encodedOk then
+        sanitizedRequest = {
+            summary = request.summary, category = request.category,
+            sessionId = request.sessionId, decisionId = request.decisionId,
+            clientRuntimeId = request.clientRuntimeId, clientRevision = request.clientRevision,
+            clientGeneratedGlobalLuaSha256 = request.clientGeneratedGlobalLuaSha256,
+            expectedGeneratedGlobalLuaSha256 = request.expectedGeneratedGlobalLuaSha256,
+            runtimeCompatibilityState = request.runtimeCompatibilityState,
+            lastAppliedEventSequence = request.lastAppliedEventSequence,
+            diagnosticSerializationWarnings = {"diagnostic payload reduced to core after JSON encoding failure"}
+        }
+        encodedOk = pcall(function() JSON.encode(sanitizedRequest) end)
+    end
+    if not encodedOk then
+        finish(false, nil, "diagnostic request failed: minimal core payload is not JSON encodable", "serialization-error", "DIAG_CAPTURE_SERIALIZATION_FAILED")
+        return
+    end
+    request = sanitizedRequest
     -- Purity belongs to the synchronous payload collection owned by this
     -- capture. Once the request is handed off, normal event/resync callbacks
     -- are allowed to advance the match while ZIP creation runs asynchronously;
