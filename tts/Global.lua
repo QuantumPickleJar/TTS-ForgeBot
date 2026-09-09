@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 433289a4604c84a405fc4083b1bc8ce598714d8649db8c29ca3f6edce0adbaa9
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "433289a4604c84a405fc4083b1bc8ce598714d8649db8c29ca3f6edce0adbaa9"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 2aa63ee700e2fdbd9079249ec4662c524080c1dd330ef456970879ec943c0dec
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "2aa63ee700e2fdbd9079249ec4662c524080c1dd330ef456970879ec943c0dec"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -1717,6 +1717,37 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
     return plan
 end
 
+-- A successful local binder is not progress if the exact same physical
+-- topology and validator blocker immediately recur.  Keep this independent
+-- of global replan accounting so a representation bug cannot spin every
+-- update while reporting replanCount=1.
+function BridgeLocalReplanProgressFingerprint(tx, operation)
+    local seatId = operation and operation.seatId or ""
+    local zone = operation and operation.zone or ""
+    local mappingCount = 0
+    for _, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+        if tostring(mapping.seatId or "") == tostring(seatId)
+            and tostring(mapping.zoneName or "") == tostring(zone) then mappingCount = mappingCount + 1 end
+    end
+    local generation = BridgeState.libraryBindingGenerationBySeatId
+        and BridgeState.libraryBindingGenerationBySeatId[seatId] or ""
+    local topology = {}
+    local deck = BridgeResolveSeatLibraryDeck ~= nil and BridgeResolveSeatLibraryDeck(seatId) or nil
+    if deck ~= nil and deck.tag == "Deck" then
+        local ok, entries = pcall(function() return deck.getObjects() or {} end)
+        if ok then
+            for _, entry in ipairs(entries) do
+                table.insert(topology, tostring(entry.index) .. ":" .. BridgeNormalizeCardName(entry.nickname or entry.name or "")
+                    .. ":" .. tostring(entry.guid or entry.GUID or ""))
+            end
+        end
+    end
+    table.sort(topology)
+    return table.concat({tostring(operation and operation.scope or ""), tostring(seatId), tostring(zone),
+        tostring(tx.targetCursor or ""), tostring(mappingCount), tostring(generation),
+        table.concat(topology, ","), tostring(tx.lastBlockingPredicate or "")}, "|")
+end
+
 function BridgeAssignEmbodimentOperationTokens(tx)
     for index, operation in ipairs(tx.plan and tx.plan.operations or {}) do
         operation.index = index
@@ -2144,6 +2175,23 @@ function BridgePumpEmbodimentTransaction()
                         return
                     end
                     if status == "SUCCESS" then
+                        local fingerprint = BridgeLocalReplanProgressFingerprint(tx, operation)
+                        tx.localNoProgress = tx.localNoProgress or {}
+                        local localKey = table.concat({tostring(operation.scope), tostring(operation.seatId),
+                            tostring(operation.zone), tostring(tx.targetCursor)}, "|")
+                        local previous = tx.localNoProgress[localKey]
+                        if previous ~= nil and previous.fingerprint == fingerprint then
+                            previous.count = (previous.count or 1) + 1
+                            if previous.count > 2 then
+                                local detail = "seat-local replan made no progress scope=" .. tostring(operation.scope)
+                                    .. " seat=" .. tostring(operation.seatId) .. " zone=" .. tostring(operation.zone)
+                                    .. " blocker=" .. tostring(tx.lastBlockingPredicate)
+                                BridgeEmbodimentRecordActualFailure(tx, detail)
+                                return BridgeFinishEmbodimentTransaction(tx, false, detail)
+                            end
+                        else
+                            tx.localNoProgress[localKey] = {fingerprint = fingerprint, count = 1}
+                        end
                         tx.operationStarted = false
                         tx.phase = "OBSERVE"
                         tx.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
@@ -3527,6 +3575,7 @@ function BridgeRecordContainedCardIdentity(cardInstanceId, containingDeckGuid, c
     BridgeState.physicalContainerByInstanceId[cardInstanceId] = {
         deckGuid = containingDeckGuid,
         cardGuid = containedCardGuid,
+        locatorType = "GUID_LOCATOR",
         seatId = seatId,
         zoneName = zoneName
     }
@@ -3558,6 +3607,25 @@ function BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
     if not ok then return nil, nil, "containing Deck inventory is unavailable" end
     if mapping.locatorType == "SLOT_LOCATOR" then
         local targetIndex = tonumber(mapping.slotIndex)
+        local expectedGeneration = BridgeState.libraryBindingGenerationBySeatId
+            and BridgeState.libraryBindingGenerationBySeatId[mapping.seatId] or nil
+        if targetIndex == nil or targetIndex < 0 then return nil, nil, "slot locator has no usable native index" end
+        if expectedGeneration == nil or tonumber(mapping.bindingGeneration) ~= tonumber(expectedGeneration) then
+            return nil, nil, "slot locator binding generation is stale"
+        end
+        for otherInstanceId, other in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+            if otherInstanceId ~= cardInstanceId and other.locatorType == "SLOT_LOCATOR"
+                and tostring(other.deckGuid) == tostring(mapping.deckGuid)
+                and tonumber(other.bindingGeneration) == tonumber(mapping.bindingGeneration)
+                and tonumber(other.slotIndex) == targetIndex then
+                return nil, nil, "slot locator is claimed by another Forge instance"
+            end
+        end
+        for containedGuid, owner in pairs(BridgeState.physicalContainedInstanceIdByGuid or {}) do
+            if owner == cardInstanceId then
+                return nil, nil, "slot locator has contradictory GUID inverse mapping"
+            end
+        end
         local targetName = BridgeNormalizeCardName(mapping.cardName or BridgeState.cardNameByInstanceId[cardInstanceId])
         local match = nil
         for _, entry in ipairs(entries) do
@@ -3571,6 +3639,9 @@ function BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
         if match == nil then return nil, nil, "slot locator no longer matches Deck" end
         mapping.index = targetIndex
         return deck, match, nil
+    end
+    if mapping.cardGuid == nil or string.match(tostring(mapping.cardGuid), "%S") == nil then
+        return nil, nil, "contained GUID locator has no usable GUID"
     end
     for _, entry in ipairs(entries) do
         local guid = entry and (entry.guid or entry.GUID) or nil
@@ -5344,6 +5415,29 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
                 return
             end
             local candidate = candidates[index]
+            -- putObject/group/collapse can retire the Card captured during
+            -- collection. Re-resolve by the known GUID at every async edge;
+            -- a retired object is a cleanup observation failure, never a
+            -- reason to dereference stale native userdata.
+            local liveCandidate = BridgeGetLiveObjectByGuid ~= nil
+                and BridgeGetLiveObjectByGuid(candidate.guid) or nil
+            -- The source-only MoonSharp contract fixture predates the live
+            -- GUID resolver. TTS always supplies it; retain the old local
+            -- object fallback only for that isolated harness condition.
+            if BridgeGetLiveObjectByGuid == nil then liveCandidate = candidate.object end
+            if not BridgeObjectIsUsable(liveCandidate) or liveCandidate.tag ~= "Card" then
+                BridgeState.lastNewMatchCleanupCallbackFailure = {
+                    cleanupOwner = BridgeState.newMatchCleanupOwner,
+                    embodimentEpoch = BridgeState.embodimentEpoch,
+                    operation = "RETURN_PREVIOUS_GAME_CARDS",
+                    seatId = candidate.seatId, sourceZone = candidate.zone,
+                    guid = candidate.guid, callbackStage = "before-library-insert",
+                    error = "captured native Card is retired or no longer a loose Card"
+                }
+                if callback then callback(false, "previous-game card callback observed retired native object " .. tostring(candidate.guid)) end
+                return
+            end
+            candidate.object = liveCandidate
             BridgeInsertPhysicalCardIntoLibrary(candidate.seatId, candidate.object, "NORMAL", function(inserted, insertError)
                 if not inserted then
                     local library = BridgeResolveSeatLibraryDeck(candidate.seatId)
@@ -13709,6 +13803,7 @@ function BridgeBindLibraryMappingsForSnapshot(seatSnapshot, callback)
             end
             nextContainer[mapping.cardInstanceId] = {
                 deckGuid = mapping.deckGuid, cardGuid = mapping.containedGuid,
+                locatorType = "GUID_LOCATOR",
                 seatId = mapping.seatId, zoneName = mapping.zoneName
             }
             nextContained[mapping.containedGuid] = mapping.cardInstanceId
@@ -19742,12 +19837,19 @@ function BridgeVerifyFinalPhysicalRepresentation(instanceId, seatId, zoneName)
     if container.tag ~= "Deck" or not BridgeObjectIsUsable(container) then
         return false, "contained final representation is not a usable native Deck"
     end
-    if BridgeState.physicalContainedInstanceIdByGuid[mapping.cardGuid] ~= instanceId then
-        return false, "contained final representation has no exact inverse identity"
-    end
-    if BridgeState.physicalSeatByGuid[mapping.cardGuid] ~= seatId
-        or BridgeState.physicalZoneByGuid[mapping.cardGuid] ~= zoneName then
-        return false, "contained final representation has incorrect seat or zone"
+    if mapping.locatorType == "GUID_LOCATOR" then
+        if mapping.cardGuid == nil or string.match(tostring(mapping.cardGuid), "%S") == nil then
+            return false, "contained GUID final representation has no usable GUID"
+        end
+        if BridgeState.physicalContainedInstanceIdByGuid[mapping.cardGuid] ~= instanceId then
+            return false, "contained GUID final representation has no exact inverse identity"
+        end
+        if BridgeState.physicalSeatByGuid[mapping.cardGuid] ~= seatId
+            or BridgeState.physicalZoneByGuid[mapping.cardGuid] ~= zoneName then
+            return false, "contained GUID final representation has incorrect seat or zone"
+        end
+    elseif mapping.locatorType ~= "SLOT_LOCATOR" then
+        return false, "contained final representation has unknown locator type"
     end
     return true, nil
 end

@@ -5947,12 +5947,19 @@ function BridgeVerifyFinalPhysicalRepresentation(instanceId, seatId, zoneName)
     if container.tag ~= "Deck" or not BridgeObjectIsUsable(container) then
         return false, "contained final representation is not a usable native Deck"
     end
-    if BridgeState.physicalContainedInstanceIdByGuid[mapping.cardGuid] ~= instanceId then
-        return false, "contained final representation has no exact inverse identity"
-    end
-    if BridgeState.physicalSeatByGuid[mapping.cardGuid] ~= seatId
-        or BridgeState.physicalZoneByGuid[mapping.cardGuid] ~= zoneName then
-        return false, "contained final representation has incorrect seat or zone"
+    if mapping.locatorType == "GUID_LOCATOR" then
+        if mapping.cardGuid == nil or string.match(tostring(mapping.cardGuid), "%S") == nil then
+            return false, "contained GUID final representation has no usable GUID"
+        end
+        if BridgeState.physicalContainedInstanceIdByGuid[mapping.cardGuid] ~= instanceId then
+            return false, "contained GUID final representation has no exact inverse identity"
+        end
+        if BridgeState.physicalSeatByGuid[mapping.cardGuid] ~= seatId
+            or BridgeState.physicalZoneByGuid[mapping.cardGuid] ~= zoneName then
+            return false, "contained GUID final representation has incorrect seat or zone"
+        end
+    elseif mapping.locatorType ~= "SLOT_LOCATOR" then
+        return false, "contained final representation has unknown locator type"
     end
     return true, nil
 end

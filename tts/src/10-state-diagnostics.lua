@@ -1522,6 +1522,29 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
                 return
             end
             local candidate = candidates[index]
+            -- putObject/group/collapse can retire the Card captured during
+            -- collection. Re-resolve by the known GUID at every async edge;
+            -- a retired object is a cleanup observation failure, never a
+            -- reason to dereference stale native userdata.
+            local liveCandidate = BridgeGetLiveObjectByGuid ~= nil
+                and BridgeGetLiveObjectByGuid(candidate.guid) or nil
+            -- The source-only MoonSharp contract fixture predates the live
+            -- GUID resolver. TTS always supplies it; retain the old local
+            -- object fallback only for that isolated harness condition.
+            if BridgeGetLiveObjectByGuid == nil then liveCandidate = candidate.object end
+            if not BridgeObjectIsUsable(liveCandidate) or liveCandidate.tag ~= "Card" then
+                BridgeState.lastNewMatchCleanupCallbackFailure = {
+                    cleanupOwner = BridgeState.newMatchCleanupOwner,
+                    embodimentEpoch = BridgeState.embodimentEpoch,
+                    operation = "RETURN_PREVIOUS_GAME_CARDS",
+                    seatId = candidate.seatId, sourceZone = candidate.zone,
+                    guid = candidate.guid, callbackStage = "before-library-insert",
+                    error = "captured native Card is retired or no longer a loose Card"
+                }
+                if callback then callback(false, "previous-game card callback observed retired native object " .. tostring(candidate.guid)) end
+                return
+            end
+            candidate.object = liveCandidate
             BridgeInsertPhysicalCardIntoLibrary(candidate.seatId, candidate.object, "NORMAL", function(inserted, insertError)
                 if not inserted then
                     local library = BridgeResolveSeatLibraryDeck(candidate.seatId)

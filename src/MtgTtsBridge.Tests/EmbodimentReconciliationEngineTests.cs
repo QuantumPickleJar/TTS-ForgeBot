@@ -499,6 +499,83 @@ public sealed class EmbodimentReconciliationEngineTests
             lua.Globals.Get("ambiguousPlan").Table.Get("blockingPredicate").String);
     }
 
+    [Fact]
+    public void AuthoritativeSnapshotValidationAcceptsValidSlotBoundLibraryCard()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local deck = {tag='Deck', getGUID=function() return 'library' end,
+                getObjects=function() return {{index=4, nickname='Mental Note', guid=' '}} end}
+            function getObjectFromGUID(guid) if guid == 'library' then return deck end end
+            BridgeState.libraryBindingGenerationBySeatId = {['forge-player-1']=7}
+            BridgeState.physicalContainerByInstanceId = {['X']={locatorType='SLOT_LOCATOR', deckGuid='library', slotIndex=4, bindingGeneration=7, seatId='forge-player-1', zoneName='library', cardName='Mental Note'}}
+            BridgeState.physicalContainedInstanceIdByGuid = {}
+            BridgeState.physicalByInstanceId = {}; BridgeState.physicalInstanceIdByGuid = {}
+            valid, validationError = BridgeValidateAuthoritativeSnapshotPhysicalState({sessionId='session', eventCursor=14, seats={{seatId='forge-player-1', zones={{name='library', cards={{cardInstanceId='X', cardName='Mental Note'}}}}}}})
+        ");
+
+        Assert.True(lua.Globals.Get("valid").Boolean, lua.Globals.Get("validationError").ToPrintString());
+    }
+
+    [Fact]
+    public void AuthoritativeSnapshotValidationSupportsMixedGuidAndSlotLibraryLocators()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local deck = {tag='Deck', getGUID=function() return 'library' end, getObjects=function() return {
+                {index=1, nickname='Swamp', guid='guid-swamp'}, {index=4, nickname='Mental Note', guid=' '}} end}
+            function getObjectFromGUID(guid) if guid == 'library' then return deck end end
+            BridgeState.libraryBindingGenerationBySeatId = {['forge-player-1']=7}
+            BridgeState.physicalContainerByInstanceId = {
+                ['G']={locatorType='GUID_LOCATOR', deckGuid='library', cardGuid='guid-swamp', seatId='forge-player-1', zoneName='library'},
+                ['S']={locatorType='SLOT_LOCATOR', deckGuid='library', slotIndex=4, bindingGeneration=7, seatId='forge-player-1', zoneName='library', cardName='Mental Note'}}
+            BridgeState.physicalContainedInstanceIdByGuid = {['guid-swamp']='G'}
+            BridgeState.physicalSeatByGuid = {['guid-swamp']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['guid-swamp']='library'}
+            BridgeState.physicalByInstanceId = {}; BridgeState.physicalInstanceIdByGuid = {}
+            valid, validationError = BridgeValidateAuthoritativeSnapshotPhysicalState({sessionId='session', eventCursor=14, seats={{seatId='forge-player-1', zones={{name='library', cards={{cardInstanceId='G', cardName='Swamp'}, {cardInstanceId='S', cardName='Mental Note'}}}}}}})
+        ");
+
+        Assert.True(lua.Globals.Get("valid").Boolean, lua.Globals.Get("validationError").ToPrintString());
+    }
+
+    [Fact]
+    public void AuthoritativeSnapshotValidationRejectsStaleSlotLocator()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local deck = {tag='Deck', getGUID=function() return 'library' end,
+                getObjects=function() return {{index=4, nickname='Mental Note', guid=' '}} end}
+            function getObjectFromGUID(guid) if guid == 'library' then return deck end end
+            BridgeState.libraryBindingGenerationBySeatId = {['forge-player-1']=8}
+            BridgeState.physicalContainerByInstanceId = {['X']={locatorType='SLOT_LOCATOR', deckGuid='library', slotIndex=4, bindingGeneration=7, seatId='forge-player-1', zoneName='library', cardName='Mental Note'}}
+            BridgeState.physicalContainedInstanceIdByGuid = {}; BridgeState.physicalByInstanceId = {}; BridgeState.physicalInstanceIdByGuid = {}
+            valid, validationError = BridgeValidateAuthoritativeSnapshotPhysicalState({sessionId='session', eventCursor=14, seats={{seatId='forge-player-1', zones={{name='library', cards={{cardInstanceId='X', cardName='Mental Note'}}}}}}})
+        ");
+
+        Assert.False(lua.Globals.Get("valid").Boolean);
+        Assert.Contains("generation is stale", lua.Globals.Get("validationError").String);
+    }
+
+    [Fact]
+    public void SeatLocalReplanStopsAfterBoundedNoProgressFingerprint()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local deck = {tag='Deck', getGUID=function() return 'library' end,
+                getObjects=function() return {{index=4, nickname='Mental Note', guid=' '}} end}
+            function BridgeResolveSeatLibraryDeck(_) return deck end
+            BridgeState.libraryBindingGenerationBySeatId = {['forge-player-1']=7}
+            BridgeState.physicalContainerByInstanceId = {['X']={locatorType='SLOT_LOCATOR', deckGuid='library', slotIndex=4, bindingGeneration=7, seatId='forge-player-1', zoneName='library', cardName='Mental Note'}}
+            local tx = {targetCursor=14, lastBlockingPredicate='validator rejects representation'}
+            local operation = {scope='SEAT_LIBRARY', seatId='forge-player-1', zone='library'}
+            first = BridgeLocalReplanProgressFingerprint(tx, operation)
+            second = BridgeLocalReplanProgressFingerprint(tx, operation)
+        ");
+
+        Assert.Equal(lua.Globals.Get("first").String, lua.Globals.Get("second").String);
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script();

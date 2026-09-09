@@ -3173,6 +3173,7 @@ function BridgeBindLibraryMappingsForSnapshot(seatSnapshot, callback)
             end
             nextContainer[mapping.cardInstanceId] = {
                 deckGuid = mapping.deckGuid, cardGuid = mapping.containedGuid,
+                locatorType = "GUID_LOCATOR",
                 seatId = mapping.seatId, zoneName = mapping.zoneName
             }
             nextContained[mapping.containedGuid] = mapping.cardInstanceId

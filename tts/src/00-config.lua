@@ -1714,6 +1714,37 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
     return plan
 end
 
+-- A successful local binder is not progress if the exact same physical
+-- topology and validator blocker immediately recur.  Keep this independent
+-- of global replan accounting so a representation bug cannot spin every
+-- update while reporting replanCount=1.
+function BridgeLocalReplanProgressFingerprint(tx, operation)
+    local seatId = operation and operation.seatId or ""
+    local zone = operation and operation.zone or ""
+    local mappingCount = 0
+    for _, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+        if tostring(mapping.seatId or "") == tostring(seatId)
+            and tostring(mapping.zoneName or "") == tostring(zone) then mappingCount = mappingCount + 1 end
+    end
+    local generation = BridgeState.libraryBindingGenerationBySeatId
+        and BridgeState.libraryBindingGenerationBySeatId[seatId] or ""
+    local topology = {}
+    local deck = BridgeResolveSeatLibraryDeck ~= nil and BridgeResolveSeatLibraryDeck(seatId) or nil
+    if deck ~= nil and deck.tag == "Deck" then
+        local ok, entries = pcall(function() return deck.getObjects() or {} end)
+        if ok then
+            for _, entry in ipairs(entries) do
+                table.insert(topology, tostring(entry.index) .. ":" .. BridgeNormalizeCardName(entry.nickname or entry.name or "")
+                    .. ":" .. tostring(entry.guid or entry.GUID or ""))
+            end
+        end
+    end
+    table.sort(topology)
+    return table.concat({tostring(operation and operation.scope or ""), tostring(seatId), tostring(zone),
+        tostring(tx.targetCursor or ""), tostring(mappingCount), tostring(generation),
+        table.concat(topology, ","), tostring(tx.lastBlockingPredicate or "")}, "|")
+end
+
 function BridgeAssignEmbodimentOperationTokens(tx)
     for index, operation in ipairs(tx.plan and tx.plan.operations or {}) do
         operation.index = index
@@ -2141,6 +2172,23 @@ function BridgePumpEmbodimentTransaction()
                         return
                     end
                     if status == "SUCCESS" then
+                        local fingerprint = BridgeLocalReplanProgressFingerprint(tx, operation)
+                        tx.localNoProgress = tx.localNoProgress or {}
+                        local localKey = table.concat({tostring(operation.scope), tostring(operation.seatId),
+                            tostring(operation.zone), tostring(tx.targetCursor)}, "|")
+                        local previous = tx.localNoProgress[localKey]
+                        if previous ~= nil and previous.fingerprint == fingerprint then
+                            previous.count = (previous.count or 1) + 1
+                            if previous.count > 2 then
+                                local detail = "seat-local replan made no progress scope=" .. tostring(operation.scope)
+                                    .. " seat=" .. tostring(operation.seatId) .. " zone=" .. tostring(operation.zone)
+                                    .. " blocker=" .. tostring(tx.lastBlockingPredicate)
+                                BridgeEmbodimentRecordActualFailure(tx, detail)
+                                return BridgeFinishEmbodimentTransaction(tx, false, detail)
+                            end
+                        else
+                            tx.localNoProgress[localKey] = {fingerprint = fingerprint, count = 1}
+                        end
                         tx.operationStarted = false
                         tx.phase = "OBSERVE"
                         tx.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
@@ -3524,6 +3572,7 @@ function BridgeRecordContainedCardIdentity(cardInstanceId, containingDeckGuid, c
     BridgeState.physicalContainerByInstanceId[cardInstanceId] = {
         deckGuid = containingDeckGuid,
         cardGuid = containedCardGuid,
+        locatorType = "GUID_LOCATOR",
         seatId = seatId,
         zoneName = zoneName
     }
@@ -3555,6 +3604,25 @@ function BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
     if not ok then return nil, nil, "containing Deck inventory is unavailable" end
     if mapping.locatorType == "SLOT_LOCATOR" then
         local targetIndex = tonumber(mapping.slotIndex)
+        local expectedGeneration = BridgeState.libraryBindingGenerationBySeatId
+            and BridgeState.libraryBindingGenerationBySeatId[mapping.seatId] or nil
+        if targetIndex == nil or targetIndex < 0 then return nil, nil, "slot locator has no usable native index" end
+        if expectedGeneration == nil or tonumber(mapping.bindingGeneration) ~= tonumber(expectedGeneration) then
+            return nil, nil, "slot locator binding generation is stale"
+        end
+        for otherInstanceId, other in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+            if otherInstanceId ~= cardInstanceId and other.locatorType == "SLOT_LOCATOR"
+                and tostring(other.deckGuid) == tostring(mapping.deckGuid)
+                and tonumber(other.bindingGeneration) == tonumber(mapping.bindingGeneration)
+                and tonumber(other.slotIndex) == targetIndex then
+                return nil, nil, "slot locator is claimed by another Forge instance"
+            end
+        end
+        for containedGuid, owner in pairs(BridgeState.physicalContainedInstanceIdByGuid or {}) do
+            if owner == cardInstanceId then
+                return nil, nil, "slot locator has contradictory GUID inverse mapping"
+            end
+        end
         local targetName = BridgeNormalizeCardName(mapping.cardName or BridgeState.cardNameByInstanceId[cardInstanceId])
         local match = nil
         for _, entry in ipairs(entries) do
@@ -3568,6 +3636,9 @@ function BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
         if match == nil then return nil, nil, "slot locator no longer matches Deck" end
         mapping.index = targetIndex
         return deck, match, nil
+    end
+    if mapping.cardGuid == nil or string.match(tostring(mapping.cardGuid), "%S") == nil then
+        return nil, nil, "contained GUID locator has no usable GUID"
     end
     for _, entry in ipairs(entries) do
         local guid = entry and (entry.guid or entry.GUID) or nil
