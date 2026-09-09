@@ -22,6 +22,13 @@ function Normalize-Text([string]$Text) {
     return $Text.Replace("`r`n", "`n").Replace("`r", "`n")
 }
 
+function Normalize-TtsScriptForComparison([string]$Text) {
+    # TTS/external-editor transport may normalize line endings and may add or
+    # remove one or more terminal newlines. Neither changes Lua semantics.
+    $normalized = Normalize-Text $Text
+    return $normalized.TrimEnd([char[]]"`n")
+}
+
 function Get-TextSha256([string]$Text) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
@@ -34,12 +41,37 @@ function Get-TextSha256([string]$Text) {
     }
 }
 
+function Get-TtsComparableSha256([string]$Text) {
+    return Get-TextSha256 (Normalize-TtsScriptForComparison $Text)
+}
+
 function Get-EmbeddedGeneratedSha([string]$Text) {
     $match = [System.Text.RegularExpressions.Regex]::Match(
         $Text,
         'BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256\s*=\s*"(?<sha>[0-9a-fA-F]{64})"')
     if (-not $match.Success) { return $null }
     return $match.Groups['sha'].Value.ToLowerInvariant()
+}
+
+function Get-FirstTextDifferenceIndex(
+    [string]$Expected,
+    [string]$Actual
+) {
+    $expectedText = if ($null -eq $Expected) { '' } else { $Expected }
+    $actualText = if ($null -eq $Actual) { '' } else { $Actual }
+    $minLength = [Math]::Min($expectedText.Length, $actualText.Length)
+
+    for ($i = 0; $i -lt $minLength; $i++) {
+        if ($expectedText[$i] -cne $actualText[$i]) {
+            return $i
+        }
+    }
+
+    if ($expectedText.Length -ne $actualText.Length) {
+        return $minLength
+    }
+
+    return -1
 }
 
 function Format-OptionalValue([object]$Value) {
@@ -181,7 +213,8 @@ $localGeneratedSha = Get-EmbeddedGeneratedSha $localGlobal
 if ([string]::IsNullOrWhiteSpace($localGeneratedSha)) {
     throw "Local generated Global.lua does not contain BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256: $GlobalLuaPath"
 }
-$localContentSha = Get-TextSha256 $localGlobal
+$localComparable = Normalize-TtsScriptForComparison $localGlobal
+$localContentSha = Get-TtsComparableSha256 $localGlobal
 
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $EditorPort)
 try {
@@ -200,7 +233,7 @@ try {
 
     $currentScript = [string]$currentGlobal.script
     $currentGeneratedSha = Get-EmbeddedGeneratedSha $currentScript
-    $currentContentSha = Get-TextSha256 $currentScript
+    $currentContentSha = Get-TtsComparableSha256 $currentScript
     $currentUi = ''
     if ($null -ne $currentGlobal.PSObject.Properties['ui']) {
         $currentUi = [string]$currentGlobal.ui
@@ -215,7 +248,7 @@ try {
     Write-Host "Local Global chars:    $($localGlobal.Length)"
 
     if ($currentContentSha -eq $localContentSha) {
-        Write-Host 'Running TTS Global already matches the repository-generated Global.lua. Nothing to push.'
+        Write-Host 'Running TTS Global already matches the repository-generated Global.lua after TTS-safe normalization. Nothing to push.'
         exit 0
     }
 
@@ -249,7 +282,7 @@ try {
     $reloadedGlobal = Get-GlobalScriptState $reloadedMessage
     $reloadedScript = [string]$reloadedGlobal.script
     $reloadedGeneratedSha = Get-EmbeddedGeneratedSha $reloadedScript
-    $reloadedContentSha = Get-TextSha256 $reloadedScript
+    $reloadedContentSha = Get-TtsComparableSha256 $reloadedScript
 
     Write-Host ("Reloaded generated SHA: {0}" -f (Format-OptionalValue $reloadedGeneratedSha))
     Write-Host "Reloaded content SHA:   $reloadedContentSha"
@@ -257,8 +290,20 @@ try {
     if ($reloadedGeneratedSha -ne $localGeneratedSha) {
         throw "TTS reloaded, but Global's embedded generated SHA does not match the local generated file. expected=$localGeneratedSha actual=$reloadedGeneratedSha"
     }
+
     if ($reloadedContentSha -ne $localContentSha) {
-        throw "TTS reloaded, but Global.lua content differs from the local generated file. expectedContentSha=$localContentSha actualContentSha=$reloadedContentSha"
+        $reloadedComparable = Normalize-TtsScriptForComparison $reloadedScript
+        $firstDiffIndex = Get-FirstTextDifferenceIndex $localComparable $reloadedComparable
+
+        throw (
+            "TTS reloaded with the expected generated script identity, " +
+            "but substantive Global.lua content differs from the local generated file. " +
+            "expectedContentSha=$localContentSha " +
+            "actualContentSha=$reloadedContentSha " +
+            "expectedLength=$($localComparable.Length) " +
+            "actualLength=$($reloadedComparable.Length) " +
+            "firstDiffIndex=$firstDiffIndex"
+        )
     }
 
     Write-Host 'PASS: running TTS Global matches repository tts\Global.lua after Save & Play.'
