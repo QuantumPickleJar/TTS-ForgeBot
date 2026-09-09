@@ -42,6 +42,11 @@ function Get-EmbeddedGeneratedSha([string]$Text) {
     return $match.Groups['sha'].Value.ToLowerInvariant()
 }
 
+function Format-OptionalValue([object]$Value) {
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { return '<missing>' }
+    return [string]$Value
+}
+
 function Send-TtsMessage([object]$Message) {
     $json = $Message | ConvertTo-Json -Depth 16 -Compress
     $bytes = $utf8.GetBytes($json)
@@ -188,7 +193,7 @@ try {
     }
 
     Write-Host "TTS external-editor listener: localhost:$EditorPort"
-    Write-Host "Requesting scripts from the currently loaded TTS game..."
+    Write-Host 'Requesting scripts from the currently loaded TTS game...'
     Send-TtsMessage ([ordered]@{ messageID = 0 })
     $currentMessage = Wait-TtsMessageId $listener 1 $RequestTimeoutSeconds
     $currentGlobal = Get-GlobalScriptState $currentMessage
@@ -201,8 +206,8 @@ try {
         $currentUi = [string]$currentGlobal.ui
     }
 
-    Write-Host "Loaded Global detected: YES"
-    Write-Host "Current generated SHA: $($currentGeneratedSha ?? '<missing>')"
+    Write-Host 'Loaded Global detected: YES'
+    Write-Host ("Current generated SHA: {0}" -f (Format-OptionalValue $currentGeneratedSha))
     Write-Host "Local generated SHA:   $localGeneratedSha"
     Write-Host "Current content SHA:   $currentContentSha"
     Write-Host "Local content SHA:     $localContentSha"
@@ -223,8 +228,10 @@ try {
         }
     }
 
+    $replacementName = [string]$currentGlobal.name
+    if ([string]::IsNullOrWhiteSpace($replacementName)) { $replacementName = 'Global' }
     $replacementGlobal = [ordered]@{
-        name = if ([string]::IsNullOrWhiteSpace([string]$currentGlobal.name)) { 'Global' } else { [string]$currentGlobal.name }
+        name = $replacementName
         guid = '-1'
         script = $localGlobal
         ui = $currentUi
@@ -244,7 +251,7 @@ try {
     $reloadedGeneratedSha = Get-EmbeddedGeneratedSha $reloadedScript
     $reloadedContentSha = Get-TextSha256 $reloadedScript
 
-    Write-Host "Reloaded generated SHA: $($reloadedGeneratedSha ?? '<missing>')"
+    Write-Host ("Reloaded generated SHA: {0}" -f (Format-OptionalValue $reloadedGeneratedSha))
     Write-Host "Reloaded content SHA:   $reloadedContentSha"
 
     if ($reloadedGeneratedSha -ne $localGeneratedSha) {
