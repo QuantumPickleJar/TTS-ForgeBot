@@ -1819,17 +1819,44 @@ function BridgeBindHandMappingsForSnapshot(seatSnapshot, callback)
             table.insert(candidates, {instanceId = card.instanceId, guid = item.guid, object = item.object})
         end
     end
-    local priorLedger = BridgeCapturePhysicalLedger()
-    local published = {}
-    for _, item in ipairs(candidates) do
-        local ok = BridgeRecordLooseCardIdentity(item.instanceId, item.guid, seatId, "hand", item.object)
-        if not ok then
-            BridgeActivatePhysicalLedger(priorLedger)
-            callback(false, "hand candidate publication failed", {status="FAILED"})
-            return
-        end
-        table.insert(published, item)
+    if BridgeState.eventSessionId == nil or BridgeState.eventSessionId == "session-not-started" then
+        callback(false, "hand candidate has no active session", {status="FAILED"}); return
     end
+    local nextPhysical = BridgeDiagnosticSnapshot(BridgeState.physicalByInstanceId or {})
+    local nextReverse = BridgeDiagnosticSnapshot(BridgeState.physicalInstanceIdByGuid or {})
+    local nextSeat = BridgeDiagnosticSnapshot(BridgeState.physicalSeatByGuid or {})
+    local nextZone = BridgeDiagnosticSnapshot(BridgeState.physicalZoneByGuid or {})
+    local nextContainer = BridgeDiagnosticSnapshot(BridgeState.physicalContainerByInstanceId or {})
+    local nextContained = BridgeDiagnosticSnapshot(BridgeState.physicalContainedInstanceIdByGuid or {})
+    local nextSlots = BridgeDiagnosticSnapshot(BridgeState.physicalSlotByInstanceId or {})
+    for _, item in ipairs(candidates) do
+        local owner = nextReverse[item.guid]
+        if owner ~= nil and owner ~= item.instanceId then
+            callback(false, "hand candidate publication found duplicate physical GUID", {status="FAILED"}); return
+        end
+    end
+    for _, item in ipairs(candidates) do
+        local previousGuid = nextPhysical[item.instanceId]
+        if previousGuid ~= nil and previousGuid ~= item.guid then nextReverse[previousGuid] = nil end
+        nextPhysical[item.instanceId] = item.guid
+        nextReverse[item.guid] = item.instanceId
+        nextSeat[item.guid] = seatId
+        nextZone[item.guid] = "hand"
+        local previousContainer = nextContainer[item.instanceId]
+        if previousContainer ~= nil and previousContainer.cardGuid ~= nil then nextContained[previousContainer.cardGuid] = nil end
+        nextContainer[item.instanceId] = nil
+        nextSlots[item.instanceId] = nil
+    end
+    BridgeState.physicalByInstanceId = nextPhysical
+    BridgeState.physicalInstanceIdByGuid = nextReverse
+    BridgeState.physicalSeatByGuid = nextSeat
+    BridgeState.physicalZoneByGuid = nextZone
+    BridgeState.physicalContainerByInstanceId = nextContainer
+    BridgeState.physicalContainedInstanceIdByGuid = nextContained
+    BridgeState.physicalSlotByInstanceId = nextSlots
+    for _, item in ipairs(candidates) do BridgeWritePhysicalIdentity(item.object, item.instanceId) end
+    BridgeAdvancePhysicalPresentationGeneration("hand-bindings-committed")
+    local published = candidates
     callback(true, nil, {status="SUCCESS", verifiedHandMappings=#published, expectedHandMappings=#candidates})
 end
 

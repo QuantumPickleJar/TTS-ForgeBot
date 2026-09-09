@@ -199,6 +199,31 @@ public sealed class EmbodimentReconciliationEngineTests
     }
 
     [Fact]
+    public void LegacyBootstrapPreservesAuthoritativeSnapshotAcrossSeatOutcome()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeGetEmbodimentSnapshot = function(callback)
+                callback(true, {sessionId='session', eventCursor=11, forgeSequence=4, seats={}}, nil)
+            end
+            function BridgeStageSeatCardsForBootstrap(snapshot, callback) callback(true, nil, {}) end
+            function BridgeVerifyLibraryIdentityStability(callback) callback(true, nil) end
+            function BridgeAnnotateSnapshotBattlefieldKinds(snapshot, callback) callback(true, nil) end
+            function BridgeValidateAuthoritativeSnapshotPhysicalState(_) return false, 'seat outcome not physically verified' end
+            function BridgeBootstrapSeats(snapshot, seatIndex, callback)
+                callback(BridgeMakeEmbodimentResult('FAILED', snapshot, 'seat outcome failed', {status='FAILED'}))
+            end
+            BridgeBootstrapCurrentSnapshot('session', function(ok, err) finalOk, finalErr = ok, err end,
+                false, 'initial-bootstrap')
+            finalTx = BridgeState.embodimentTransaction or BridgeState.lastEmbodimentTransaction
+        ");
+
+        Assert.False(lua.Globals.Get("finalOk").Boolean);
+        Assert.Equal(11, lua.Globals.Get("finalTx").Table.Get("targetCursor").Number);
+        Assert.DoesNotContain("cursor0", lua.Globals.Get("finalErr").IsNil() ? "" : lua.Globals.Get("finalErr").String);
+    }
+
+    [Fact]
     public void DesiredZoneStateExposesTheMillMigrationTopologyContract()
     {
         var lua = NewProbe();
@@ -418,6 +443,26 @@ public sealed class EmbodimentReconciliationEngineTests
         Assert.Equal(2, lua.Globals.Get("cleanupCalls").Number);
         Assert.Equal(2, lua.Globals.Get("completionCount").Number);
         Assert.True(lua.Globals.Get("BridgeState").Table.Get("embodimentTransaction").IsNil());
+    }
+
+    [Fact]
+    public void NewMatchCleanupCannotCommitWhilePreviousGameHandIsNonEmpty()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local oldHand = {tag='Card', getGUID=function() return 'old-hand' end}
+            BRIDGE_SEATS = {['forge-player-1'] = {}}
+            function BridgeTryGetSeatHandObjects(_) return {oldHand} end
+            function BridgeReturnPreviousGameCardsToLibraries(callback) callback(true, nil) end
+            BridgeAdvanceEmbodimentEpoch('cleanup-hand-regression')
+            BridgeBeginNewMatchCleanupTransaction(function(ok, err) cleanupOk, cleanupErr = ok, err end)
+            BridgePumpEmbodimentTransaction()
+            BridgeState.updateTick = BridgeState.updateTick + 1
+            BridgePumpEmbodimentTransaction()
+        ");
+
+        Assert.False(lua.Globals.Get("cleanupOk").Boolean);
+        Assert.Contains("hand", lua.Globals.Get("BridgeState").Table.Get("embodimentTransaction").Table.Get("lastBlockingPredicate").String);
     }
 
     [Fact]

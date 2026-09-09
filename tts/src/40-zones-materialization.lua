@@ -1,4 +1,5 @@
 ﻿            if not materialized then callback(false, materializeError); return end
+            if not materialized then callback(BridgeMakeEmbodimentResult("FAILED", nil, materializeError, nil)); return end
             -- Materialization removes snapshot hand/public cards first. The
             -- remaining native Deck is then bound to Forge library instances
             -- by exact contained GUID without destructive reordering.
@@ -13,11 +14,289 @@
                     and BridgeMarkResyncPhysicalRebuildReady ~= nil then
                     BridgeMarkResyncPhysicalRebuildReady(BridgeState.resyncCandidateSnapshot)
                 end
+                callback(BridgeMakeEmbodimentResult("SUCCESS", nil, nil, {status = "SUCCESS"}))
+                return
                 callback(true, nil, {status = "SUCCESS"})
             end, 30)
         end)
         end)
+        end)
+        end)
+        end)
     end)
+end
+
+local function BridgeSourceCardSort(left, right)
+    local leftZone = tostring(left.zone or "")
+    local rightZone = tostring(right.zone or "")
+    if leftZone ~= rightZone then return leftZone < rightZone end
+    local leftPosition = tonumber(left.zonePosition or left.index or 0) or 0
+    local rightPosition = tonumber(right.zonePosition or right.index or 0) or 0
+    if leftPosition ~= rightPosition then return leftPosition < rightPosition end
+    return tostring(left.cardInstanceId or left.guid or "") < tostring(right.cardInstanceId or right.guid or "")
+end
+
+local function BridgeSourceEntrySort(left, right)
+    local leftIndex = tonumber(left.index or 0) or 0
+    local rightIndex = tonumber(right.index or 0) or 0
+    if leftIndex ~= rightIndex then return leftIndex < rightIndex end
+    return tostring(left.guid or "") < tostring(right.guid or "")
+end
+
+-- Build a complete seat-local source assignment before touching any committed
+-- physical ledger.  This is intentionally broader than the final library
+-- binder: a 40-card Deck is a valid source inventory for a 33-card library
+-- plus a seven-card opening hand.
+function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
+    local seatId = seatSnapshot.seatId
+    BridgeState.physicalContainerByInstanceId = BridgeState.physicalContainerByInstanceId or {}
+    BridgeState.physicalZoneByGuid = BridgeState.physicalZoneByGuid or {}
+    BridgeState.physicalInstanceIdByGuid = BridgeState.physicalInstanceIdByGuid or {}
+    local deck = BridgeResolveSeatLibraryDeck(seatId)
+    if deck == nil then return nil, "source assignment cannot resolve seat library" end
+    local entries = {}
+    if deck.tag == "Card" then
+        entries = {{guid = BridgeSafeObjectGuid(deck), nickname = BridgePhysicalCanonicalCardName(deck), index = 1}}
+    else
+        local ok, native = pcall(function() return deck.getObjects() or {} end)
+        if not ok then return nil, "source assignment cannot inspect seat library" end
+        entries = native
+    end
+    table.sort(entries, BridgeSourceEntrySort)
+    local sources = {}
+    local sourceByGuid = {}
+    for _, entry in ipairs(entries) do
+        local rawGuid = entry and (entry.guid or entry.GUID) or nil
+        local guid = rawGuid ~= nil and tostring(rawGuid) or ""
+        local item = {
+            sourceZone = "library", deck = deck, deckGuid = BridgeSafeObjectGuid(deck),
+            guid = string.match(guid, "%S") ~= nil and guid or nil,
+            index = tonumber(entry and entry.index or -1) or -1,
+            cardName = entry and (entry.nickname or entry.name or "") or "",
+            normalizedName = BridgeNormalizeCardName(entry and (entry.nickname or entry.name or "") or ""),
+            locatorType = string.match(guid, "%S") ~= nil and "GUID_LOCATOR" or "SLOT_LOCATOR"
+        }
+        table.insert(sources, item)
+        if item.guid ~= nil then sourceByGuid[item.guid] = item end
+    end
+    local handObjects = BridgeTryGetSeatHandObjects(seatId) or {}
+    local handSeen = {}
+    for _, object in ipairs(handObjects) do
+        local guid = BridgeSafeObjectGuid(object)
+        if guid ~= nil and not handSeen[guid] then
+            handSeen[guid] = true
+            table.insert(sources, {
+                sourceZone = "hand", object = object, guid = guid,
+                cardName = BridgePhysicalCanonicalCardName(object),
+                normalizedName = BridgeNormalizeCardName(BridgePhysicalCanonicalCardName(object)),
+                instanceId = BridgeReadPhysicalIdentity(object) or BridgeState.physicalInstanceIdByGuid[guid]
+            })
+        end
+    end
+    local knownSourceGuid = {}
+    for _, source in ipairs(sources) do if source.guid ~= nil then knownSourceGuid[source.guid] = true end end
+    for _, asset in ipairs(assets or {}) do
+        local guid = asset.guid or (asset.object and BridgeSafeObjectGuid(asset.object))
+        if guid ~= nil and not knownSourceGuid[guid] then
+            local object = asset.object
+            local assetSeat, assetZone = BridgeObserveObjectPhysicalZone(object, seatId)
+            if assetSeat == nil or tostring(assetSeat) == tostring(seatId) then
+                local zone = assetZone or BridgeState.physicalZoneByGuid[guid] or "public"
+                table.insert(sources, {
+                    sourceZone = zone, object = object, guid = guid,
+                    cardName = asset.cardName or BridgePhysicalCanonicalCardName(object),
+                    normalizedName = BridgeNormalizeCardName(asset.cardName or BridgePhysicalCanonicalCardName(object)),
+                    instanceId = BridgeReadPhysicalIdentity(object) or BridgeState.physicalInstanceIdByGuid[guid]
+                })
+                knownSourceGuid[guid] = true
+            end
+        end
+    end
+
+    local desired = {}
+    for _, zone in ipairs(seatSnapshot.zones or {}) do
+        for _, card in ipairs(zone.cards or {}) do
+            if card.isVirtual ~= true and tostring(card.materializationPolicy or "") ~= "virtual" then
+                table.insert(desired, {
+                    card = card, cardInstanceId = card.cardInstanceId, zone = zone.name,
+                    zonePosition = card.zonePosition, normalizedName = BridgeNormalizeCardName(card.cardName)
+                })
+            end
+        end
+    end
+    table.sort(desired, BridgeSourceCardSort)
+    local byName = {}
+    for _, source in ipairs(sources) do
+        byName[source.normalizedName] = byName[source.normalizedName] or {}
+        table.insert(byName[source.normalizedName], source)
+    end
+    for _, list in pairs(byName) do table.sort(list, BridgeSourceEntrySort) end
+
+    local assignments, used = {}, {}
+    local function takeCandidate(desiredCard, preferZone)
+        local list = byName[desiredCard.normalizedName] or {}
+        for _, source in ipairs(list) do
+            if not used[source] and (preferZone == nil or source.sourceZone == preferZone) then
+                used[source] = true; return source
+            end
+        end
+        for _, source in ipairs(list) do
+            if not used[source] then used[source] = true; return source end
+        end
+        return nil
+    end
+    -- Preserve exact advertised hand identities first.
+    for _, desiredCard in ipairs(desired) do
+        local exact = nil
+        for _, source in ipairs(sources) do
+            if not used[source] and source.instanceId ~= nil
+                and tostring(source.instanceId) == tostring(desiredCard.cardInstanceId) then exact = source; break end
+        end
+        if exact == nil then
+            local committed = BridgeState.physicalContainerByInstanceId[desiredCard.cardInstanceId]
+            local committedGuid = committed and committed.cardGuid or nil
+            local committedSlot = committed and committed.slotIndex or nil
+            for _, source in ipairs(sources) do
+                if not used[source] and source.sourceZone == "library"
+                    and ((committedGuid ~= nil and tostring(source.guid or "") == tostring(committedGuid))
+                        or (committedGuid == nil and committedSlot ~= nil and tonumber(source.index) == tonumber(committedSlot))) then
+                    exact = source; break
+                end
+            end
+        end
+        if exact ~= nil then used[exact] = true end
+        assignments[desiredCard.cardInstanceId] = {desired = desiredCard, source = exact}
+    end
+    for _, desiredCard in ipairs(desired) do
+        local assignment = assignments[desiredCard.cardInstanceId]
+        if assignment.source == nil then
+            assignment.source = takeCandidate(desiredCard, desiredCard.zone)
+        end
+        if assignment.source == nil then
+            return nil, "source assignment missing physical card " .. tostring(desiredCard.cardName)
+        end
+    end
+    local moves = {}
+    for _, assignment in pairs(assignments) do
+        local source = assignment.source
+        if source.sourceZone ~= assignment.desired.zone then table.insert(moves, assignment) end
+    end
+    table.sort(moves, function(left, right)
+        return tostring(left.desired.cardInstanceId) < tostring(right.desired.cardInstanceId)
+    end)
+    local sourceAssignments = {}
+    for _, assignment in pairs(assignments) do table.insert(sourceAssignments, {
+        cardInstanceId = assignment.desired.cardInstanceId,
+        cardName = assignment.desired.card.cardName,
+        desiredZone = assignment.desired.zone,
+        sourceZone = assignment.source.sourceZone,
+        locatorType = assignment.source.locatorType,
+        deckGuid = assignment.source.deckGuid,
+        containedGuid = assignment.source.guid,
+        slotIndex = assignment.source.index,
+        physicalGuid = assignment.source.guid
+    }) end
+    table.sort(sourceAssignments, function(left, right)
+        return tostring(left.cardInstanceId) < tostring(right.cardInstanceId)
+    end)
+    if #sources ~= #desired then
+        return nil, string.format("seat physical inventory count mismatch: observed=%d desired=%d", #sources, #desired)
+    end
+    return {
+        seatId = seatId, deck = deck, assignments = assignments, sourceAssignments = sourceAssignments, moves = moves,
+        observedTotalInventory = #sources, desiredTotalInventory = #desired,
+        observedLibraryCount = #entries, observedHandCount = #handObjects,
+        desiredLibraryCount = 0, desiredHandCount = 0,
+        plannedLibraryToHand = 0, plannedHandToLibrary = 0,
+        completedMoves = 0,
+        alreadyCorrectZoneCount = #desired - #moves
+    }, nil
+end
+
+function BridgeTakeSeatSourceCard(source, expectedName, position, callback)
+    if source == nil or source.deck == nil then callback(nil, "missing source locator"); return end
+    local deck = source.deck
+    local entries = {}
+    local ok = pcall(function() entries = deck.getObjects() or {} end)
+    if not ok then callback(nil, "source Deck could not be reobserved"); return end
+    local selected = nil
+    for _, entry in ipairs(entries) do
+        local entryName = BridgeNormalizeCardName(entry.nickname or entry.name or "")
+        local entryGuid = entry.guid or entry.GUID
+        if entryName == BridgeNormalizeCardName(expectedName)
+            and (source.guid == nil or tostring(source.guid) == tostring(entryGuid)) then
+            if source.guid ~= nil or tonumber(entry.index or -1) == tonumber(source.index or -1) then selected = entry; break end
+            if selected == nil then selected = entry end
+        end
+    end
+    if selected == nil then callback(nil, "source locator no longer uniquely resolves expected card"); return end
+    local takeArgs = {position = position, smooth = false,
+        guid = (selected.guid ~= nil and string.match(tostring(selected.guid), "%S") ~= nil) and tostring(selected.guid) or nil,
+        index = (selected.guid == nil or string.match(tostring(selected.guid or ""), "%S") == nil) and selected.index or nil}
+    local finished = false
+    local function finish(object, errorMessage)
+        if finished then return end; finished = true; callback(object, errorMessage)
+    end
+    local takeOk, takeError = pcall(function()
+        deck.takeObject({guid = takeArgs.guid, index = takeArgs.index, position = position,
+            smooth = false, callback_function = function(taken)
+                if not BridgeObjectIsUsable(taken) then finish(nil, "source extraction returned unusable Card"); return end
+                if BridgeNormalizeCardName(BridgePhysicalCanonicalCardName(taken)) ~= BridgeNormalizeCardName(expectedName) then
+                    finish(nil, "source extraction returned wrong card identity"); return
+                end
+                finish(taken, nil)
+            end})
+    end)
+    if not takeOk then finish(nil, "source extraction failed: " .. tostring(takeError)) end
+end
+
+function BridgeApplySeatSourceAssignment(plan, seatSnapshot, moveIndex, callback)
+    moveIndex = moveIndex or 1
+    if moveIndex > #(plan.moves or {}) then callback(BridgeMakeEmbodimentResult("SUCCESS", nil, nil, plan)); return end
+    local move = plan.moves[moveIndex]
+    local destination = move.desired.zone
+    local source = move.source
+    local function nextMove()
+        plan.completedMoves = (plan.completedMoves or 0) + 1
+        BridgeApplySeatSourceAssignment(plan, seatSnapshot, moveIndex + 1, callback)
+    end
+    if source.sourceZone == "library" and destination == "hand" then
+        local hand, handError = BridgeTryGetSeatHandTransform(seatSnapshot.seatId)
+        if hand == nil then callback(BridgeMakeEmbodimentResult("FAILED", nil, handError, nil)); return end
+        BridgeTakeSeatSourceCard(source, move.desired.card.cardName, hand.position, function(taken, errorMessage)
+            if taken == nil then callback(BridgeMakeEmbodimentResult("FAILED", nil, errorMessage, nil)); return end
+            -- The extracted loose Card receives the exact Forge identity that
+            -- drove this source move.  The committed bridge ledger is still
+            -- published only by the final atomic hand binder.
+            BridgeWritePhysicalIdentity(taken, move.desired.cardInstanceId)
+            BridgeWritePhysicalSessionIdentity(taken, BridgeState.eventSessionId)
+            pcall(function() taken.use_hands = true; taken.setPosition(hand.position) end)
+            BridgeWaitFrames(nextMove, 2)
+        end)
+    elseif source.sourceZone == "hand" and destination == "library" then
+        local deck = plan.deck
+        local putOk, putError = pcall(function() deck.putObject(source.object, 0) end)
+        if not putOk then callback(BridgeMakeEmbodimentResult("FAILED", nil, "hand-to-library move failed: " .. tostring(putError), nil)); return end
+        BridgeWaitFrames(nextMove, 2)
+    else
+        nextMove()
+    end
+end
+
+function BridgePrepareSeatSourceAssignment(seatSnapshot, assets, callback)
+    local plan, planError = BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
+    if plan == nil then callback(BridgeMakeEmbodimentResult("FAILED", nil, planError, nil)); return end
+    for _, zone in ipairs(seatSnapshot.zones or {}) do
+        if zone.name == "library" then plan.desiredLibraryCount = #(zone.cards or {}) end
+        if zone.name == "hand" then plan.desiredHandCount = #(zone.cards or {}) end
+    end
+    for _, move in ipairs(plan.moves) do
+        if move.source.sourceZone == "library" and move.desired.zone == "hand" then plan.plannedLibraryToHand = plan.plannedLibraryToHand + 1 end
+        if move.source.sourceZone == "hand" and move.desired.zone == "library" then plan.plannedHandToLibrary = plan.plannedHandToLibrary + 1 end
+    end
+    BridgeState.seatReconciliationDiagnosticsBySeatId = BridgeState.seatReconciliationDiagnosticsBySeatId or {}
+    BridgeState.seatReconciliationDiagnosticsBySeatId[seatSnapshot.seatId] = plan
+    BridgeApplySeatSourceAssignment(plan, seatSnapshot, 1, callback)
 end
 
 function BridgeCollectSeatAssets(seatId, seatSnapshot, callback)
