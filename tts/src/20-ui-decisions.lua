@@ -2549,6 +2549,20 @@ function BridgeTryPresentPendingDecision(reason)
             BridgeScheduleHandActionReadinessRetry()
             return
         end
+        -- A decision cursor can legitimately arrive ahead of a no-gap event
+        -- response. Hold it for the discoverable authoritative events rather
+        -- than force-rendering it and letting missing physical mappings start
+        -- a cursor-N snapshot mutation over the pending event range.
+        if eventCursor > applied and BridgeState.eventPolling == true
+            and BridgeState.eventHistoryGapDeclared ~= true then
+            if BridgeScheduleEventPoll ~= nil then
+                BridgeScheduleEventPoll(0, BridgeState.eventPollGeneration)
+            end
+            BridgeLog(string.format(
+                "[Bridge] holding decision %s behind discoverable events cursor=%s applied=%s",
+                tostring(pending.decisionId), tostring(eventCursor), tostring(applied)))
+            return
+        end
         local stalledProgress = BridgeState.pendingDecisionDeferredCursor == eventCursor
             and BridgeState.pendingDecisionDeferredApplied == applied
         if elapsed < BRIDGE_DECISION_DEFER_STALL_SECONDS or not stalledProgress then
@@ -2960,6 +2974,9 @@ function BridgeTryApplyDeferredSnapshotReconcile(reason)
     local pending = BridgeState.deferredSnapshotReconcile
     if pending == nil or not BridgeSnapshotMayMutatePublicZones(pending.snapshot)
         or not BridgePhysicalLibraryQueuesIdle() then return false end
+    if BridgeSnapshotMustYieldToDiscoverableEvents(pending.snapshot) then
+        return false
+    end
     if pending.category == "ROUTINE_VERIFY" and BridgeRoutineSnapshotBlocked() then
         return false
     end
@@ -2974,6 +2991,24 @@ function BridgeTryApplyDeferredSnapshotReconcile(reason)
     BridgeState.pendingStructuredZoneTransitionByInstanceId = {}
     BridgeApplySafeSnapshotReconcile(pending.snapshot, pending.reason or reason or "deferred")
     return true
+end
+
+-- A snapshot represents a final authoritative state, not permission to skip
+-- a still-discoverable event range. Active event polling owns that range until
+-- it declares a real gap.
+function BridgeSnapshotMustYieldToDiscoverableEvents(snapshot)
+    local cursor = tonumber(snapshot and snapshot.eventCursor or 0) or 0
+    local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+    if cursor > applied and BridgeState.eventPolling == true
+        and BridgeState.eventHistoryGapDeclared ~= true then
+        if BridgeScheduleEventPoll ~= nil then
+            BridgeScheduleEventPoll(0, BridgeState.eventPollGeneration)
+        end
+        BridgeLogSnapshotOrdering("held-for-event-catchup", snapshot,
+            "cursor=" .. tostring(cursor) .. " applied=" .. tostring(applied))
+        return true
+    end
+    return false
 end
 
 function BridgeScheduleSnapshotReconcile(reason, category)
@@ -3020,7 +3055,8 @@ function BridgeScheduleSnapshotReconcile(reason, category)
             local snapshotCursor = tonumber(snapshot.eventCursor or 0) or 0
             local alreadyCovered = category == "ROUTINE_VERIFY"
                 and snapshotCursor <= tonumber(BridgeState.snapshotReconcileLastAppliedCursor or 0)
-            local canApply = not alreadyCovered
+            local yieldsToEvents = BridgeSnapshotMustYieldToDiscoverableEvents(snapshot)
+            local canApply = not alreadyCovered and not yieldsToEvents
                 and BridgeSnapshotMayMutatePublicZones(snapshot)
                 and BridgePhysicalLibraryQueuesIdle()
                 and (category ~= "ROUTINE_VERIFY" or not BridgeRoutineSnapshotBlocked())
@@ -3040,7 +3076,8 @@ function BridgeScheduleSnapshotReconcile(reason, category)
                         generation = requestGeneration
                     }
                 end
-                local queueState = BridgePhysicalLibraryQueuesIdle() and "event-cursor" or "physical-library-queue"
+                local queueState = yieldsToEvents and "discoverable-event-catchup"
+                    or (BridgePhysicalLibraryQueuesIdle() and "event-cursor" or "physical-library-queue")
                 BridgeLogSnapshotOrdering("deferred-" .. queueState, snapshot, reason)
             end
         elseif not ok then

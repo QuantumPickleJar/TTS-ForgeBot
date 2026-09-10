@@ -968,6 +968,10 @@ function BridgeEventDrainQueueState()
         lastProgressStage = BridgeState.eventDrainTransaction.lastProgressStage,
         lastProgressUpdateTick = BridgeState.eventDrainTransaction.lastProgressUpdateTick,
         progressFingerprint = BridgeState.eventDrainTransaction.progressFingerprint,
+        ownerSessionId = BridgeState.eventDrainTransaction.sessionId,
+        ownerSessionGeneration = BridgeState.eventDrainTransaction.eventSessionGeneration,
+        ownerPhysicalGeneration = BridgeState.eventDrainTransaction.physicalTransactionGeneration,
+        physicalOperationCount = BridgeTableSize(BridgeState.eventDrainTransaction.pendingPhysicalEvents or {}),
         batches = {}
     } or nil
     if mutationProgress ~= nil then
@@ -976,6 +980,8 @@ function BridgeEventDrainQueueState()
                 state = batch.state, stagedCount = batch.stagedCount,
                 requiredCount = batch.requiredCount, targetDeckGuid = batch.targetDeckGuid,
                 settlementSampleCount = batch.settlementSampleCount,
+                deferredPendingCount = batch.deferredPendingCount,
+                deferredFailureReason = batch.deferredFailureReason,
                 lastProgressStage = batch.lastProgressStage,
                 lastProgressUpdateTick = batch.lastProgressUpdateTick
             }
@@ -1008,6 +1014,7 @@ function BridgeEventDrainQueueState()
         physicalQueues = physical,
         physicalMutationProgress = BridgeDiagnosticSnapshot(BridgeState.eventDrainPhysicalProgress or {}),
         physicalMutationJournal = BridgeDiagnosticSnapshot(BridgeState.physicalMutationJournal or {}),
+        lastTtsRuntimeError = BridgeDiagnosticSnapshot(BridgeState.lastTtsRuntimeError or {}),
         ownedMutation = BridgeDiagnosticSnapshot(mutationProgress or {}),
         snapshotReconcilePending = BridgeState.snapshotReconcilePending == true,
         snapshotReconcileInFlight = BridgeState.snapshotReconcileInFlight == true,
@@ -2961,6 +2968,7 @@ BridgeState = {
     },
     eventDrainPhysicalProgress = nil,
     physicalMutationJournal = {},
+    lastTtsRuntimeError = nil,
     currentPhysicalPresentationGeneration = 0,
     physicalTransactionGeneration = 0,
     physicalReadinessDependency = nil,
@@ -3602,6 +3610,17 @@ function BridgeSafeObjectGuid(object)
     return guid
 end
 
+-- A TTS native Card/Deck can be absorbed or replaced between two Lua frames.
+-- Reading even the lightweight `tag` property from that retired userdata can
+-- raise TTS's "null object" error, so asynchronous physical owners must use
+-- this probe rather than retaining a raw object and dereferencing it later.
+function BridgeSafeObjectTag(object)
+    if not BridgeObjectIsUsable(object) then return nil end
+    local ok, tag = pcall(function() return object.tag end)
+    if not ok then return nil end
+    return tag
+end
+
 function BridgeRegisterPresentationObject(objectOrGuid, kind)
     local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
     if guid == nil then return false end
@@ -3679,6 +3698,54 @@ end
 function BridgeWritePhysicalSessionIdentity(object, sessionId)
     if not BridgeObjectIsUsable(object) or sessionId == nil or type(object.setVar) ~= "function" then return end
     pcall(function() object.setVar(BRIDGE_PHYSICAL_SESSION_KEY, tostring(sessionId)) end)
+end
+
+-- A physical Card may correctly survive destructive new-match cleanup, but
+-- its Forge identity cannot.  This runs only after the retiring session's
+-- asynchronous physical owners have been fenced, before the replacement
+-- session is allowed to bind the same inventory.  Keep it separate from the
+-- in-memory ledger reset: a live TTS object retains setVar values until they
+-- are explicitly retired.
+function BridgeRetirePhysicalIdentityForSession(object, retiredSessionId)
+    if not BridgeObjectIsUsable(object) or retiredSessionId == nil or type(object.setVar) ~= "function" then
+        return false
+    end
+    local instanceId = BridgeReadPhysicalIdentity(object)
+    local objectSessionId = BridgeReadPhysicalSessionIdentity(object)
+    if tostring(objectSessionId or "") ~= tostring(retiredSessionId)
+        and not (instanceId ~= nil and BridgeCardInstanceBelongsToSession(instanceId, retiredSessionId)) then
+        return false
+    end
+    pcall(function() object.setVar(BRIDGE_PHYSICAL_ID_KEY, nil) end)
+    pcall(function() object.setVar(BRIDGE_PHYSICAL_SESSION_KEY, nil) end)
+    return true
+end
+
+function BridgeRetireLivePhysicalIdentitiesForSession(retiredSessionId, reason)
+    if retiredSessionId == nil then return 0 end
+    local retired = 0
+    local seenGuids = {}
+    local function retire(object)
+        if not BridgeObjectIsUsable(object) or BridgeIsPresentationOnlyObject(object) then return end
+        local guid = BridgeSafeObjectGuid(object)
+        if guid ~= nil and seenGuids[guid] then return end
+        if guid ~= nil then seenGuids[guid] = true end
+        if BridgeRetirePhysicalIdentityForSession(object, retiredSessionId) then retired = retired + 1 end
+    end
+    if type(getAllObjects) == "function" then
+        local ok, objects = pcall(getAllObjects)
+        if ok then for _, object in ipairs(objects or {}) do retire(object) end end
+    end
+    if BridgeTryGetSeatHandObjects ~= nil then
+        for seatId, _ in pairs(BRIDGE_SEATS or {}) do
+            local objects = BridgeTryGetSeatHandObjects(seatId) or {}
+            for _, object in ipairs(objects) do retire(object) end
+        end
+    end
+    BridgeState.lastRetiredPhysicalIdentitySessionId = tostring(retiredSessionId)
+    BridgeState.lastRetiredPhysicalIdentityCount = retired
+    BridgeState.lastRetiredPhysicalIdentityReason = tostring(reason or "session-replaced")
+    return retired
 end
 
 -- A TTS Card can physically survive a Forge session replacement. Its custom
