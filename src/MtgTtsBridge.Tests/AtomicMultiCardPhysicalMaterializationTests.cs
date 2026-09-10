@@ -1078,6 +1078,46 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void MentalNoteBatchTracksBaseAndFinalExpectedGraveyardCounts()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.cardNameByInstanceId[':g1'] = 'Swamp'
+            BridgeState.cardNameByInstanceId[':g2'] = 'Forest'
+            BridgeState.cardNameByInstanceId[':g3'] = 'Island'
+            BridgeState.cardNameByInstanceId[':mill-a'] = 'Mental Note'
+            BridgeState.cardNameByInstanceId[':mill-b'] = 'Harmonized Trio'
+            BridgeState.cardNameByInstanceId[':note'] = 'Mental Note'
+            local tx = {
+                token='session:1:1:300', sessionId='session', eventSessionGeneration=1,
+                physicalTransactionGeneration=1, forgeSequence=17, firstEventSequence=300,
+                lastEventSequence=303, state='APPLYING', events={
+                    {sequence=301, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':mill-a', cardName='Mental Note', forgeSequence=17},
+                    {sequence=302, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':mill-b', cardName='Harmonized Trio', forgeSequence=17},
+                    {sequence=303, kind='card_moved', seatId='forge-player-1', sourceZone='stack', destinationZone='graveyard', cardInstanceId=':note', cardName='Mental Note', forgeSequence=17}
+                },
+                eventCount=3,
+                pendingPhysicalEvents={}
+            }
+            local existingGraveyard = {':g1', ':g2', ':g3'}
+            BridgeZoneLedger = function(seatId, zone)
+                if seatId == 'forge-player-1' and zone == 'graveyard' then
+                    return existingGraveyard
+                end
+                return {}
+            end
+            BridgeBuildAtomicLibraryToGraveyardBatches(tx)
+            local batch = tx.graveyardMutationBatchesBySeatId['forge-player-1']
+            baseCount = BridgeTableSize(batch and batch.baseExpectedInstances or {})
+            finalCount = BridgeTableSize(batch and batch.finalExpectedInstances or {})
+        ");
+
+        Assert.Equal(5, lua.Globals.Get("baseCount").Number);
+        Assert.Equal(6, lua.Globals.Get("finalCount").Number);
+    }
+
+    [Fact]
     public void ThoughtScourStagingAvoidsPlayerOneLandRowAndPositionsFinalDeckAtGraveyard()
     {
         var lua = NewProbe();
@@ -1716,12 +1756,36 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                             table.insert(stagedLedger, instanceId)
                         end
                         batch.stagedGraveyardLedger = stagedLedger
-                        batch.expectedInstances = {}
+                        batch.baseExpectedInstances = {}
                         for _, instanceId in pairs(stagedLedger) do
-                            table.insert(batch.expectedInstances, {
+                            table.insert(batch.baseExpectedInstances, {
                                 instanceId = instanceId,
                                 cardName = BridgeState.cardNameByInstanceId[instanceId]
                             })
+                        end
+                        batch.expectedInstances = batch.baseExpectedInstances
+                        batch.finalExpectedInstances = nil
+                        for index = 1, (tonumber(tx.eventCount) or 0) do
+                            local event = tx.events[index]
+                            if event ~= nil and tostring(event.kind or '') == 'card_moved'
+                                and tostring(event.destinationZone or '') == 'graveyard'
+                                and tostring(event.sourceZone or '') ~= 'library'
+                                and tostring(event.seatId or '') == tostring(seatId) then
+                                local finalExpected = {}
+                                for _, entry in pairs(BridgeTestNormalizeSequence(batch.baseExpectedInstances or {})) do
+                                    table.insert(finalExpected, {
+                                        instanceId = entry and entry.instanceId or nil,
+                                        cardName = entry and entry.cardName or nil
+                                    })
+                                end
+                                if event.cardInstanceId ~= nil then
+                                    table.insert(finalExpected, {
+                                        instanceId = event.cardInstanceId,
+                                        cardName = BridgeState.cardNameByInstanceId[event.cardInstanceId]
+                                    })
+                                end
+                                batch.finalExpectedInstances = finalExpected
+                            end
                         end
                     end
                 end

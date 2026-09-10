@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 3e8061e75a824837a69130d8f5c7cf3dac9d7851669381d177135670f72ac846
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "3e8061e75a824837a69130d8f5c7cf3dac9d7851669381d177135670f72ac846"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 86ace7d98662753cf6898e7bcbc1f45e139bb4f5ed6cb1f013ed884381d465a4
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "86ace7d98662753cf6898e7bcbc1f45e139bb4f5ed6cb1f013ed884381d465a4"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -17380,13 +17380,15 @@ function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
                 table.insert(stagedLedger, instanceId)
             end
             batch.stagedGraveyardLedger = stagedLedger
-            batch.expectedInstances = {}
+            batch.baseExpectedInstances = {}
             for index, instanceId in ipairs(stagedLedger) do
-                batch.expectedInstances[index] = {
+                batch.baseExpectedInstances[index] = {
                     instanceId = instanceId,
                     cardName = BridgeState.cardNameByInstanceId[instanceId]
                 }
             end
+            batch.expectedInstances = batch.baseExpectedInstances
+            batch.finalExpectedInstances = nil
             local preMutation = BridgeLogAtomicGraveyardTopology(seatId, batch, "before-mutation")
             batch.preMutationContainedGuidSet = BridgeAtomicGraveyardGuidSet(
                 preMutation and preMutation.graveyardEntries or {})
@@ -17398,7 +17400,10 @@ function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
     -- two library -> graveyard events (Mental Note). Keep that card under the
     -- same transaction owner: applying it immediately would make the strict
     -- graveyard shape audit observe an intermediate multi-loose state while
-    -- the owned library batch is still staging.
+    -- the owned library batch is still staging. Keep a distinct final
+    -- expectation for the post-settlement state so the batch can verify the
+    -- 5-card base before the deferred move settles and then the 6-card final
+    -- state afterwards.
     for index = 1, (tonumber(tx.eventCount) or 0) do
         local event = tx.events[index]
         if event ~= nil and event.destinationZone == "graveyard"
@@ -17410,6 +17415,20 @@ function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
                     batch.deferredEventSequenceSet[key] = true
                     table.insert(batch.deferredEvents, event)
                 end
+                local finalExpected = {}
+                for _, entry in ipairs(batch.baseExpectedInstances or {}) do
+                    table.insert(finalExpected, {
+                        instanceId = entry and entry.instanceId or nil,
+                        cardName = entry and entry.cardName or nil
+                    })
+                end
+                if event.cardInstanceId ~= nil then
+                    table.insert(finalExpected, {
+                        instanceId = event.cardInstanceId,
+                        cardName = BridgeState.cardNameByInstanceId[event.cardInstanceId]
+                    })
+                end
+                batch.finalExpectedInstances = finalExpected
             end
         end
     end
@@ -17699,6 +17718,67 @@ end
 -- produced its native destination. Their completion remains part of the same
 -- event transaction readiness fence, so a cursor cannot commit while the
 -- deferred card is still settling into that Deck.
+function BridgeFinalizeDeferredGraveyardBatch(tx, batch)
+    if tx == nil or batch == nil or batch.state == "FAILED" or batch.state == "VERIFIED" then
+        return
+    end
+    if (tonumber(batch.deferredPendingCount or 0) or 0) > 0 then
+        return
+    end
+    local finalExpectedInstances = batch.finalExpectedInstances or batch.expectedInstances or nil
+    if batch.targetDeckGuid ~= nil then
+        local finalDeck = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(batch.targetDeckGuid) or nil
+        if BridgeSafeObjectTag(finalDeck) == "Deck" then
+            batch.targetDeck = finalDeck
+        end
+    end
+    local settledDeck = batch.targetDeck or BridgeFindGraveyardContainer(batch.seatId)
+    if BridgeSafeObjectTag(settledDeck) ~= "Deck" then
+        return
+    end
+    batch.expectedInstances = finalExpectedInstances or batch.expectedInstances or nil
+    if finalExpectedInstances ~= nil then
+        if not BridgeRecordGraveyardContainerEntries(batch.seatId, settledDeck, finalExpectedInstances) then
+            local reason = "graveyard-final-reconciliation:" .. tostring(batch.seatId)
+                .. ":entries=" .. tostring(#(BridgeLibraryEntries(settledDeck) or {}))
+                .. ":expected=" .. tostring(BridgeTableSize(finalExpectedInstances or {}))
+                .. ":rebind=" .. tostring(BridgeState.lastGraveyardRebindFailure)
+            BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
+            return
+        end
+    end
+    local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(
+        batch.seatId, "after-deferred-graveyard-settlement", batch.containmentOwner)
+    if not shapeOk then
+        BridgeAbortAtomicGraveyardMutation(tx, batch, "graveyard-shape:" .. tostring(shapeReason))
+        return
+    end
+    batch.state = "VERIFIED"
+    batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+    batch.lastProgressStage = "VERIFIED"
+    batch.verifiedAt = os.clock()
+    if BridgeState.libraryBatchBySeatId ~= nil then
+        BridgeState.libraryBatchBySeatId[batch.seatId] = nil
+    end
+    BridgeRecordPhysicalMutationProgress(tx, "FINAL_VERIFY", "graveyard-shape")
+    BridgeRecordPhysicalMutationJournal({
+        token = tx.token, forgeSequence = tx.forgeSequence, stage = "FINAL_VERIFY",
+        seatId = batch.seatId, targetDeckGuid = batch.targetDeckGuid,
+        stagedCount = batch.stagedCount, requiredCount = batch.requiredCount,
+        expectedCount = BridgeTableSize(finalExpectedInstances or batch.expectedInstances or {})
+    })
+    BridgeRecordPhysicalMutationProgress(tx, "VERIFIED", "graveyard-batch")
+    BridgeRecordPhysicalMutationJournal({
+        token = tx.token, forgeSequence = tx.forgeSequence, stage = "VERIFIED",
+        seatId = batch.seatId, targetDeckGuid = batch.targetDeckGuid,
+        stagedCount = batch.stagedCount, requiredCount = batch.requiredCount,
+        expectedCount = BridgeTableSize(finalExpectedInstances or batch.expectedInstances or {})
+    })
+    if BridgeWakePhysicalReadinessDependency ~= nil then
+        BridgeWakePhysicalReadinessDependency(tx.physicalTransactionGeneration, "atomic-graveyard-verified")
+    end
+end
+
 function BridgeStartDeferredGraveyardEvents(tx, batch)
     local deferredCount = batch ~= nil and BridgeTableSize(batch.deferredEvents or {}) or 0
     if tx == nil or batch == nil or deferredCount == 0 then return end
@@ -17750,9 +17830,12 @@ function BridgeStartDeferredGraveyardEvents(tx, batch)
                 cardInstanceId = event.cardInstanceId,
                 pendingCount = batch.deferredPendingCount
             })
-            if batch.deferredPendingCount == 0 and BridgeWakePhysicalReadinessDependency ~= nil then
-                BridgeWakePhysicalReadinessDependency(tx.physicalTransactionGeneration,
-                    "deferred-graveyard-settled")
+            if batch.deferredPendingCount == 0 then
+                BridgeFinalizeDeferredGraveyardBatch(tx, batch)
+                if BridgeWakePhysicalReadinessDependency ~= nil then
+                    BridgeWakePhysicalReadinessDependency(tx.physicalTransactionGeneration,
+                        "deferred-graveyard-settled")
+                end
             end
             if transactionCompletion ~= nil then transactionCompletion(true, reason) end
         end
@@ -18181,11 +18264,15 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         end
         batch.targetDeck = settledDeck
         batch.targetDeckGuid = BridgeSafeObjectGuid(settledDeck)
-        if not BridgeRecordGraveyardContainerEntries(batch.seatId, settledDeck, batch.expectedInstances) then
+        local expectedInstances = batch.expectedInstances
+        if batch.finalExpectedInstances ~= nil and (tonumber(batch.deferredPendingCount or 0) or 0) > 0 then
+            expectedInstances = batch.baseExpectedInstances or batch.expectedInstances
+        end
+        if not BridgeRecordGraveyardContainerEntries(batch.seatId, settledDeck, expectedInstances) then
             BridgeLogAtomicGraveyardTopology(batch.seatId, batch, "settled-reconciliation-failed")
             local reason = "graveyard-reconciliation:entries="
                 .. tostring(#(BridgeLibraryEntries(settledDeck) or {}))
-                .. ":expected=" .. tostring(BridgeTableSize(batch.expectedInstances or {}))
+                .. ":expected=" .. tostring(BridgeTableSize(expectedInstances or {}))
                 .. ":rebind=" .. tostring(BridgeState.lastGraveyardRebindFailure)
             BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
             return
@@ -18259,6 +18346,20 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             BridgeAbortAtomicGraveyardMutation(tx, batch, "graveyard-shape:" .. tostring(shapeReason))
             return
         end
+        if (tonumber(batch.deferredPendingCount or 0) or 0) > 0 then
+            batch.state = "DEFERRED_SETTLING"
+            batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+            batch.lastProgressStage = "DEFERRED_SETTLING"
+            BridgeRecordPhysicalMutationProgress(tx, "DEFERRED_SETTLING", "graveyard-deferred")
+            BridgeRecordPhysicalMutationJournal({
+                token = tx.token, forgeSequence = tx.forgeSequence, stage = "DEFERRED_SETTLING",
+                seatId = batch.seatId, targetDeckGuid = batch.targetDeckGuid,
+                stagedCount = batch.stagedCount, requiredCount = batch.requiredCount,
+                deferredPendingCount = batch.deferredPendingCount
+            })
+            BridgeStartDeferredGraveyardEvents(tx, batch)
+            return
+        end
         BridgeRecordPhysicalMutationProgress(tx, "FINAL_VERIFY", "graveyard-shape")
         batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
         batch.lastProgressStage = "FINAL_VERIFY"
@@ -18285,7 +18386,6 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             seatId = batch.seatId, targetDeckGuid = batch.targetDeckGuid,
             stagedCount = batch.stagedCount, requiredCount = batch.requiredCount
         })
-        BridgeStartDeferredGraveyardEvents(tx, batch)
         if BridgeWakePhysicalReadinessDependency ~= nil then
             BridgeWakePhysicalReadinessDependency(tx.physicalTransactionGeneration, "atomic-graveyard-verified")
         end
