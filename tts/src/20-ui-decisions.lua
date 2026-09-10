@@ -2131,6 +2131,18 @@ function BridgeShouldIgnoreStaleDecision(decision)
     local appliedForgeSequence = tonumber(BridgeState.lastAppliedForgeSequence or 0) or 0
     if decisionForgeSequence > 0 and appliedForgeSequence > 0
         and decisionForgeSequence < appliedForgeSequence then
+        -- Forge publishes turn-zero Keep/Mulligan before the snapshot's later
+        -- annotation sequence. Once that snapshot is fully committed, a
+        -- same-cursor opening decision is current; this narrowly preserves
+        -- that ordering without relaxing ordinary stale-menu fencing.
+        local openingMulligan = decision ~= nil and decision.kind == "mulligan"
+            and tostring(decision.mulliganStage or "") == "keep_or_mulligan"
+        if openingMulligan and eventCursor > 0 and eventCursor == applied
+            and BridgeState.bootstrapping ~= true and BridgeState.embodimentTransaction == nil
+            and #(BridgeState.eventQueue or {}) == 0 then
+            BridgeLog("[Bridge] retaining bootstrap-complete opening mulligan despite forgeSequence annotation lag")
+            return false, eventCursor, applied, "opening_mulligan_snapshot_annotation_lag"
+        end
         BridgeLog(string.format(
             "[Bridge] ignoring stale decision %s due to forgeSequence ordering decision=%s applied=%s",
             tostring(decision and decision.decisionId), tostring(decisionForgeSequence), tostring(appliedForgeSequence)))
@@ -4193,6 +4205,9 @@ end
 
 function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationGeneration)
     local function reject(reason)
+        if BridgeRecordDecisionRejection ~= nil then
+            BridgeRecordDecisionRejection(decision, origin, reason, expectedSessionId, presentationGeneration)
+        end
         return false, tostring(reason or "rejected")
     end
     local function defer(reason)
@@ -4296,7 +4311,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
                 BridgeScheduleDecisionPoll(retryDelay, BridgeState.decisionPollGeneration, 1, false)
             end
         end
-        return reject("stale_event_cursor")
+        return reject(staleReason or "stale_event_cursor")
     end
 
     -- The producer must never turn Forge's private library inspection into a

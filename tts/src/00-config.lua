@@ -1019,6 +1019,7 @@ function BridgeEventDrainQueueState()
         bootstrapping = BridgeState.bootstrapping == true,
         terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
         terminalRecovery = BridgeDiagnosticSnapshot(BridgeCurrentTerminalRecoveryError() or {}),
+        decisionAcceptanceRejections = BridgeDiagnosticSnapshot(BridgeState.decisionAcceptanceRejections or {}),
         resyncToken = BridgeState.resyncToken,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,
@@ -1448,6 +1449,34 @@ function BridgeDiagnosticSnapshot(value, active)
     end
     active[value] = nil
     return copy
+end
+
+-- Keep the exact acceptance predicate in durable diagnostics. A valid Forge
+-- decision must not disappear behind an anonymous flight-recorder rejection.
+function BridgeRecordDecisionRejection(decision, origin, reason, expectedSessionId, presentationGeneration)
+    BridgeState.decisionAcceptanceRejections = BridgeState.decisionAcceptanceRejections or {}
+    local record = {
+        timestamp = os.clock(), origin = origin, reason = tostring(reason or "rejected"),
+        decisionId = decision and decision.decisionId or nil,
+        decisionKind = decision and decision.kind or nil,
+        decisionSessionId = decision and decision.sessionId or nil,
+        expectedSessionId = expectedSessionId, currentSessionId = BridgeState.eventSessionId,
+        eventCursor = decision and decision.eventCursor or nil,
+        lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
+        decisionForgeSequence = decision and decision.forgeSequence or nil,
+        lastAppliedForgeSequence = BridgeState.lastAppliedForgeSequence,
+        expectedPresentationGeneration = presentationGeneration,
+        currentPresentationGeneration = BridgeState.decisionPresentationGeneration,
+        bootstrapping = BridgeState.bootstrapping == true,
+        embodimentActive = BridgeState.embodimentTransaction ~= nil,
+        resyncInFlight = BridgeState.resyncInFlight == true,
+        choiceProtocolPaused = BridgeState.choiceProtocolPaused == true
+    }
+    table.insert(BridgeState.decisionAcceptanceRejections, record)
+    while #BridgeState.decisionAcceptanceRejections > 32 do table.remove(BridgeState.decisionAcceptanceRejections, 1) end
+    BridgeLog(string.format("[Bridge] DECISION_ACCEPT_REJECTED origin=%s reason=%s decision=%s cursor=%s applied=%s decisionForgeSequence=%s appliedForgeSequence=%s",
+        tostring(origin), tostring(record.reason), tostring(record.decisionId), tostring(record.eventCursor),
+        tostring(record.lastAppliedEventSequence), tostring(record.decisionForgeSequence), tostring(record.lastAppliedForgeSequence)))
 end
 
 -- Terminal recovery failures belong to the authoritative session/generation
@@ -3071,6 +3100,7 @@ BridgeState = {
     yieldPolicySessionId = nil,
     yieldPolicyOwnTurn = false,
     decisionLifecycle = {},
+    decisionAcceptanceRejections = {},
     staleDecisionFault = nil,
     staleDecisionFaultsByKey = {},
     terminalRecoveryError = nil,
@@ -4004,9 +4034,16 @@ function BridgeRefreshLibrarySlotBindings(deckGuid)
     end
     local mappings = {}
     local generationBySeat = {}
-    for instanceId, mapping in pairs(BridgeState.physicalSlotByInstanceId or {}) do
-        if mapping.deckGuid == deckGuid then
+    -- The container ledger is authoritative; physicalSlotByInstanceId is a
+    -- refresh cache which native Deck promotion can drop. Rebuild the cache
+    -- from the ledger before re-observing, never from a stale native index.
+    BridgeState.physicalSlotByInstanceId = BridgeState.physicalSlotByInstanceId or {}
+    for instanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+        if mapping.locatorType == "SLOT_LOCATOR" and mapping.deckGuid == deckGuid
+            and mapping.zoneName == "library" then
+            BridgeState.physicalSlotByInstanceId[instanceId] = mapping
             local name = BridgeNormalizeCardName(mapping.cardName or BridgeState.cardNameByInstanceId[instanceId])
+            if name == "" then return false, "slot locator has no canonical card identity" end
             mappings[name] = mappings[name] or {}
             table.insert(mappings[name], {instanceId = instanceId, mapping = mapping})
             if generationBySeat[mapping.seatId] == nil then
@@ -4040,8 +4077,11 @@ end
 function BridgeRefreshContainedMappingsAfterDeckMutation(deckGuid)
     if deckGuid == nil then return end
     BridgeState.libraryBindingGenerationBySeatId = BridgeState.libraryBindingGenerationBySeatId or {}
-    for instanceId, mapping in pairs(BridgeState.physicalSlotByInstanceId or {}) do
-        if mapping.deckGuid == deckGuid then
+    local invalidatedSeats = {}
+    for instanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+        if mapping.locatorType == "SLOT_LOCATOR" and mapping.deckGuid == deckGuid
+            and mapping.zoneName == "library" and invalidatedSeats[mapping.seatId] ~= true then
+            invalidatedSeats[mapping.seatId] = true
             BridgeState.libraryBindingGenerationBySeatId[mapping.seatId] =
                 (BridgeState.libraryBindingGenerationBySeatId[mapping.seatId] or 0) + 1
         end

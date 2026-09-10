@@ -1186,6 +1186,13 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
                 callback(false, stabilityError)
                 return
             end
+            -- Card -> Deck containment changes every remaining native slot.
+            -- Refresh from the settled inventory before the next exact
+            -- SLOT_LOCATOR extraction is allowed to resolve.
+            local settledDeckGuid = BridgeSafeObjectGuid(deck)
+            if settledDeckGuid ~= nil and BridgeRefreshContainedMappingsAfterDeckMutation ~= nil then
+                BridgeRefreshContainedMappingsAfterDeckMutation(settledDeckGuid)
+            end
             callback(true, nil, deck, guid)
         end, 1, guid, owner)
     end, 1, resultingLibrary)

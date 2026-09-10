@@ -1753,6 +1753,7 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         scheduled = false
     }
     BridgeState.decisionLifecycle = {}
+    BridgeState.decisionAcceptanceRejections = {}
     BridgeState.diagnosticCaptureLifecycle = {}
     BridgeState.diagnosticCaptureFollowupToken = nil
     BridgeState.diagnosticCaptureFollowupUntil = 0

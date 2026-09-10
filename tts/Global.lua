@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 74caa4a07d1873485f3445c015439b36008180a4501c921b2dab0d7797bc0f03
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "74caa4a07d1873485f3445c015439b36008180a4501c921b2dab0d7797bc0f03"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: e3901d058cb74ee929756eff2e7ab11eda9403f064e08642e3923087159b9a23
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "e3901d058cb74ee929756eff2e7ab11eda9403f064e08642e3923087159b9a23"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -1022,6 +1022,7 @@ function BridgeEventDrainQueueState()
         bootstrapping = BridgeState.bootstrapping == true,
         terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
         terminalRecovery = BridgeDiagnosticSnapshot(BridgeCurrentTerminalRecoveryError() or {}),
+        decisionAcceptanceRejections = BridgeDiagnosticSnapshot(BridgeState.decisionAcceptanceRejections or {}),
         resyncToken = BridgeState.resyncToken,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,
@@ -1451,6 +1452,34 @@ function BridgeDiagnosticSnapshot(value, active)
     end
     active[value] = nil
     return copy
+end
+
+-- Keep the exact acceptance predicate in durable diagnostics. A valid Forge
+-- decision must not disappear behind an anonymous flight-recorder rejection.
+function BridgeRecordDecisionRejection(decision, origin, reason, expectedSessionId, presentationGeneration)
+    BridgeState.decisionAcceptanceRejections = BridgeState.decisionAcceptanceRejections or {}
+    local record = {
+        timestamp = os.clock(), origin = origin, reason = tostring(reason or "rejected"),
+        decisionId = decision and decision.decisionId or nil,
+        decisionKind = decision and decision.kind or nil,
+        decisionSessionId = decision and decision.sessionId or nil,
+        expectedSessionId = expectedSessionId, currentSessionId = BridgeState.eventSessionId,
+        eventCursor = decision and decision.eventCursor or nil,
+        lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
+        decisionForgeSequence = decision and decision.forgeSequence or nil,
+        lastAppliedForgeSequence = BridgeState.lastAppliedForgeSequence,
+        expectedPresentationGeneration = presentationGeneration,
+        currentPresentationGeneration = BridgeState.decisionPresentationGeneration,
+        bootstrapping = BridgeState.bootstrapping == true,
+        embodimentActive = BridgeState.embodimentTransaction ~= nil,
+        resyncInFlight = BridgeState.resyncInFlight == true,
+        choiceProtocolPaused = BridgeState.choiceProtocolPaused == true
+    }
+    table.insert(BridgeState.decisionAcceptanceRejections, record)
+    while #BridgeState.decisionAcceptanceRejections > 32 do table.remove(BridgeState.decisionAcceptanceRejections, 1) end
+    BridgeLog(string.format("[Bridge] DECISION_ACCEPT_REJECTED origin=%s reason=%s decision=%s cursor=%s applied=%s decisionForgeSequence=%s appliedForgeSequence=%s",
+        tostring(origin), tostring(record.reason), tostring(record.decisionId), tostring(record.eventCursor),
+        tostring(record.lastAppliedEventSequence), tostring(record.decisionForgeSequence), tostring(record.lastAppliedForgeSequence)))
 end
 
 -- Terminal recovery failures belong to the authoritative session/generation
@@ -3074,6 +3103,7 @@ BridgeState = {
     yieldPolicySessionId = nil,
     yieldPolicyOwnTurn = false,
     decisionLifecycle = {},
+    decisionAcceptanceRejections = {},
     staleDecisionFault = nil,
     staleDecisionFaultsByKey = {},
     terminalRecoveryError = nil,
@@ -4007,9 +4037,16 @@ function BridgeRefreshLibrarySlotBindings(deckGuid)
     end
     local mappings = {}
     local generationBySeat = {}
-    for instanceId, mapping in pairs(BridgeState.physicalSlotByInstanceId or {}) do
-        if mapping.deckGuid == deckGuid then
+    -- The container ledger is authoritative; physicalSlotByInstanceId is a
+    -- refresh cache which native Deck promotion can drop. Rebuild the cache
+    -- from the ledger before re-observing, never from a stale native index.
+    BridgeState.physicalSlotByInstanceId = BridgeState.physicalSlotByInstanceId or {}
+    for instanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+        if mapping.locatorType == "SLOT_LOCATOR" and mapping.deckGuid == deckGuid
+            and mapping.zoneName == "library" then
+            BridgeState.physicalSlotByInstanceId[instanceId] = mapping
             local name = BridgeNormalizeCardName(mapping.cardName or BridgeState.cardNameByInstanceId[instanceId])
+            if name == "" then return false, "slot locator has no canonical card identity" end
             mappings[name] = mappings[name] or {}
             table.insert(mappings[name], {instanceId = instanceId, mapping = mapping})
             if generationBySeat[mapping.seatId] == nil then
@@ -4043,8 +4080,11 @@ end
 function BridgeRefreshContainedMappingsAfterDeckMutation(deckGuid)
     if deckGuid == nil then return end
     BridgeState.libraryBindingGenerationBySeatId = BridgeState.libraryBindingGenerationBySeatId or {}
-    for instanceId, mapping in pairs(BridgeState.physicalSlotByInstanceId or {}) do
-        if mapping.deckGuid == deckGuid then
+    local invalidatedSeats = {}
+    for instanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+        if mapping.locatorType == "SLOT_LOCATOR" and mapping.deckGuid == deckGuid
+            and mapping.zoneName == "library" and invalidatedSeats[mapping.seatId] ~= true then
+            invalidatedSeats[mapping.seatId] = true
             BridgeState.libraryBindingGenerationBySeatId[mapping.seatId] =
                 (BridgeState.libraryBindingGenerationBySeatId[mapping.seatId] or 0) + 1
         end
@@ -5402,6 +5442,13 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
                 BridgeLog("[Bridge] " .. tostring(stabilityError))
                 callback(false, stabilityError)
                 return
+            end
+            -- Card -> Deck containment changes every remaining native slot.
+            -- Refresh from the settled inventory before the next exact
+            -- SLOT_LOCATOR extraction is allowed to resolve.
+            local settledDeckGuid = BridgeSafeObjectGuid(deck)
+            if settledDeckGuid ~= nil and BridgeRefreshContainedMappingsAfterDeckMutation ~= nil then
+                BridgeRefreshContainedMappingsAfterDeckMutation(settledDeckGuid)
             end
             callback(true, nil, deck, guid)
         end, 1, guid, owner)
@@ -8546,6 +8593,18 @@ function BridgeShouldIgnoreStaleDecision(decision)
     local appliedForgeSequence = tonumber(BridgeState.lastAppliedForgeSequence or 0) or 0
     if decisionForgeSequence > 0 and appliedForgeSequence > 0
         and decisionForgeSequence < appliedForgeSequence then
+        -- Forge publishes turn-zero Keep/Mulligan before the snapshot's later
+        -- annotation sequence. Once that snapshot is fully committed, a
+        -- same-cursor opening decision is current; this narrowly preserves
+        -- that ordering without relaxing ordinary stale-menu fencing.
+        local openingMulligan = decision ~= nil and decision.kind == "mulligan"
+            and tostring(decision.mulliganStage or "") == "keep_or_mulligan"
+        if openingMulligan and eventCursor > 0 and eventCursor == applied
+            and BridgeState.bootstrapping ~= true and BridgeState.embodimentTransaction == nil
+            and #(BridgeState.eventQueue or {}) == 0 then
+            BridgeLog("[Bridge] retaining bootstrap-complete opening mulligan despite forgeSequence annotation lag")
+            return false, eventCursor, applied, "opening_mulligan_snapshot_annotation_lag"
+        end
         BridgeLog(string.format(
             "[Bridge] ignoring stale decision %s due to forgeSequence ordering decision=%s applied=%s",
             tostring(decision and decision.decisionId), tostring(decisionForgeSequence), tostring(appliedForgeSequence)))
@@ -10608,6 +10667,9 @@ end
 
 function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationGeneration)
     local function reject(reason)
+        if BridgeRecordDecisionRejection ~= nil then
+            BridgeRecordDecisionRejection(decision, origin, reason, expectedSessionId, presentationGeneration)
+        end
         return false, tostring(reason or "rejected")
     end
     local function defer(reason)
@@ -10711,7 +10773,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
                 BridgeScheduleDecisionPoll(retryDelay, BridgeState.decisionPollGeneration, 1, false)
             end
         end
-        return reject("stale_event_cursor")
+        return reject(staleReason or "stale_event_cursor")
     end
 
     -- The producer must never turn Forge's private library inspection into a
@@ -16273,6 +16335,7 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         scheduled = false
     }
     BridgeState.decisionLifecycle = {}
+    BridgeState.decisionAcceptanceRejections = {}
     BridgeState.diagnosticCaptureLifecycle = {}
     BridgeState.diagnosticCaptureFollowupToken = nil
     BridgeState.diagnosticCaptureFollowupUntil = 0
