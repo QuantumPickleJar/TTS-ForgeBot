@@ -299,6 +299,7 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncDeferredRetryScheduled = BridgeState.resyncDeferredRetryScheduled == true,
         resyncWatchdogToken = BridgeState.resyncWatchdogToken,
         resyncLifecycle = BridgeState.resyncLifecycle or {},
+        resyncActionJournal = BridgeState.resyncActionJournal or {},
         resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration,
         resyncReconcileStarted = BridgeState.resyncReconcileStarted == true,
         reportCaptureInFlight = ui.reportCaptureInFlight == true
@@ -3151,6 +3152,8 @@ BridgeState = {
         lastLoggedCount = 0
     },
     resyncLifecycle = {},
+    resyncActionJournal = {},
+    resyncActionJournalCount = 0,
     resyncCheckpoint = nil,
     resyncScheduled = false,
     resyncDeferredRetryScheduled = false,
@@ -3190,6 +3193,7 @@ BridgeState = {
     -- identity so the second renderer never treats a temporarily unresolved
     -- first renderer as a name-based physical desync.
     pendingStructuredZoneTransitionByInstanceId = {},
+    pendingSemanticResolutionByInstanceId = {},
     -- A card returning from a public zone to a hand can be visually
     -- indistinguishable from another copy already in that hand. Keep the
     -- authoritative Forge identity pending until it next becomes public.

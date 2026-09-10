@@ -2514,12 +2514,48 @@ function BridgeHudRollingCapture(player, value, id)
     BridgeHudSubmitReport("Performance / Freeze", "Rolling freeze capture")
 end
 
+function BridgeRecordResyncAction(stage, reason, statusBeforeClick)
+    BridgeState.resyncActionJournal = BridgeState.resyncActionJournal or {}
+    local terminal = BridgeCurrentTerminalRecoveryError ~= nil
+        and BridgeCurrentTerminalRecoveryError() or nil
+    local active = BridgeState.embodimentTransaction
+    local record = {
+        stage = stage, reason = reason,
+        timestamp = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock(),
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
+        resyncToken = BridgeState.resyncToken,
+        resyncInFlight = BridgeState.resyncInFlight == true,
+        hudResyncPending = BridgeState.hudResyncPending == true,
+        desyncLatched = BridgeState.desyncLatched == true,
+        terminalErrorPresent = terminal ~= nil,
+        embodimentReason = active and active.reason or nil,
+        embodimentToken = active and active.token or nil,
+        statusBeforeClick = statusBeforeClick
+    }
+    local count = (tonumber(BridgeState.resyncActionJournalCount or 0) or 0) + 1
+    BridgeState.resyncActionJournal[count] = record
+    BridgeState.resyncActionJournalCount = count
+    if count > 32 then
+        table.remove(BridgeState.resyncActionJournal, 1)
+        BridgeState.resyncActionJournalCount = 32
+    end
+    BridgeLog("[Bridge] " .. tostring(stage) .. " reason=" .. tostring(reason)
+        .. " session=" .. tostring(record.sessionId)
+        .. " generation=" .. tostring(record.sessionGeneration)
+        .. " token=" .. tostring(record.resyncToken))
+    return record
+end
+
 function BridgeHudResyncFromForge(player, value, id)
     local ui = BridgeState.ui
+    local statusBeforeClick = BridgeState.statusHeadline or BridgeState.statusText
     if ui == nil then
+        BridgeRecordResyncAction("RESYNC_CLICK_REJECTED", "ui-unavailable", statusBeforeClick)
         BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=ui-unavailable")
         return
     end
+    BridgeRecordResyncAction("RESYNC_CLICK_RECEIVED", nil, statusBeforeClick)
     BridgeLog(string.format("[Bridge] RESYNC_CLICK_RECEIVED coreResyncInFlight=%s uiResyncInFlight=%s desyncLatched=%s schedulerOwner=%s session=%s generation=%s",
         tostring(BridgeState.resyncInFlight == true), tostring(ui.resyncInFlight == true),
         tostring(BridgeState.desyncLatched == true), tostring(BridgeState.schedulerOwner),
@@ -2532,11 +2568,13 @@ function BridgeHudResyncFromForge(player, value, id)
         tostring(queueState.queueLength), tostring(queueState.desyncLatched),
         tostring(queueState.bootstrapping), tostring(BRIDGE_RUNTIME_EPOCH_LOCAL)))
     if BridgeState.resyncInFlight == true then
+        BridgeRecordResyncAction("RESYNC_CLICK_JOINED_EXISTING", "core-resync-in-flight", statusBeforeClick)
         BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=core-resync-in-flight")
         BridgeSetStatus("RESYNCING FROM FORGE", "An explicit recovery is already running.")
         return
     end
     if BridgeState.hudResyncPending == true then
+        BridgeRecordResyncAction("RESYNC_CLICK_JOINED_EXISTING", "compatibility-handshake-pending", statusBeforeClick)
         BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=hud-recovery-handshake-pending")
         BridgeSetStatus("RESYNCING FROM FORGE", "The recovery request is still being established.")
         return
@@ -2545,36 +2583,50 @@ function BridgeHudResyncFromForge(player, value, id)
         ui.resyncInFlight = false
         BridgeSetStatus("RESYNC UNAVAILABLE", "No active Forge session is available for recovery.")
         BridgeLog("[Bridge] RESYNC_CLICK_REJECTED origin=hud reason=no-active-session")
+        BridgeRecordResyncAction("RESYNC_CLICK_REJECTED", "no-active-session", statusBeforeClick)
         BridgeUiMarkDirty("resync-rejected")
         return
     end
     -- Claim the UI side before the asynchronous compatibility check so a
     -- second click cannot create a second recovery owner while the first is
     -- waiting for its handshake.
-    BridgeState.hudResyncPending = true
-    ui.resyncInFlight = true
-    BridgeSetStatus("RESYNCING FROM FORGE", "Request accepted; checking runtime compatibility...")
-    BridgeUiMarkDirty("resync-click-pending")
-    BridgeEnsureRuntimeCompatibility(function(compatible)
+    local function startExplicitResync()
         BridgeState.hudResyncPending = false
-        if not compatible then
-            ui.resyncInFlight = false
-            BridgeSetStatus("RESYNC REJECTED", "Runtime compatibility did not match; reload the current Global.lua.")
-            BridgeLog("[Bridge] RESYNC_CLICK_REJECTED origin=hud reason=runtime-incompatible")
-            BridgeUiMarkDirty("resync-rejected")
-            return
-        end
         local started = BridgeResyncFromAuthoritativeSnapshot("hud")
         if started ~= true then
             ui.resyncInFlight = BridgeState.resyncInFlight == true
             BridgeSetStatus("RESYNC REJECTED", "The current recovery owner did not accept the explicit retry.")
             BridgeLog("[Bridge] RESYNC_CLICK_REJECTED origin=hud reason=core-rejected")
+            BridgeRecordResyncAction("RESYNC_CLICK_REJECTED", "core-rejected", statusBeforeClick)
             BridgeUiMarkDirty("resync-rejected")
             return
         end
         BridgeLog("[Bridge] RESYNC_CLICK_ACCEPTED origin=hud coreResyncInFlight="
             .. tostring(BridgeState.resyncInFlight == true))
+        BridgeRecordResyncAction("RESYNC_CLICK_STARTED", "hud-explicit", statusBeforeClick)
         BridgeUiMarkDirty("resync-click-accepted")
+    end
+    BridgeState.hudResyncPending = true
+    ui.resyncInFlight = true
+    if BridgeState.runtimeCompatibilityState == "MATCH" then
+        BridgeSetStatus("RESYNCING FROM FORGE", "Request accepted; starting explicit recovery...")
+        BridgeUiMarkDirty("resync-click-pending")
+        startExplicitResync()
+        return
+    end
+    BridgeSetStatus("RESYNCING FROM FORGE", "Request accepted; checking runtime compatibility...")
+    BridgeUiMarkDirty("resync-click-pending")
+    BridgeEnsureRuntimeCompatibility(function(compatible)
+        if not compatible then
+            BridgeState.hudResyncPending = false
+            ui.resyncInFlight = false
+            BridgeSetStatus("RESYNC REJECTED", "Runtime compatibility did not match; reload the current Global.lua.")
+            BridgeLog("[Bridge] RESYNC_CLICK_REJECTED origin=hud reason=runtime-incompatible")
+            BridgeRecordResyncAction("RESYNC_CLICK_REJECTED", "runtime-incompatible", statusBeforeClick)
+            BridgeUiMarkDirty("resync-rejected")
+            return
+        end
+        startExplicitResync()
     end)
 end
 

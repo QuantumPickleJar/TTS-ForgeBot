@@ -2861,8 +2861,17 @@ public sealed class TtsEventQueueLivelockTests
             BridgeState.desyncLatched = true
             BridgeState.resyncInFlight = false
             BridgeState.hudResyncPending = false
+            BridgeState.resyncActionJournal = {}
+            BridgeState.resyncActionJournalCount = 0
+            BridgeState.runtimeCompatibilityState = 'MATCH'
+            BridgeState.resyncCircuitOpen = true
+            BridgeState.resyncDeferredReason = 'snapshot-reconcile-failed'
             BridgeState.ui = {resyncInFlight=false, fastForwardActive=false, autoPassEmpty=false}
-            BridgeEnsureRuntimeCompatibility = function(callback) callback(true) end
+            compatibilityCalls = 0
+            BridgeEnsureRuntimeCompatibility = function(callback)
+                compatibilityCalls = compatibilityCalls + 1
+                callback(true)
+            end
             BridgeSetStatus = function() end
             BridgeUiMarkDirty = function() end
             hudCalls = 0
@@ -2870,13 +2879,22 @@ public sealed class TtsEventQueueLivelockTests
             BridgeResyncFromAuthoritativeSnapshot = function(origin)
                 hudCalls = hudCalls + 1
                 hudOrigin = origin
+                BridgeState.resyncInFlight = true
                 return true
             end
             BridgeHudResyncFromForge(nil, nil, nil)
+            BridgeHudResyncFromForge(nil, nil, nil)
+            firstAction = BridgeState.resyncActionJournal[1]
+            startedAction = BridgeState.resyncActionJournal[2]
+            joinedAction = BridgeState.resyncActionJournal[4]
         ");
 
         Assert.Equal(1, lua.Globals.Get("hudCalls").Number);
         Assert.Equal("hud", lua.Globals.Get("hudOrigin").String);
+        Assert.Equal(0, lua.Globals.Get("compatibilityCalls").Number);
+        Assert.Equal("RESYNC_CLICK_RECEIVED", lua.Globals.Get("firstAction").Table.Get("stage").String);
+        Assert.Equal("RESYNC_CLICK_STARTED", lua.Globals.Get("startedAction").Table.Get("stage").String);
+        Assert.Equal("RESYNC_CLICK_JOINED_EXISTING", lua.Globals.Get("joinedAction").Table.Get("stage").String);
     }
 
     [Fact]

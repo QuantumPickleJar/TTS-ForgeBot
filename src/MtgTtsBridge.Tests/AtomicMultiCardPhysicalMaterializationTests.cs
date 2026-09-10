@@ -8,6 +8,131 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.lua"));
 
     [Fact]
+    public void SemanticSpellResolvedDoesNotPreemptStructuredThoughtScourMove()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'session'
+            BridgeState.eventSessionGeneration = 3
+            BridgeState.lastAppliedEventSequence = 27
+            BridgeState.cardNameByInstanceId[':33'] = 'Harmonized Trio'
+            BridgeState.cardNameByInstanceId[':36'] = 'Baleful Strix'
+            BridgeState.cardNameByInstanceId[':35'] = 'Thought Scour'
+            BridgeState.cardNameByInstanceId[':3'] = 'Armored Skaab'
+            local millA = BridgeTestCreateCard(':33', 'Harmonized Trio', 'mill-a')
+            local millB = BridgeTestCreateCard(':36', 'Baleful Strix', 'mill-b')
+            local scour = BridgeTestCreateCard(':35', 'Thought Scour', 'scour-guid')
+            local draw = BridgeTestCreateCard(':3', 'Armored Skaab', 'draw-guid')
+            scour._inLibrary = false
+            scour._inHand = false
+            scour._lastPosition = {x=0, y=2, z=0}
+            BridgeRecordLooseCardIdentity(':35', 'scour-guid', 'forge-player-1', 'stack')
+            BridgeState.pendingCastBySeatId['forge-player-1'] = {
+                cardInstanceId=':35', guid='scour-guid', seatId='forge-player-1'
+            }
+            snapshotSchedules = 0
+            BridgeScheduleSnapshotReconcile = function(reason) snapshotSchedules = snapshotSchedules + 1 end
+
+            semanticApplied, semanticDelay = BridgeApplyAuthoritativeEvent({
+                sequence=27, kind='spell_resolved', seatId='forge-player-1',
+                sourceZone='stack', destinationZone='graveyard',
+                cardInstanceId=':35', cardName='Thought Scour', forgeSequence=12
+            })
+            zoneAfterSemantic = BridgeState.physicalZoneByGuid['scour-guid']
+            pendingAfterSemantic = BridgeState.pendingCastBySeatId['forge-player-1'] ~= nil
+            semanticResolutionAfterSemantic = BridgeState.pendingSemanticResolutionByInstanceId[':35'] ~= nil
+            graveyardBeforeStructured = bridgeTest.graveyardContainer
+
+            BridgeTestQueueExtractionCards({millA, millB, draw})
+            BridgeTestSetEventQueue(
+                {sequence=28, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':33', cardName='Harmonized Trio', forgeSequence=13},
+                {sequence=29, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':36', cardName='Baleful Strix', forgeSequence=13},
+                {sequence=30, kind='card_moved', seatId='forge-player-1', sourceZone='stack', destinationZone='graveyard', cardInstanceId=':35', cardName='Thought Scour', forgeSequence=13},
+                {sequence=31, kind='draw', seatId='forge-player-1', sourceZone='library', destinationZone='hand', cardInstanceId=':3', cardName='Armored Skaab', forgeSequence=13}
+            )
+            BridgeProcessEventQueue()
+            finalApplied = BridgeState.lastAppliedEventSequence
+            finalDeckCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries)
+            scourContainer = BridgeState.physicalContainerByInstanceId[':35']
+            scourContained = scourContainer and scourContainer.zoneName == 'graveyard'
+            pendingAfterStructured = BridgeState.pendingCastBySeatId['forge-player-1'] ~= nil
+            pendingInstanceAfterStructured = pendingAfterStructured
+                and BridgeState.pendingCastBySeatId['forge-player-1'].cardInstanceId or nil
+            semanticResolutionAfterStructured = BridgeState.pendingSemanticResolutionByInstanceId[':35'] ~= nil
+            drawZone = BridgeState.physicalZoneByGuid[BridgeState.physicalByInstanceId[':3']]
+            commits = BridgeTestCountLogToken('MUTATION_COMMIT')
+            aborts = BridgeTestCountLogToken('MUTATION_ABORT')
+            deferredPhysicalDispatches = BridgeTestCountLogToken('DEFERRED_GRAVEYARD_PHYSICAL_DISPATCHED')
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.True(lua.Globals.Get("semanticApplied").Boolean);
+        Assert.Equal("stack", lua.Globals.Get("zoneAfterSemantic").String);
+        Assert.True(lua.Globals.Get("pendingAfterSemantic").Boolean);
+        Assert.True(lua.Globals.Get("semanticResolutionAfterSemantic").Boolean);
+        Assert.True(lua.Globals.Get("graveyardBeforeStructured").IsNil());
+        Assert.Equal(31, lua.Globals.Get("finalApplied").Number);
+        Assert.Equal(3, lua.Globals.Get("finalDeckCount").Number);
+        Assert.True(lua.Globals.Get("scourContained").Boolean);
+        Assert.False(lua.Globals.Get("pendingAfterStructured").Boolean,
+            $"pending={lua.Globals.Get("pendingInstanceAfterStructured").ToPrintString()} logs={CapturedLogsTail(lua)}");
+        Assert.False(lua.Globals.Get("semanticResolutionAfterStructured").Boolean);
+        Assert.Equal("hand", lua.Globals.Get("drawZone").String);
+        Assert.Equal(1, lua.Globals.Get("commits").Number);
+        Assert.Equal(0, lua.Globals.Get("aborts").Number);
+        Assert.Equal(1, lua.Globals.Get("deferredPhysicalDispatches").Number);
+        Assert.Equal("nil", lua.Globals.Get("desyncState").String);
+    }
+
+    [Fact]
+    public void SemanticPermanentResolutionDoesNotPreemptStructuredBattlefieldMove()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            local creature = BridgeTestCreateCard(':permanent', 'Armored Skaab', 'permanent-guid')
+            creature._inLibrary = false
+            creature._inHand = false
+            creature._lastPosition = {x=0, y=2, z=0}
+            BridgeRecordLooseCardIdentity(':permanent', 'permanent-guid', 'forge-player-1', 'stack')
+            BridgeState.pendingCastBySeatId['forge-player-1'] = {
+                cardInstanceId=':permanent', guid='permanent-guid', seatId='forge-player-1'
+            }
+            BridgeScheduleSnapshotReconcile = function(reason) end
+            applied = BridgeApplyAuthoritativeEvent({
+                sequence=10, kind='spell_resolved', seatId='forge-player-1',
+                sourceZone='stack', destinationZone='battlefield',
+                cardInstanceId=':permanent', cardName='Armored Skaab'
+            })
+            zoneAfterSemantic = BridgeState.physicalZoneByGuid['permanent-guid']
+            pendingAfterSemantic = BridgeState.pendingCastBySeatId['forge-player-1'] ~= nil
+            semanticResolutionAfterSemantic = BridgeState.pendingSemanticResolutionByInstanceId[':permanent'] ~= nil
+            moved, moveError = BridgeApplyStructuredCardMove({
+                sequence=11, kind='card_moved', seatId='forge-player-1',
+                sourceZone='stack', destinationZone='battlefield',
+                cardInstanceId=':permanent', cardName='Armored Skaab'
+            })
+            zoneAfterStructured = BridgeState.physicalZoneByGuid['permanent-guid']
+            pendingAfterStructured = BridgeState.pendingCastBySeatId['forge-player-1'] ~= nil
+            pendingInstanceAfterStructured = pendingAfterStructured
+                and BridgeState.pendingCastBySeatId['forge-player-1'].cardInstanceId or nil
+            semanticResolutionAfterStructured = BridgeState.pendingSemanticResolutionByInstanceId[':permanent'] ~= nil
+        ");
+
+        Assert.True(lua.Globals.Get("applied").Boolean);
+        Assert.Equal("stack", lua.Globals.Get("zoneAfterSemantic").String);
+        Assert.True(lua.Globals.Get("pendingAfterSemantic").Boolean);
+        Assert.True(lua.Globals.Get("semanticResolutionAfterSemantic").Boolean);
+        Assert.True(lua.Globals.Get("moved").Boolean,
+            lua.Globals.Get("moveError").ToPrintString());
+        Assert.Equal("battlefield", lua.Globals.Get("zoneAfterStructured").String);
+        Assert.False(lua.Globals.Get("pendingAfterStructured").Boolean,
+            $"pending={lua.Globals.Get("pendingInstanceAfterStructured").ToPrintString()} logs={CapturedLogsTail(lua)}");
+        Assert.False(lua.Globals.Get("semanticResolutionAfterStructured").Boolean);
+    }
+
+    [Fact]
     public void MentalNoteTwoCardMillCommitsNativeGraveyardAtomically()
     {
         var lua = NewProbe();

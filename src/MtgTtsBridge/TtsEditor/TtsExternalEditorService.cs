@@ -351,7 +351,7 @@ public sealed class TtsExternalEditorService : IHostedService, ITtsExternalEdito
                 TimeSpan.FromSeconds(Math.Max(1, _options.OperationTimeoutSeconds)),
                 cancellationToken).ConfigureAwait(false);
         }
-        catch (TimeoutException exception)
+        catch (TimeoutException)
         {
             throw new TtsEditorOperationException(timeoutErrorCode, timeoutMessage, StatusCodes.Status504GatewayTimeout)
             {

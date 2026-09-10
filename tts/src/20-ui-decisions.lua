@@ -2989,6 +2989,7 @@ function BridgeTryApplyDeferredSnapshotReconcile(reason)
     end
     BridgeState.deferredSnapshotReconcile = nil
     BridgeState.pendingStructuredZoneTransitionByInstanceId = {}
+    BridgeState.pendingSemanticResolutionByInstanceId = {}
     BridgeApplySafeSnapshotReconcile(pending.snapshot, pending.reason or reason or "deferred")
     return true
 end

@@ -72,6 +72,7 @@ public sealed record DiagnosticEventDrainDiagnosticsDto(
     JsonElement? PhysicalMutationJournal = null,
     JsonElement? LastTtsRuntimeError = null,
     JsonElement? OwnedMutation = null,
+    JsonElement? ResyncActionJournal = null,
     int? EmbodimentEpoch = null,
     int? EmbodimentTransactionToken = null,
     bool EmbodimentActive = false,

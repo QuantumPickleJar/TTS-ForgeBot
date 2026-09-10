@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 6651c704c19fe8cbaf2ca12fd7ba544b48d59046256d8dfc564f9813b31b6d4a
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "6651c704c19fe8cbaf2ca12fd7ba544b48d59046256d8dfc564f9813b31b6d4a"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 3e8061e75a824837a69130d8f5c7cf3dac9d7851669381d177135670f72ac846
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "3e8061e75a824837a69130d8f5c7cf3dac9d7851669381d177135670f72ac846"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -302,6 +302,7 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncDeferredRetryScheduled = BridgeState.resyncDeferredRetryScheduled == true,
         resyncWatchdogToken = BridgeState.resyncWatchdogToken,
         resyncLifecycle = BridgeState.resyncLifecycle or {},
+        resyncActionJournal = BridgeState.resyncActionJournal or {},
         resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration,
         resyncReconcileStarted = BridgeState.resyncReconcileStarted == true,
         reportCaptureInFlight = ui.reportCaptureInFlight == true
@@ -3154,6 +3155,8 @@ BridgeState = {
         lastLoggedCount = 0
     },
     resyncLifecycle = {},
+    resyncActionJournal = {},
+    resyncActionJournalCount = 0,
     resyncCheckpoint = nil,
     resyncScheduled = false,
     resyncDeferredRetryScheduled = false,
@@ -3193,6 +3196,7 @@ BridgeState = {
     -- identity so the second renderer never treats a temporarily unresolved
     -- first renderer as a name-based physical desync.
     pendingStructuredZoneTransitionByInstanceId = {},
+    pendingSemanticResolutionByInstanceId = {},
     -- A card returning from a public zone to a hand can be visually
     -- indistinguishable from another copy already in that hand. Keep the
     -- authoritative Forge identity pending until it next becomes public.
@@ -9583,6 +9587,7 @@ function BridgeTryApplyDeferredSnapshotReconcile(reason)
     end
     BridgeState.deferredSnapshotReconcile = nil
     BridgeState.pendingStructuredZoneTransitionByInstanceId = {}
+    BridgeState.pendingSemanticResolutionByInstanceId = {}
     BridgeApplySafeSnapshotReconcile(pending.snapshot, pending.reason or reason or "deferred")
     return true
 end
@@ -16631,6 +16636,7 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.untappedRotationByGuid = {}
     BridgeState.physicalTappedByGuid = {}
     BridgeState.pendingCastBySeatId = {}
+    BridgeState.pendingSemanticResolutionByInstanceId = {}
     BridgeState.attackOriginByGuid = {}
     BridgeState.attackLaneGuidBySeatId = {}
     BridgeState.snapshotForgeSequence = 0
@@ -17735,6 +17741,7 @@ function BridgeStartDeferredGraveyardEvents(tx, batch)
                 if transactionCompletion ~= nil then transactionCompletion(false, batch.deferredFailureReason) end
                 return
             end
+            event._bridgeDeferredGraveyardExecutedToken = tx.token
             BridgeRecordPhysicalMutationProgress(tx, "DEFERRED_GRAVEYARD_SETTLED",
                 tostring(event.sequence))
             BridgeRecordPhysicalMutationJournal({
@@ -17762,6 +17769,15 @@ function BridgeStartDeferredGraveyardEvents(tx, batch)
         local ok, applied, errorMessage = pcall(BridgeApplyStructuredCardMove, event)
         if not ok or applied ~= true then
             completeDeferred(false, errorMessage or applied or "deferred graveyard move failed")
+        else
+            BridgeRecordPhysicalMutationJournal({
+                token = tx.token, forgeSequence = tx.forgeSequence,
+                stage = "DEFERRED_GRAVEYARD_PHYSICAL_DISPATCHED", eventSequence = event.sequence,
+                cardInstanceId = event.cardInstanceId
+            })
+            BridgeLog("[Bridge] DEFERRED_GRAVEYARD_PHYSICAL_DISPATCHED token="
+                .. tostring(tx.token) .. " event=" .. tostring(event.sequence)
+                .. " instance=" .. tostring(event.cardInstanceId))
         end
     end
 end
@@ -18592,12 +18608,14 @@ function BridgeProcessEventQueue()
         event._bridgePhysicalCompletion = function(ok, reason)
             if not BridgeEventMutationIsCurrent(tx) then return end
             if tx.pendingPhysicalEvents[event.sequence] == nil then return end
-            tx.pendingPhysicalEvents[event.sequence] = nil
             if not ok then
+                tx.pendingPhysicalEvents[event.sequence] = nil
                 tx.physicalCompletionError = tostring(reason or "physical event completion failed")
                 BridgeAbortEventMutationTransaction(tx, tx.physicalCompletionError)
                 return
             end
+            BridgeFinalizeStructuredStackDeparture(event, reason)
+            tx.pendingPhysicalEvents[event.sequence] = nil
             BridgeRecordPhysicalMutationProgress(tx, "EVENT_PHYSICAL_COMPLETE", tostring(event.sequence))
             BridgeRecordPhysicalMutationJournal({
                 token = tx.token, forgeSequence = tx.forgeSequence,
@@ -18729,6 +18747,56 @@ function BridgeAuthoritativeEventSupersededByDecision(event)
     return false
 end
 
+-- spell_resolved is semantic projection, not an identity-bearing physical
+-- transition. Forge's structured card_moved event is the sole normal owner of
+-- stack departures. Keeping the pending cast alive here is essential: a
+-- later exact stack -> graveyard/battlefield move must still resolve the same
+-- physical CardInstanceId and GUID.
+function BridgeRecordSemanticSpellResolution(event)
+    BridgeState.pendingSemanticResolutionByInstanceId =
+        BridgeState.pendingSemanticResolutionByInstanceId or {}
+    local pendingCast = event.seatId ~= nil
+        and (BridgeState.pendingCastBySeatId or {})[event.seatId] or nil
+    local instanceId = event.cardInstanceId
+    if instanceId == nil and pendingCast ~= nil and pendingCast.cardInstanceId ~= nil then
+        local pendingObject = pendingCast.guid ~= nil and BridgeGetLiveObjectByGuid(pendingCast.guid) or nil
+        local pendingName = pendingObject ~= nil and BridgeSafeObjectName(pendingObject) or nil
+        local pendingZone = pendingCast.guid ~= nil and BridgeState.physicalZoneByGuid[pendingCast.guid] or nil
+        if pendingZone == "stack" and pendingName ~= nil
+            and BridgeCardNameMatches(pendingName, event.cardName) then
+            instanceId = pendingCast.cardInstanceId
+        end
+    end
+    local structured = instanceId ~= nil
+        and BridgeState.pendingStructuredZoneTransitionByInstanceId[instanceId] or nil
+    if instanceId ~= nil then
+        BridgeState.pendingSemanticResolutionByInstanceId[instanceId] = {
+            sessionId = BridgeState.eventSessionId,
+            sessionGeneration = BridgeState.eventSessionGeneration,
+            eventSequence = event.sequence,
+            sourceZone = event.sourceZone,
+            destinationZone = event.destinationZone,
+            structuredMoveApplied = structured ~= nil and structured.applied == true
+        }
+    end
+    BridgeTracePermanentTransition("SEMANTIC_SPELL_RESOLVED", event,
+        pendingCast ~= nil and BridgeGetLiveObjectByGuid(pendingCast.guid) or nil,
+        event.sourceZone, "physical-transition-owner=structured-card-moved")
+    BridgeLog(string.format(
+        "[Bridge] semantic spell resolution retained pending physical transition event=%s instance=%s destination=%s structuredApplied=%s",
+        tostring(event.sequence), tostring(instanceId), tostring(event.destinationZone),
+        tostring(structured ~= nil and structured.applied == true)))
+    -- If a particular Forge transport omits the structured transition, the
+    -- cursor-ordered snapshot remains the explicit fallback. Snapshot mutation
+    -- is fenced behind the event-drain owner and cannot preempt a later
+    -- card_moved event in the same delivered range.
+    if structured == nil or structured.applied ~= true then
+        BridgeScheduleSnapshotReconcile("semantic spell resolution awaiting structured move "
+            .. tostring(instanceId or event.sequence))
+    end
+    return true, 0.1
+end
+
 function BridgeApplyAuthoritativeEvent(event)
     BridgeUiRecordEvent(event)
     if event.containsHiddenIdentity == true then
@@ -18750,6 +18818,10 @@ function BridgeApplyAuthoritativeEvent(event)
             tostring(event.sourceZone),
             tostring(event.destinationZone),
             tostring(event.cardName)))
+    end
+
+    if event.kind == "spell_resolved" then
+        return BridgeRecordSemanticSpellResolution(event)
     end
 
     if event.kind == "game_ended" then
@@ -19099,110 +19171,6 @@ function BridgeApplyAuthoritativeEvent(event)
         return applied, presentationDelay, moveError
     end
 
-    -- Some tested Forge TUI resolution lines do not have a second text event
-    -- for stack -> graveyard. The resolved card identity is still Forge's;
-    -- this only gives its already-authoritative result a physical location.
-    if event.kind == "spell_resolved" and event.destinationZone == "graveyard" then
-        -- Some Forge TUI resolution lines omit the numeric object id.  If the
-        -- exact human cast preview is still present, the pending GUID below
-        -- remains safe to use.  Otherwise this is only a semantic duplicate
-        -- (the structured snapshot/card_moved stream owns identity); do not
-        -- guess a same-name card from the battlefield, hand, or stack.
-        if event.cardInstanceId == nil then
-            local pendingCast = BridgeState.pendingCastBySeatId[event.seatId]
-            local pendingObject = pendingCast ~= nil and getObjectFromGUID(pendingCast.guid) or nil
-            if pendingObject == nil or not BridgeCardNameMatches(pendingObject.getName(), event.cardName) then
-                BridgeState.pendingCastBySeatId[event.seatId] = nil
-                BridgeLog(string.format(
-                    "[Bridge] semantic spell resolution deferred event=%s card=%s: no exact Forge instance; awaiting structured snapshot",
-                    tostring(event.sequence), tostring(event.cardName)))
-                BridgeScheduleSnapshotReconcile("semantic spell resolution without exact instance")
-                return true, 0.1
-            end
-            -- A crew/activated-ability resolution can be printed by Forge's TUI
-            -- with spell-like wording even though the source permanent never
-            -- entered the stack.  Never turn that semantic line into a physical
-            -- zone move.  A pending physical cast is the only case in which this
-            -- instance may be moved by the instance-less resolution fallback, and
-            -- it must still be tracked on the bridge stack.
-            local pendingGuid = BridgeSafeObjectGuid(pendingObject)
-            local pendingZone = pendingGuid and BridgeState.physicalZoneByGuid[pendingGuid] or nil
-            if pendingZone ~= "stack" then
-                BridgeState.pendingCastBySeatId[event.seatId] = nil
-                BridgeLog(string.format(
-                    "[Bridge] semantic spell resolution ignored for non-stack object event=%s card=%s guid=%s trackedZone=%s; awaiting authoritative snapshot",
-                    tostring(event.sequence), tostring(event.cardName), tostring(pendingGuid), tostring(pendingZone)))
-                BridgeScheduleSnapshotReconcile("semantic ability resolution for non-stack object")
-                return true, 0.1
-            end
-        end
-        if event.cardInstanceId ~= nil then
-            local structuredMove = BridgeState.pendingStructuredZoneTransitionByInstanceId[event.cardInstanceId]
-            if structuredMove ~= nil and structuredMove.applied == true
-                and structuredMove.destinationZone == "graveyard" then
-                -- The exact instance has already been embodied by the ordered
-                -- card_moved event. Do not require it to still be in stack (or
-                -- re-resolve it by name) for this explanatory semantic event.
-                BridgeState.pendingCastBySeatId[event.seatId] = nil
-                BridgeLog(string.format(
-                    "[Bridge] idempotent spell resolution event=%s instance=%s after structured graveyard move=%s",
-                    tostring(event.sequence), tostring(event.cardInstanceId), tostring(structuredMove.sequence)))
-                return true, 0.1
-            end
-            local mappedGuid = BridgeState.physicalByInstanceId[event.cardInstanceId]
-            local mappedObject = BridgeGetLiveObjectByGuid(mappedGuid)
-            local mappedSeat = mappedGuid and BridgeState.physicalSeatByGuid[mappedGuid] or nil
-            local mappedZone = mappedGuid and BridgeState.physicalZoneByGuid[mappedGuid] or nil
-            local inverseInstanceId = mappedGuid and BridgeState.physicalInstanceIdByGuid[mappedGuid] or nil
-            if mappedObject ~= nil and mappedObject.tag == "Card" and mappedZone == "graveyard" then
-                if mappedSeat ~= event.seatId then
-                    return false, 0, BridgePhysicalMappingError(event, "graveyard", 0,
-                        "exact resolved spell destination belongs to a different seat", {mappedGuid = mappedGuid})
-                end
-                if inverseInstanceId ~= event.cardInstanceId then
-                    return false, 0, BridgePhysicalMappingError(event, "graveyard", 0,
-                        "resolved spell destination GUID belongs to a different Forge instance", {mappedGuid = mappedGuid})
-                end
-                BridgeState.pendingCastBySeatId[event.seatId] = nil
-                BridgeLog(string.format(
-                    "[Bridge] idempotent spell resolution event=%s instance=%s already at graveyard",
-                    tostring(event.sequence), tostring(event.cardInstanceId)))
-                return true, 0.1
-            end
-            if mappedObject ~= nil and mappedObject.tag == "Card" and mappedZone ~= "stack" then
-                -- An exact Forge instance already embodied on the battlefield
-                -- (or another non-stack public zone) cannot be the physical
-                -- spell being resolved.  This is the characteristic shape of
-                -- a crew/activated-ability line: leave the Vehicle in place
-                -- and let the authoritative snapshot carry any characteristic
-                -- changes instead of moving it to the graveyard.
-                BridgeState.pendingCastBySeatId[event.seatId] = nil
-                BridgeLog(string.format(
-                    "[Bridge] semantic spell resolution ignored for non-stack mapped object event=%s instance=%s guid=%s trackedZone=%s; awaiting authoritative snapshot",
-                    tostring(event.sequence), tostring(event.cardInstanceId), tostring(mappedGuid), tostring(mappedZone)))
-                BridgeScheduleSnapshotReconcile("semantic ability resolution for non-stack mapped object")
-                return true, 0.1
-            end
-        end
-        local object, resolveError = BridgeResolveResolvedSpellObject(event)
-        if object == nil then
-            -- A semantic resolution line is not an identity-bearing source of
-            -- truth.  If its exact physical object is not currently visible,
-            -- let the cursor-ordered authoritative snapshot repair the public
-            -- zone.  A genuinely missing card still fails in snapshot
-            -- multiplicity/reconciliation; do not guess by display name here.
-            BridgeLog(string.format(
-                "[Bridge] resolved spell presentation deferred event=%s instance=%s card=%s reason=%s",
-                tostring(event.sequence), tostring(event.cardInstanceId), tostring(event.cardName), tostring(resolveError)))
-            BridgeState.pendingCastBySeatId[event.seatId] = nil
-            BridgeScheduleSnapshotReconcile("unmapped resolved spell " .. tostring(event.cardInstanceId or event.cardName))
-            return true, 0.1
-        end
-        local moved, moveError = BridgeMoveToGraveyard(event, object)
-        if not moved then return false, 0, moveError end
-        return true, 0.8
-    end
-
     if event.kind == "tap_changed" then
         BridgeTtsExecutionBreadcrumb("TAP_CHANGED_ENTER", "tap_changed", event, "event:" .. tostring(event.sequence))
         local object, resolveError = BridgeResolveMappedInstance(event)
@@ -19468,77 +19436,6 @@ function BridgeApplyAuthoritativeEvent(event)
 
         local moved, moveError = BridgeMoveToBattlefield(event, object, "land")
         if not moved then return false, 0, moveError end
-        return true, 1.25
-    end
-
-    if event.kind == "spell_resolved" and event.destinationZone == "battlefield" then
-        local resolvedMappedGuid = event.cardInstanceId ~= nil
-            and BridgeState.physicalByInstanceId[event.cardInstanceId] or nil
-        local resolvedMappedObject = resolvedMappedGuid ~= nil
-            and BridgeGetLiveObjectByGuid(resolvedMappedGuid) or nil
-        BridgeTracePermanentTransition(
-            "SPELL_RESOLVED", event, resolvedMappedObject, event.sourceZone)
-        -- Structured card_moved already moved this exact instance from stack to
-        -- battlefield. The human-readable semantic line has no instance ID and
-        -- must not attempt a second name-based move from an empty stack.
-        if event.cardInstanceId == nil then
-            -- A human cast has an exact pending physical object even when the
-            -- TUI resolution line omits Forge's numeric object id. It is safe
-            -- to present that object immediately: the cast action selected its
-            -- exact CardInstanceId and the object is still tracked on stack.
-            -- AI casts have no pending physical intent and continue to wait for
-            -- the exact structured snapshot transition.
-            local pendingCast = event.seatId ~= nil
-                and BridgeState.pendingCastBySeatId[event.seatId] or nil
-            if pendingCast ~= nil and pendingCast.cardInstanceId ~= nil then
-                local pendingObject = getObjectFromGUID(pendingCast.guid)
-                local pendingName = pendingObject ~= nil and pendingObject.getName() or nil
-                local pendingZone = pendingObject ~= nil
-                    and BridgeState.physicalZoneByGuid[pendingCast.guid] or nil
-                if pendingObject ~= nil and pendingName ~= nil
-                    and BridgeCardNameMatches(pendingName, event.cardName)
-                    and pendingZone == "stack" then
-                    local resolvedEvent = {}
-                    for key, value in pairs(event) do resolvedEvent[key] = value end
-                    resolvedEvent.cardInstanceId = pendingCast.cardInstanceId
-                    BridgeTracePermanentTransition(
-                        "STACK_MOVE stack->battlefield", resolvedEvent, pendingObject, "stack")
-                    local moved, moveError = BridgeMoveToBattlefield(
-                        resolvedEvent, pendingObject, BridgeBattlefieldRowForEvent(resolvedEvent, "creature"))
-                    if not moved then return false, 0, moveError end
-                    BridgeRetirePendingCastForInstance(
-                        event.seatId, resolvedEvent.cardInstanceId, pendingCast.guid,
-                        "semantic stack-to-battlefield")
-                    BridgeLog(string.format(
-                        "[Bridge] presented exact pending cast on semantic resolution event=%s instance=%s",
-                        tostring(event.sequence), tostring(resolvedEvent.cardInstanceId)))
-                    return true, 0.1
-                end
-            end
-            return true, 0.1
-        end
-        if resolvedMappedObject ~= nil and resolvedMappedObject.tag == "Card"
-            and BridgeState.physicalZoneByGuid[resolvedMappedGuid] == "battlefield"
-            and BridgePhysicalObjectAtStackAnchor(resolvedMappedObject) then
-            BridgeTracePermanentTransition(
-                "STACK_MOVE stack->battlefield", event, resolvedMappedObject, "stack",
-                "semantic resolution repaired stranded exact mapping")
-            local corrected, correctionError = BridgeMoveToBattlefield(
-                event, resolvedMappedObject, BridgeBattlefieldRowForEvent(event, "creature"), false)
-            if not corrected then return false, 0, correctionError end
-            BridgeRetirePendingCastForInstance(
-                event.seatId, event.cardInstanceId, resolvedMappedGuid,
-                "semantic stack-to-battlefield correction")
-            return true, 0.1
-        end
-        local object, resolveError = BridgeResolvePhysicalCard(event, "stack")
-        if object == nil then return false, 0, resolveError end
-        BridgeTracePermanentTransition("STACK_MOVE stack->battlefield", event, object, "stack")
-        local moved, moveError = BridgeMoveToBattlefield(event, object, BridgeBattlefieldRowForEvent(event, "creature"))
-        if not moved then return false, 0, moveError end
-        BridgeRetirePendingCastForInstance(
-            event.seatId, event.cardInstanceId, BridgeSafeObjectGuid(object),
-            "semantic stack-to-battlefield")
         return true, 1.25
     end
 
@@ -19995,6 +19892,10 @@ local function BridgeApplyStructuredCardMoveCore(event)
     -- is a physical ordering fence, not a name-based reconciliation shortcut.
     if event.destinationZone == "graveyard" and event.sourceZone ~= "library"
         and event._bridgeDeferredGraveyardDispatch ~= true then
+        if event._bridgeDeferredGraveyardExecutedToken ~= nil then
+            return false, "deferred structured graveyard event was already physically executed by owner "
+                .. tostring(event._bridgeDeferredGraveyardExecutedToken)
+        end
         local deferredTx, deferredBatch = BridgeMutationBatchForLibraryToGraveyardEvent(event)
         if deferredBatch ~= nil and deferredBatch.state ~= "FAILED"
             and deferredBatch.deferredStarted ~= true then
@@ -20008,6 +19909,7 @@ local function BridgeApplyStructuredCardMoveCore(event)
             -- event was enrolled in the graveyard batch, not that its Card
             -- has reached the final native Deck.
             event._bridgePhysicalCompletionPending = true
+            event._bridgeDeferredGraveyardOwnerToken = deferredTx.token
             BridgeRecordPhysicalMutationProgress(deferredTx, "DEFERRED_GRAVEYARD_EVENT", sequenceKey)
             BridgeRecordPhysicalMutationJournal({
                 token = deferredTx.token, forgeSequence = deferredTx.forgeSequence,
@@ -20144,8 +20046,6 @@ local function BridgeApplyStructuredCardMoveCore(event)
                     BridgeLog(string.format(
                         "[Bridge] corrected existing battlefield row instance=%s row=%s",
                         tostring(event.cardInstanceId), tostring(expectedRow)))
-                    BridgeRetirePendingCastForInstance(
-                        event.seatId, event.cardInstanceId, guid, "structured stack-to-battlefield")
                     return true, nil
                 end
             end
@@ -20601,10 +20501,6 @@ local function BridgeApplyStructuredCardMoveCore(event)
         end
         local moved, moveError = BridgeMoveToBattlefield(event, object, row)
         if not moved then return false, moveError end
-        if sourcePhysicalZone == "stack" then
-            BridgeRetirePendingCastForInstance(
-                event.seatId, event.cardInstanceId, guid, "structured stack-to-battlefield")
-        end
     elseif event.destinationZone == "stack" then
         object.use_hands = false
         BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
@@ -20676,6 +20572,39 @@ local function BridgeApplyStructuredCardMoveCore(event)
     return true, nil
 end
 
+-- Only the successful completion of an exact structured stack departure may
+-- retire its pending-cast and semantic-resolution ownership.  This uses only
+-- stable Lua scalars; the native Card userdata may already have been replaced
+-- by a Deck by the time an asynchronous graveyard callback settles.
+function BridgeFinalizeStructuredStackDeparture(event, completionReason)
+    if event == nil or event.cardInstanceId == nil or event.seatId == nil
+        or event.sourceZone ~= "stack" or event.destinationZone == "stack" then
+        return false
+    end
+    local retiredCast = false
+    local pending = (BridgeState.pendingCastBySeatId or {})[event.seatId]
+    if pending ~= nil and pending.cardInstanceId == event.cardInstanceId then
+        BridgeState.pendingCastBySeatId[event.seatId] = nil
+        retiredCast = true
+    end
+    local retiredSemantic = false
+    if BridgeState.pendingSemanticResolutionByInstanceId ~= nil
+        and BridgeState.pendingSemanticResolutionByInstanceId[event.cardInstanceId] ~= nil then
+        BridgeState.pendingSemanticResolutionByInstanceId[event.cardInstanceId] = nil
+        retiredSemantic = true
+    end
+    if retiredCast or retiredSemantic then
+        BridgeLog("[Bridge] structured stack ownership retired event="
+            .. tostring(event.sequence) .. " instance=" .. tostring(event.cardInstanceId)
+            .. " seat=" .. tostring(event.seatId)
+            .. " destination=" .. tostring(event.destinationZone)
+            .. " pendingCast=" .. tostring(retiredCast)
+            .. " semanticResolution=" .. tostring(retiredSemantic)
+            .. " reason=" .. tostring(completionReason or "physical completion"))
+    end
+    return retiredCast or retiredSemantic
+end
+
 function BridgeApplyStructuredCardMove(event)
     local operationId = "event:" .. tostring(event and event.sequence or "unknown")
     BridgeTtsExecutionBreadcrumb("STRUCTURED_CARD_MOVE_ENTER", "structured_card_move", event, operationId)
@@ -20686,6 +20615,16 @@ function BridgeApplyStructuredCardMove(event)
     BridgeTtsExecutionBreadcrumb("STRUCTURED_CARD_MOVE_RETURNED", "structured_card_move", event, operationId)
     BridgeLog(string.format("[Bridge] STRUCTURED_CARD_MOVE_RESULT operationId=%s ok=%s error=%s",
         tostring(operationId), tostring(ok), tostring(err)))
+    -- Normal event-drain calls install a transaction-owned completion callback
+    -- before reaching this function.  A direct synchronous structured move
+    -- (used by narrow presentation callers and tests) has no such callback,
+    -- so its non-graveyard physical operation is already the success point.
+    -- Graveyard moves are deliberately excluded: Card -> Deck settlement is
+    -- asynchronous and must retire stack ownership only from that callback.
+    if ok == true and event ~= nil and event._bridgePhysicalCompletion == nil
+        and event.destinationZone ~= "graveyard" then
+        BridgeFinalizeStructuredStackDeparture(event, "direct structured move")
+    end
     return ok, err
 end
 
@@ -21253,12 +21192,9 @@ function BridgeMoveToGraveyard(event, object, completion)
     if guid == nil then
         return false, "graveyard move source Card became unavailable after native movement"
     end
-    -- Retire only the exact cast that reached the graveyard. Clearing the
-    -- seat-wide slot here can discard a different pending physical cast when
-    -- an older semantic resolution event is delivered after the next cast has
-    -- already been previewed.
-    BridgeRetirePendingCastForInstance(
-        event.seatId, event.cardInstanceId, guid, "graveyard-move")
+    -- Do not retire pending stack ownership here.  putObject and native Deck
+    -- settlement are asynchronous; the transaction-owned physical completion
+    -- callback is the only proof that this exact stack departure succeeded.
     BridgeClearCardDesignationPresentation(event.cardInstanceId, object)
     local existing = BridgeFindGraveyardContainer(event.seatId, guid)
     if existing == nil then
@@ -24004,12 +23940,48 @@ function BridgeHudRollingCapture(player, value, id)
     BridgeHudSubmitReport("Performance / Freeze", "Rolling freeze capture")
 end
 
+function BridgeRecordResyncAction(stage, reason, statusBeforeClick)
+    BridgeState.resyncActionJournal = BridgeState.resyncActionJournal or {}
+    local terminal = BridgeCurrentTerminalRecoveryError ~= nil
+        and BridgeCurrentTerminalRecoveryError() or nil
+    local active = BridgeState.embodimentTransaction
+    local record = {
+        stage = stage, reason = reason,
+        timestamp = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock(),
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
+        resyncToken = BridgeState.resyncToken,
+        resyncInFlight = BridgeState.resyncInFlight == true,
+        hudResyncPending = BridgeState.hudResyncPending == true,
+        desyncLatched = BridgeState.desyncLatched == true,
+        terminalErrorPresent = terminal ~= nil,
+        embodimentReason = active and active.reason or nil,
+        embodimentToken = active and active.token or nil,
+        statusBeforeClick = statusBeforeClick
+    }
+    local count = (tonumber(BridgeState.resyncActionJournalCount or 0) or 0) + 1
+    BridgeState.resyncActionJournal[count] = record
+    BridgeState.resyncActionJournalCount = count
+    if count > 32 then
+        table.remove(BridgeState.resyncActionJournal, 1)
+        BridgeState.resyncActionJournalCount = 32
+    end
+    BridgeLog("[Bridge] " .. tostring(stage) .. " reason=" .. tostring(reason)
+        .. " session=" .. tostring(record.sessionId)
+        .. " generation=" .. tostring(record.sessionGeneration)
+        .. " token=" .. tostring(record.resyncToken))
+    return record
+end
+
 function BridgeHudResyncFromForge(player, value, id)
     local ui = BridgeState.ui
+    local statusBeforeClick = BridgeState.statusHeadline or BridgeState.statusText
     if ui == nil then
+        BridgeRecordResyncAction("RESYNC_CLICK_REJECTED", "ui-unavailable", statusBeforeClick)
         BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=ui-unavailable")
         return
     end
+    BridgeRecordResyncAction("RESYNC_CLICK_RECEIVED", nil, statusBeforeClick)
     BridgeLog(string.format("[Bridge] RESYNC_CLICK_RECEIVED coreResyncInFlight=%s uiResyncInFlight=%s desyncLatched=%s schedulerOwner=%s session=%s generation=%s",
         tostring(BridgeState.resyncInFlight == true), tostring(ui.resyncInFlight == true),
         tostring(BridgeState.desyncLatched == true), tostring(BridgeState.schedulerOwner),
@@ -24022,11 +23994,13 @@ function BridgeHudResyncFromForge(player, value, id)
         tostring(queueState.queueLength), tostring(queueState.desyncLatched),
         tostring(queueState.bootstrapping), tostring(BRIDGE_RUNTIME_EPOCH_LOCAL)))
     if BridgeState.resyncInFlight == true then
+        BridgeRecordResyncAction("RESYNC_CLICK_JOINED_EXISTING", "core-resync-in-flight", statusBeforeClick)
         BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=core-resync-in-flight")
         BridgeSetStatus("RESYNCING FROM FORGE", "An explicit recovery is already running.")
         return
     end
     if BridgeState.hudResyncPending == true then
+        BridgeRecordResyncAction("RESYNC_CLICK_JOINED_EXISTING", "compatibility-handshake-pending", statusBeforeClick)
         BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=hud-recovery-handshake-pending")
         BridgeSetStatus("RESYNCING FROM FORGE", "The recovery request is still being established.")
         return
@@ -24035,36 +24009,50 @@ function BridgeHudResyncFromForge(player, value, id)
         ui.resyncInFlight = false
         BridgeSetStatus("RESYNC UNAVAILABLE", "No active Forge session is available for recovery.")
         BridgeLog("[Bridge] RESYNC_CLICK_REJECTED origin=hud reason=no-active-session")
+        BridgeRecordResyncAction("RESYNC_CLICK_REJECTED", "no-active-session", statusBeforeClick)
         BridgeUiMarkDirty("resync-rejected")
         return
     end
     -- Claim the UI side before the asynchronous compatibility check so a
     -- second click cannot create a second recovery owner while the first is
     -- waiting for its handshake.
-    BridgeState.hudResyncPending = true
-    ui.resyncInFlight = true
-    BridgeSetStatus("RESYNCING FROM FORGE", "Request accepted; checking runtime compatibility...")
-    BridgeUiMarkDirty("resync-click-pending")
-    BridgeEnsureRuntimeCompatibility(function(compatible)
+    local function startExplicitResync()
         BridgeState.hudResyncPending = false
-        if not compatible then
-            ui.resyncInFlight = false
-            BridgeSetStatus("RESYNC REJECTED", "Runtime compatibility did not match; reload the current Global.lua.")
-            BridgeLog("[Bridge] RESYNC_CLICK_REJECTED origin=hud reason=runtime-incompatible")
-            BridgeUiMarkDirty("resync-rejected")
-            return
-        end
         local started = BridgeResyncFromAuthoritativeSnapshot("hud")
         if started ~= true then
             ui.resyncInFlight = BridgeState.resyncInFlight == true
             BridgeSetStatus("RESYNC REJECTED", "The current recovery owner did not accept the explicit retry.")
             BridgeLog("[Bridge] RESYNC_CLICK_REJECTED origin=hud reason=core-rejected")
+            BridgeRecordResyncAction("RESYNC_CLICK_REJECTED", "core-rejected", statusBeforeClick)
             BridgeUiMarkDirty("resync-rejected")
             return
         end
         BridgeLog("[Bridge] RESYNC_CLICK_ACCEPTED origin=hud coreResyncInFlight="
             .. tostring(BridgeState.resyncInFlight == true))
+        BridgeRecordResyncAction("RESYNC_CLICK_STARTED", "hud-explicit", statusBeforeClick)
         BridgeUiMarkDirty("resync-click-accepted")
+    end
+    BridgeState.hudResyncPending = true
+    ui.resyncInFlight = true
+    if BridgeState.runtimeCompatibilityState == "MATCH" then
+        BridgeSetStatus("RESYNCING FROM FORGE", "Request accepted; starting explicit recovery...")
+        BridgeUiMarkDirty("resync-click-pending")
+        startExplicitResync()
+        return
+    end
+    BridgeSetStatus("RESYNCING FROM FORGE", "Request accepted; checking runtime compatibility...")
+    BridgeUiMarkDirty("resync-click-pending")
+    BridgeEnsureRuntimeCompatibility(function(compatible)
+        if not compatible then
+            BridgeState.hudResyncPending = false
+            ui.resyncInFlight = false
+            BridgeSetStatus("RESYNC REJECTED", "Runtime compatibility did not match; reload the current Global.lua.")
+            BridgeLog("[Bridge] RESYNC_CLICK_REJECTED origin=hud reason=runtime-incompatible")
+            BridgeRecordResyncAction("RESYNC_CLICK_REJECTED", "runtime-incompatible", statusBeforeClick)
+            BridgeUiMarkDirty("resync-rejected")
+            return
+        end
+        startExplicitResync()
     end)
 end
 

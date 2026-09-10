@@ -763,6 +763,10 @@ public sealed class DiagnosticsTests
                   { "classification": "transitional_alias", "cardGuid": "safe-guid" }
                 ],
                 "ownedMutation": { "firstEventSequence": 174, "lastEventSequence": 177 }
+                ,"resyncActionJournal": [
+                  { "stage": "RESYNC_CLICK_RECEIVED", "sessionId": "session" },
+                  { "stage": "RESYNC_CLICK_STARTED", "reason": "hud-explicit" }
+                ]
               }
             }
             """;
@@ -776,6 +780,8 @@ public sealed class DiagnosticsTests
         Assert.Equal("transitional_alias", journal[1].GetProperty("classification").GetString());
         Assert.Equal(174, request.EventDrainDiagnostics.OwnedMutation!.Value
             .GetProperty("firstEventSequence").GetInt32());
+        var resyncActions = request.EventDrainDiagnostics.ResyncActionJournal!.Value;
+        Assert.Equal("RESYNC_CLICK_STARTED", resyncActions[1].GetProperty("stage").GetString());
     }
 
     private static string CreateTempDirectory()

@@ -823,13 +823,12 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void StructuredBattlefieldMove_IsNotRepeatedByInstanceLessSemanticResolution()
+    public void SemanticSpellResolutionDefersAllPhysicalMovementToStructuredTransition()
     {
         Assert.Contains("event.kind == \"spell_resolved\"", Script);
-        Assert.Contains("presented exact pending cast on semantic resolution", Script);
-        Assert.Contains("resolvedEvent.cardInstanceId = pendingCast.cardInstanceId", Script);
-        Assert.Contains("if event.cardInstanceId == nil then", Script);
-        Assert.Contains("BridgeResolvePhysicalCard(event, \"stack\")", Script);
+        Assert.Contains("return BridgeRecordSemanticSpellResolution(event)", Script);
+        Assert.Contains("physical-transition-owner=structured-card-moved", Script);
+        Assert.DoesNotContain("semantic stack-to-battlefield", Script);
     }
 
     [Fact]
@@ -838,7 +837,6 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgeBattlefieldRowForEvent(event, defaultRow)", Script);
         Assert.Contains("event.battlefieldKind == \"land\"", Script);
         Assert.Contains("event.currentTypes or {}", Script);
-        Assert.Contains("BridgeBattlefieldRowForEvent(resolvedEvent, \"creature\")", Script);
         Assert.Contains("BridgeBattlefieldRowForEvent(event, \"creature\")", Script);
     }
 
@@ -1621,51 +1619,39 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void ExactResolvedSpellAlreadyInGraveyard_IsIdempotent()
+    public void SemanticResolvedSpellRecordsButDoesNotOwnExactPhysicalTransition()
     {
-        Assert.Contains("idempotent spell resolution event=", Script);
-        Assert.Contains("after structured graveyard move=", Script);
-        Assert.Contains("structuredMove.destinationZone == \"graveyard\"", Script);
-        Assert.Contains("mappedZone == \"graveyard\"", Script);
-        Assert.Contains("inverseInstanceId ~= event.cardInstanceId", Script);
-        Assert.Contains("BridgeState.pendingCastBySeatId[event.seatId] = nil", Script);
+        Assert.Contains("pendingSemanticResolutionByInstanceId[instanceId]", Script);
+        Assert.Contains("physical-transition-owner=structured-card-moved", Script);
+        Assert.Contains("BridgeFinalizeStructuredStackDeparture", Script);
+        Assert.DoesNotContain("idempotent spell resolution event=", Script);
     }
 
     [Fact]
     public void ResolvedSpellWithoutExactInstance_DefersToStructuredSnapshotInsteadOfGuessing()
     {
-        var start = Script.IndexOf("if event.kind == \"spell_resolved\" and event.destinationZone == \"graveyard\" then", StringComparison.Ordinal);
-        var end = Script.IndexOf("if event.kind == \"spell_resolved\" and event.destinationZone == \"battlefield\" then", start, StringComparison.Ordinal);
+        var start = Script.IndexOf("function BridgeRecordSemanticSpellResolution(event)", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeApplyAuthoritativeEvent(event)", start, StringComparison.Ordinal);
         var handler = Script[start..end];
-        Assert.Contains("if event.cardInstanceId == nil then", handler);
-        Assert.Contains("pendingCastBySeatId[event.seatId]", handler);
-        Assert.Contains("BridgeScheduleSnapshotReconcile(\"semantic spell resolution without exact instance\")", handler);
-        Assert.Contains("BridgeScheduleSnapshotReconcile(\"unmapped resolved spell \"", handler);
-        Assert.Contains("resolved spell presentation deferred event=", handler);
-        Assert.Contains("return true, 0.1", handler);
+        Assert.Contains("instanceId = pendingCast.cardInstanceId", handler);
+        Assert.Contains("semantic spell resolution awaiting structured move", handler);
+        Assert.DoesNotContain("BridgeMoveToGraveyard", handler);
+        Assert.DoesNotContain("BridgeMoveToBattlefield", handler);
     }
 
     [Fact]
     public void SemanticSpellResolution_CannotMoveCrewedVehicleFromBattlefield()
     {
-        var start = Script.IndexOf("if event.kind == \"spell_resolved\" and event.destinationZone == \"graveyard\" then", StringComparison.Ordinal);
-        var end = Script.IndexOf("if event.kind == \"tap_changed\" then", start, StringComparison.Ordinal);
+        var start = Script.IndexOf("function BridgeRecordSemanticSpellResolution(event)", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeApplyAuthoritativeEvent(event)", start, StringComparison.Ordinal);
         var handler = Script[start..end];
 
-        // TUI resolution text is not an identity-bearing zone transition.
-        // Only a physically tracked stack object may use the semantic fallback;
-        // a Vehicle/ability source already on the battlefield must remain there.
-        Assert.Contains("pendingZone ~= \"stack\"", handler);
-        Assert.Contains("mappedZone ~= \"stack\"", handler);
-        Assert.Contains("semantic ability resolution for non-stack object", handler);
-        Assert.Contains("semantic ability resolution for non-stack mapped object", handler);
+        // TUI resolution text is not an identity-bearing zone transition: no
+        // semantic path may move a Vehicle/ability source from battlefield.
+        Assert.Contains("pendingZone == \"stack\"", handler);
         Assert.Contains("BridgeScheduleSnapshotReconcile", handler);
-
-        var resolverStart = Script.IndexOf("function BridgeResolveResolvedSpellObject(event)", StringComparison.Ordinal);
-        var resolverEnd = Script.IndexOf("-- Table-native presentation adapter", resolverStart, StringComparison.Ordinal);
-        var resolver = Script[resolverStart..resolverEnd];
-        Assert.Contains("BridgeResolvePhysicalCard(event, \"stack\")", resolver);
-        Assert.DoesNotContain("{\"stack\", \"battlefield\", \"hand\"}", resolver);
+        Assert.DoesNotContain("BridgeMoveToGraveyard", handler);
+        Assert.DoesNotContain("BridgeMoveToBattlefield", handler);
     }
 
     [Fact]
@@ -2266,7 +2252,8 @@ public sealed class TtsGlobalLuaContractTests
     public void RedundantLandEventWithAlreadyMovedMapping_DefersInsteadOfStopping()
     {
         var start = Script.IndexOf("if event.kind == \"land_played\" then", StringComparison.Ordinal);
-        var end = Script.IndexOf("if event.kind == \"spell_resolved\" and event.destinationZone == \"battlefield\" then", start, StringComparison.Ordinal);
+        var end = Script.IndexOf("if event.kind == \"mana_ability_used\" then", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
         var handler = Script[start..end];
 
         Assert.Contains("semantic land source already changed", handler);
@@ -3271,32 +3258,21 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void ResolvedPermanent_RetiresPendingCastOnlyAfterExactBattlefieldMove()
     {
-        var move = Script.IndexOf("function BridgeMoveToBattlefield", StringComparison.Ordinal);
-        var retire = Script.IndexOf("function BridgeRetirePendingCastForInstance", StringComparison.Ordinal);
-        Assert.True(move >= 0);
-        Assert.True(retire >= 0);
-        Assert.Contains("BridgeRetirePendingCastForInstance(", Script);
-
-        var structured = Script.IndexOf("if event.kind == \"card_moved\"", StringComparison.Ordinal);
-        var structuredBattlefield = Script.IndexOf("sourcePhysicalZone == \"stack\"", structured, StringComparison.Ordinal);
-        Assert.True(structuredBattlefield > structured);
-        Assert.Contains("structured stack-to-battlefield", Script);
-        Assert.Contains("semantic stack-to-battlefield", Script);
+        var finalizer = Script.IndexOf("function BridgeFinalizeStructuredStackDeparture", StringComparison.Ordinal);
+        var structured = Script.IndexOf("function BridgeApplyStructuredCardMove(event)", StringComparison.Ordinal);
+        Assert.True(finalizer >= 0);
+        Assert.True(structured > finalizer);
+        Assert.Contains("event.sourceZone ~= \"stack\"", Script);
+        Assert.Contains("BridgeFinalizeStructuredStackDeparture(event, reason)", Script);
+        Assert.DoesNotContain("semantic stack-to-battlefield", Script);
     }
 
     [Fact]
     public void ResolvedInstantOrSorcery_DoesNotUsePermanentBattlefieldRepair()
     {
-        var graveyard = Script.IndexOf(
-            "if event.kind == \"spell_resolved\" and event.destinationZone == \"graveyard\" then",
-            StringComparison.Ordinal);
-        var graveyardEnd = Script.IndexOf(
-            "if event.kind == \"tap_changed\" then", graveyard, StringComparison.Ordinal);
-        Assert.True(graveyard >= 0);
-        Assert.True(graveyardEnd > graveyard);
-        var graveyardHandler = Script[graveyard..graveyardEnd];
-        Assert.DoesNotContain("BridgeMoveToBattlefield", graveyardHandler);
-        Assert.Contains("BridgeMoveToGraveyard", graveyardHandler);
+        Assert.Contains("function BridgeRecordSemanticSpellResolution(event)", Script);
+        Assert.Contains("return BridgeRecordSemanticSpellResolution(event)", Script);
+        Assert.DoesNotContain("if event.kind == \"spell_resolved\" and event.destinationZone == \"graveyard\" then", Script);
     }
 
     [Fact]
@@ -3306,8 +3282,8 @@ public sealed class TtsGlobalLuaContractTests
         var end = Script.IndexOf("function BridgeFindSeatLibraryDeckWithCard", start, StringComparison.Ordinal);
         var move = Script[start..end];
 
-        Assert.Contains("BridgeRetirePendingCastForInstance(", move);
-        Assert.Contains("event.cardInstanceId, guid, \"graveyard-move\"", move);
+        Assert.DoesNotContain("BridgeRetirePendingCastForInstance(", move);
+        Assert.Contains("transaction-owned physical completion", move);
         Assert.DoesNotContain("BridgeState.pendingCastBySeatId[event.seatId] = nil", move);
     }
 
