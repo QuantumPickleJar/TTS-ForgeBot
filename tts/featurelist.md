@@ -151,56 +151,18 @@ Bug:
 opening the card importer breaks the custom UI such that it takes up the entire screen
 WAS FIXED - HAS RESURFACED
 
-Bug: cannot play lands already in hand on draw nor upkeep steps, must wait for combat to pass
-NOT FIXED 
-
-Bug: casting stitcher's suppplier failed to trigger the mill-adjacent effect that mental note shares
-FIXED
-
-Bug: you can select spent instants as attackers 
-NOT FIXED
-
-Bug: passing priority on the upkeep step skips Main 
-NOT FIXED
-
-Bug: YIELD TURN does not pass priority during opponent's steps, seems to be defunct
-NOT FIXED
-
-Bug: legal actions don't appear until combat step, they should be displayed by the upkeep step. (Acceptance: drawing the new card should present new options, and playing a land pre-main 1 should be presented so it can be enqueued)
-NOT FIXED
-
 CRITCAL: Effects from Young Pyromancer fail to trigger.
-
-
-Bug: Land cannot be played before combat due to main 1 consistently being skipped
-NOT FIXED
 
 Bug: YIELD TURN is missing during Blue's turn (should advance until human intervention required OR turn change)
 FIXED
 
-Bug: casting thought scour picks up played lands and the already milled card back into the libray
-FIXED
-
-Bug: casting Thought Scour inappropriately highlights after the effects have physically finished
-NOT FIXED
-
-
-Bug: resync does not sseem to do anything
-IMPLEMENTED — bootstrap staging now serializes verified library containment before strict duplicate audit (`b3aa409`); NEEDS LIVE CONFIRMATION FROM A CLEAN TABLE
-
-(high priority) Bug: if a player opts to keep the opening hand, it can sometimes still gets mulliganned
-NEEDS LIVE CONFIRMATION
-
 bug: sacrifice cards say "sacrifice CARDNAME" instead of the actual card's name
 NOT FIXED
-
-Bug: Consider does not resolve at the appropriate speed
 
 Bug: Sacrificing a tapped permanent does not untap it before transporting to its destination (exile or graveyard) is complete
 NOT FIXED
 
-bug: application does not safely shut down, must be crtl+shift+c interrupted
-FIXED
+Bug: Artifact Creatures get listed as legal options twice, once as an artifact cast and once as a creature cast choice
 
 ==========================
 Live smoke matrix:
