@@ -625,6 +625,57 @@ public sealed class EmbodimentReconciliationEngineTests
         Assert.NotEqual(first.Get("guid").String, second.Get("guid").String);
     }
 
+    [Fact]
+    public void SlotLocatorRefreshAfterLibraryMutationUsesCurrentDeckTopology()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local deck = {tag='Deck', getGUID=function() return 'library' end,
+                getObjects=function() return {
+                    {index=3, nickname='Armored Skaab', guid=' '},
+                    {index=8, nickname='Armored Skaab', guid=' '}}
+                end}
+            function getObjectFromGUID(guid) if guid == 'library' then return deck end end
+            BridgeState.libraryBindingGenerationBySeatId = {['forge-player-1']=4}
+            BridgeState.physicalContainerByInstanceId = {
+                ['forge:session:4']={locatorType='SLOT_LOCATOR', deckGuid='library', slotIndex=1,
+                    bindingGeneration=3, seatId='forge-player-1', zoneName='library', cardName='Armored Skaab'},
+                ['forge:session:9']={locatorType='SLOT_LOCATOR', deckGuid='library', slotIndex=2,
+                    bindingGeneration=3, seatId='forge-player-1', zoneName='library', cardName='Armored Skaab'}}
+            BridgeState.physicalSlotByInstanceId = {}
+            refreshed, refreshError = BridgeRefreshLibrarySlotBindings('library')
+            resolvedDeck, resolvedEntry, resolveError = BridgeFindContainedCardEntry('forge:session:9', 'library')
+        ");
+
+        Assert.True(lua.Globals.Get("refreshed").Boolean, lua.Globals.Get("refreshError").ToPrintString());
+        Assert.True(lua.Globals.Get("resolvedDeck").Table is not null, lua.Globals.Get("resolveError").ToPrintString());
+        Assert.Equal(8, lua.Globals.Get("resolvedEntry").Table.Get("index").Number);
+        var mappings = lua.Globals.Get("BridgeState").Table.Get("physicalContainerByInstanceId").Table;
+        Assert.Equal(mappings.Get("forge:session:9").Table.Get("bindingGeneration").Number,
+            lua.Globals.Get("BridgeState").Table.Get("libraryBindingGenerationBySeatId").Table.Get("forge-player-1").Number);
+    }
+
+    [Fact]
+    public void StaleSlotLocatorIsNeverUsedDirectlyWhenRefreshCannotProveIdentity()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local deck = {tag='Deck', getGUID=function() return 'library' end,
+                getObjects=function() return {{index=9, nickname='Mountain', guid=' '}} end}
+            function getObjectFromGUID(guid) if guid == 'library' then return deck end end
+            BridgeState.libraryBindingGenerationBySeatId = {['forge-player-1']=5}
+            BridgeState.physicalContainerByInstanceId = {['forge:session:4']={locatorType='SLOT_LOCATOR', deckGuid='library',
+                slotIndex=1, bindingGeneration=4, seatId='forge-player-1', zoneName='library', cardName='Armored Skaab'}}
+            BridgeState.physicalSlotByInstanceId = {}
+            refreshed, refreshError = BridgeRefreshLibrarySlotBindings('library')
+            resolvedDeck, resolvedEntry, resolveError = BridgeFindContainedCardEntry('forge:session:4', 'library')
+        ");
+
+        Assert.False(lua.Globals.Get("refreshed").Boolean);
+        Assert.True(lua.Globals.Get("resolvedDeck").IsNil());
+        Assert.Contains("generation is stale", lua.Globals.Get("resolveError").String);
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script();

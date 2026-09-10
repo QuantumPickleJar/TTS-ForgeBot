@@ -2415,6 +2415,83 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void ReplacementBootstrapReleasesOpeningDecisionDespiteSnapshotForgeSequenceAnnotation()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "ReplacementBootstrapReleasesOpeningDecisionDespiteSnapshotForgeSequenceAnnotation.probe.lua", @"
+            BridgeState.eventSessionId = 'replacement-session'
+            BridgeState.decisionPresentationGeneration = 7
+            BridgeState.lastAppliedEventSequence = 54
+            BridgeState.lastReceivedEventSequence = 54
+            BridgeState.lastAppliedForgeSequence = 4
+            BridgeState.eventQueue = {}
+            BridgeState.bootstrapping = false
+            BridgeState.embodimentTransaction = nil
+            BridgeState.openingHandReadinessSnapshotPending = false
+            BridgeState.choiceTransactions = {}
+            BridgeState.retiredChoiceDecisionIds = {}
+            BridgeState.decisionAcceptanceRejections = {}
+            rendered = 0
+            function BridgeSetStatus(headline, detail) end
+            function BridgeUiMarkDirty(reason) end
+            function BridgeStartupPerfEvent(kind, detail) end
+            function BridgeSetupStage(stage, detail) end
+            function BridgeRecordDecisionLifecycle(decision, origin, state, reason) end
+            function BridgeCheckProjectionCoherence(decision, source) end
+            function BridgeCheckOpeningHandReadiness(seatId) return true, 7, 7, nil end
+            function BridgeTurnLabel() return 'Turn 1' end
+            function BridgeRetireChoiceTransactionsForDecision(decisionId) end
+            function BridgeCreatureTypeClearDraft(reason) end
+            function BridgeGraveyardClear(reason) end
+            function BridgeDecisionHasUnauthorizedPresentationAction(decision) return false end
+            function BridgeShouldDeferDecision(decision) return false, 54, 54, nil end
+            function BridgeRenderDecision(decision, force) rendered = rendered + 1 end
+            function BridgeDecisionPhysicalMappingsReady(decision) return true, nil end
+            local opening = {
+                decisionId='forge-tui-1', sessionId='replacement-session', kind='mulligan',
+                mulliganStage='keep_or_mulligan', seatId='forge-player-1', eventCursor=54,
+                forgeSequence=3, actions={{actionId='keep', type='keep_hand', isPresentationAuthorized=true}}
+            }
+            acceptanceCallOk, accepted, acceptanceReason = pcall(BridgeAcceptDecision, opening, 'replacement-bootstrap', 'replacement-session', 7)
+        ");
+
+        Assert.True(lua.Globals.Get("acceptanceCallOk").Boolean, lua.Globals.Get("accepted").ToPrintString());
+        Assert.True(lua.Globals.Get("accepted").Boolean, lua.Globals.Get("acceptanceReason").ToPrintString());
+        Assert.Equal("forge-tui-1", lua.Globals.Get("BridgeState").Table.Get("lastDecision").Table.Get("decisionId").String);
+        Assert.Equal(1, lua.Globals.Get("rendered").Number);
+        Assert.Equal(0, lua.Globals.Get("BridgeState").Table.Get("decisionAcceptanceRejections").Table.Length);
+    }
+
+    [Fact]
+    public void DecisionRejectionDiagnosticsExposePredicate()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "DecisionRejectionDiagnosticsExposePredicate.probe.lua", @"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.decisionPresentationGeneration = 2
+            BridgeState.lastAppliedEventSequence = 54
+            BridgeState.lastAppliedForgeSequence = 9
+            BridgeState.choiceTransactions = {}
+            BridgeState.retiredChoiceDecisionIds = {}
+            BridgeState.decisionAcceptanceRejections = {}
+            rejected = BridgeAcceptDecision({decisionId='old', sessionId='session', kind='main_priority',
+                seatId='forge-player-1', eventCursor=54, forgeSequence=8, actions={}}, 'decision_poll', 'session', 2)
+            rejectionCount = #BridgeState.decisionAcceptanceRejections
+            for _, record in pairs(BridgeState.decisionAcceptanceRejections) do diagnostic = record end
+        ");
+
+        Assert.False(lua.Globals.Get("rejected").Boolean);
+        var diagnosticValue = lua.Globals.Get("diagnostic");
+        Assert.True(diagnosticValue.Type == DataType.Table,
+            $"count={lua.Globals.Get("rejectionCount").ToPrintString()} rejected={lua.Globals.Get("rejected").ToPrintString()} diagnostic={diagnosticValue.ToPrintString()}");
+        var diagnostic = diagnosticValue.Table;
+        Assert.Equal("forge_sequence_lag", diagnostic.Get("reason").String);
+        Assert.Equal("old", diagnostic.Get("decisionId").String);
+        Assert.Equal(54, diagnostic.Get("eventCursor").Number);
+        Assert.Equal(9, diagnostic.Get("lastAppliedForgeSequence").Number);
+    }
+
+    [Fact]
     public void G6_ThoughtScourMutationCompletionInstallsCursorCurrentDecisionWithoutResync()
     {
         var lua = NewQueueProbe();
