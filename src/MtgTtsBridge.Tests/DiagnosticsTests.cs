@@ -751,6 +751,33 @@ public sealed class DiagnosticsTests
         Assert.Contains(sampler.Snapshot(), sample => sample.Role == "bridge");
     }
 
+    [Fact]
+    public void DiagnosticEventDrainPreservesOwnedNativeMutationJournal()
+    {
+        const string json = """
+            {
+              "eventDrainDiagnostics": {
+                "physicalMutationProgress": { "stage": "DECK_OBSERVED", "stagedCount": 2 },
+                "physicalMutationJournal": [
+                  { "stage": "GROUP_RESULT", "transitionToken": "tx:32" },
+                  { "classification": "transitional_alias", "cardGuid": "safe-guid" }
+                ],
+                "ownedMutation": { "firstEventSequence": 174, "lastEventSequence": 177 }
+              }
+            }
+            """;
+
+        var request = JsonSerializer.Deserialize<DiagnosticReportRequestDto>(json,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.NotNull(request?.EventDrainDiagnostics?.PhysicalMutationJournal);
+        var journal = request!.EventDrainDiagnostics!.PhysicalMutationJournal!.Value;
+        Assert.Equal(JsonValueKind.Array, journal.ValueKind);
+        Assert.Equal("transitional_alias", journal[1].GetProperty("classification").GetString());
+        Assert.Equal(174, request.EventDrainDiagnostics.OwnedMutation!.Value
+            .GetProperty("firstEventSequence").GetInt32());
+    }
+
     private static string CreateTempDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), $"MtgTtsBridge-diagnostics-{Guid.NewGuid():N}");

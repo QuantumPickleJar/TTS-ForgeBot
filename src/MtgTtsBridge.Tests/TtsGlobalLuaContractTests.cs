@@ -943,7 +943,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgePhysicalLibraryQueuesIdle()", Script);
         Assert.Contains("snapshotReconcilePendingRequest", Script);
         Assert.Contains("BridgeTryStartPendingSnapshotReconcile(\"event-drain\")", Script);
-        Assert.Contains("local queueState = BridgePhysicalLibraryQueuesIdle() and \"event-cursor\" or \"physical-library-queue\"", Script);
+        Assert.Contains("local queueState = yieldsToEvents and \"discoverable-event-catchup\"", Script);
+        Assert.Contains("or (BridgePhysicalLibraryQueuesIdle() and \"event-cursor\" or \"physical-library-queue\")", Script);
         Assert.Contains("library-extraction-complete", Script);
     }
 
@@ -1229,13 +1230,13 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeAssertGraveyardObjectShape(event.seatId, \"after-loose-card\"", Script);
         
         // Object-shape assertion must be called after container merge
-        Assert.Contains("BridgeAssertGraveyardObjectShape(merge.seatId, \"after-merge\")", Script);
+        Assert.Contains("merge.seatId, \"after-merge\", merge.containmentOwner", Script);
         
         // Object-shape assertion must be called after native container formation
         Assert.Contains("BridgeAssertGraveyardObjectShape(seatId, \"after-container-formation\")", Script);
         
         // The function must exist and validate contract
-        Assert.Contains("function BridgeAssertGraveyardObjectShape(seatId, context)", Script);
+        Assert.Contains("function BridgeAssertGraveyardObjectShape(seatId, context, containmentOwner)", Script);
         Assert.Contains("TWO_OR_MORE_LOOSE_CARDS", Script);
         Assert.Contains("MULTIPLE_DECKS", Script);
         Assert.Contains("LOOSE_CARD_WITH_DECK", Script);

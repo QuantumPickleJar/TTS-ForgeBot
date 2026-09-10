@@ -1769,6 +1769,17 @@ function BridgeLegacyBootstrapCurrentSnapshot(sessionId, callback, resumeFromSna
     BridgeTraceStart("START-09 event-session-prepare", sameSessionRecovery and "preserved" or "required")
     if not sameSessionRecovery then
         BridgePrepareEventSession(sessionId, true, resumeFromSnapshotCursor == true)
+        -- Session preparation is the authoritative identity-retirement
+        -- barrier. Rebase this transaction's rollback ledger after it has
+        -- cleared the outgoing CardInstance maps, so a later bootstrap
+        -- failure cannot resurrect the previous session's identities.
+        if embodimentTx ~= nil and BridgeEmbodimentTransactionIsCurrent(embodimentTx)
+            and tostring(BridgeState.physicalOwnershipSessionId or "") == tostring(sessionId) then
+            embodimentTx.committedPhysicalLedger = BridgeCapturePhysicalLedger()
+            embodimentTx.sessionBarrierRebased = true
+            BridgeEmbodimentJournal(embodimentTx, embodimentTx.phase,
+                "SESSION_IDENTITY_BARRIER", "session=" .. tostring(sessionId))
+        end
     end
     -- A resync rebuilds physical embodiment, not the Forge match.  The card
     -- snapshot intentionally does not carry the live phase/priority mirror,

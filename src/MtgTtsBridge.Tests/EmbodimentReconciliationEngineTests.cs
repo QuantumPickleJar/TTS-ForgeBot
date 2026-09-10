@@ -708,6 +708,166 @@ public sealed class EmbodimentReconciliationEngineTests
     }
 
     [Fact]
+    public void OldSessionLedgerCannotBeRestoredAfterReplacementBootstrapFailure()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'new-session'
+            BridgeState.physicalOwnershipSessionId = 'new-session'
+            BridgeState.eventSessionGeneration = 8
+            BridgeState.physicalTransactionGeneration = 12
+            BridgeState.physicalByInstanceId = {['forge:new-session:1']='new-guid'}
+            BridgeState.physicalInstanceIdByGuid = {['new-guid']='forge:new-session:1'}
+            BridgeState.physicalSeatByGuid = {['new-guid']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['new-guid']='hand'}
+            local tx = BridgeBeginEmbodimentTransaction('new-session', 'initial-bootstrap', false, nil)
+            tx.committedPhysicalLedger = {
+                ownerSessionId='old-session', ownerEventSessionGeneration=7,
+                ownerPhysicalTransactionGeneration=11,
+                physicalByInstanceId={['forge:old-session:29']='old-guid'},
+                physicalInstanceIdByGuid={['old-guid']='forge:old-session:29'},
+                physicalSeatByGuid={['old-guid']='forge-player-1'},
+                physicalZoneByGuid={['old-guid']='graveyard'},
+                physicalContainerByInstanceId={}, physicalContainedInstanceIdByGuid={},
+                physicalSlotByInstanceId={}
+            }
+            -- The replacement session owns the current candidate publication.
+            BridgeState.physicalByInstanceId = {['forge:new-session:1']='new-guid'}
+            BridgeState.physicalInstanceIdByGuid = {['new-guid']='forge:new-session:1'}
+            BridgeState.physicalSeatByGuid = {['new-guid']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['new-guid']='hand'}
+            BridgeFinishEmbodimentTransaction(tx, false, 'synthetic materialization failure')
+            oldRestored = BridgeState.physicalByInstanceId['forge:old-session:29']
+            newPreserved = BridgeState.physicalByInstanceId['forge:new-session:1']
+            rollbackSkipped = BridgeState.lastEmbodimentTransaction.ledgerRollbackSkipped == true
+        ");
+
+        Assert.True(lua.Globals.Get("oldRestored").IsNil());
+        Assert.Equal("new-guid", lua.Globals.Get("newPreserved").String);
+        Assert.True(lua.Globals.Get("rollbackSkipped").Boolean);
+    }
+
+    [Fact]
+    public void StaleOldCallbacksCannotRepopulateMappingsAfterNewMatchFence()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'old-session'
+            BridgeState.physicalOwnershipSessionId = 'old-session'
+            BridgeState.eventSessionGeneration = 4
+            BridgeState.physicalTransactionGeneration = 6
+            local capturedSession = BridgeState.eventSessionId
+            local capturedGeneration = BridgeState.physicalTransactionGeneration
+            local function lateAtomicCallback()
+                if not BridgePhysicalPresentationIsCurrent(capturedSession, capturedGeneration) then
+                    staleRejected = true
+                    return
+                end
+                BridgeState.physicalByInstanceId['forge:old-session:29'] = 'old-note-guid'
+                BridgeState.physicalInstanceIdByGuid['old-note-guid'] = 'forge:old-session:29'
+            end
+            BridgeRetireLocalPhysicalTransactions('new-match-cleanup')
+            BridgeState.eventSessionId = 'new-session'
+            BridgeState.physicalOwnershipSessionId = 'new-session'
+            lateAtomicCallback()
+            oldMapping = BridgeState.physicalByInstanceId['forge:old-session:29']
+            generationAdvanced = BridgeState.physicalTransactionGeneration > capturedGeneration
+        ");
+
+        Assert.True(lua.Globals.Get("staleRejected").Boolean);
+        Assert.True(lua.Globals.Get("oldMapping").IsNil());
+        Assert.True(lua.Globals.Get("generationAdvanced").Boolean);
+    }
+
+    [Fact]
+    public void CleanFortyCardReplacementInventoryPlansExactSevenAndThirtyThree()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'new-session'
+            BridgeState.physicalOwnershipSessionId = 'new-session'
+            local entries = {}
+            local hand = {}
+            local cardsByGuid = {}
+            local function cardName(index)
+                if index == 1 or index == 2 then return 'Stitcher\'s Supplier' end
+                return 'Card ' .. tostring(index)
+            end
+            for index = 1, 40 do
+                table.insert(entries, {guid='physical-' .. tostring(index), nickname=cardName(index), index=index - 1})
+            end
+            local deck = {tag='Deck'}
+            deck.getGUID = function() return 'replacement-library' end
+            deck.getObjects = function() return entries end
+            deck.takeObject = function(args)
+                local selectedIndex = nil
+                for index, entry in ipairs(entries) do
+                    if tostring(entry.guid) == tostring(args.guid) then selectedIndex = index; break end
+                end
+                if selectedIndex == nil then error('exact replacement source was not found') end
+                local entry = table.remove(entries, selectedIndex)
+                local card = {tag='Card', guid=entry.guid, name=entry.nickname, vars={}}
+                card.getGUID = function() return card.guid end
+                card.getName = function() return card.name end
+                card.getVar = function(key) return card.vars[key] end
+                card.setVar = function(key, value) card.vars[key] = value end
+                card.setPosition = function(position)
+                    if card.inHand ~= true then table.insert(hand, card); card.inHand = true end
+                end
+                cardsByGuid[card.guid] = card
+                args.callback_function(card)
+            end
+            function BridgeResolveSeatLibraryDeck(seatId) return deck end
+            function BridgeTryGetSeatHandObjects(seatId) return hand end
+            function BridgeTryGetSeatHandTransform(seatId)
+                return {position={x=1,y=2,z=3}, rotation={x=0,y=0,z=0}}, nil
+            end
+            function BridgePhysicalCanonicalCardName(object) return object and object.name or nil end
+            function BridgeWritePhysicalIdentity(object, instanceId)
+                object.vars.bridgeCardInstanceId = instanceId
+            end
+            function BridgeWritePhysicalSessionIdentity(object, sessionId)
+                object.vars.bridgeSessionId = sessionId
+            end
+            function BridgeGetLiveObjectByGuid(guid)
+                if guid == 'replacement-library' then return deck end
+                return cardsByGuid[guid]
+            end
+            function BridgeWaitFrames(callback, frames) callback() end
+            local libraryCards = {}
+            local handCards = {}
+            for index = 1, 40 do
+                local desired = {cardInstanceId='forge:new-session:' .. tostring(index),
+                    cardName=cardName(index), zonePosition=index}
+                if index <= 7 then table.insert(handCards, desired) else table.insert(libraryCards, desired) end
+            end
+            local seatSnapshot = {seatId='forge-player-1', zones={
+                {name='library', cards=libraryCards}, {name='hand', cards=handCards}}}
+            initialEntryCount = #entries
+            initialLibraryDesiredCount = #libraryCards
+            initialHandDesiredCount = #handCards
+            finalPlan, finalError = BridgeBuildSeatSourceAssignment(seatSnapshot, {})
+            plannedHandMoves = 0
+            allNewExact = finalPlan ~= nil
+            local exact = {}
+            for _, move in ipairs(finalPlan and finalPlan.moves or {}) do
+                local instanceId = move.desired and move.desired.cardInstanceId or nil
+                if move.desired == nil or move.desired.zone ~= 'hand'
+                    or instanceId == nil or string.find(instanceId, 'forge:new-session:', 1, true) ~= 1
+                    or exact[instanceId] == true then allNewExact = false end
+                exact[instanceId] = true
+                plannedHandMoves = plannedHandMoves + 1
+            end
+        ");
+
+        Assert.False(lua.Globals.Get("finalPlan").IsNil(), lua.Globals.Get("finalError").ToPrintString());
+        Assert.Equal(40, lua.Globals.Get("finalPlan").Table.Get("observedTotalInventory").Number);
+        Assert.Equal(40, lua.Globals.Get("finalPlan").Table.Get("desiredTotalInventory").Number);
+        Assert.Equal(7, lua.Globals.Get("plannedHandMoves").Number);
+        Assert.True(lua.Globals.Get("allNewExact").Boolean);
+    }
+
+    [Fact]
     public void SlotLocatorRefreshAfterLibraryMutationUsesCurrentDeckTopology()
     {
         var lua = NewProbe();

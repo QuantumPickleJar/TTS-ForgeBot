@@ -923,12 +923,14 @@ function BridgeBeginPhysicalContainmentTransition(guid, seatId, source, destinat
         guid = tostring(guid), seatId = seatId, source = source,
         destinationDeck = destinationDeck and BridgeSafeObjectGuid(destinationDeck) or nil,
         status = "DISPATCHED", looseAliasStillVisible = false,
-        ownerToken = owner and owner.token or nil
+        ownerToken = owner and owner.token or nil,
+        operation = owner and owner.operation or "CardToLibrary",
+        cardInstanceId = owner and owner.cardInstanceId or nil
     }
     BridgeState.physicalContainmentTransitionsByGuid[tostring(guid)] = transition
     BridgeRecordPhysicalMutationJournal({
         transitionToken = transition.token, generation = transition.generation,
-        operation = "CardToLibrary", cardGuid = transition.guid, seatId = seatId,
+        operation = transition.operation, cardGuid = transition.guid, seatId = seatId,
         source = source, destinationDeck = transition.destinationDeck,
         classification = "dispatched"
     })
@@ -946,10 +948,50 @@ function BridgeMarkPhysicalContainmentProven(transition, deck, owner)
     end
     BridgeRecordPhysicalMutationJournal({
         transitionToken = transition.token, generation = transition.generation,
-        operation = "CardToLibrary", cardGuid = transition.guid,
+        operation = transition.operation or "CardToLibrary", cardGuid = transition.guid,
         destinationDeck = transition.destinationDeck, containmentProven = true,
         classification = "containment_proven"
     })
+end
+
+-- A stale loose userdata view is not a second physical Card once the exact
+-- current-generation owner has positively proved that member inside its
+-- intended Deck. This is deliberately stricter than a GUID ignore list: the
+-- owner token, destination Deck, seat, generation, and exact instance mapping
+-- must all still agree.
+function BridgePhysicalContainmentAliasIsProven(guid, seatId, zoneName, owner)
+    if guid == nil or owner == nil then return false, nil end
+    local transition = (BridgeState.physicalContainmentTransitionsByGuid or {})[tostring(guid)]
+    if transition == nil
+        or (transition.status ~= "CONTAINMENT_PROVEN" and transition.status ~= "SETTLED")
+        or tonumber(transition.generation or -1) ~= tonumber(BridgeState.physicalTransactionGeneration or 0)
+        or tostring(transition.ownerToken or "") ~= tostring(owner.token or "")
+        or tostring(transition.seatId or "") ~= tostring(seatId or "") then
+        return false, transition
+    end
+    local deck = transition.destinationDeck and BridgeGetLiveObjectByGuid(transition.destinationDeck) or nil
+    if not BridgeObjectIsUsable(deck) or BridgeSafeObjectTag(deck) ~= "Deck" then
+        return false, transition
+    end
+    local exactContained = BridgeLibraryContainsGuid(deck, guid)
+    if not exactContained and transition.cardInstanceId ~= nil then
+        local mapping = BridgeState.physicalContainerByInstanceId[transition.cardInstanceId]
+        exactContained = mapping ~= nil
+            and tostring(mapping.deckGuid or "") == tostring(transition.destinationDeck)
+            and tostring(mapping.seatId or "") == tostring(seatId or "")
+            and tostring(mapping.zoneName or "") == tostring(zoneName or "")
+    end
+    if not exactContained then return false, transition end
+    transition.looseAliasStillVisible = true
+    transition.status = "SETTLED"
+    BridgeRecordPhysicalMutationJournal({
+        transitionToken = transition.token, generation = transition.generation,
+        operation = transition.operation or "CardToLibrary", cardGuid = transition.guid,
+        destinationDeck = transition.destinationDeck, containmentProven = true,
+        looseAliasStillVisible = true, classification = "transitional_alias",
+        finalDisposition = "accepted-contained"
+    })
+    return true, transition
 end
 
 local function BridgeOwnedContainmentGuids(expectedGuids, owner)

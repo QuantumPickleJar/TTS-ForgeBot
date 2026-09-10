@@ -4173,6 +4173,13 @@ function BridgeResetSession()
             and BridgeRuntimeIsCurrent(BRIDGE_RUNTIME_EPOCH_LOCAL)
     end
     BridgeStopEventPolling("session-reset")
+    -- NEW MATCH preserves the physical cards but abandons every old event
+    -- mutation owner. Fence queued/native callbacks before cleanup observes
+    -- the table; late callbacks can then contribute only physical evidence
+    -- for the cleanup reobserve, never republish old CardInstance identities.
+    if BridgeRetireLocalPhysicalTransactions ~= nil then
+        BridgeRetireLocalPhysicalTransactions("new-match-cleanup")
+    end
     BridgeClearHighlights()
     BridgeState.lastDecision = nil
     BridgeState.newMatchCleanupOwner = "NEW_MATCH_CLEANUP"

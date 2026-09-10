@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: eb4d941de6adfe5e26baf31412abb51ecb5096a5b19c39ede0c8783041af1cd5
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "eb4d941de6adfe5e26baf31412abb51ecb5096a5b19c39ede0c8783041af1cd5"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 6651c704c19fe8cbaf2ca12fd7ba544b48d59046256d8dfc564f9813b31b6d4a
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "6651c704c19fe8cbaf2ca12fd7ba544b48d59046256d8dfc564f9813b31b6d4a"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -974,14 +974,22 @@ function BridgeEventDrainQueueState()
         ownerSessionId = BridgeState.eventDrainTransaction.sessionId,
         ownerSessionGeneration = BridgeState.eventDrainTransaction.eventSessionGeneration,
         ownerPhysicalGeneration = BridgeState.eventDrainTransaction.physicalTransactionGeneration,
-        physicalOperationCount = BridgeTableSize(BridgeState.eventDrainTransaction.pendingPhysicalEvents or {}),
+        physicalOperationCount = tonumber(BridgeState.eventDrainTransaction.eventCount or 0) or 0,
+        outstandingCallbacks = BridgeTableSize(BridgeState.eventDrainTransaction.pendingPhysicalEvents or {}),
+        operationsCompleted = math.max((tonumber(BridgeState.eventDrainTransaction.eventCount or 0) or 0)
+            - BridgeTableSize(BridgeState.eventDrainTransaction.pendingPhysicalEvents or {}), 0),
+        commitAttempted = BridgeState.eventDrainTransaction.state == "COMMITTING"
+            or BridgeState.eventDrainTransaction.state == "COMMITTED",
+        commitSucceeded = BridgeState.eventDrainTransaction.state == "COMMITTED",
         batches = {}
     } or nil
     if mutationProgress ~= nil then
         for seatId, batch in pairs(BridgeState.eventDrainTransaction.graveyardMutationBatchesBySeatId or {}) do
             mutationProgress.batches[seatId] = {
                 state = batch.state, stagedCount = batch.stagedCount,
+                stagedSettledCount = batch.stagedSettledCount,
                 requiredCount = batch.requiredCount, targetDeckGuid = batch.targetDeckGuid,
+                groupRequested = batch.groupRequested == true,
                 settlementSampleCount = batch.settlementSampleCount,
                 deferredPendingCount = batch.deferredPendingCount,
                 deferredFailureReason = batch.deferredFailureReason,
@@ -1585,6 +1593,9 @@ end
 
 function BridgeCapturePhysicalLedger()
     return {
+        ownerSessionId = BridgeState.physicalOwnershipSessionId or BridgeState.eventSessionId,
+        ownerEventSessionGeneration = BridgeState.eventSessionGeneration,
+        ownerPhysicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
         physicalByInstanceId = BridgeDiagnosticSnapshot(BridgeState.physicalByInstanceId or {}),
         physicalInstanceIdByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalInstanceIdByGuid or {}),
         physicalSeatByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalSeatByGuid or {}),
@@ -2058,11 +2069,23 @@ function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
     if ok then
         tx.candidatePhysicalLedger = BridgeCapturePhysicalLedger()
         BridgeState.committedPhysicalLedger = tx.candidatePhysicalLedger
-    elseif tx.committedPhysicalLedger ~= nil then
+    elseif tx.committedPhysicalLedger ~= nil
+        and (tx.committedPhysicalLedger.ownerSessionId == nil
+            or tx.targetSessionId == nil
+            or tostring(tx.committedPhysicalLedger.ownerSessionId) == tostring(tx.targetSessionId)) then
         -- This restores only the last committed logical publication. It does
         -- not claim physics rolled back: tx.observedState remains the durable
         -- account of current TTS reality and the next plan reobserves the table.
         BridgeActivatePhysicalLedger(tx.committedPhysicalLedger)
+    elseif tx.committedPhysicalLedger ~= nil then
+        -- A replacement bootstrap begins before its snapshot adapter adopts
+        -- the new event session. Its original rollback ledger can therefore
+        -- belong to the abandoned match. Never re-publish that old identity
+        -- after the new-session barrier has cleared it.
+        tx.ledgerRollbackSkipped = true
+        BridgeEmbodimentJournal(tx, "ABORTED", "STALE_LEDGER_ROLLBACK_REJECTED",
+            "ledgerSession=" .. tostring(tx.committedPhysicalLedger.ownerSessionId)
+                .. " targetSession=" .. tostring(tx.targetSessionId))
     end
     BridgeState.lastEmbodimentTransaction = BridgeDiagnosticSnapshot(tx)
     BridgeState.embodimentTransaction = nil
@@ -5247,12 +5270,14 @@ function BridgeBeginPhysicalContainmentTransition(guid, seatId, source, destinat
         guid = tostring(guid), seatId = seatId, source = source,
         destinationDeck = destinationDeck and BridgeSafeObjectGuid(destinationDeck) or nil,
         status = "DISPATCHED", looseAliasStillVisible = false,
-        ownerToken = owner and owner.token or nil
+        ownerToken = owner and owner.token or nil,
+        operation = owner and owner.operation or "CardToLibrary",
+        cardInstanceId = owner and owner.cardInstanceId or nil
     }
     BridgeState.physicalContainmentTransitionsByGuid[tostring(guid)] = transition
     BridgeRecordPhysicalMutationJournal({
         transitionToken = transition.token, generation = transition.generation,
-        operation = "CardToLibrary", cardGuid = transition.guid, seatId = seatId,
+        operation = transition.operation, cardGuid = transition.guid, seatId = seatId,
         source = source, destinationDeck = transition.destinationDeck,
         classification = "dispatched"
     })
@@ -5270,10 +5295,50 @@ function BridgeMarkPhysicalContainmentProven(transition, deck, owner)
     end
     BridgeRecordPhysicalMutationJournal({
         transitionToken = transition.token, generation = transition.generation,
-        operation = "CardToLibrary", cardGuid = transition.guid,
+        operation = transition.operation or "CardToLibrary", cardGuid = transition.guid,
         destinationDeck = transition.destinationDeck, containmentProven = true,
         classification = "containment_proven"
     })
+end
+
+-- A stale loose userdata view is not a second physical Card once the exact
+-- current-generation owner has positively proved that member inside its
+-- intended Deck. This is deliberately stricter than a GUID ignore list: the
+-- owner token, destination Deck, seat, generation, and exact instance mapping
+-- must all still agree.
+function BridgePhysicalContainmentAliasIsProven(guid, seatId, zoneName, owner)
+    if guid == nil or owner == nil then return false, nil end
+    local transition = (BridgeState.physicalContainmentTransitionsByGuid or {})[tostring(guid)]
+    if transition == nil
+        or (transition.status ~= "CONTAINMENT_PROVEN" and transition.status ~= "SETTLED")
+        or tonumber(transition.generation or -1) ~= tonumber(BridgeState.physicalTransactionGeneration or 0)
+        or tostring(transition.ownerToken or "") ~= tostring(owner.token or "")
+        or tostring(transition.seatId or "") ~= tostring(seatId or "") then
+        return false, transition
+    end
+    local deck = transition.destinationDeck and BridgeGetLiveObjectByGuid(transition.destinationDeck) or nil
+    if not BridgeObjectIsUsable(deck) or BridgeSafeObjectTag(deck) ~= "Deck" then
+        return false, transition
+    end
+    local exactContained = BridgeLibraryContainsGuid(deck, guid)
+    if not exactContained and transition.cardInstanceId ~= nil then
+        local mapping = BridgeState.physicalContainerByInstanceId[transition.cardInstanceId]
+        exactContained = mapping ~= nil
+            and tostring(mapping.deckGuid or "") == tostring(transition.destinationDeck)
+            and tostring(mapping.seatId or "") == tostring(seatId or "")
+            and tostring(mapping.zoneName or "") == tostring(zoneName or "")
+    end
+    if not exactContained then return false, transition end
+    transition.looseAliasStillVisible = true
+    transition.status = "SETTLED"
+    BridgeRecordPhysicalMutationJournal({
+        transitionToken = transition.token, generation = transition.generation,
+        operation = transition.operation or "CardToLibrary", cardGuid = transition.guid,
+        destinationDeck = transition.destinationDeck, containmentProven = true,
+        looseAliasStillVisible = true, classification = "transitional_alias",
+        finalDisposition = "accepted-contained"
+    })
+    return true, transition
 end
 
 local function BridgeOwnedContainmentGuids(expectedGuids, owner)
@@ -10702,6 +10767,13 @@ function BridgeResetSession()
             and BridgeRuntimeIsCurrent(BRIDGE_RUNTIME_EPOCH_LOCAL)
     end
     BridgeStopEventPolling("session-reset")
+    -- NEW MATCH preserves the physical cards but abandons every old event
+    -- mutation owner. Fence queued/native callbacks before cleanup observes
+    -- the table; late callbacks can then contribute only physical evidence
+    -- for the cleanup reobserve, never republish old CardInstance identities.
+    if BridgeRetireLocalPhysicalTransactions ~= nil then
+        BridgeRetireLocalPhysicalTransactions("new-match-cleanup")
+    end
     BridgeClearHighlights()
     BridgeState.lastDecision = nil
     BridgeState.newMatchCleanupOwner = "NEW_MATCH_CLEANUP"
@@ -13088,6 +13160,17 @@ function BridgeLegacyBootstrapCurrentSnapshot(sessionId, callback, resumeFromSna
     BridgeTraceStart("START-09 event-session-prepare", sameSessionRecovery and "preserved" or "required")
     if not sameSessionRecovery then
         BridgePrepareEventSession(sessionId, true, resumeFromSnapshotCursor == true)
+        -- Session preparation is the authoritative identity-retirement
+        -- barrier. Rebase this transaction's rollback ledger after it has
+        -- cleared the outgoing CardInstance maps, so a later bootstrap
+        -- failure cannot resurrect the previous session's identities.
+        if embodimentTx ~= nil and BridgeEmbodimentTransactionIsCurrent(embodimentTx)
+            and tostring(BridgeState.physicalOwnershipSessionId or "") == tostring(sessionId) then
+            embodimentTx.committedPhysicalLedger = BridgeCapturePhysicalLedger()
+            embodimentTx.sessionBarrierRebased = true
+            BridgeEmbodimentJournal(embodimentTx, embodimentTx.phase,
+                "SESSION_IDENTITY_BARRIER", "session=" .. tostring(sessionId))
+        end
     end
     -- A resync rebuilds physical embodiment, not the Forge match.  The card
     -- snapshot intentionally does not carry the live phase/priority mirror,
@@ -17261,6 +17344,7 @@ function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
                     stagedPhysicalMoves = {},
                     stagedBySequence = {},
                     stagedCount = 0,
+                    stagedSettledCount = 0,
                     deferredEvents = {},
                     deferredEventSequenceSet = {},
                     deferredPendingCount = 0,
@@ -17328,6 +17412,9 @@ end
 local BRIDGE_ATOMIC_GRAVEYARD_STAGING_CLEARANCE = 3.25
 local BRIDGE_ATOMIC_GRAVEYARD_STAGING_SPACING = 3.60
 local BRIDGE_ATOMIC_GRAVEYARD_DESTINATION_RADIUS = 3.50
+local BRIDGE_ATOMIC_GRAVEYARD_STAGING_RADIUS = 0.35
+local BRIDGE_ATOMIC_GRAVEYARD_STABLE_SAMPLES = 2
+local BRIDGE_ATOMIC_GRAVEYARD_MAX_STAGING_SAMPLES = 30
 
 local function BridgeAtomicHorizontalDistance(left, right)
     if left == nil or right == nil then return nil end
@@ -17385,6 +17472,82 @@ function BridgeAtomicGraveyardStagingPosition(seatId, offset, batch)
         nearestBlocker = blocker
     end
     return nil, nearestBlocker
+end
+
+-- Native Card userdata is presentation state, not transaction identity. A
+-- takeObject/group/putObject transition may retire it between frames, so every
+-- asynchronous staging observation resolves the logical member by its stable
+-- loose GUID and revalidates the exact Forge instance before touching it.
+function BridgeResolveAtomicGraveyardStagedCard(staged)
+    if staged == nil or staged.guid == nil then
+        return nil, "atomic graveyard staged member has no source GUID"
+    end
+    local object = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(staged.guid) or nil
+    if not BridgeObjectIsUsable(object) or BridgeSafeObjectTag(object) ~= "Card" then
+        return nil, "atomic graveyard staged Card is no longer independently usable guid="
+            .. tostring(staged.guid)
+    end
+    if tostring(BridgeSafeObjectGuid(object) or "") ~= tostring(staged.guid) then
+        return nil, "atomic graveyard staged Card GUID changed before destination formation"
+    end
+    local inverse = BridgeState.physicalInstanceIdByGuid[staged.guid]
+        or BridgeReadCurrentSessionPhysicalIdentity(object)
+    if inverse ~= nil and tostring(inverse) ~= tostring(staged.cardInstanceId) then
+        return nil, "atomic graveyard staged Card exact identity changed guid=" .. tostring(staged.guid)
+    end
+    staged.object = object
+    return object, nil
+end
+
+function BridgeObserveAtomicGraveyardStagingSettlement(tx, batch, staged)
+    if not BridgeEventMutationIsCurrent(tx) or batch == nil or staged == nil then return end
+    if batch.state == "FAILED" or batch.state == "VERIFIED" or staged.settled == true then return end
+    staged.settlementSampleCount = (tonumber(staged.settlementSampleCount or 0) or 0) + 1
+    local object, resolveError = BridgeResolveAtomicGraveyardStagedCard(staged)
+    if object == nil then
+        BridgeAbortAtomicGraveyardMutation(tx, batch, resolveError)
+        return
+    end
+    local position = BridgeAtomicGraveyardPosition(object)
+    local distance = BridgeAtomicHorizontalDistance(position, staged.stagingPosition)
+    local atStagingPosition = distance ~= nil and distance <= BRIDGE_ATOMIC_GRAVEYARD_STAGING_RADIUS
+    local sameAsLast = staged.lastObservedPosition ~= nil
+        and BridgeAtomicHorizontalDistance(position, staged.lastObservedPosition) <= 0.02
+    staged.stableSampleCount = sameAsLast and ((staged.stableSampleCount or 0) + 1) or 1
+    staged.lastObservedPosition = position and {x = position.x, y = position.y, z = position.z} or nil
+    BridgeRecordPhysicalMutationJournal({
+        token = tx.token, forgeSequence = tx.forgeSequence, stage = "STAGING_SETTLEMENT_SAMPLE",
+        seatId = batch.seatId, eventSequence = staged.eventSequence,
+        cardGuid = staged.guid, sampleCount = staged.settlementSampleCount,
+        stableSampleCount = staged.stableSampleCount, distance = distance,
+        atStagingPosition = atStagingPosition
+    })
+    if atStagingPosition and staged.stableSampleCount >= BRIDGE_ATOMIC_GRAVEYARD_STABLE_SAMPLES then
+        staged.settled = true
+        batch.stagedSettledCount = (batch.stagedSettledCount or 0) + 1
+        batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+        batch.lastProgressStage = "STAGING_SETTLED"
+        BridgeRecordPhysicalMutationProgress(tx, "STAGING_SETTLED", tostring(staged.eventSequence))
+        BridgeRecordPhysicalMutationJournal({
+            token = tx.token, forgeSequence = tx.forgeSequence, stage = "STAGING_SETTLED",
+            seatId = batch.seatId, eventSequence = staged.eventSequence,
+            cardGuid = staged.guid, stagedCount = batch.stagedCount,
+            settledCount = batch.stagedSettledCount, requiredCount = batch.requiredCount
+        })
+        if batch.stagedCount >= batch.requiredCount
+            and batch.stagedSettledCount >= batch.requiredCount then
+            BridgeCommitAtomicGraveyardMutation(tx, batch)
+        end
+        return
+    end
+    if staged.settlementSampleCount >= BRIDGE_ATOMIC_GRAVEYARD_MAX_STAGING_SAMPLES then
+        BridgeAbortAtomicGraveyardMutation(tx, batch,
+            "atomic graveyard staged Card did not become physically ready guid=" .. tostring(staged.guid))
+        return
+    end
+    BridgeWaitFrames(function()
+        BridgeObserveAtomicGraveyardStagingSettlement(tx, batch, staged)
+    end, 1)
 end
 
 function BridgeValidateAtomicGraveyardDestination(batch, container)
@@ -17588,6 +17751,7 @@ function BridgeStartDeferredGraveyardEvents(tx, batch)
         end
         event._bridgePhysicalCompletion = completeDeferred
         event._bridgeDeferredGraveyardDispatch = true
+        event._bridgeContainmentOwner = batch.containmentOwner
         BridgeRecordPhysicalMutationJournal({
             token = tx.token, forgeSequence = tx.forgeSequence,
             stage = "DEFERRED_GRAVEYARD_DISPATCH", eventSequence = event.sequence,
@@ -17629,9 +17793,10 @@ function BridgeValidateLooseGraveyardStaging(stagedMoves, stagedCount)
     local seenGuids = {}
     for index = 1, (tonumber(stagedCount) or 0) do
         local staged = stagedMoves and stagedMoves[index] or nil
-        local object = staged and staged.object or nil
-        if not BridgeObjectIsUsable(object) then
-            return false, "staged object unavailable while grouping index=" .. tostring(index)
+        local object, resolveError = BridgeResolveAtomicGraveyardStagedCard(staged)
+        if object == nil then return false, tostring(resolveError) .. " index=" .. tostring(index) end
+        if staged.settled ~= true then
+            return false, "staged object has not reached physical readiness index=" .. tostring(index)
         end
         local tag = nil
         pcall(function() tag = object.tag end)
@@ -17699,6 +17864,12 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
     if not BridgeEventMutationIsCurrent(tx) then return end
     if batch.state == "VERIFIED" or batch.state == "FAILED" then return end
     batch.state = "DESTINATION_COMMITTING"
+    batch.containmentOwner = batch.containmentOwner or {
+        token = tx.token,
+        generation = tx.physicalTransactionGeneration,
+        operation = "AtomicGraveyardFormation",
+        provenContainedGuids = {}
+    }
     batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
     batch.lastProgressStage = "DESTINATION_COMMIT_BEGIN"
     BridgeRecordPhysicalMutationProgress(tx, "DESTINATION_COMMIT_BEGIN", "graveyard")
@@ -17802,17 +17973,23 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
 
         for index = 1, (tonumber(batch.stagedCount) or 0) do
             local staged = stagedMoves[index]
-            if staged == nil or not BridgeObjectIsUsable(staged.object) then
-                BridgeAbortAtomicGraveyardMutation(tx, batch,
-                    "staged object unavailable while grouping index=" .. tostring(index))
+            local stagedObject, stagedError = BridgeResolveAtomicGraveyardStagedCard(staged)
+            if stagedObject == nil then
+                BridgeAbortAtomicGraveyardMutation(tx, batch, tostring(stagedError) .. " index=" .. tostring(index))
                 return
             end
             pcall(function()
-                staged.object.setLock(false)
-                staged.object.use_hands = false
+                stagedObject.setLock(false)
+                stagedObject.use_hands = false
             end)
-            table.insert(cardsToGroup, staged.object)
+            table.insert(cardsToGroup, stagedObject)
             groupCardCount = groupCardCount + 1
+            staged.containmentTransition = BridgeBeginPhysicalContainmentTransition(
+                staged.guid, batch.seatId, "atomic-graveyard-staging", nil, {
+                    token = tx.token,
+                    operation = "AtomicGraveyardFormation",
+                    cardInstanceId = staged.cardInstanceId
+                })
         end
 
         if groupCardCount == 0 then
@@ -17828,7 +18005,12 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             return
         end
         local groupedCandidate = BridgeDeckFromNativeGroupResult(groupResult)
-        if groupedCandidate ~= nil then target = groupedCandidate end
+        -- group() returns a table and native Card->Deck replacement can lag
+        -- behind that return. Keep a logical source handle only as a cue for
+        -- the settlement loop; correctness still requires reacquiring one
+        -- live Deck from the table before any mapping is published.
+        target = groupedCandidate or existingLooseCard or cardsToGroup[1]
+        batch.groupRequested = true
         batch.targetDeckGuid = groupedCandidate and BridgeSafeObjectGuid(groupedCandidate) or nil
         batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
         batch.lastProgressStage = "GROUP_RESULT"
@@ -17875,7 +18057,7 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
     end
 
     local targetTag = BridgeSafeObjectTag(target)
-    if targetTag ~= "Deck" and targetTag ~= "Card" then
+    if targetTag ~= "Deck" and targetTag ~= "Card" and batch.groupRequested ~= true then
         BridgeAbortAtomicGraveyardMutation(tx, batch,
             "native graveyard destination is neither Deck nor Card seat=" .. tostring(batch.seatId))
         return
@@ -17884,13 +18066,20 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
     if startIndex <= (tonumber(batch.stagedCount) or 0) then
         for index = startIndex, (tonumber(batch.stagedCount) or 0) do
             local staged = stagedMoves[index]
-            if staged == nil or not BridgeObjectIsUsable(staged.object) then
+            local stagedObject, stagedError = BridgeResolveAtomicGraveyardStagedCard(staged)
+            if stagedObject == nil then
                 BridgeAbortAtomicGraveyardMutation(tx, batch,
-                    "staged object unavailable index=" .. tostring(index))
+                    tostring(stagedError) .. " index=" .. tostring(index))
                 return
             end
             BridgeStartupPerfCounter("deckPutObjectCalls", 1)
-            local putOk, putResult = pcall(function() return target.putObject(staged.object, 0) end)
+            staged.containmentTransition = BridgeBeginPhysicalContainmentTransition(
+                staged.guid, batch.seatId, "atomic-graveyard-staging", target, {
+                    token = tx.token,
+                    operation = "AtomicGraveyardFormation",
+                    cardInstanceId = staged.cardInstanceId
+                })
+            local putOk, putResult = pcall(function() return target.putObject(stagedObject, 0) end)
             if not putOk then
                 BridgeAbortAtomicGraveyardMutation(tx, batch,
                     "native graveyard putObject failed index=" .. tostring(index) .. " error=" .. tostring(putResult))
@@ -17985,6 +18174,29 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
             return
         end
+        -- Exact contained identity is the native Card->Deck commit point. TTS
+        -- may continue to enumerate the retired Card userdata for a few
+        -- frames; retain that alias under this transaction instead of
+        -- misclassifying it as a second physical Card.
+        for stagedIndex = 1, (tonumber(batch.stagedCount) or 0) do
+            local staged = batch.stagedPhysicalMoves and batch.stagedPhysicalMoves[stagedIndex] or nil
+            local mapping = staged and BridgeState.physicalContainerByInstanceId[staged.cardInstanceId] or nil
+            if mapping ~= nil and tostring(mapping.deckGuid or "") == tostring(batch.targetDeckGuid or "")
+                and tostring(mapping.seatId or "") == tostring(batch.seatId)
+                and tostring(mapping.zoneName or "") == "graveyard" then
+                if staged.containmentTransition == nil then
+                    staged.containmentTransition = BridgeBeginPhysicalContainmentTransition(
+                        staged.guid, batch.seatId, "atomic-graveyard-staging", settledDeck, {
+                            token = tx.token,
+                            operation = "AtomicGraveyardFormation",
+                            cardInstanceId = staged.cardInstanceId
+                        })
+                end
+                staged.containmentTransition.cardInstanceId = staged.cardInstanceId
+                BridgeMarkPhysicalContainmentProven(staged.containmentTransition,
+                    settledDeck, batch.containmentOwner)
+            end
+        end
         local destinationOk, destinationError, destinationDistance, unexpectedInstances =
             BridgeValidateAtomicGraveyardDestination(batch, settledDeck)
         BridgeRecordPhysicalMutationJournal({
@@ -18025,7 +18237,8 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
                 end
             end
         end
-        local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(batch.seatId, "after-mutation-batch")
+        local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(
+            batch.seatId, "after-mutation-batch", batch.containmentOwner)
         if not shapeOk then
             BridgeAbortAtomicGraveyardMutation(tx, batch, "graveyard-shape:" .. tostring(shapeReason))
             return
@@ -18116,9 +18329,11 @@ function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, comple
     end
     local seat = BRIDGE_SEATS[event.seatId]
     local anchor = BridgeGraveyardPosition(event.seatId)
+    local stagedPosition = nil
     if seat ~= nil and anchor ~= nil then
         local offset = (batch.stagedCount or 0) + 1
-        local stagedPosition, nearestBlocker = BridgeAtomicGraveyardStagingPosition(event.seatId, offset, batch)
+        local nearestBlocker = nil
+        stagedPosition, nearestBlocker = BridgeAtomicGraveyardStagingPosition(event.seatId, offset, batch)
         if stagedPosition == nil then
             BridgeAbortAtomicGraveyardMutation(tx, batch,
                 "no safe atomic graveyard staging position")
@@ -18159,6 +18374,7 @@ function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, comple
         destinationZone = event.destinationZone,
         guid = BridgeSafeObjectGuid(taken),
         object = taken,
+        stagingPosition = stagedPosition,
         token = tx.token,
         sessionId = tx.sessionId,
         eventSessionGeneration = tx.eventSessionGeneration,
@@ -18186,9 +18402,7 @@ function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, comple
         tostring(event.cardInstanceId), tostring(batch.stagedCount), tostring(batch.requiredCount),
         tostring(tx.physicalTransactionGeneration)))
 
-    if batch.stagedCount >= batch.requiredCount then
-        BridgeCommitAtomicGraveyardMutation(tx, batch)
-    end
+    BridgeObserveAtomicGraveyardStagingSettlement(tx, batch, staged)
     if complete ~= nil then complete() end
 end
 
@@ -20545,7 +20759,7 @@ end
 --   - MULTIPLE_DECKS: >= 2 Deck objects
 --   - LOOSE_CARD_WITH_DECK: >= 1 loose Card AND >= 1 Deck (mixed state)
 --   - UNMAPPED_CONTAINED_CARDS: Deck contains Cards not in identity mapping
-function BridgeAssertGraveyardObjectShape(seatId, context)
+function BridgeAssertGraveyardObjectShape(seatId, context, containmentOwner)
     if seatId == nil then return true, nil end
     context = context or "unnamed"
 
@@ -20561,7 +20775,12 @@ function BridgeAssertGraveyardObjectShape(seatId, context)
             and BridgeState.physicalZoneByGuid[guid] == "graveyard" then
 
             if object.tag == "Card" then
-                looseCards = looseCards + 1
+                local aliasProven = false
+                if BridgePhysicalContainmentAliasIsProven ~= nil then
+                    aliasProven = BridgePhysicalContainmentAliasIsProven(
+                        guid, seatId, "graveyard", containmentOwner) == true
+                end
+                if not aliasProven then looseCards = looseCards + 1 end
             elseif object.tag == "Deck" then
                 deckObjects = deckObjects + 1
                 table.insert(deckGuids, guid)
@@ -21062,6 +21281,19 @@ function BridgeMoveToGraveyard(event, object, completion)
         event.seatId, existing, event.cardInstanceId, true)
 
     local target = existing
+    local containmentOwner = event._bridgeContainmentOwner or {
+        token = "graveyard:" .. tostring(BridgeState.eventSessionGeneration or 0)
+            .. ":" .. tostring(event.sequence or 0),
+        generation = BridgeState.physicalTransactionGeneration or 0,
+        operation = "GraveyardMerge",
+        provenContainedGuids = {}
+    }
+    local containmentTransition = BridgeBeginPhysicalContainmentTransition(
+        guid, event.seatId, event.sourceZone, target, {
+            token = containmentOwner.token,
+            operation = "GraveyardMerge",
+            cardInstanceId = event.cardInstanceId
+        })
     BridgeTtsExecutionBreadcrumb("GRAVEYARD_PUT_OBJECT_ENTER", "graveyard_materialization", event,
         "event:" .. tostring(event.sequence))
     local ok, result = pcall(function() return target.putObject(object, 0) end)
@@ -21083,6 +21315,8 @@ function BridgeMoveToGraveyard(event, object, completion)
         expectedInstances = expectedInstances,
         eventSequence = event.sequence,
         cardInstanceId = event.cardInstanceId,
+        containmentOwner = containmentOwner,
+        containmentTransition = containmentTransition,
         generation = BridgeState.physicalTransactionGeneration or 0,
         sessionId = BridgeState.eventSessionId
     }
@@ -21165,7 +21399,13 @@ function BridgeCompletePendingGraveyardMerge(merge, callback)
             finish(false, reason)
             return
         end
-        local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(merge.seatId, "after-merge")
+        if merge.containmentTransition ~= nil then
+            merge.containmentTransition.cardInstanceId = merge.cardInstanceId
+            BridgeMarkPhysicalContainmentProven(merge.containmentTransition,
+                settledTarget, merge.containmentOwner)
+        end
+        local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(
+            merge.seatId, "after-merge", merge.containmentOwner)
         if not shapeOk then
             local reason = "graveyard-shape:" .. tostring(shapeReason)
             BridgeState.resyncLastBlockingPredicate = reason

@@ -971,14 +971,22 @@ function BridgeEventDrainQueueState()
         ownerSessionId = BridgeState.eventDrainTransaction.sessionId,
         ownerSessionGeneration = BridgeState.eventDrainTransaction.eventSessionGeneration,
         ownerPhysicalGeneration = BridgeState.eventDrainTransaction.physicalTransactionGeneration,
-        physicalOperationCount = BridgeTableSize(BridgeState.eventDrainTransaction.pendingPhysicalEvents or {}),
+        physicalOperationCount = tonumber(BridgeState.eventDrainTransaction.eventCount or 0) or 0,
+        outstandingCallbacks = BridgeTableSize(BridgeState.eventDrainTransaction.pendingPhysicalEvents or {}),
+        operationsCompleted = math.max((tonumber(BridgeState.eventDrainTransaction.eventCount or 0) or 0)
+            - BridgeTableSize(BridgeState.eventDrainTransaction.pendingPhysicalEvents or {}), 0),
+        commitAttempted = BridgeState.eventDrainTransaction.state == "COMMITTING"
+            or BridgeState.eventDrainTransaction.state == "COMMITTED",
+        commitSucceeded = BridgeState.eventDrainTransaction.state == "COMMITTED",
         batches = {}
     } or nil
     if mutationProgress ~= nil then
         for seatId, batch in pairs(BridgeState.eventDrainTransaction.graveyardMutationBatchesBySeatId or {}) do
             mutationProgress.batches[seatId] = {
                 state = batch.state, stagedCount = batch.stagedCount,
+                stagedSettledCount = batch.stagedSettledCount,
                 requiredCount = batch.requiredCount, targetDeckGuid = batch.targetDeckGuid,
+                groupRequested = batch.groupRequested == true,
                 settlementSampleCount = batch.settlementSampleCount,
                 deferredPendingCount = batch.deferredPendingCount,
                 deferredFailureReason = batch.deferredFailureReason,
@@ -1582,6 +1590,9 @@ end
 
 function BridgeCapturePhysicalLedger()
     return {
+        ownerSessionId = BridgeState.physicalOwnershipSessionId or BridgeState.eventSessionId,
+        ownerEventSessionGeneration = BridgeState.eventSessionGeneration,
+        ownerPhysicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
         physicalByInstanceId = BridgeDiagnosticSnapshot(BridgeState.physicalByInstanceId or {}),
         physicalInstanceIdByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalInstanceIdByGuid or {}),
         physicalSeatByGuid = BridgeDiagnosticSnapshot(BridgeState.physicalSeatByGuid or {}),
@@ -2055,11 +2066,23 @@ function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
     if ok then
         tx.candidatePhysicalLedger = BridgeCapturePhysicalLedger()
         BridgeState.committedPhysicalLedger = tx.candidatePhysicalLedger
-    elseif tx.committedPhysicalLedger ~= nil then
+    elseif tx.committedPhysicalLedger ~= nil
+        and (tx.committedPhysicalLedger.ownerSessionId == nil
+            or tx.targetSessionId == nil
+            or tostring(tx.committedPhysicalLedger.ownerSessionId) == tostring(tx.targetSessionId)) then
         -- This restores only the last committed logical publication. It does
         -- not claim physics rolled back: tx.observedState remains the durable
         -- account of current TTS reality and the next plan reobserves the table.
         BridgeActivatePhysicalLedger(tx.committedPhysicalLedger)
+    elseif tx.committedPhysicalLedger ~= nil then
+        -- A replacement bootstrap begins before its snapshot adapter adopts
+        -- the new event session. Its original rollback ledger can therefore
+        -- belong to the abandoned match. Never re-publish that old identity
+        -- after the new-session barrier has cleared it.
+        tx.ledgerRollbackSkipped = true
+        BridgeEmbodimentJournal(tx, "ABORTED", "STALE_LEDGER_ROLLBACK_REJECTED",
+            "ledgerSession=" .. tostring(tx.committedPhysicalLedger.ownerSessionId)
+                .. " targetSession=" .. tostring(tx.targetSessionId))
     end
     BridgeState.lastEmbodimentTransaction = BridgeDiagnosticSnapshot(tx)
     BridgeState.embodimentTransaction = nil

@@ -175,6 +175,149 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void WidelySeparatedStagedCardsRequireOwnedNativeDestinationFormation()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            bridgeTest.useProductionGraveyardShape = true
+            bridgeTest.preserveContainedSourceGuid = true
+            bridgeTest.keepContainedLooseAliases = true
+            bridgeTest.reassignContainedEveryPut = false
+            BridgeState.lastAppliedEventSequence = 173
+            BridgeState.cardNameByInstanceId[':3'] = 'Armored Skaab'
+            BridgeState.cardNameByInstanceId[':9'] = 'Stitcher\'s Supplier'
+            BridgeState.cardNameByInstanceId[':29'] = 'Mental Note'
+            BridgeState.cardNameByInstanceId[':8'] = 'Stitcher\'s Supplier'
+            local skaab = BridgeTestCreateCard(':3', 'Armored Skaab', 'skaab-guid')
+            local milledSupplier = BridgeTestCreateCard(':9', 'Stitcher\'s Supplier', 'milled-supplier-guid')
+            local note = BridgeTestCreateCard(':29', 'Mental Note', 'note-guid')
+            local drawnSupplier = BridgeTestCreateCard(':8', 'Stitcher\'s Supplier', 'drawn-supplier-guid')
+            note._inLibrary = false
+            note._inHand = false
+            note._lastPosition = {x=2, y=1, z=0}
+            BridgeRecordLooseCardIdentity(':29', 'note-guid', 'forge-player-1', 'stack')
+            BridgeTestQueueExtractionCards({skaab, milledSupplier, drawnSupplier})
+            BridgeTestSetEventQueue(
+                {sequence=174, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':3', cardName='Armored Skaab', forgeSequence=32},
+                {sequence=175, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':9', cardName='Stitcher\'s Supplier', forgeSequence=32},
+                {sequence=176, kind='card_moved', seatId='forge-player-1', sourceZone='stack', destinationZone='graveyard', cardInstanceId=':29', cardName='Mental Note', forgeSequence=32},
+                {sequence=177, kind='draw', seatId='forge-player-1', sourceZone='library', destinationZone='hand', cardInstanceId=':8', cardName='Stitcher\'s Supplier', forgeSequence=32}
+            )
+            BridgeProcessEventQueue()
+            local function distance(left, right)
+                local dx = left.x - right.x
+                local dz = left.z - right.z
+                return math.sqrt(dx * dx + dz * dz)
+            end
+            finalApplied = BridgeState.lastAppliedEventSequence
+            stagingDistance = distance(skaab._lastPosition, milledSupplier._lastPosition)
+            finalDeckCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries)
+            finalLooseCount = BridgeTestLooseGraveyardCardCount()
+            drawGuid = BridgeState.physicalByInstanceId[':8']
+            drawZone = drawGuid and BridgeState.physicalZoneByGuid[drawGuid] or nil
+            transitionAliases = 0
+            for _, record in ipairs(BridgeState.physicalMutationJournal or {}) do
+                if record.classification == 'transitional_alias' then
+                    transitionAliases = transitionAliases + 1
+                end
+            end
+            commits = BridgeTestCountLogToken('MUTATION_COMMIT')
+            aborts = BridgeTestCountLogToken('MUTATION_ABORT')
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.True(lua.Globals.Get("finalApplied").Number == 177,
+            $"applied={lua.Globals.Get("finalApplied").ToPrintString()} stageDistance={lua.Globals.Get("stagingDistance").ToPrintString()} deck={lua.Globals.Get("finalDeckCount").ToPrintString()} loose={lua.Globals.Get("finalLooseCount").ToPrintString()} aliases={lua.Globals.Get("transitionAliases").ToPrintString()} draw={lua.Globals.Get("drawZone").ToPrintString()} commits={lua.Globals.Get("commits").ToPrintString()} aborts={lua.Globals.Get("aborts").ToPrintString()} desync={lua.Globals.Get("desyncState").ToPrintString()} logs={CapturedLogsTail(lua)}");
+        Assert.True(lua.Globals.Get("stagingDistance").Number > 3.25);
+        Assert.Equal(3, lua.Globals.Get("finalDeckCount").Number);
+        // Real TTS may retain pre-group Card userdata in getAllObjects for a
+        // few frames. The production shape validator must classify only the
+        // positively owned aliases, rather than weakening the final topology.
+        Assert.True(lua.Globals.Get("finalLooseCount").Number >= 2);
+        Assert.True(lua.Globals.Get("transitionAliases").Number >= 2);
+        Assert.Equal("hand", lua.Globals.Get("drawZone").String);
+        Assert.Equal(1, lua.Globals.Get("commits").Number);
+        Assert.Equal(0, lua.Globals.Get("aborts").Number);
+        Assert.Equal("nil", lua.Globals.Get("desyncState").String);
+    }
+
+    [Fact]
+    public void NativeGroupMayReturnBeforeSingleDeckExists()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            bridgeTest.groupDeckDiscoveryDelay = 3
+            BridgeState.lastAppliedEventSequence = 40
+            BridgeState.cardNameByInstanceId[':a'] = 'Island'
+            BridgeState.cardNameByInstanceId[':b'] = 'Swamp'
+            local a = BridgeTestCreateCard(':a', 'Island', 'a-guid')
+            local b = BridgeTestCreateCard(':b', 'Swamp', 'b-guid')
+            BridgeTestQueueExtractionCards({a, b})
+            BridgeTestSetEventQueue(
+                {sequence=41, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':a', cardName='Island', forgeSequence=41},
+                {sequence=42, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':b', cardName='Swamp', forgeSequence=41}
+            )
+            BridgeProcessEventQueue()
+            finalApplied = BridgeState.lastAppliedEventSequence
+            discoveryChecks = bridgeTest.groupDiscoveryChecks or 0
+            deckCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries)
+            commits = BridgeTestCountLogToken('MUTATION_COMMIT')
+            aborts = BridgeTestCountLogToken('MUTATION_ABORT')
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.True(lua.Globals.Get("finalApplied").Number == 42,
+            $"applied={lua.Globals.Get("finalApplied").ToPrintString()} checks={lua.Globals.Get("discoveryChecks").ToPrintString()} deck={lua.Globals.Get("deckCount").ToPrintString()} commits={lua.Globals.Get("commits").ToPrintString()} aborts={lua.Globals.Get("aborts").ToPrintString()} desync={lua.Globals.Get("desyncState").ToPrintString()} logs={CapturedLogsTail(lua)}");
+        Assert.True(lua.Globals.Get("discoveryChecks").Number >= 3);
+        Assert.Equal(2, lua.Globals.Get("deckCount").Number);
+        Assert.Equal(1, lua.Globals.Get("commits").Number);
+        Assert.Equal(0, lua.Globals.Get("aborts").Number);
+    }
+
+    [Fact]
+    public void GenuineDestinationFormationFailureRemainsRecoverable()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            bridgeTest.groupNeverFormsDeck = true
+            bridgeTest.useProductionGraveyardShape = true
+            BridgeState.lastAppliedEventSequence = 50
+            BridgeState.cardNameByInstanceId[':a'] = 'Island'
+            BridgeState.cardNameByInstanceId[':b'] = 'Swamp'
+            local a = BridgeTestCreateCard(':a', 'Island', 'a-guid')
+            local b = BridgeTestCreateCard(':b', 'Swamp', 'b-guid')
+            BridgeTestQueueExtractionCards({a, b})
+            BridgeTestSetEventQueue(
+                {sequence=51, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':a', cardName='Island', forgeSequence=51},
+                {sequence=52, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':b', cardName='Swamp', forgeSequence=51}
+            )
+            BridgeProcessEventQueue()
+            finalApplied = BridgeState.lastAppliedEventSequence
+            desyncLatched = BridgeState.desyncLatched == true
+            txRetired = BridgeState.eventDrainTransaction == nil
+            aStillPresent = bridgeTest.cardsByGuid['a-guid'] ~= nil
+                and bridgeTest.cardsByGuid['a-guid']._inLibrary ~= true
+            bStillPresent = bridgeTest.cardsByGuid['b-guid'] ~= nil
+                and bridgeTest.cardsByGuid['b-guid']._inLibrary ~= true
+            commits = BridgeTestCountLogToken('MUTATION_COMMIT')
+            aborts = BridgeTestCountLogToken('MUTATION_ABORT')
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.True(lua.Globals.Get("finalApplied").Number == 50,
+            $"applied={lua.Globals.Get("finalApplied").ToPrintString()} desync={lua.Globals.Get("desyncState").ToPrintString()} txRetired={lua.Globals.Get("txRetired").ToPrintString()} aPresent={lua.Globals.Get("aStillPresent").ToPrintString()} bPresent={lua.Globals.Get("bStillPresent").ToPrintString()} commits={lua.Globals.Get("commits").ToPrintString()} aborts={lua.Globals.Get("aborts").ToPrintString()} logs={CapturedLogsTail(lua)}");
+        Assert.True(lua.Globals.Get("desyncLatched").Boolean);
+        Assert.True(lua.Globals.Get("txRetired").Boolean);
+        Assert.True(lua.Globals.Get("aStillPresent").Boolean);
+        Assert.True(lua.Globals.Get("bStillPresent").Boolean);
+        Assert.Equal(0, lua.Globals.Get("commits").Number);
+        Assert.True(lua.Globals.Get("aborts").Number >= 1);
+    }
+
+    [Fact]
     public void SupplierThreeCardMillCommitsAsOneMutation()
     {
         var lua = NewProbe();
@@ -1553,6 +1696,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
             end
 
             function BridgeTestInitAtomicHarness()
+                local productionAssertGraveyardObjectShape = BridgeAssertGraveyardObjectShape
                 BRIDGE_SEATS['forge-player-1'] = BRIDGE_SEATS['forge-player-1'] or {}
                 BRIDGE_SEATS['forge-player-1'].libraryZoneGuid = 'lib-zone'
                 BRIDGE_SEATS['forge-player-1'].graveyardAnchor = {x=0, y=0, z=0}
@@ -1693,13 +1837,25 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     local instanceId = object and object._instanceId or nil
                     local cardName = (instanceId and BridgeState.cardNameByInstanceId[instanceId])
                         or (object and object.name) or tostring(instanceId or 'unknown')
-                    bridgeTest.graveyardDeck.entries[BridgeTestArrayLength(bridgeTest.graveyardDeck.entries) + 1] = {
+                    local containedGuid = bridgeTest.preserveContainedSourceGuid == true
+                        and object and object.getGUID and object.getGUID()
+                        or bridgeTest.nextContainedGuid(instanceId)
+                    local entry = {
                         instanceId = instanceId,
                         name = cardName,
-                        guid = bridgeTest.nextContainedGuid(instanceId)
+                        guid = containedGuid
                     }
+                    local entryCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries)
+                    if tonumber(position) == 0 and bridgeTest.insideNativeGroup ~= true then
+                        for entryIndex = entryCount, 1, -1 do
+                            bridgeTest.graveyardDeck.entries[entryIndex + 1] = bridgeTest.graveyardDeck.entries[entryIndex]
+                        end
+                        bridgeTest.graveyardDeck.entries[1] = entry
+                    else
+                        bridgeTest.graveyardDeck.entries[entryCount + 1] = entry
+                    end
                     if object ~= nil then
-                        object._inDeck = true
+                        object._inDeck = bridgeTest.keepContainedLooseAliases ~= true
                         object._inLibrary = false
                         object._inHand = false
                     end
@@ -1710,7 +1866,14 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
 
                 function group(objects)
                     bridgeTest.groupCalls = bridgeTest.groupCalls + 1
+                    if bridgeTest.groupNeverFormsDeck == true then return objects end
+                    if bridgeTest.groupDeckDiscoveryDelay ~= nil then
+                        bridgeTest.pendingGroupObjects = objects
+                        bridgeTest.graveyardContainer = nil
+                        return {}
+                    end
                     bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
+                    bridgeTest.insideNativeGroup = true
                     for _, object in ipairs(objects or {}) do
                         if object ~= nil and object._nativeAutoStack ~= nil then
                             bridgeTest.forEachArrayEntry(object._nativeAutoStack, function(member)
@@ -1720,6 +1883,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                             bridgeTest.graveyardDeck.putObject(object, 0)
                         end
                     end
+                    bridgeTest.insideNativeGroup = false
                     if bridgeTest.groupReturnsArray then return {bridgeTest.graveyardDeck} end
                     return bridgeTest.graveyardDeck
                 end
@@ -1976,6 +2140,17 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                 end
 
                 function BridgeFindGraveyardContainer(seatId, excludeGuid)
+                    if bridgeTest.pendingGroupObjects ~= nil then
+                        bridgeTest.groupDiscoveryChecks = (bridgeTest.groupDiscoveryChecks or 0) + 1
+                        if bridgeTest.groupDiscoveryChecks >= bridgeTest.groupDeckDiscoveryDelay then
+                            local pending = bridgeTest.pendingGroupObjects
+                            bridgeTest.pendingGroupObjects = nil
+                            bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
+                            bridgeTest.forEachArrayEntry(pending, function(object)
+                                bridgeTest.graveyardDeck.putObject(object, 0)
+                            end)
+                        end
+                    end
                     local container = bridgeTest.graveyardContainer
                     if container ~= nil then
                         local guid = container.getGUID and container.getGUID() or nil
@@ -1994,7 +2169,11 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     return nil
                 end
 
-                function BridgeAssertGraveyardObjectShape(seatId, context)
+                function BridgeAssertGraveyardObjectShape(seatId, context, containmentOwner)
+                    if bridgeTest.useProductionGraveyardShape == true then
+                        return productionAssertGraveyardObjectShape(seatId, context,
+                            containmentOwner or bridgeTest.activeContainmentOwner)
+                    end
                     return true, nil
                 end
 
