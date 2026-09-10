@@ -8,6 +8,7 @@ using MtgTtsBridge.Contracts.Diagnostics;
 using MtgTtsBridge.Contracts.State;
 using MtgTtsBridge.Diagnostics;
 using MtgTtsBridge.Forge;
+using MtgTtsBridge.TtsEditor;
 
 var trayIcon = new BridgeTrayIcon();
 
@@ -19,12 +20,32 @@ var diagnosticTelemetry = new DiagnosticTelemetryBuffer();
 builder.Services.AddSingleton(diagnosticTelemetry);
 builder.Services.Configure<DiagnosticOptions>(builder.Configuration.GetSection("Diagnostics"));
 builder.Services.AddSingleton(serviceProvider => serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<DiagnosticOptions>>().Value);
+builder.Services.Configure<TtsExternalEditorOptions>(builder.Configuration.GetSection("TtsEditor"));
+builder.Services.PostConfigure<TtsExternalEditorOptions>(options =>
+{
+	if (options.ListenPort <= 0) options.ListenPort = 39998;
+	if (options.TtsPort <= 0) options.TtsPort = 39999;
+	if (options.OperationTimeoutSeconds <= 0) options.OperationTimeoutSeconds = 120;
+	if (string.IsNullOrWhiteSpace(options.ListenHost)) options.ListenHost = "127.0.0.1";
+	if (string.IsNullOrWhiteSpace(options.TtsHost)) options.TtsHost = "127.0.0.1";
+});
 builder.Services.AddSingleton<DiagnosticSelfTestRunner>();
 builder.Services.AddSingleton<DiagnosticBundleWriter>();
 builder.Services.AddSingleton<ProcessSampler>();
 builder.Services.AddSingleton<DiagnosticReportCollector>();
 builder.Services.AddHostedService<TtsExecutionWatchdogService>();
 builder.Logging.AddProvider(new DiagnosticLoggerProvider(diagnosticTelemetry));
+
+if (builder.Environment.IsEnvironment("Testing"))
+{
+	builder.Services.AddSingleton<ITtsExternalEditorService, DisabledTtsExternalEditorService>();
+}
+else
+{
+	builder.Services.AddSingleton<TtsExternalEditorService>();
+	builder.Services.AddSingleton<ITtsExternalEditorService>(serviceProvider => serviceProvider.GetRequiredService<TtsExternalEditorService>());
+	builder.Services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<TtsExternalEditorService>());
+}
 
 var listenUrl = builder.Configuration["Bridge:ListenUrl"] ?? "http://127.0.0.1:43110";
 builder.WebHost.UseUrls(listenUrl);
@@ -91,6 +112,36 @@ app.MapPost("/api/v1/runtime/compatibility", (RuntimeCompatibilityRequestDto req
 		RuntimeBuildContract.ExpectedGeneratedGlobalLuaSha256,
 		compatible ? null : "RUNTIME BUILD MISMATCH: reload TTS Save & Play and/or restart Start-ForgeBot.");
 	return compatible ? Results.Ok(response) : Results.Json(response, statusCode: StatusCodes.Status409Conflict);
+});
+
+app.MapGet("/api/v1/tts-editor/status", (ITtsExternalEditorService service) => Results.Ok(service.GetStatus()));
+
+app.MapPost("/api/v1/tts-editor/refresh", async (ITtsExternalEditorService service, CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var result = await service.RefreshAsync(cancellationToken);
+		return Results.Ok(result);
+	}
+	catch (TtsEditorOperationException exception)
+	{
+		var details = exception.Details ?? new TtsEditorErrorResponseDto(exception.ErrorCode, exception.Message);
+		return Results.Json(details, statusCode: exception.StatusCode);
+	}
+});
+
+app.MapPost("/api/v1/tts-editor/push-global", async (TtsEditorPushGlobalRequestDto request, ITtsExternalEditorService service, CancellationToken cancellationToken) =>
+{
+	try
+	{
+		var result = await service.PushGlobalAsync(request, cancellationToken);
+		return Results.Ok(result);
+	}
+	catch (TtsEditorOperationException exception)
+	{
+		var details = exception.Details ?? new TtsEditorErrorResponseDto(exception.ErrorCode, exception.Message);
+		return Results.Json(details, statusCode: exception.StatusCode);
+	}
 });
 
 app.MapPost("/api/v1/session/start", async (IForgeAdapter adapter, ILogger<Program> logger, CancellationToken cancellationToken) =>
