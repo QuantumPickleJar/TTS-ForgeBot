@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 07797a89137cf69d8e07acbc5e1c69dec3970d30411aac53277ec0d3f9aa782f
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "07797a89137cf69d8e07acbc5e1c69dec3970d30411aac53277ec0d3f9aa782f"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: eb4d941de6adfe5e26baf31412abb51ecb5096a5b19c39ede0c8783041af1cd5
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "eb4d941de6adfe5e26baf31412abb51ecb5096a5b19c39ede0c8783041af1cd5"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -17325,6 +17325,113 @@ function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
     end
 end
 
+local BRIDGE_ATOMIC_GRAVEYARD_STAGING_CLEARANCE = 3.25
+local BRIDGE_ATOMIC_GRAVEYARD_STAGING_SPACING = 3.60
+local BRIDGE_ATOMIC_GRAVEYARD_DESTINATION_RADIUS = 3.50
+
+local function BridgeAtomicHorizontalDistance(left, right)
+    if left == nil or right == nil then return nil end
+    local dx = (tonumber(left.x) or 0) - (tonumber(right.x) or 0)
+    local dz = (tonumber(left.z) or 0) - (tonumber(right.z) or 0)
+    return math.sqrt(dx * dx + dz * dz)
+end
+
+local function BridgeAtomicGraveyardStagingBlocker(position, batch)
+    local stagedGuids = {}
+    for _, staged in ipairs(batch and batch.stagedPhysicalMoves or {}) do
+        local guid = staged and (staged.guid or BridgeSafeObjectGuid(staged.object)) or nil
+        if guid ~= nil then stagedGuids[tostring(guid)] = true end
+    end
+    local nearest = nil
+    for _, object in ipairs(getAllObjects() or {}) do
+        local guid = BridgeSafeObjectGuid(object)
+        local tag = BridgeSafeObjectTag(object)
+        if guid ~= nil and (tag == "Card" or tag == "Deck")
+            and stagedGuids[tostring(guid)] ~= true
+            and not BridgeIsPresentationOnlyObject(object) then
+            local zone = BridgeState.physicalZoneByGuid[guid]
+            -- An unknown live game card is conservative blocking evidence;
+            -- only a known graveyard object may share this presentation lane.
+            if zone ~= "graveyard" then
+                local distance = BridgeAtomicHorizontalDistance(position, BridgeAtomicGraveyardPosition(object))
+                if distance ~= nil and distance < BRIDGE_ATOMIC_GRAVEYARD_STAGING_CLEARANCE
+                    and (nearest == nil or distance < nearest.distance) then
+                    nearest = {guid = guid, zone = zone or "unknown", distance = distance}
+                end
+            end
+        end
+    end
+    return nearest
+end
+
+-- Keep staged mill cards separated until owned group() forms the native pile.
+-- The lane deliberately extends away from the configured battlefield rows
+-- (which live on +X for both seats), rather than through them as the former
+-- +X offset did. A live non-graveyard object can still occupy any configured
+-- space under FREEFORM play, so probe and advance deterministically.
+function BridgeAtomicGraveyardStagingPosition(seatId, offset, batch)
+    local anchor = BridgeGraveyardPosition(seatId)
+    if anchor == nil then return nil, nil end
+    local ordinal = math.max(1, tonumber(offset or 1) or 1)
+    local nearestBlocker = nil
+    for candidateOrdinal = ordinal, ordinal + 11 do
+        local position = {
+            x = anchor.x - 6.0 - ((candidateOrdinal - 1) * BRIDGE_ATOMIC_GRAVEYARD_STAGING_SPACING),
+            y = anchor.y + 1.1,
+            z = anchor.z
+        }
+        local blocker = BridgeAtomicGraveyardStagingBlocker(position, batch)
+        if blocker == nil then return position, nearestBlocker end
+        nearestBlocker = blocker
+    end
+    return nil, nearestBlocker
+end
+
+function BridgeValidateAtomicGraveyardDestination(batch, container)
+    local seatId = batch and batch.seatId or nil
+    local anchor = seatId and BridgeGraveyardPosition(seatId) or nil
+    local position = BridgeAtomicGraveyardPosition(container)
+    local distance = BridgeAtomicHorizontalDistance(position, anchor)
+    if BridgeSafeObjectTag(container) ~= "Deck" then
+        return false, "graveyard destination is not a usable native Deck", distance, nil
+    end
+    if distance == nil or distance > BRIDGE_ATOMIC_GRAVEYARD_DESTINATION_RADIUS then
+        return false, "graveyard destination is outside its seat anchor radius", distance, nil
+    end
+    local expected = {}
+    for _, entry in ipairs(batch.expectedInstances or {}) do
+        local instanceId = entry and entry.instanceId or nil
+        if instanceId ~= nil then expected[tostring(instanceId)] = true end
+    end
+    local unexpected = {}
+    local seenExpected = {}
+    local entries = BridgeLibraryEntries(container) or {}
+    for _, entry in ipairs(entries) do
+        local guid = entry and (entry.guid or entry.GUID) or nil
+        local instanceId = guid and (BridgeState.physicalContainedInstanceIdByGuid[guid]
+            or BridgeState.physicalInstanceIdByGuid[guid]) or nil
+        if instanceId ~= nil then
+            if expected[tostring(instanceId)] ~= true then
+                table.insert(unexpected, tostring(instanceId))
+            else
+                seenExpected[tostring(instanceId)] = true
+            end
+        end
+    end
+    if #unexpected > 0 then
+        return false, "graveyard destination contains tracked non-graveyard instance", distance, unexpected
+    end
+    if BridgeTableSize(entries) ~= BridgeTableSize(expected) then
+        return false, "graveyard destination has an unexpected contained-card count", distance, unexpected
+    end
+    for instanceId, _ in pairs(expected) do
+        if seenExpected[instanceId] ~= true then
+            return false, "graveyard destination is missing an exact expected instance", distance, unexpected
+        end
+    end
+    return true, nil, distance, unexpected
+end
+
 function BridgeMutationBatchForLibraryToGraveyardEvent(event)
     local tx = BridgeState.eventDrainTransaction
     if tx == nil or tx.graveyardMutationBatchesBySeatId == nil or event == nil or event.seatId == nil then
@@ -17813,6 +17920,27 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             end
         end
         if BridgeSafeObjectTag(resolved) == "Deck" then
+            local graveyardAnchor = BridgeGraveyardPosition(batch.seatId)
+            if graveyardAnchor == nil then
+                BridgeAbortAtomicGraveyardMutation(tx, batch, "missing graveyard anchor for destination Deck")
+                return
+            end
+            -- group() inherits a staged Card's position. Move only the newly
+            -- formed/selected graveyard container to its authoritative anchor;
+            -- never displace battlefield permanents that may occupy a bad
+            -- staging coordinate in a legacy table state.
+            local positioned, positionError = pcall(function()
+                if type(resolved.setPosition) == "function" then
+                    resolved.setPosition(graveyardAnchor)
+                else
+                    resolved.setPositionSmooth(graveyardAnchor, false, true)
+                end
+            end)
+            if not positioned then
+                BridgeAbortAtomicGraveyardMutation(tx, batch,
+                    "could not position native graveyard Deck: " .. tostring(positionError))
+                return
+            end
             batch.targetDeck = resolved
             batch.targetDeckGuid = BridgeSafeObjectGuid(resolved)
             batch.settlementSampleCount = (batch.settlementSampleCount or 0) + 1
@@ -17855,6 +17983,26 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
                 .. ":expected=" .. tostring(BridgeTableSize(batch.expectedInstances or {}))
                 .. ":rebind=" .. tostring(BridgeState.lastGraveyardRebindFailure)
             BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
+            return
+        end
+        local destinationOk, destinationError, destinationDistance, unexpectedInstances =
+            BridgeValidateAtomicGraveyardDestination(batch, settledDeck)
+        BridgeRecordPhysicalMutationJournal({
+            token = tx.token, forgeSequence = tx.forgeSequence, stage = "GRAVEYARD_DESTINATION_VERIFY",
+            seatId = batch.seatId, targetDeckGuid = BridgeSafeObjectGuid(settledDeck),
+            positionX = BridgeAtomicGraveyardPosition(settledDeck)
+                and BridgeAtomicGraveyardPosition(settledDeck).x or nil,
+            positionZ = BridgeAtomicGraveyardPosition(settledDeck)
+                and BridgeAtomicGraveyardPosition(settledDeck).z or nil,
+            anchorX = BridgeGraveyardPosition(batch.seatId) and BridgeGraveyardPosition(batch.seatId).x or nil,
+            anchorZ = BridgeGraveyardPosition(batch.seatId) and BridgeGraveyardPosition(batch.seatId).z or nil,
+            distance = destinationDistance, expectedCount = BridgeTableSize(batch.expectedInstances or {}),
+            unexpectedTrackedInstanceCount = #(unexpectedInstances or {}),
+            valid = destinationOk == true
+        })
+        if not destinationOk then
+            BridgeAbortAtomicGraveyardMutation(tx, batch,
+                "graveyard-destination:" .. tostring(destinationError))
             return
         end
         BridgeRecordPhysicalMutationProgress(tx, "CONTAINED_REBIND", "graveyard-mappings")
@@ -17969,25 +18117,17 @@ function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, comple
     local seat = BRIDGE_SEATS[event.seatId]
     local anchor = BridgeGraveyardPosition(event.seatId)
     if seat ~= nil and anchor ~= nil then
-        pcall(function()
+        local offset = (batch.stagedCount or 0) + 1
+        local stagedPosition, nearestBlocker = BridgeAtomicGraveyardStagingPosition(event.seatId, offset, batch)
+        if stagedPosition == nil then
+            BridgeAbortAtomicGraveyardMutation(tx, batch,
+                "no safe atomic graveyard staging position")
+            if complete ~= nil then complete("no-safe-staging-position") end
+            return
+        end
+        local stagedOk, stagedError = pcall(function()
             taken.use_hands = false
             BridgeSetPhysicalFaceDown(taken, seat, false)
-            local offset = (batch.stagedCount or 0) + 1
-            -- Keep every extracted object physically isolated until the atomic
-            -- destination commit owns group(). The old smooth move was locked
-            -- immediately, so the cards could remain together at the shared
-            -- library extraction point. Its 0.35-unit destinations also
-            -- overlapped ordinary card footprints. Native auto-stacking then
-            -- turned two Card references into aliases of the same Deck before
-            -- group(cardsToGroup); passing both aliases represented those two
-            -- cards twice (3 authoritative -> 5 physical entries). The lane
-            -- begins one card-width to the right of an existing graveyard and
-            -- does not cross the library/exile anchors sharing its x coordinate.
-            local stagedPosition = {
-                x = anchor.x + 4.0 + ((offset - 1) * 3.2),
-                y = anchor.y + 1.1,
-                z = anchor.z
-            }
             if type(taken.setPosition) == "function" then
                 taken.setPosition(stagedPosition)
             else
@@ -17996,6 +18136,21 @@ function BridgeStageAtomicLibraryToGraveyardMove(tx, batch, event, taken, comple
             end
             taken.setLock(true)
         end)
+        if not stagedOk then
+            BridgeAbortAtomicGraveyardMutation(tx, batch,
+                "could not position atomic graveyard staging Card: " .. tostring(stagedError))
+            if complete ~= nil then complete("staging-position-failed") end
+            return
+        end
+        BridgeRecordPhysicalMutationJournal({
+            token = tx.token, forgeSequence = tx.forgeSequence, stage = "STAGING_POSITION",
+            seatId = event.seatId, eventSequence = event.sequence,
+            stagingX = stagedPosition.x, stagingY = stagedPosition.y, stagingZ = stagedPosition.z,
+            graveyardAnchorX = anchor.x, graveyardAnchorY = anchor.y, graveyardAnchorZ = anchor.z,
+            nearestBlockerGuid = nearestBlocker and nearestBlocker.guid or nil,
+            nearestBlockerZone = nearestBlocker and nearestBlocker.zone or nil,
+            nearestBlockerDistance = nearestBlocker and nearestBlocker.distance or nil
+        })
     end
     local staged = {
         eventSequence = event.sequence,
@@ -20320,7 +20475,7 @@ function BridgeApplyStructuredCardMove(event)
     return ok, err
 end
 
-function BridgeFindGraveyardContainer(seatId, excludeGuid)
+function BridgeFindGraveyardContainer(seatId, excludeGuid, allowMappedOffAnchorFallback)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then return nil end
     local anchor = BridgeResolveSeatZoneAnchor(seatId, "graveyard")
@@ -20342,7 +20497,9 @@ function BridgeFindGraveyardContainer(seatId, excludeGuid)
                 if anchor == nil or BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
                     return candidate
                 end
-                fallback = candidate
+                if allowMappedOffAnchorFallback == true or BridgeState.resyncInFlight == true then
+                    fallback = candidate
+                end
             end
         end
     end
@@ -20363,7 +20520,9 @@ function BridgeFindGraveyardContainer(seatId, excludeGuid)
                     if anchor == nil or BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
                         return candidate
                     end
-                    if fallback == nil then fallback = candidate end
+                    if fallback == nil and (allowMappedOffAnchorFallback == true or BridgeState.resyncInFlight == true) then
+                        fallback = candidate
+                    end
                 end
             end
         end

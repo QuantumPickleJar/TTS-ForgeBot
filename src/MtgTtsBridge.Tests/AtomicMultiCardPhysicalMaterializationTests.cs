@@ -810,6 +810,138 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void ThoughtScourStagingAvoidsPlayerOneLandRowAndPositionsFinalDeckAtGraveyard()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            local graveyardAnchor = {x=1.7714, y=2.0, z=-12.2921}
+            local landAnchor = {x=6.5, y=2.0, z=-11.5}
+            BridgeGraveyardPosition = function(seatId) return graveyardAnchor end
+            BridgeState.lastAppliedEventSequence = 67
+            BridgeState.cardNameByInstanceId[':mill-a'] = 'Island'
+            BridgeState.cardNameByInstanceId[':mill-b'] = 'Mental Note'
+            BridgeState.cardNameByInstanceId[':scour'] = 'Thought Scour'
+            BridgeState.cardNameByInstanceId[':draw'] = 'Harmonized Trio'
+            BridgeState.cardNameByInstanceId[':land'] = 'Island'
+            local millA = BridgeTestCreateCard(':mill-a', 'Island', 'mill-a')
+            local millB = BridgeTestCreateCard(':mill-b', 'Mental Note', 'mill-b')
+            local draw = BridgeTestCreateCard(':draw', 'Harmonized Trio', 'draw')
+            local scour = BridgeTestCreateCard(':scour', 'Thought Scour', 'scour')
+            scour._inLibrary = false
+            scour._inHand = false
+            scour._lastPosition = {x=2, y=1, z=0}
+            BridgeRecordLooseCardIdentity(':scour', 'scour', 'forge-player-1', 'stack')
+            local land = BridgeTestCreateCard(':land', 'Island', 'battlefield-land')
+            land._inLibrary = false
+            land._inHand = false
+            land._lastPosition = landAnchor
+            BridgeRecordLooseCardIdentity(':land', 'battlefield-land', 'forge-player-1', 'battlefield')
+            BridgeTestQueueExtractionCards({millA, millB, draw})
+            BridgeTestSetEventQueue(
+                {sequence=68, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':mill-a', cardName='Island', forgeSequence=71},
+                {sequence=69, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':mill-b', cardName='Mental Note', forgeSequence=71},
+                {sequence=70, kind='card_moved', seatId='forge-player-1', sourceZone='stack', destinationZone='graveyard', cardInstanceId=':scour', cardName='Thought Scour', forgeSequence=71},
+                {sequence=71, kind='draw', seatId='forge-player-1', sourceZone='library', destinationZone='hand', cardInstanceId=':draw', cardName='Harmonized Trio', forgeSequence=71}
+            )
+            BridgeProcessEventQueue()
+            local function distance(left, right)
+                local dx = left.x - right.x
+                local dz = left.z - right.z
+                return math.sqrt(dx * dx + dz * dz)
+            end
+            stageAFromLand = distance(millA._lastPosition, landAnchor)
+            stageBFromLand = distance(millB._lastPosition, landAnchor)
+            stageSeparation = distance(millA._lastPosition, millB._lastPosition)
+            finalDeckDistance = distance(bridgeTest.graveyardDeck._lastPosition, graveyardAnchor)
+            finalApplied = BridgeState.lastAppliedEventSequence
+            deckCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries)
+            landStillLoose = land._inDeck ~= true
+            landMapping = BridgeState.physicalByInstanceId[':land']
+            landZone = landMapping and BridgeState.physicalZoneByGuid[landMapping] or nil
+            drawGuid = BridgeState.physicalByInstanceId[':draw']
+            drawZone = drawGuid and BridgeState.physicalZoneByGuid[drawGuid] or nil
+            aborts = BridgeTestCountLogToken('MUTATION_ABORT')
+        ");
+
+        Assert.Equal(71, lua.Globals.Get("finalApplied").Number);
+        Assert.True(lua.Globals.Get("stageAFromLand").Number > 3.25);
+        Assert.True(lua.Globals.Get("stageBFromLand").Number > 3.25);
+        Assert.True(lua.Globals.Get("stageSeparation").Number > 3.25);
+        Assert.True(lua.Globals.Get("finalDeckDistance").Number <= 0.001);
+        Assert.Equal(3, lua.Globals.Get("deckCount").Number);
+        Assert.True(lua.Globals.Get("landStillLoose").Boolean);
+        Assert.Equal("battlefield-land", lua.Globals.Get("landMapping").String);
+        Assert.Equal("battlefield", lua.Globals.Get("landZone").String);
+        Assert.Equal("hand", lua.Globals.Get("drawZone").String);
+        Assert.Equal(0, lua.Globals.Get("aborts").Number);
+    }
+
+    [Fact]
+    public void AtomicGraveyardDestinationRejectsBattlefieldDeckAndUnexpectedTrackedCard()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            local graveyardAnchor = {x=1.7714, y=2.0, z=-12.2921}
+            local landAnchor = {x=6.5, y=2.0, z=-11.5}
+            BridgeGraveyardPosition = function(seatId) return graveyardAnchor end
+            BridgeState.cardNameByInstanceId[':a'] = 'Island'
+            BridgeState.cardNameByInstanceId[':b'] = 'Mental Note'
+            BridgeState.cardNameByInstanceId[':land'] = 'Island'
+            local batch = {seatId='forge-player-1', expectedInstances={{instanceId=':a'}, {instanceId=':b'}}}
+            local foreignDeck
+            foreignDeck = {
+                tag='Deck', _position=landAnchor,
+                getGUID=function() return 'foreign-deck' end,
+                getPosition=function() return foreignDeck._position end,
+                getObjects=function() return {{guid='expected-a'}, {guid='contained-foreign'}} end
+            }
+            BridgeState.physicalContainedInstanceIdByGuid['expected-a'] = ':a'
+            BridgeState.physicalContainedInstanceIdByGuid['contained-foreign'] = ':land'
+            wrongLocationOk, wrongLocationReason = BridgeValidateAtomicGraveyardDestination(batch, foreignDeck)
+            foreignDeck._position = graveyardAnchor
+            foreignOk, foreignReason = BridgeValidateAtomicGraveyardDestination(batch, foreignDeck)
+        ");
+
+        Assert.False(lua.Globals.Get("wrongLocationOk").Boolean);
+        Assert.Contains("outside its seat anchor radius", lua.Globals.Get("wrongLocationReason").String);
+        Assert.True(!lua.Globals.Get("foreignOk").Boolean,
+            $"foreignOk={lua.Globals.Get("foreignOk").ToPrintString()} reason={lua.Globals.Get("foreignReason").ToPrintString()}");
+        Assert.Contains("unexpected", lua.Globals.Get("foreignReason").String);
+    }
+
+    [Fact]
+    public void AtomicGraveyardStagingUsesTheSafeSideForPlayerTwoGeometry()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            local graveyardAnchor = {x=1.7476, y=2.0, z=12.3162}
+            local landAnchor = {x=6.5, y=2.0, z=19.0}
+            BridgeGraveyardPosition = function(seatId) return graveyardAnchor end
+            local first = BridgeAtomicGraveyardStagingPosition('forge-player-2', 1, {stagedPhysicalMoves={}})
+            local second = BridgeAtomicGraveyardStagingPosition('forge-player-2', 2, {stagedPhysicalMoves={}})
+            local function distance(left, right)
+                local dx = left.x - right.x
+                local dz = left.z - right.z
+                return math.sqrt(dx * dx + dz * dz)
+            end
+            firstLandDistance = distance(first, landAnchor)
+            secondLandDistance = distance(second, landAnchor)
+            stageDistance = distance(first, second)
+            firstOnSafeSide = first.x < graveyardAnchor.x
+            secondOnSafeSide = second.x < first.x
+        ");
+
+        Assert.True(lua.Globals.Get("firstLandDistance").Number > 3.25);
+        Assert.True(lua.Globals.Get("secondLandDistance").Number > 3.25);
+        Assert.True(lua.Globals.Get("stageDistance").Number > 3.25);
+        Assert.True(lua.Globals.Get("firstOnSafeSide").Boolean);
+        Assert.True(lua.Globals.Get("secondOnSafeSide").Boolean);
+    }
+
+    [Fact]
     public void ThoughtScourTwoCardMillAndDrawPreservesPhysicalAtomicity()
     {
         var lua = NewProbe();
@@ -1510,6 +1642,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                 }
                 bridgeTest.graveyardDeck = {
                     tag = 'Deck',
+                    _lastPosition = {x=0, y=0, z=0},
                     getGUID = function()
                         bridgeTest.groupDeckGuidReads = (bridgeTest.groupDeckGuidReads or 0) + 1
                         if bridgeTest.groupDeckUnreadyGuidReads ~= nil
@@ -1520,6 +1653,11 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     end,
                     entries = {}
                 }
+                bridgeTest.graveyardDeck.getPosition = function() return bridgeTest.graveyardDeck._lastPosition end
+                bridgeTest.graveyardDeck.setPosition = function(position) bridgeTest.graveyardDeck._lastPosition = position end
+                bridgeTest.graveyardDeck.setPositionSmooth = function(position, smooth, collide)
+                    bridgeTest.graveyardDeck._lastPosition = position
+                end
                 bridgeTest.graveyardDeck.getObjects = function()
                     local out = {}
                     local outIndex = 1
