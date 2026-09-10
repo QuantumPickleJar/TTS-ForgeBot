@@ -7284,6 +7284,10 @@ end
 function BridgeShouldDeferDecision(decision)
     local openingMulligan = decision ~= nil and decision.kind == "mulligan"
         and tostring(decision.mulliganStage or "") == "keep_or_mulligan"
+    local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
+    local applied = math.max(
+        tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+        tonumber(BridgeState.lastStateProjectedEventSequence or 0) or 0)
     local function globalPhysicalQueueBusy()
         for seatId, _ in pairs(BRIDGE_SEATS or {}) do
             if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
@@ -7299,8 +7303,7 @@ function BridgeShouldDeferDecision(decision)
     if busy then
         BridgeRegisterPhysicalReadinessDependency(decision, "physical_transition_pending_global",
             "seat=" .. tostring(busySeatId), busySeatId)
-        return true, tonumber(decision and decision.eventCursor or 0) or 0,
-            tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+        return true, eventCursor, applied,
             "physical_transition_pending_global",
             "seat=" .. tostring(busySeatId)
     end
@@ -7313,14 +7316,30 @@ function BridgeShouldDeferDecision(decision)
             for _, queued in ipairs(BridgeState.eventQueue or {}) do
                 local queuedForgeSequence = tonumber(queued and queued.forgeSequence or 0) or 0
                 if queuedForgeSequence == decisionForgeSequence then
-                    return true, tonumber(decision.eventCursor or 0) or 0,
-                        tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+                    return true, eventCursor, applied,
                         "causal_dependency_pending",
                         "forgeSequence=" .. tostring(decisionForgeSequence)
                             .. " queuedEvent=" .. tostring(queued.sequence)
                 end
             end
         end
+    end
+    -- Central ordering rule: event cursor coverage must win before any exact
+    -- hand/action readiness is evaluated, even when the target card is absent
+    -- from hand / battlefield / graveyard and may still be established by a
+    -- contiguous queued authoritative event range.
+    if eventCursor > 0 and eventCursor > applied and BridgeState.eventHistoryGapDeclared ~= true then
+        BridgeRegisterPhysicalReadinessDependency(decision, "event_cursor_coverage",
+            "cursor=" .. tostring(eventCursor) .. " applied=" .. tostring(applied),
+            decision and decision.seatId or nil)
+        if BridgeScheduleEventPoll ~= nil and BridgeState.eventPolling == true then
+            BridgeScheduleEventPoll(0, BridgeState.eventPollGeneration)
+        end
+        return true, eventCursor, applied, "event_cursor_coverage",
+            "cursor=" .. tostring(eventCursor) .. " applied=" .. tostring(applied)
+            .. " received=" .. tostring(BridgeState.lastReceivedEventSequence or 0)
+            .. " queueHead=" .. tostring((BridgeState.eventQueue and BridgeState.eventQueue[1] and BridgeState.eventQueue[1].sequence) or 0)
+            .. " queueLength=" .. tostring(#(BridgeState.eventQueue or {}))
     end
     -- Forge can produce the next priority menu before the bridge event poll
     -- has received the matching draw. Do not reveal or make actionable a
@@ -7340,8 +7359,7 @@ function BridgeShouldDeferDecision(decision)
                     or handGuids[guid] ~= true then
                     BridgeRegisterPhysicalReadinessDependency(decision, "hand_action_readiness",
                         "instance=" .. tostring(instanceId), decision.seatId)
-                    return true, tonumber(decision.eventCursor or 0) or 0,
-                        tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+                    return true, eventCursor, applied,
                         "hand_action_readiness",
                         string.format("instance=%s guid=%s hand=%s error=%s",
                             tostring(instanceId), tostring(guid), tostring(handGuids[guid] == true), tostring(handError))
@@ -7360,8 +7378,9 @@ function BridgeShouldDeferDecision(decision)
             or (extractionQueue ~= nil and #extractionQueue > 0) then
             BridgeRegisterPhysicalReadinessDependency(decision, "hand_action_readiness",
                 "library-extraction-pending", decision.seatId)
-            return true, tonumber(decision.eventCursor or 0) or 0,
-                tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+            return true, eventCursor, applied,
+                "hand_action_readiness",
+                "library-extraction-pending"
         end
     end
 
@@ -7376,31 +7395,28 @@ function BridgeShouldDeferDecision(decision)
             BridgeState.openingHandReadinessSnapshotRequested = false
         end
         if BridgeState.openingHandReadinessSnapshotPending then
-            return true, tonumber(decision.eventCursor or 0) or 0,
-                tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+            return true, eventCursor, applied,
                 "opening_hand_readiness", "waiting for authoritative opening-hand snapshot"
         end
         local ready, readyCount, expectedCount, readinessDetail =
             BridgeCheckOpeningHandReadiness(decision.seatId)
         if not ready then
-            return true, tonumber(decision.eventCursor or 0) or 0,
-                tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+            return true, eventCursor, applied,
                 "opening_hand_readiness",
                 string.format("ready=%d expected=%d missing=%s", readyCount, expectedCount, readinessDetail)
         end
     end
-    local eventCursor = tonumber(decision and decision.eventCursor or 0) or 0
-    local applied = math.max(
-        tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
-        tonumber(BridgeState.lastStateProjectedEventSequence or 0) or 0)
-    local observed = tonumber(BridgeState.lastReceivedEventSequence or 0) or 0
     if eventCursor <= 0 then return false, eventCursor, applied end
     -- H0 invariant: a command that depends on event N cannot be presented until
     -- the physical transaction that committed N has actually landed in TTS.
     -- lastReceived is only a Forge observation marker; it is not a physical
     -- embodiment guarantee and must never substitute for lastApplied.
     if eventCursor > applied then
-        return true, eventCursor, applied
+        return true, eventCursor, applied, "event_cursor_coverage",
+            "cursor=" .. tostring(eventCursor) .. " applied=" .. tostring(applied)
+            .. " received=" .. tostring(BridgeState.lastReceivedEventSequence or 0)
+            .. " queueHead=" .. tostring((BridgeState.eventQueue and BridgeState.eventQueue[1] and BridgeState.eventQueue[1].sequence) or 0)
+            .. " queueLength=" .. tostring(#(BridgeState.eventQueue or {}))
     end
     return false, eventCursor, applied
 end

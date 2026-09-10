@@ -2415,6 +2415,45 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void DecisionCursorCoveragePrecedesHandActionReadiness()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "DecisionCursorCoveragePrecedesHandActionReadiness.probe.lua", @"
+            BridgeState.eventSessionId = 'thought-scour-session'
+            BridgeState.eventPolling = true
+            BridgeState.eventPollGeneration = 7
+            BridgeState.lastAppliedEventSequence = 114
+            BridgeState.lastReceivedEventSequence = 132
+            BridgeState.eventHistoryGapDeclared = false
+            BridgeState.pendingDecision = nil
+            BridgeState.libraryExtractionActiveBySeatId = {}
+            BridgeState.libraryExtractionQueueBySeatId = {}
+            BridgeState.mulliganBottomInsertionActiveBySeatId = {}
+            BridgeState.mulliganBottomQueueBySeatId = {}
+            BridgeState.graveyardExtractionActiveBySeatId = {}
+            BridgeState.physicalByInstanceId = {}
+            BridgeState.physicalInstanceIdByGuid = {}
+            scheduledEventPolls = 0
+            function BridgeScheduleEventPoll(delay, generation) scheduledEventPolls = scheduledEventPolls + 1 end
+            function BridgeBuildSeatHandGuidSet(seatId) return {}, 'no-hand-mapping-yet' end
+            local decision = {
+                decisionId='forge-tui-11',
+                kind='main_priority',
+                seatId='forge-player-1',
+                eventCursor=132,
+                actions={{actionId='cast-thought-scour', type='play_spell', sourceZone='hand', preparedSourceCardInstanceId=':34'}}
+            }
+            defer, cursor, applied, reason, detail = BridgeShouldDeferDecision(decision)
+        ");
+
+        Assert.True(lua.Globals.Get("defer").Boolean);
+        Assert.Equal("event_cursor_coverage", lua.Globals.Get("reason").String);
+        Assert.Equal(132, lua.Globals.Get("cursor").Number);
+        Assert.Equal(114, lua.Globals.Get("applied").Number);
+        Assert.Equal(1, lua.Globals.Get("scheduledEventPolls").Number);
+    }
+
+    [Fact]
     public void DecisionCursorOutrunsEventDeliveryWithoutSnapshotMutation()
     {
         var lua = NewQueueProbe();
