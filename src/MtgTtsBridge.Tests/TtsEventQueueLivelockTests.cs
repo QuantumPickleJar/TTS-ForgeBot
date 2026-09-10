@@ -2415,6 +2415,47 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void DecisionCursorOutrunsEventDeliveryWithoutSnapshotMutation()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "DecisionCursorOutrunsEventDeliveryWithoutSnapshotMutation.probe.lua", @"
+            BridgeState.eventSessionId = 'thought-scour-session'
+            BridgeState.eventPolling = true
+            BridgeState.eventPollGeneration = 4
+            BridgeState.lastAppliedEventSequence = 148
+            BridgeState.lastReceivedEventSequence = 148
+            BridgeState.eventHistoryGapDeclared = false
+            BridgeState.snapshotReconcileInFlight = false
+            BridgeState.snapshotRecoveryOwner = nil
+            scheduledEventPolls = 0
+            function BridgeScheduleEventPoll(delay, generation) scheduledEventPolls = scheduledEventPolls + 1 end
+            snapshotYields = BridgeSnapshotMustYieldToDiscoverableEvents(
+                {sessionId='thought-scour-session', eventCursor=153, seats={}})
+        ");
+
+        Assert.True(lua.Globals.Get("snapshotYields").Boolean);
+        Assert.True(lua.Globals.Get("scheduledEventPolls").Number >= 1);
+    }
+
+    [Fact]
+    public void RealDeclaredEventGapStillAllowsSnapshotRecovery()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "RealDeclaredEventGapStillAllowsSnapshotRecovery.probe.lua", @"
+            BridgeState.eventSessionId = 'gap-session'
+            BridgeState.eventPolling = true
+            BridgeState.lastAppliedEventSequence = 148
+            BridgeState.lastReceivedEventSequence = 148
+            BridgeState.eventHistoryGapDeclared = true
+            function BridgeScheduleEventPoll(delay, generation) error('gap must not repoll events') end
+            snapshotYields = BridgeSnapshotMustYieldToDiscoverableEvents(
+                {sessionId='gap-session', eventCursor=153, seats={}})
+        ");
+
+        Assert.False(lua.Globals.Get("snapshotYields").Boolean);
+    }
+
+    [Fact]
     public void ReplacementBootstrapReleasesOpeningDecisionDespiteSnapshotForgeSequenceAnnotation()
     {
         var lua = NewQueueProbe();

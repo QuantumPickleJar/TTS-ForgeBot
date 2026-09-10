@@ -626,6 +626,88 @@ public sealed class EmbodimentReconciliationEngineTests
     }
 
     [Fact]
+    public void NewMatchRetiresOldSessionIdentityBeforeBootstrap()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'old-session'
+            BridgeState.physicalOwnershipSessionId = 'old-session'
+            BridgeState.physicalByInstanceId = {['forge:old-session:4']='old-guid'}
+            BridgeState.physicalInstanceIdByGuid = {['old-guid']='forge:old-session:4'}
+            BridgeState.physicalContainerByInstanceId = {['forge:old-session:5']={deckGuid='old-library', cardGuid='old-contained', seatId='forge-player-1', zoneName='library'}}
+            BridgeState.physicalContainedInstanceIdByGuid = {['old-contained']='forge:old-session:5'}
+            BridgeState.physicalSlotByInstanceId = {['forge:old-session:6']={deckGuid='old-library', slotIndex=2}}
+            BridgeState.libraryBindingGenerationBySeatId = {['forge-player-1']=9}
+            function BridgeStopEventPolling(reason) end
+            function BridgeAdvanceEventSessionGeneration(reason) BridgeState.eventSessionGeneration=(BridgeState.eventSessionGeneration or 0)+1 end
+            function BridgeStopDecisionPolling() end
+            function BridgeReturnAttackPresentation(value) end
+            function BridgeRetireResourceRowObjects() end
+            function BridgeHydratePresentationObjectIndexes() end
+            function BridgeClearPreparedPresentationObjects() end
+            function BridgeAdvancePhysicalPresentationGeneration(reason) end
+            function BridgeAdvancePhysicalTransactionGeneration(reason) BridgeState.physicalTransactionGeneration=(BridgeState.physicalTransactionGeneration or 0)+1 end
+            function BridgeCreatureTypeClearDraft(reason) end
+            function BridgeGraveyardClear(reason) end
+            function BridgeGetLiveObjectByGuid(guid) return nil end
+            BridgePrepareEventSession('new-session', true, true)
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(state.Get("physicalByInstanceId").Table.Get("forge:old-session:4").IsNil());
+        Assert.True(state.Get("physicalContainerByInstanceId").Table.Get("forge:old-session:5").IsNil());
+        Assert.True(state.Get("physicalSlotByInstanceId").Table.Get("forge:old-session:6").IsNil());
+        Assert.Equal(0, state.Get("libraryBindingGenerationBySeatId").Table.Length);
+        Assert.Equal("new-session", state.Get("physicalOwnershipSessionId").String);
+    }
+
+    [Fact]
+    public void NewMatchRetiresOldPhysicalCardAdvertisementBeforeNewBootstrap()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local oldCard = {tag='Card', guid='thought-scour-card', vars={
+                bridgeCardInstanceId='forge:old-session:35', bridgeSessionId='old-session'}}
+            oldCard.getGUID = function() return oldCard.guid end
+            oldCard.getVar = function(key) return oldCard.vars[key] end
+            oldCard.setVar = function(key, value) oldCard.vars[key] = value end
+            BridgeObjectIsUsable = function(object) return object ~= nil end
+            BridgeSafeObjectGuid = function(object) return object and object.getGUID and object.getGUID() or nil end
+            BridgeIsPresentationOnlyObject = function(object) return false end
+            function getAllObjects() return {oldCard} end
+            BridgeState.eventSessionId = 'old-session'
+            BridgeState.physicalOwnershipSessionId = 'old-session'
+            BridgeState.physicalByInstanceId = {['forge:old-session:35']='thought-scour-card'}
+            BridgeState.physicalInstanceIdByGuid = {['thought-scour-card']='forge:old-session:35'}
+            function BridgeStopEventPolling(reason) end
+            function BridgeAdvanceEventSessionGeneration(reason) BridgeState.eventSessionGeneration=(BridgeState.eventSessionGeneration or 0)+1 end
+            function BridgeStopDecisionPolling() end
+            function BridgeReturnAttackPresentation(value) end
+            function BridgeRetireResourceRowObjects() end
+            function BridgeHydratePresentationObjectIndexes() end
+            function BridgeClearPreparedPresentationObjects() end
+            function BridgeAdvancePhysicalPresentationGeneration(reason) end
+            function BridgeAdvancePhysicalTransactionGeneration(reason) BridgeState.physicalTransactionGeneration=(BridgeState.physicalTransactionGeneration or 0)+1 end
+            function BridgeCreatureTypeClearDraft(reason) end
+            function BridgeGraveyardClear(reason) end
+            function BridgeGetLiveObjectByGuid(guid) if guid == 'thought-scour-card' then return oldCard end end
+            BridgePrepareEventSession('new-session', true, false)
+            retiredInstance = oldCard.vars.bridgeCardInstanceId
+            retiredSession = oldCard.vars.bridgeSessionId
+            function staleOldCallback()
+                if BridgeState.eventSessionId ~= 'old-session' then return end
+                BridgeWritePhysicalIdentity(oldCard, 'forge:old-session:35')
+            end
+            staleOldCallback()
+            instanceAfterStaleCallback = oldCard.vars.bridgeCardInstanceId
+        ");
+
+        Assert.True(lua.Globals.Get("retiredInstance").IsNil());
+        Assert.True(lua.Globals.Get("retiredSession").IsNil());
+        Assert.True(lua.Globals.Get("instanceAfterStaleCallback").IsNil());
+    }
+
+    [Fact]
     public void SlotLocatorRefreshAfterLibraryMutationUsesCurrentDeckTopology()
     {
         var lua = NewProbe();

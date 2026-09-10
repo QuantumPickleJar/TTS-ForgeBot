@@ -683,6 +683,59 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void ThoughtScourDeferredGraveyardSettlementRetainsItsTransactionCompletion()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            local queue = {}
+            local tx = {
+                token='session:1:1:135', sessionId='session', eventSessionGeneration=1,
+                physicalTransactionGeneration=1, forgeSequence=37, firstEventSequence=135,
+                lastEventSequence=138, state='APPLYING', queue=queue, pendingPhysicalEvents={}
+            }
+            BridgeState.eventQueue = queue
+            BridgeState.eventDrainTransaction = tx
+            local event = {sequence=137, kind='card_moved', seatId='forge-player-1',
+                sourceZone='stack', destinationZone='graveyard', cardInstanceId='forge:session:35',
+                cardName='Thought Scour', forgeSequence=37}
+            tx.pendingPhysicalEvents[137] = true
+            completionCount = 0
+            event._bridgePhysicalCompletion = function(ok, reason)
+                completionCount = completionCount + 1
+                if ok then tx.pendingPhysicalEvents[137] = nil end
+            end
+            local deferredEvents = {}
+            deferredEvents[1] = event
+            local batch = {seatId='forge-player-1', requiredCount=2,
+                deferredEvents=deferredEvents, deferredPendingCount=0}
+            local rawApply = BridgeApplyStructuredCardMove
+            BridgeApplyStructuredCardMove = function(candidate)
+                delayedDeferredEvent = candidate
+                return true, nil
+            end
+            deferredInputCount = BridgeTableSize(batch.deferredEvents)
+            BridgeStartDeferredGraveyardEvents(tx, batch)
+            callbackRetainedAfterDispatch = delayedDeferredEvent ~= nil
+                and delayedDeferredEvent._bridgePhysicalCompletion ~= nil
+            pendingBeforeCallback = batch.deferredPendingCount
+            local delayedCompletion = delayedDeferredEvent and delayedDeferredEvent._bridgePhysicalCompletion or nil
+            if delayedCompletion ~= nil then delayedCompletion(true, nil) end
+            pendingAfterCallback = batch.deferredPendingCount
+            transactionPendingAfterCallback = tx.pendingPhysicalEvents[137] ~= nil
+            if delayedCompletion ~= nil then delayedCompletion(true, nil) end
+            BridgeApplyStructuredCardMove = rawApply
+        ");
+
+        Assert.True(lua.Globals.Get("callbackRetainedAfterDispatch").Boolean,
+            $"input={lua.Globals.Get("deferredInputCount").ToPrintString()} pending={lua.Globals.Get("pendingBeforeCallback").ToPrintString()} logs={CapturedLogsTail(lua)}");
+        Assert.Equal(1, lua.Globals.Get("pendingBeforeCallback").Number);
+        Assert.Equal(0, lua.Globals.Get("pendingAfterCallback").Number);
+        Assert.False(lua.Globals.Get("transactionPendingAfterCallback").Boolean);
+        Assert.Equal(1, lua.Globals.Get("completionCount").Number);
+    }
+
+    [Fact]
     public void MentalNoteCompoundLibraryBatchDefersStackArrivalUntilOwnedGraveyardIsReady()
     {
         var lua = NewProbe();
@@ -749,7 +802,11 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Assert.Equal(":ashiok", lua.Globals.Get("graveyard2").String);
         Assert.Equal("hand", lua.Globals.Get("swampZone").String);
         Assert.Equal(0, lua.Globals.Get("mutationAbortCount").Number);
-        Assert.True(lua.Globals.Get("stackApplyCount").Number >= 2);
+        // One call enrolls the resolving spell in the transaction; the second
+        // is the single physical dispatch after the native graveyard Deck is
+        // ready. The exact graveyard ledger above proves that dispatch did not
+        // create a second physical Thought Scour representation.
+        Assert.Equal(2, lua.Globals.Get("stackApplyCount").Number);
     }
 
     [Fact]
@@ -830,6 +887,63 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Assert.Equal(1, lua.Globals.Get("destinationVerifiedCount").Number);
         Assert.Equal(1, lua.Globals.Get("mutationCommitCount").Number);
         Assert.Equal(0, lua.Globals.Get("mutationAbortCount").Number);
+    }
+
+    [Fact]
+    public void CompoundMutationNativeSettlementExceptionAbortsOwnedTransactionWithoutOrphaningAnimation()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.lastAppliedEventSequence = 93
+            BridgeState.cardNameByInstanceId[':scour'] = 'Thought Scour'
+            BridgeState.cardNameByInstanceId[':swamp'] = 'Swamp'
+            BridgeState.cardNameByInstanceId[':note'] = 'Mental Note'
+            BridgeState.cardNameByInstanceId[':supplier'] = 'Stitcher\'s Supplier'
+            local scour = BridgeTestCreateCard(':scour', 'Thought Scour', 'late-scour')
+            local swamp = BridgeTestCreateCard(':swamp', 'Swamp', 'late-swamp')
+            local note = BridgeTestCreateCard(':note', 'Mental Note', 'late-note')
+            local supplier = BridgeTestCreateCard(':supplier', 'Stitcher\'s Supplier', 'late-supplier')
+            BridgeTestQueueExtractionCards({scour, swamp, supplier})
+            local rawRecord = BridgeRecordGraveyardContainerEntries
+            BridgeRecordGraveyardContainerEntries = function(seatId, deck, expected)
+                error('simulated native null object after Deck promotion')
+            end
+            BridgeTestSetEventQueue(
+                {sequence=94, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':scour', cardName='Thought Scour', forgeSequence=931},
+                {sequence=95, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':swamp', cardName='Swamp', forgeSequence=931},
+                {sequence=96, kind='card_moved', seatId='forge-player-1', sourceZone='stack', destinationZone='graveyard', cardInstanceId=':note', cardName='Mental Note', forgeSequence=931},
+                {sequence=97, kind='draw', seatId='forge-player-1', sourceZone='library', destinationZone='hand', cardInstanceId=':supplier', cardName='Stitcher\'s Supplier', forgeSequence=931}
+            )
+            callbackOk, callbackError = pcall(BridgeProcessEventQueue)
+            finalApplied = BridgeState.lastAppliedEventSequence
+            animationRunning = BridgeState.animationRunning == true
+            desyncLatched = BridgeState.desyncLatched == true
+            activeTransaction = BridgeState.eventDrainTransaction
+            runtimeStage = BridgeState.lastTtsRuntimeError and BridgeState.lastTtsRuntimeError.stage or nil
+            runtimeDetail = BridgeState.lastTtsRuntimeError and BridgeState.lastTtsRuntimeError.detail or nil
+            callbackExceptionCount = 0
+            for _, record in ipairs(BridgeState.physicalMutationJournal or {}) do
+                if record.stage == 'NATIVE_CALLBACK_EXCEPTION' then
+                    callbackExceptionCount = callbackExceptionCount + 1
+                end
+            end
+            mutationAbortCount = BridgeTestCountLogToken('MUTATION_ABORT')
+            supplierGuid = BridgeState.physicalByInstanceId[':supplier']
+            BridgeRecordGraveyardContainerEntries = rawRecord
+        ");
+
+        Assert.True(lua.Globals.Get("callbackOk").Boolean,
+            lua.Globals.Get("callbackError").ToPrintString());
+        Assert.Equal(93, lua.Globals.Get("finalApplied").Number);
+        Assert.False(lua.Globals.Get("animationRunning").Boolean);
+        Assert.True(lua.Globals.Get("desyncLatched").Boolean);
+        Assert.True(lua.Globals.Get("activeTransaction").IsNil());
+        Assert.Equal("graveyard-settlement", lua.Globals.Get("runtimeStage").String);
+        Assert.Contains("simulated native null object", lua.Globals.Get("runtimeDetail").String);
+        Assert.Equal(1, lua.Globals.Get("callbackExceptionCount").Number);
+        Assert.True(lua.Globals.Get("mutationAbortCount").Number >= 1);
+        Assert.Equal("late-supplier", lua.Globals.Get("supplierGuid").String);
     }
 
     [Fact]
