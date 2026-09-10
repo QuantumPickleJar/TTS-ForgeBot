@@ -1738,8 +1738,42 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         return
     end
     local activeActionType = "unknown"
+    local activeAction = nil
     for _, action in ipairs(activeDecision.actions or {}) do
-        if action.actionId == actionId then activeActionType = action.type or action.actionType or "unknown"; break end
+        if action.actionId == actionId then
+            activeAction = action
+            activeActionType = action.type or action.actionType or "unknown"
+            break
+        end
+    end
+    if activeAction == nil then
+        BridgeLog("[Bridge] CHOICE_POST_BLOCKED reason=action-absent-from-current-decision decision="
+            .. tostring(decisionId) .. " action=" .. tostring(actionId)
+            .. " source=" .. tostring(source))
+        return
+    end
+    -- A HUD/proxy surface can outlive a native Card/Deck mutation.  Re-check
+    -- exact provenance at the final submission boundary as well as during
+    -- rendering: an exact Forge action must still resolve to its own current
+    -- loose or contained representation, never to a same-name substitute.
+    local exactInstanceId = BridgeActionExactPhysicalInstanceId
+        and BridgeActionExactPhysicalInstanceId(activeAction) or nil
+    if exactInstanceId ~= nil then
+        local descriptor = BridgeState.authoritativeObjectByInstanceId
+            and BridgeState.authoritativeObjectByInstanceId[exactInstanceId] or nil
+        local policy = descriptor and tostring(descriptor.materializationPolicy or "") or ""
+        local physicalRequired = descriptor == nil
+            or (descriptor.isVirtual ~= true and policy ~= "virtual" and policy ~= "virtual-stack")
+        if physicalRequired and BridgeResolveExactActionPhysical ~= nil then
+            local resolved, reason = BridgeResolveExactActionPhysical(activeDecision, activeAction)
+            if resolved == nil then
+                BridgeLog("[Bridge] CHOICE_POST_BLOCKED reason=exact-physical-provenance-unavailable decision="
+                    .. tostring(decisionId) .. " action=" .. tostring(actionId)
+                    .. " instance=" .. tostring(exactInstanceId)
+                    .. " detail=" .. tostring(reason))
+                return
+            end
+        end
     end
     if activeDecision ~= nil and activeDecision.decisionId == decisionId
         and activeDecision.kind == "mulligan"

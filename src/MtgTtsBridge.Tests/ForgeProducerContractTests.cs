@@ -409,6 +409,21 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void PreparedSpellEnumerationWalksTheExactPreparedSourceRelation()
+    {
+        var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
+        var body = ExtractMethodBody(controller, "private List<SpellAbility> getCastableSpellsFromAllZones(String category)");
+
+        Assert.Contains("permanent.getPreparedSpell()", body);
+        Assert.Contains("prepared.isInZone(ZoneType.Exile)", body);
+        Assert.Contains("prepared.getAllPossibleAbilities(player, false)", body);
+        Assert.Contains("preparedSpellIds.add(prepared.getId())", body);
+        Assert.Contains("[TUI-DIAG prepared]", controller);
+        Assert.Contains("source permanent is never used as the cast object", controller);
+        Assert.Contains("castMode = preparedSpell ? \"prepare\"", controller);
+    }
+
+    [Fact]
     public void ProliferateEntitiesExposeExactCardInstancesAndPlayerSeats()
     {
         Assert.Contains("bridgeEntityMetadata", Patch);

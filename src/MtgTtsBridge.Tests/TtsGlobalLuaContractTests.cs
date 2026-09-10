@@ -1657,12 +1657,12 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void MainPriorityActions_BindExactActivatedAbilitySourceOutsideHand()
     {
-        var start = Script.IndexOf("local presentationInstanceId = action.preparedSourceCardInstanceId", StringComparison.Ordinal);
-        var end = Script.IndexOf("if mappedSeatMatches and mappedZoneMatches then", start, StringComparison.Ordinal);
+        var start = Script.IndexOf("local presentationInstanceId = BridgeActionExactPhysicalInstanceId(action)", StringComparison.Ordinal);
+        var end = Script.IndexOf("if #matches > 0 and (action.cardIdentity ~= nil or exactAction) then", start, StringComparison.Ordinal);
         var binding = Script[start..end];
 
-        Assert.Contains("action.preparedSourceCardInstanceId or action.cardInstanceId", binding);
-        Assert.Contains("action.sourceZone", binding);
+        Assert.Contains("BridgeActionExactPhysicalInstanceId(action)", binding);
+        Assert.Contains("BridgeActionExpectedSourceZone(action)", binding);
         Assert.Contains("mappedPhysicalZone == actionSourceZone", binding);
         Assert.Contains("action.type == \"activate_ability\"", binding);
         Assert.Contains("mappedPhysicalZone == \"battlefield\"", binding);
@@ -1808,10 +1808,12 @@ public sealed class TtsGlobalLuaContractTests
     public void RealDecisionIdentity_WinsOverDuplicateNameFallback()
     {
         Assert.Contains("presentationInstanceId and BridgeState.physicalByInstanceId[presentationInstanceId]", Script);
-        Assert.Contains("if mappedSeatMatches and mappedZoneMatches then", Script);
+        Assert.Contains("function BridgeResolveExactActionPhysical(decision, action)", Script);
+        Assert.Contains("resolved.kind == \"exact-contained\"", Script);
+        Assert.Contains("Only genuinely legacy actions without any exact provenance", Script);
         Assert.Contains("if mappedGuid == nil and #matches > 1 then", Script);
-        Assert.Contains("repaired instance mapping", Script);
-        Assert.Contains("instance mapping ambiguous", Script);
+        Assert.DoesNotContain("repaired instance mapping", Script);
+        Assert.DoesNotContain("BridgeRecordLooseCardIdentity(action.cardInstanceId, recoveredGuid", Script);
     }
 
     [Fact]

@@ -1036,6 +1036,7 @@ function BridgeEventDrainQueueState()
         terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
         terminalRecovery = BridgeDiagnosticSnapshot(BridgeCurrentTerminalRecoveryError() or {}),
         decisionAcceptanceRejections = BridgeDiagnosticSnapshot(BridgeState.decisionAcceptanceRejections or {}),
+        lastActionPhysicalResolution = BridgeDiagnosticSnapshot(BridgeState.lastActionPhysicalResolution or {}),
         resyncToken = BridgeState.resyncToken,
         resyncOrigin = BridgeState.resyncOrigin,
         resyncRootCause = BridgeState.resyncRootCause,

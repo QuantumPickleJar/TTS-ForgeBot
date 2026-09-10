@@ -8,6 +8,114 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.lua"));
 
     [Fact]
+    public void ExactCostCandidateNeverFallsBackToSameNameBattlefieldCard()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            local battlefield = BridgeTestCreateCard(':32', 'Harmonized Trio', 'battlefield-32')
+            battlefield._inLibrary = false
+            BridgeRecordLooseCardIdentity(':32', 'battlefield-32', 'forge-player-1', 'battlefield')
+            local decision = {decisionId='delve-1', seatId='forge-player-1'}
+            local action = {actionId='delve-31', cardInstanceId=':31', cardIdentity='Harmonized Trio', sourceZone='graveyard'}
+            resolved, resolveError = BridgeResolveExactActionPhysical(decision, action)
+            battlefieldInstance = BridgeState.physicalInstanceIdByGuid['battlefield-32']
+            battlefieldZone = BridgeState.physicalZoneByGuid['battlefield-32']
+            attemptedRepair = BridgeState.physicalByInstanceId[':31']
+            resolutionKind = BridgeState.lastActionPhysicalResolution and BridgeState.lastActionPhysicalResolution.resolutionKind or nil
+        ");
+
+        Assert.True(lua.Globals.Get("resolved").IsNil());
+        Assert.Contains("contained", lua.Globals.Get("resolveError").String);
+        Assert.Equal(":32", lua.Globals.Get("battlefieldInstance").String);
+        Assert.Equal("battlefield", lua.Globals.Get("battlefieldZone").String);
+        Assert.True(lua.Globals.Get("attemptedRepair").IsNil());
+        Assert.Equal("unresolved", lua.Globals.Get("resolutionKind").String);
+    }
+
+    [Fact]
+    public void DelveGraveyardCandidateResolvesContainedExactInstanceWithoutTouchingSameNamePermanent()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            local battlefield = BridgeTestCreateCard(':32', 'Harmonized Trio', 'battlefield-32')
+            battlefield._inLibrary = false
+            BridgeRecordLooseCardIdentity(':32', 'battlefield-32', 'forge-player-1', 'battlefield')
+            bridgeTest.graveyardDeck.entries = {{instanceId=':31', name='Harmonized Trio', guid='contained-31'}}
+            bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
+            BridgeState.physicalContainerByInstanceId[':31'] = {
+                deckGuid='grave-deck', cardGuid='contained-31', locatorType='GUID_LOCATOR',
+                seatId='forge-player-1', zoneName='graveyard', cardName='Harmonized Trio'
+            }
+            BridgeState.physicalContainedInstanceIdByGuid['contained-31'] = ':31'
+            BridgeState.physicalSeatByGuid['contained-31'] = 'forge-player-1'
+            BridgeState.physicalZoneByGuid['contained-31'] = 'graveyard'
+            local decision = {decisionId='delve-1', seatId='forge-player-1'}
+            local action = {actionId='delve-31', cardInstanceId=':31', cardIdentity='Harmonized Trio', sourceZone='graveyard'}
+            resolved, resolveError = BridgeResolveExactActionPhysical(decision, action)
+            resolutionKind = resolved and resolved.kind or nil
+            resolvedDeckGuid = resolved and resolved.deckGuid or nil
+            battlefieldInstance = BridgeState.physicalInstanceIdByGuid['battlefield-32']
+            battlefieldZone = BridgeState.physicalZoneByGuid['battlefield-32']
+        ");
+
+        Assert.Equal("exact-contained", lua.Globals.Get("resolutionKind").String);
+        Assert.Equal("grave-deck", lua.Globals.Get("resolvedDeckGuid").String);
+        Assert.Equal(":32", lua.Globals.Get("battlefieldInstance").String);
+        Assert.Equal("battlefield", lua.Globals.Get("battlefieldZone").String);
+    }
+
+    [Fact]
+    public void ExactActionSourceZoneMustMatchPhysicalZone()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            local battlefield = BridgeTestCreateCard(':31', 'Harmonized Trio', 'battlefield-31')
+            battlefield._inLibrary = false
+            BridgeRecordLooseCardIdentity(':31', 'battlefield-31', 'forge-player-1', 'battlefield')
+            local decision = {decisionId='delve-1', seatId='forge-player-1'}
+            local action = {actionId='delve-31', cardInstanceId=':31', cardIdentity='Harmonized Trio', sourceZone='graveyard'}
+            resolved, resolveError = BridgeResolveExactActionPhysical(decision, action)
+            physicalZone = BridgeState.physicalZoneByGuid['battlefield-31']
+            resolutionKind = BridgeState.lastActionPhysicalResolution and BridgeState.lastActionPhysicalResolution.resolutionKind or nil
+        ");
+
+        Assert.True(lua.Globals.Get("resolved").IsNil());
+        Assert.Contains("wrong seat or source zone", lua.Globals.Get("resolveError").String);
+        Assert.Equal("battlefield", lua.Globals.Get("physicalZone").String);
+        Assert.Equal("unresolved", lua.Globals.Get("resolutionKind").String);
+    }
+
+    [Fact]
+    public void StaleDecisionActionCannotSubmitAfterDecisionReplacement()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'session'
+            BridgeState.eventSessionGeneration = 1
+            BridgeState.lastDecision = {
+                decisionId = 'decision-new', kind = 'main_priority', seatId = 'forge-player-1',
+                actions = {{actionId = 'pass-new', type = 'pass_priority'}}
+            }
+            BridgeState.choiceTransactions = {}
+            BridgeState.choiceProtocolPaused = false
+            BridgeState.desyncLatched = false
+            BridgeState.submitting = false
+            posted = 0
+            BridgeHttp.requestJson = function(...) posted = posted + 1 end
+            BridgeSubmitChoice('decision-new', 'cast-old-trio', 'stale-test')
+            stalePosted = posted
+            staleTransaction = BridgeState.choiceTransactions['decision-new']
+        ");
+
+        Assert.Equal(0d, lua.Globals.Get("stalePosted").Number);
+        Assert.True(lua.Globals.Get("staleTransaction").IsNil());
+    }
+
+    [Fact]
     public void SemanticSpellResolvedDoesNotPreemptStructuredThoughtScourMove()
     {
         var lua = NewProbe();

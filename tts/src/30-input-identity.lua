@@ -783,21 +783,105 @@ function BridgeRecordDecisionPresentationRendered(key)
         BridgeState.currentPhysicalPresentationGeneration or 0
 end
 
+-- An action that names any Forge CardInstanceId is an exact physical request.
+-- Display names are never a recovery key for it: another printing with the
+-- same name can be in a different authoritative zone (notably Delve's native
+-- graveyard Deck beside a battlefield permanent).
+function BridgeActionExactPhysicalInstanceId(action)
+    if action == nil then return nil end
+    return action.preparedSourceCardInstanceId
+        or action.sourceCardInstanceId
+        or action.cardInstanceId
+        or action.entityCardInstanceId
+end
+
+function BridgeActionExpectedSourceZone(action)
+    if action == nil then return nil end
+    local zone = action.sourceZone or action.candidateSourceZone
+    if zone == nil or tostring(zone) == "" then return nil end
+    return string.lower(tostring(zone))
+end
+
+function BridgeRecordActionPhysicalResolution(decision, action, kind, reason, guid, containerGuid, observedZone)
+    BridgeState.lastActionPhysicalResolution = {
+        decisionId = decision and decision.decisionId or nil,
+        actionId = action and action.actionId or nil,
+        cardInstanceId = BridgeActionExactPhysicalInstanceId(action),
+        sourceZone = BridgeActionExpectedSourceZone(action),
+        resolutionKind = kind,
+        reason = reason,
+        physicalGuid = guid,
+        containerGuid = containerGuid,
+        observedZone = observedZone,
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration
+    }
+    BridgeLog("[Bridge] ACTION_PHYSICAL_RESOLUTION decision="
+        .. tostring(decision and decision.decisionId) .. " action="
+        .. tostring(action and action.actionId) .. " instance="
+        .. tostring(BridgeActionExactPhysicalInstanceId(action)) .. " sourceZone="
+        .. tostring(BridgeActionExpectedSourceZone(action)) .. " kind=" .. tostring(kind)
+        .. " observedZone=" .. tostring(observedZone) .. " reason=" .. tostring(reason))
+end
+
+-- Resolve exact action provenance through the live loose ledger or an exact
+-- contained Deck locator.  The latter intentionally has no Card click surface;
+-- callers present its Forge ActionId through the HUD/graveyard UI instead of
+-- stealing a same-name loose Card from another zone.
+function BridgeResolveExactActionPhysical(decision, action)
+    local instanceId = BridgeActionExactPhysicalInstanceId(action)
+    if instanceId == nil then return nil, "legacy action has no exact instance", nil end
+    local expectedZone = BridgeActionExpectedSourceZone(action)
+    local guid = BridgeState.physicalByInstanceId and BridgeState.physicalByInstanceId[instanceId] or nil
+    local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
+    local observedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
+    local observedSeat = guid and BridgeState.physicalSeatByGuid[guid] or nil
+    local inverse = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+    if object ~= nil and object.tag == "Card" and inverse == instanceId
+        and (decision == nil or decision.seatId == nil or observedSeat == decision.seatId)
+        and (expectedZone == nil or observedZone == expectedZone) then
+        BridgeRecordActionPhysicalResolution(decision, action, "exact-loose", nil, guid, nil, observedZone)
+        return {kind = "exact-loose", object = object, guid = guid, zone = observedZone}, nil, instanceId
+    end
+
+    local containedDeck, containedEntry, containedError = nil, nil, nil
+    if BridgeFindContainedCardEntry ~= nil then
+        containedDeck, containedEntry, containedError = BridgeFindContainedCardEntry(instanceId, expectedZone)
+    end
+    local container = BridgeState.physicalContainerByInstanceId
+        and BridgeState.physicalContainerByInstanceId[instanceId] or nil
+    if containedDeck ~= nil and containedEntry ~= nil and container ~= nil
+        and (decision == nil or decision.seatId == nil or container.seatId == decision.seatId)
+        and (expectedZone == nil or container.zoneName == expectedZone) then
+        local deckGuid = BridgeSafeObjectGuid(containedDeck)
+        BridgeRecordActionPhysicalResolution(decision, action, "exact-contained", nil,
+            container.cardGuid, deckGuid, container.zoneName)
+        return {kind = "exact-contained", deck = containedDeck, entry = containedEntry,
+            deckGuid = deckGuid, zone = container.zoneName}, nil, instanceId
+    end
+
+    local reason = containedError or "exact physical mapping is unavailable"
+    if object ~= nil and object.tag == "Card" and inverse == instanceId then
+        reason = "exact mapping is in wrong seat or source zone"
+    end
+    BridgeRecordActionPhysicalResolution(decision, action, "unresolved", reason,
+        guid, container and container.deckGuid or nil, observedZone or (container and container.zoneName))
+    return nil, reason, instanceId
+end
+
 function BridgeDecisionPhysicalMappingsReady(decision)
     if decision == nil then return true, nil end
     for _, action in ipairs(decision.actions or {}) do
-        local instanceId = action.preparedSourceCardInstanceId or action.sourceCardInstanceId or action.cardInstanceId
+        local instanceId = BridgeActionExactPhysicalInstanceId(action)
         if instanceId ~= nil then
             local descriptor = BridgeState.authoritativeObjectByInstanceId[instanceId]
             local policy = descriptor and tostring(descriptor.materializationPolicy or "") or ""
             local physicalRequired = descriptor == nil
                 or (descriptor.isVirtual ~= true and policy ~= "virtual" and policy ~= "virtual-stack")
             if physicalRequired then
-                local guid = BridgeState.physicalByInstanceId[instanceId]
-                local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
-                local inverse = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
-                if object == nil or object.tag ~= "Card" or inverse ~= instanceId then
-                    return false, instanceId
+                local resolved, reason = BridgeResolveExactActionPhysical(decision, action)
+                if resolved == nil then
+                    return false, tostring(instanceId) .. ":" .. tostring(reason)
                 end
             end
         end
@@ -1129,11 +1213,12 @@ function BridgeRenderDecision(decision, force)
         end
 
         local matches = {}
-        local presentationInstanceId = action.preparedSourceCardInstanceId or action.cardInstanceId
+        local presentationInstanceId = BridgeActionExactPhysicalInstanceId(action)
+        local exactAction = presentationInstanceId ~= nil
         local mappedGuid = presentationInstanceId and BridgeState.physicalByInstanceId[presentationInstanceId] or nil
         local mappedObject = BridgeGetLiveObjectByGuid(mappedGuid)
-        local mappedSeatMatches = mappedObject ~= nil and (decision.kind ~= "main_priority"
-            or BridgeState.physicalSeatByGuid[mappedGuid] == decision.seatId)
+        local mappedSeatMatches = mappedObject ~= nil
+            and (decision.seatId == nil or BridgeState.physicalSeatByGuid[mappedGuid] == decision.seatId)
         -- Main-priority actions are not limited to cards in hand: activated
         -- abilities (including Crew) originate from a permanent in the
         -- battlefield, and alternate-cost abilities may originate in a
@@ -1145,7 +1230,7 @@ function BridgeRenderDecision(decision, force)
         local mappedPhysicalZone = mappedGuid and BridgeState.physicalZoneByGuid[mappedGuid] or nil
         local combatActionKind = action.type or action.actionKind
         local combatSelection = combatActionKind == "choose_attacker" or combatActionKind == "choose_blocker"
-        local actionSourceZone = string.lower(tostring(action.sourceZone or ""))
+        local actionSourceZone = BridgeActionExpectedSourceZone(action) or ""
         local mappedSourceZoneMatches = actionSourceZone ~= ""
             and mappedPhysicalZone == actionSourceZone
         if not mappedSourceZoneMatches and actionSourceZone == ""
@@ -1165,7 +1250,7 @@ function BridgeRenderDecision(decision, force)
             mappedZoneMatches = false
         end
         local exactMappingContradictsActionSource = mappedObject ~= nil
-            and action.cardInstanceId ~= nil
+            and exactAction
             and ((actionSourceZone ~= "" and not mappedSourceZoneMatches)
                 or not mappedSeatMatches)
         if exactMappingContradictsActionSource then
@@ -1175,61 +1260,58 @@ function BridgeRenderDecision(decision, force)
             -- stale action by matching another card with the same name.
             BridgeLog(string.format(
                 "[Bridge] suppressing stale exact action instance=%s card=%s sourceZone=%s mappedZone=%s mappedSeat=%s decisionSeat=%s",
-                tostring(action.cardInstanceId), tostring(action.cardIdentity or action.type),
+                tostring(presentationInstanceId), tostring(action.cardIdentity or action.type),
                 tostring(actionSourceZone), tostring(mappedPhysicalZone),
                 tostring(BridgeState.physicalSeatByGuid[mappedGuid]), tostring(decision.seatId)))
-        elseif mappedSeatMatches and mappedZoneMatches then
-            table.insert(matches, mappedObject)
-        else
-            local fallbackMatches = {}
-            -- A combat candidate with an exact Forge identity must never fall
-            -- back to a same-name physical card. A spent instant (or another
-            -- stale card that left the battlefield) could otherwise receive an
-            -- attacker highlight and submit the wrong object.
-            if not (combatSelection and action.cardInstanceId ~= nil) then
-                for _, object in ipairs(cards) do
-                    local objectGuid = BridgeSafeObjectGuid(object)
-                    local objectZone = objectGuid and BridgeState.physicalZoneByGuid[objectGuid] or nil
-                    if (not combatSelection or objectZone == "battlefield")
-                        and BridgeCardNameMatches(object.getName(), action.cardIdentity) then
-                        table.insert(fallbackMatches, object)
-                    end
-                end
+            BridgeRecordActionPhysicalResolution(decision, action, "unresolved",
+                "exact mapping contradicts action source", mappedGuid, nil, mappedPhysicalZone)
+        elseif exactAction then
+            local resolved, resolveError = BridgeResolveExactActionPhysical(decision, action)
+            if resolved ~= nil and resolved.kind == "exact-loose" then
+                table.insert(matches, resolved.object)
+            elseif resolved ~= nil and resolved.kind == "exact-contained" then
+                -- Contained graveyard/library cards have no safe independent
+                -- world Card surface. The current decision's HUD action is the
+                -- exact Forge interaction surface; never substitute a loose
+                -- same-name object in another zone.
+                representedActionIds[action.actionId] = true
             else
                 BridgeLog(string.format(
-                    "[Bridge] suppressing combat action without exact physical mapping instance=%s card=%s",
-                    tostring(action.cardInstanceId), tostring(action.cardIdentity or action.type)))
+                    "[Bridge] suppressing exact action without safe physical representation instance=%s sourceZone=%s reason=%s",
+                    tostring(presentationInstanceId), tostring(actionSourceZone), tostring(resolveError)))
             end
-            if action.cardInstanceId == nil then
-                matches = fallbackMatches
-            elseif #fallbackMatches == 1 then
-                local recoveredGuid = BridgeSafeObjectGuid(fallbackMatches[1])
-                if recoveredGuid ~= nil then
-                    local recoveredZone = decision.kind == "main_priority"
-                        and "hand" or BridgeState.physicalZoneByGuid[recoveredGuid]
-                    BridgeRecordLooseCardIdentity(action.cardInstanceId, recoveredGuid, decision.seatId, recoveredZone)
-                    if action.cardIdentity ~= nil then
-                        BridgeState.cardNameByInstanceId[action.cardInstanceId] = action.cardIdentity
-                    end
-                    matches = fallbackMatches
-                    BridgeLog(string.format(
-                        "[Bridge] repaired instance mapping for %s -> %s (%s)",
-                        tostring(action.cardInstanceId), tostring(recoveredGuid), tostring(action.cardIdentity or action.type)))
+        else
+            local fallbackMatches = {}
+            -- Only genuinely legacy actions without any exact provenance may
+            -- use a name fallback, and even that fallback is source-zone
+            -- scoped when transport supplied a zone.
+            for _, object in ipairs(cards) do
+                local objectGuid = BridgeSafeObjectGuid(object)
+                local objectZone = objectGuid and BridgeState.physicalZoneByGuid[objectGuid] or nil
+                if (not combatSelection or objectZone == "battlefield")
+                    and (actionSourceZone == "" or objectZone == actionSourceZone)
+                    and BridgeCardNameMatches(object.getName(), action.cardIdentity) then
+                    table.insert(fallbackMatches, object)
                 end
-            elseif #fallbackMatches > 1 then
+            end
+            matches = fallbackMatches
+            if #fallbackMatches > 1 then
                 BridgeLog(string.format(
-                    "[Bridge] instance mapping ambiguous for %s (%s): %d candidates",
-                    tostring(action.cardInstanceId), tostring(action.cardIdentity or action.type), #fallbackMatches))
+                    "[Bridge] legacy name fallback ambiguous for %s: %d candidates",
+                    tostring(action.cardIdentity or action.type), #fallbackMatches))
             end
         end
 
-        if #matches > 0 and (action.cardIdentity ~= nil or action.cardInstanceId ~= nil) then
+        if #matches > 0 and (action.cardIdentity ~= nil or exactAction) then
             if mappedGuid == nil and #matches > 1 then
                 BridgeLog(string.format("[Bridge] duplicate card name '%s': highlighting all %d candidates", tostring(action.cardIdentity), #matches))
             end
 
             for _, object in ipairs(matches) do
                 local guid = object.getGUID()
+                action._bridgePresentationDecisionId = decision.decisionId
+                action._bridgePresentationGeneration = BridgeState.decisionPresentationGeneration
+                action._bridgePresentationSessionId = BridgeState.eventSessionId
                 -- Forge reprints selected combatants in the next decision. Keep
                 -- their action binding so selecting the same physical card sends
                 -- the toggle back to Forge instead of making it inert in TTS.
@@ -1322,6 +1404,29 @@ function onObjectPickUp(playerColor, object)
         BridgeClearHighlights()
         BridgeShowError("card action is stale; waiting for the current Forge decision")
         return
+    end
+    if action._bridgePresentationDecisionId ~= nil
+        and (action._bridgePresentationDecisionId ~= decision.decisionId
+            or action._bridgePresentationGeneration ~= BridgeState.decisionPresentationGeneration
+            or action._bridgePresentationSessionId ~= BridgeState.eventSessionId) then
+        BridgeClearHighlights()
+        BridgeShowError("card action belongs to a retired Forge decision")
+        return
+    end
+    local exactInstanceId = BridgeActionExactPhysicalInstanceId(action)
+    if exactInstanceId ~= nil then
+        local resolved, resolveError = BridgeResolveExactActionPhysical(decision, action)
+        local objectGuid = BridgeSafeObjectGuid(object)
+        if resolved == nil or resolved.kind ~= "exact-loose" or resolved.guid ~= objectGuid then
+            BridgeClearHighlights()
+            BridgeShowError("exact card action is no longer physically ready; awaiting reconciliation")
+            BridgeLog("[Bridge] physical pickup suppressed exact instance=" .. tostring(exactInstanceId)
+                .. " reason=" .. tostring(resolveError))
+            if BridgeScheduleSnapshotReconcile ~= nil then
+                BridgeScheduleSnapshotReconcile("exact action physical mapping unavailable", "RECOVERY")
+            end
+            return
+        end
     end
 
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
