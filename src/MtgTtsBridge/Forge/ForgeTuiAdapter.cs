@@ -395,6 +395,9 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         TaskCompletionSource<DecisionDto> waiter;
         string forgeInput = string.Empty;
         Process? process;
+        long choiceProcessGeneration;
+        CancellationToken processCancellationToken;
+        string choiceSessionId;
         DecisionDto? decisionForRequest;
         LegalActionDto? currentActionForRequest;
         lock (_sync)
@@ -473,6 +476,9 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             }
             forgeInput = mappedInput;
             process = _process;
+            choiceProcessGeneration = _processGeneration;
+            processCancellationToken = _processCancellation?.Token ?? CancellationToken.None;
+            choiceSessionId = _sessionId ?? string.Empty;
             if (process is null || process.HasExited)
             {
                 return Reject("forge_process_exited", "The Forge TUI process exited before the choice could be submitted.");
@@ -493,6 +499,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             waiter = NewDecisionWaiter();
         }
 
+        var activeProcess = process!;
         _logger.LogInformation("Forge TUI stdin action={ActionId} input={ForgeInput}", request.ActionId, forgeInput);
         if (currentActionForRequest is not null && string.Equals(currentActionForRequest.Type, "choose_none", StringComparison.Ordinal)
             && IsCollectionDecision(decisionForRequest))
@@ -501,11 +508,14 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
         try
         {
-            await process.StandardInput.WriteLineAsync(forgeInput).ConfigureAwait(false);
-            await process.StandardInput.FlushAsync().ConfigureAwait(false);
+            await activeProcess.StandardInput.WriteLineAsync(forgeInput).ConfigureAwait(false);
+            await activeProcess.StandardInput.FlushAsync().ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException)
         {
+            if (!IsCurrentProcessGeneration(activeProcess, choiceProcessGeneration)
+                || !string.Equals(choiceSessionId, _sessionId, StringComparison.Ordinal))
+                return Reject("session_replaced", "The Forge session was replaced before this choice could be written.");
             lock (_sync)
             {
                 if (_resolvedChoices.TryGetValue(request.DecisionId, out var choice))
@@ -516,9 +526,15 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             return Reject("forge_process_exited", $"Forge TUI stdin write failed: {ex.Message}");
         }
 
+        using var choiceCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, processCancellationToken);
         try
         {
-            _ = await WaitForDecisionAsync(waiter, _options.DecisionTimeoutSeconds, cancellationToken, "decision").ConfigureAwait(false);
+            _ = await WaitForDecisionAsync(waiter, _options.DecisionTimeoutSeconds, choiceCancellation.Token, "decision").ConfigureAwait(false);
+            if (!IsCurrentProcessGeneration(activeProcess, choiceProcessGeneration)
+                || !string.Equals(choiceSessionId, _sessionId, StringComparison.Ordinal))
+            {
+                return Reject("session_replaced", "The Forge session was replaced while this choice was in flight.");
+            }
             lock (_sync)
             {
                 if (_resolvedChoices.TryGetValue(request.DecisionId, out var choice))
@@ -530,20 +546,41 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
         catch (ForgeGameEndedException)
         {
+            if (!IsCurrentProcessGeneration(activeProcess, choiceProcessGeneration)
+                || !string.Equals(choiceSessionId, _sessionId, StringComparison.Ordinal))
+                return Reject("session_replaced", "The Forge session was replaced while this choice was in flight.");
             return new ForgeChoiceResult(true, CreateState(), null, null);
         }
         catch (ForgeUnsupportedPromptException ex)
         {
+            if (!IsCurrentProcessGeneration(activeProcess, choiceProcessGeneration)
+                || !string.Equals(choiceSessionId, _sessionId, StringComparison.Ordinal))
+                return Reject("session_replaced", "The Forge session was replaced while this choice was in flight.");
             return Reject("unsupported_decision", ex.Message);
         }
         catch (TimeoutException ex)
         {
-            Fail("decision_timeout", ex.Message);
-            await StopProcessAsync().ConfigureAwait(false);
+            if (!IsCurrentProcessGeneration(activeProcess, choiceProcessGeneration)
+                || !string.Equals(choiceSessionId, _sessionId, StringComparison.Ordinal))
+            {
+                return Reject("session_replaced", "The Forge session was replaced while this choice was waiting.");
+            }
+            Fail("decision_timeout", ex.Message, choiceProcessGeneration);
+            await StopProcessAsync(choiceProcessGeneration).ConfigureAwait(false);
             return Reject("decision_timeout", ex.Message);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!IsCurrentProcessGeneration(activeProcess, choiceProcessGeneration)
+                || !string.Equals(choiceSessionId, _sessionId, StringComparison.Ordinal))
+                return Reject("session_replaced", "The Forge session was replaced while this choice was waiting.");
+            return Reject("choice_cancelled", "The Forge choice wait was cancelled.");
         }
         catch (InvalidOperationException ex)
         {
+            if (!IsCurrentProcessGeneration(activeProcess, choiceProcessGeneration)
+                || !string.Equals(choiceSessionId, _sessionId, StringComparison.Ordinal))
+                return Reject("session_replaced", "The Forge session was replaced while this choice was in flight.");
             return Reject("forge_process_exited", ex.Message);
         }
     }
@@ -777,10 +814,22 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             SourceCardInstanceId = NormalizeInstanceId(sessionId, action.SourceCardInstanceId),
             PreparedSourceCardInstanceId = NormalizeInstanceId(sessionId, action.PreparedSourceCardInstanceId)
         }).ToArray();
+        // Forge can enumerate the same virtual prepared spell once per
+        // equivalent SpellAbility.  They are one legal choice when the
+        // virtual identity, prepared source, mode, and controller agree.
+        var seenPrepared = new HashSet<string>(StringComparer.Ordinal);
+        var dedupedActions = normalizedActions.Where(action =>
+        {
+            if (!string.Equals(action.CastMode, "prepare", StringComparison.OrdinalIgnoreCase)) return true;
+            var key = string.Join("|", action.CardInstanceId, action.PreparedSourceCardInstanceId,
+                action.AbilityKind, action.CostKind, parsed.Decision.SeatId);
+            return seenPrepared.Add(key);
+        }).ToArray();
+        var retainedActionIds = dedupedActions.Select(action => action.ActionId).ToHashSet(StringComparer.Ordinal);
         var normalizedDecision = parsed.Decision with
         {
             SeatId = _options.HumanSeatId,
-            Actions = normalizedActions,
+            Actions = dedupedActions,
             SourceCardInstanceId = NormalizeInstanceId(sessionId, parsed.Decision.SourceCardInstanceId),
             ContextCardInstanceId = NormalizeInstanceId(sessionId, parsed.Decision.ContextCardInstanceId),
             SessionId = sessionId,
@@ -796,7 +845,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
         _pendingDecision = new PendingDecisionCandidate(
             normalizedDecision,
-            parsed.Inputs.ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.Ordinal),
+            parsed.Inputs.Where(kvp => retainedActionIds.Contains(kvp.Key))
+                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.Ordinal),
             _latestEventSequence,
             _latestCommittedMutationCursor,
             baselineForgeSequence,
@@ -899,6 +949,24 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
         bool HasInstance(string? instanceId) => string.IsNullOrWhiteSpace(instanceId) || visibleInstances.Contains(instanceId);
 
+        bool ValidatePreparedSource(LegalActionDto action)
+        {
+            if (!string.Equals(action.Type, "cast_spell", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(action.CastMode, "prepare", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(action.CostKind, "prepare", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(action.SourceZone, "exile", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(action.PreparedSourceCardInstanceId)) return false;
+
+            var source = current.Seats.SelectMany(seat => seat.Zones)
+                .SelectMany(zone => zone.Cards)
+                .FirstOrDefault(card => string.Equals(card.CardInstanceId, action.PreparedSourceCardInstanceId, StringComparison.Ordinal));
+            if (source is null || !string.Equals(source.Zone, "battlefield", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(source.ControllerSeatId, decision.SeatId, StringComparison.Ordinal)
+                || !(source.CardDesignations ?? []).Any(designation => string.Equals(designation, "prepared", StringComparison.OrdinalIgnoreCase)))
+                return false;
+            return true;
+        }
+
         if (!HasInstance(decision.SourceCardInstanceId) || !HasInstance(decision.ContextCardInstanceId))
         {
             reason = "decision_context_card_missing";
@@ -907,9 +975,11 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
         foreach (var action in decision.Actions)
         {
-            if (!HasInstance(action.CardInstanceId)
-                || !HasInstance(action.SourceCardInstanceId)
-                || !HasInstance(action.PreparedSourceCardInstanceId))
+            var virtualPrepared = string.Equals(action.CastMode, "prepare", StringComparison.OrdinalIgnoreCase);
+            if ((!virtualPrepared && (!HasInstance(action.CardInstanceId)
+                    || !HasInstance(action.SourceCardInstanceId)
+                    || !HasInstance(action.PreparedSourceCardInstanceId)))
+                || (virtualPrepared && !ValidatePreparedSource(action)))
             {
                 reason = "action_card_reference_missing";
                 return false;
@@ -956,6 +1026,12 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                 pending.BaselineForgeSequence,
                 _latestCommittedMutationForgeSequence);
             _pendingDecision = null;
+            // A complete Forge prompt cannot be silently discarded: Forge is
+            // blocked waiting for input and any accepted choice waiter would
+            // otherwise remain pending until its timeout.  Fail and retire
+            // this process generation so recovery can take ownership.
+            Fail("decision_validation_failed", validationFailure);
+            _ = StopProcessAsync();
             return;
         }
 
@@ -1410,10 +1486,12 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         Fail("forge_process_exited", $"Forge TUI process exited with code {exitCode}.");
     }
 
-    private void Fail(string code, string message)
+    private void Fail(string code, string message, long? expectedProcessGeneration = null)
     {
         lock (_sync)
         {
+            if (expectedProcessGeneration is not null && _processGeneration != expectedProcessGeneration.Value)
+                return;
             if (!string.IsNullOrWhiteSpace(_lastObservedTuiText))
             {
                 _logger.LogWarning("Forge TUI output tail before failure: {Tail}", _lastObservedTuiText);

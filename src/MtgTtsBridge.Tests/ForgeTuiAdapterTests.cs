@@ -11,6 +11,44 @@ namespace MtgTtsBridge.Tests;
 public sealed class ForgeTuiAdapterTests
 {
     [Fact]
+    public async Task PreparedVirtualSpellSurvivesPhysicalReferenceValidationAndDeduplicates()
+    {
+        await using var adapter = WatermarkAdapter("session-prepared", 193, 27);
+        var source = new GameCardSnapshotDto(
+            "forge:session-prepared:31", 31, "Harmonized Trio", "Harmonized Trio", "battlefield", 0,
+            "forge-player-1", "forge-player-1", true, false, false, new Dictionary<string, int>(), [])
+            with { CardDesignations = ["prepared"] };
+        var snapshot = new GameSnapshotDto(
+            "session-prepared", 27, "prepared", [
+                new GameSeatSnapshotDto("forge-player-1", 1, "Player 1", 20, 0,
+                    new Dictionary<string, int>(), [new GameZoneSnapshotDto("battlefield", [source])]),
+                new GameSeatSnapshotDto("forge-player-2", 2, "AI", 20, 0,
+                    new Dictionary<string, int>(), [])], []);
+        var reconciler = Assert.IsType<ForgeStructuredStateReconciler>(GetPrivateField(adapter, "_structuredState"));
+        SetPrivateField(reconciler, "<Current>k__BackingField", snapshot);
+
+        var action1 = new LegalActionDto("forge-tui-27-choice-1", "cast_spell", "Brainstorm", false, "Brainstorm", null,
+            CardInstanceId: "forge-object:81", SourceCardInstanceId: "forge-object:81", SourceZone: "exile",
+            CastMode: "prepare", CostKind: "prepare", PreparedSourceCardInstanceId: "forge-object:31");
+        var action2 = action1 with { ActionId = "forge-tui-27-choice-2" };
+        var candidate = new ForgeTuiDecision(
+            new DecisionDto("forge-tui-27", "main_priority", [action1, action2], SeatId: "forge-player-1"),
+            new Dictionary<string, string> {
+                [action1.ActionId] = "1", [action2.ActionId] = "2" });
+        PrivateMethod("StageDecisionCandidate").Invoke(adapter, [candidate, false]);
+        PrivateMethod("ApplyDecisionReadyMarker").Invoke(adapter,
+            [new ForgeDecisionReadyMarker("session-prepared", "forge-tui-27", 27, 193, 1)]);
+        PrivateMethod("TryPublishPendingDecision").Invoke(adapter, ["prepared-test"]);
+
+        var state = await adapter.GetStateAsync(CancellationToken.None);
+        var decision = Assert.IsType<DecisionDto>(state.CurrentDecision);
+        var prepared = Assert.Single(decision.Actions);
+        Assert.Equal("forge-tui-27-choice-1", prepared.ActionId);
+        Assert.Equal("prepare", prepared.CastMode);
+        Assert.Equal("forge:session-prepared:31", prepared.PreparedSourceCardInstanceId);
+    }
+
+    [Fact]
     public async Task G2A_DecisionPublicationWaitsForStructuredWatermarkAdvance()
     {
         await using var adapter = new ForgeTuiAdapter(
