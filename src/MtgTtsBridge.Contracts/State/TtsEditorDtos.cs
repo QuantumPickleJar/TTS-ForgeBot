@@ -12,7 +12,13 @@ public sealed record TtsEditorStatusResponseDto(
     bool HasGlobalScriptState,
     string? LatestGeneratedGlobalLuaSha256,
     string? LatestCanonicalContentSha256,
-    int? LatestCanonicalLength);
+    int? LatestCanonicalLength,
+    TtsExternalEditorRuntimeErrorDto? LatestRuntimeError = null);
+
+public sealed record TtsExternalEditorRuntimeErrorDto(
+    int MessageId,
+    string Error,
+    DateTimeOffset ReceivedUtc);
 
 public sealed record TtsEditorRefreshResponseDto(
     long BaselineCallbackSequence,

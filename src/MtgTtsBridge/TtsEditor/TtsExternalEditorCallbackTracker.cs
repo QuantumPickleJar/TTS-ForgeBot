@@ -1,4 +1,5 @@
 using System.Text.Json;
+using MtgTtsBridge.Contracts.State;
 
 namespace MtgTtsBridge.TtsEditor;
 
@@ -16,7 +17,8 @@ public sealed record TtsExternalEditorGlobalScriptState(
 public sealed record TtsExternalEditorTrackerSnapshot(
     long LatestCallbackSequence,
     DateTimeOffset? LatestCallbackUtc,
-    TtsExternalEditorGlobalScriptState? LatestGlobalScriptState);
+    TtsExternalEditorGlobalScriptState? LatestGlobalScriptState,
+    TtsExternalEditorRuntimeErrorDto? LatestRuntimeError);
 
 public sealed class TtsExternalEditorCallbackTracker
 {
@@ -26,12 +28,13 @@ public sealed class TtsExternalEditorCallbackTracker
     private long _latestCallbackSequence;
     private DateTimeOffset? _latestCallbackUtc;
     private TtsExternalEditorGlobalScriptState? _latestGlobal;
+    private TtsExternalEditorRuntimeErrorDto? _latestRuntimeError;
 
     public TtsExternalEditorTrackerSnapshot Snapshot()
     {
         lock (_sync)
         {
-            return new TtsExternalEditorTrackerSnapshot(_latestCallbackSequence, _latestCallbackUtc, _latestGlobal);
+            return new TtsExternalEditorTrackerSnapshot(_latestCallbackSequence, _latestCallbackUtc, _latestGlobal, _latestRuntimeError);
         }
     }
 
@@ -47,7 +50,13 @@ public sealed class TtsExternalEditorCallbackTracker
         {
             if (messageId == 3 && root.TryGetProperty("error", out var errorElement) && errorElement.ValueKind == JsonValueKind.String)
             {
-                logger.LogWarning("TTS external-editor callback messageID=3 error={Error}", errorElement.GetString());
+                var runtimeReceivedUtc = DateTimeOffset.UtcNow;
+                var error = errorElement.GetString() ?? "";
+                lock (_sync)
+                {
+                    _latestRuntimeError = new TtsExternalEditorRuntimeErrorDto(messageId, error, runtimeReceivedUtc);
+                }
+                logger.LogWarning("TTS external-editor callback messageID=3 error={Error}", error);
             }
             else
             {

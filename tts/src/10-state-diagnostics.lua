@@ -213,7 +213,7 @@ function BridgeFindLibraryDeckCandidatesForSeat(seatId, objectSnapshot)
     if seat == nil then return {} end
     local candidates = {}
     for _, object in ipairs(objectSnapshot or _all()) do
-        if BridgeObjectIsUsable(object) and object.tag == "Deck" and BridgeObjectIsOnSeatSide(object, seat)
+        if BridgeObjectIsUsable(object) and BridgeSafeObjectTag(object) == "Deck" and BridgeObjectIsOnSeatSide(object, seat)
             and BridgeObjectNearSeatZone(object, seatId, "library") then
             table.insert(candidates, object)
         end
@@ -232,7 +232,7 @@ function BridgeFindSingleCardLibraryCandidateForSeat(seatId, objectSnapshot)
     local nearestDistance = nil
     local radius = (seat.libraryAssetRadius or 4) + 0.75
     for _, object in ipairs(objectSnapshot or _all()) do
-        if BridgeObjectIsUsable(object) and object.tag == "Card"
+        if BridgeObjectIsUsable(object) and BridgeSafeObjectTag(object) == "Card"
             and not BridgeIsPresentationOnlyObject(object) then
             local guid = BridgeSafeObjectGuid(object)
             local mappedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
@@ -669,7 +669,7 @@ function BridgeStageSeatCardsForBootstrap(snapshot, callback)
     local stagedGuids = {}
     local staged = {}
     for _, object in ipairs(getAllObjects()) do
-        if BridgeObjectIsUsable(object) and object.tag == "Card" then
+        if BridgeObjectIsUsable(object) and BridgeSafeObjectTag(object) == "Card" then
             local guid = BridgeSafeObjectGuid(object)
             local handSeatId = nil
             for candidateSeatId, handGuids in pairs(context.handGuidsBySeat or {}) do
@@ -752,7 +752,7 @@ end
 -- identity-based way to recognize a graveyard pile even when the pile was
 -- nudged outside the nominal graveyard anchor radius.
 function BridgeDeckContainsTrackedCardForSeat(deck, seatId)
-    if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then return false end
+    if not BridgeObjectIsUsable(deck) or BridgeSafeObjectTag(deck) ~= "Deck" then return false end
     local entries = {}
     BridgeStartupPerfCounter("deckGetObjectsCalls", 1)
     local ok = pcall(function() entries = deck.getObjects() or {} end)
@@ -766,7 +766,7 @@ function BridgeDeckContainsTrackedCardForSeat(deck, seatId)
 end
 
 function BridgeLibraryEntries(deck)
-    if not BridgeObjectIsUsable(deck) or deck.tag ~= "Deck" then return nil end
+    if not BridgeObjectIsUsable(deck) or BridgeSafeObjectTag(deck) ~= "Deck" then return nil end
     local entries = {}
     BridgeStartupPerfCounter("deckGetObjectsCalls", 1)
     local ok = pcall(function() entries = deck.getObjects() or {} end)
@@ -790,6 +790,18 @@ function BridgeLibraryAuditIgnoresGuid(ignoredGuids, guid)
     return tostring(guid) == tostring(ignoredGuids)
 end
 
+-- A native TTS Card proxy can remain addressable by its contained GUID after
+-- the Card has been published inside a Deck.  Cleanup records this only after
+-- repeated stable observations of the same Deck/inventory; it is not a global
+-- duplicate whitelist and is invalid if the exact contained inverse changes.
+function BridgeDurableContainedAliasMatches(guid, deckGuid)
+    local proof = (BridgeState.physicalDurableContainedAliasesByGuid or {})[tostring(guid)]
+    if proof == nil or tostring(proof.destinationDeck or "") ~= tostring(deckGuid or "") then return false end
+    return BridgeState.physicalContainedInstanceIdByGuid[guid] ~= nil
+        and BridgeState.physicalSeatByGuid[guid] == proof.seatId
+        and BridgeState.physicalZoneByGuid[guid] == proof.zoneName
+end
+
 function BridgeAuditDuplicateLibraryGuids(ignoredGuids)
     local looseByGuid = {}
     for _, object in ipairs(getAllObjects()) do
@@ -808,7 +820,7 @@ function BridgeAuditDuplicateLibraryGuids(ignoredGuids)
 
     local duplicates = 0
     for _, deck in ipairs(getAllObjects()) do
-        if BridgeObjectIsUsable(deck) and deck.tag == "Deck" then
+        if BridgeObjectIsUsable(deck) and BridgeSafeObjectTag(deck) == "Deck" then
             local deckGuid = BridgeSafeObjectGuid(deck)
             for index, entry in ipairs(BridgeLibraryEntries(deck) or {}) do
                 local guid = entry and (entry.guid or entry.GUID) or nil
@@ -817,6 +829,7 @@ function BridgeAuditDuplicateLibraryGuids(ignoredGuids)
                 local transition = guid and (BridgeState.physicalContainmentTransitionsByGuid or {})[tostring(guid)] or nil
                 local transitionDeck = transition and transition.destinationDeck or nil
                 local aliasProven = ignored and (transitionDeck == nil or tostring(transitionDeck) == tostring(deckGuid))
+                    or BridgeDurableContainedAliasMatches(guid, deckGuid)
                 if loose ~= nil and not aliasProven then
                     duplicates = duplicates + 1
                     BridgeRecordPhysicalMutationJournal({
@@ -885,10 +898,10 @@ end
 function BridgeVerifyLibraryContainment(seatId, guid, callback, attempt, preferredLibrary)
     attempt = attempt or 1
     local library = preferredLibrary
-    if library == nil or not BridgeObjectIsUsable(library) or library.tag ~= "Deck" then
+    if library == nil or not BridgeObjectIsUsable(library) or BridgeSafeObjectTag(library) ~= "Deck" then
         library = BridgeResolveSeatLibraryDeck(seatId)
     end
-    if library ~= nil and library.tag == "Deck" and BridgeLibraryContainsGuid(library, guid) then
+    if library ~= nil and BridgeSafeObjectTag(library) == "Deck" and BridgeLibraryContainsGuid(library, guid) then
         callback(true, library, nil)
         return
     end
@@ -1686,7 +1699,6 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
         end
         for _, object in ipairs(getAllObjects()) do addCandidate(object) end
 
-        local aliasSettleAttempts = {}
         local function insertCandidate(index)
             if index > #candidates then
                 if #candidates > 0 then
@@ -1705,9 +1717,40 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
                 if cleanupOwner ~= nil then
                     local liveAlias = BridgeGetLiveObjectByGuid ~= nil
                         and BridgeGetLiveObjectByGuid(candidate.guid) or candidate.object
-                    if liveAlias ~= nil and BridgeObjectIsUsable(liveAlias) and liveAlias.tag == "Card" then
-                        local settleAttempt = (aliasSettleAttempts[candidate.guid] or 0) + 1
-                        aliasSettleAttempts[candidate.guid] = settleAttempt
+                    if liveAlias ~= nil and BridgeObjectIsUsable(liveAlias) and BridgeSafeObjectTag(liveAlias) == "Card" then
+                        cleanupOwner.aliasSettleAttemptsByGuid = cleanupOwner.aliasSettleAttemptsByGuid or {}
+                        local settleAttempt = (cleanupOwner.aliasSettleAttemptsByGuid[candidate.guid] or 0) + 1
+                        cleanupOwner.aliasSettleAttemptsByGuid[candidate.guid] = settleAttempt
+                        local deckClaims = 0
+                        for _, possibleDeck in ipairs(getAllObjects()) do
+                            if BridgeSafeObjectTag(possibleDeck) == "Deck"
+                                and BridgeLibraryContainsGuid(possibleDeck, candidate.guid) then
+                                deckClaims = deckClaims + 1
+                            end
+                        end
+                        if settleAttempt >= 3 and deckClaims == 1
+                            and BridgeState.physicalContainedInstanceIdByGuid[candidate.guid] ~= nil then
+                            BridgeState.physicalDurableContainedAliasesByGuid =
+                                BridgeState.physicalDurableContainedAliasesByGuid or {}
+                            local durable = BridgeState.physicalDurableContainedAliasesByGuid
+                            durable[candidate.guid] = {
+                                destinationDeck = BridgeSafeObjectGuid(alreadyContained),
+                                seatId = candidate.seatId, zoneName = "library",
+                                observations = settleAttempt
+                            }
+                            cleanupOwner.provenContainedGuids[candidate.guid] = true
+                            BridgeRecordPhysicalMutationJournal({
+                                transitionToken = cleanupOwner.token,
+                                generation = BridgeState.physicalTransactionGeneration or 0,
+                                operation = "CardToLibrary", cardGuid = candidate.guid,
+                                destinationDeck = BridgeSafeObjectGuid(alreadyContained),
+                                containmentProven = true, looseAliasStillVisible = true,
+                                classification = "persistent_contained_alias",
+                                finalDisposition = "cleanup_done"
+                            })
+                            insertCandidate(index + 1)
+                            return
+                        end
                         if settleAttempt <= 30 then
                             BridgeRecordPhysicalMutationJournal({
                                 transitionToken = cleanupOwner.token,
@@ -1751,7 +1794,7 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
             -- GUID resolver. TTS always supplies it; retain the old local
             -- object fallback only for that isolated harness condition.
             if BridgeGetLiveObjectByGuid == nil then liveCandidate = candidate.object end
-            if not BridgeObjectIsUsable(liveCandidate) or liveCandidate.tag ~= "Card" then
+            if not BridgeObjectIsUsable(liveCandidate) or BridgeSafeObjectTag(liveCandidate) ~= "Card" then
                 BridgeState.lastNewMatchCleanupCallbackFailure = {
                     cleanupOwner = BridgeState.newMatchCleanupOwner,
                     embodimentEpoch = BridgeState.embodimentEpoch,

@@ -20,6 +20,8 @@ public sealed class TtsExternalEditorCallbackTrackerTests
         var waitTask = tracker.WaitForGlobalScriptStateAfterSequenceAsync(baseline, TimeSpan.FromSeconds(2), CancellationToken.None);
 
         tracker.TryProcessIncomingMessage(Parse("{" + "\"messageID\":3,\"error\":\"async\"}"), logger);
+        Assert.Equal(3, tracker.Snapshot().LatestRuntimeError?.MessageId);
+        Assert.Equal("async", tracker.Snapshot().LatestRuntimeError?.Error);
         tracker.TryProcessIncomingMessage(Parse("{" + "\"messageID\":1,\"scriptStates\":[{\"name\":\"Deck\",\"guid\":\"123\",\"script\":\"x\"}]}"), logger);
 
         await Task.Delay(100);

@@ -2258,7 +2258,8 @@ function BridgeBeginNewMatchCleanupTransaction(callback)
         tx.containmentOwner = {
             token = "cleanup:" .. tostring(tx.token),
             generation = BridgeState.physicalTransactionGeneration or 0,
-            provenContainedGuids = {}
+            provenContainedGuids = {},
+            aliasSettleAttemptsByGuid = {}
         }
         BridgeState.newMatchCleanupOwner = tx.containmentOwner
         BridgeEmbodimentJournal(tx, "APPLY", "CONVERGE_OLD_CARDS_TO_LIBRARIES", nil)
@@ -3209,6 +3210,7 @@ BridgeState = {
     libraryInsertionHandReleaseByGuid = {},
     newMatchCleanupOwner = nil,
     physicalContainmentTransitionsByGuid = {},
+    physicalDurableContainedAliasesByGuid = {},
     lastNewMatchCleanupFailure = nil,
     graveyardExtractionActiveBySeatId = {},
     -- Consecutive library transitions emitted by one Forge mutation are one
@@ -4411,11 +4413,12 @@ function BridgeRecordLibraryContainedState(cardInstanceId, seatId, cardName, con
     end
     local existingContainer = BridgeState.physicalContainerByInstanceId[cardInstanceId]
     if existingContainer ~= nil then
-        if BridgeState.physicalContainedInstanceIdByGuid[existingContainer.cardGuid] == cardInstanceId then
+        local ownsOldContainedGuid = BridgeState.physicalContainedInstanceIdByGuid[existingContainer.cardGuid] == cardInstanceId
+        if ownsOldContainedGuid then
             BridgeState.physicalContainedInstanceIdByGuid[existingContainer.cardGuid] = nil
         end
         BridgeState.physicalContainerByInstanceId[cardInstanceId] = nil
-        if BridgeState.physicalContainedInstanceIdByGuid[existingContainer.cardGuid] == cardInstanceId then
+        if ownsOldContainedGuid then
             BridgeState.physicalSeatByGuid[existingContainer.cardGuid] = nil
             BridgeState.physicalZoneByGuid[existingContainer.cardGuid] = nil
         end

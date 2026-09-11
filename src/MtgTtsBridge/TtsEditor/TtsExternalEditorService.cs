@@ -44,7 +44,8 @@ public sealed class TtsExternalEditorService : IHostedService, ITtsExternalEdito
             HasGlobalScriptState: global is not null,
             LatestGeneratedGlobalLuaSha256: global?.GeneratedGlobalLuaSha256,
             LatestCanonicalContentSha256: global?.CanonicalContentSha256,
-            LatestCanonicalLength: global?.CanonicalLength);
+            LatestCanonicalLength: global?.CanonicalLength,
+            LatestRuntimeError: snapshot.LatestRuntimeError);
     }
 
     public async Task<TtsEditorRefreshResponseDto> RefreshAsync(CancellationToken cancellationToken)

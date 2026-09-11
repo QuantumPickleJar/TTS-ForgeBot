@@ -3512,4 +3512,30 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeDeckFromNativeGroupResult(groupResult)", Script[recoveryStart..recoveryEnd]);
         Assert.DoesNotContain("container = loose[1]", Script[recoveryStart..Script.IndexOf("if type(group) == \"function\"", recoveryStart, StringComparison.Ordinal)]);
     }
+
+    [Fact]
+    public void LibraryEntries_UsesSafeNativeTagBoundary()
+    {
+        var start = Script.IndexOf("function BridgeLibraryEntries", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeLibraryContainsGuid", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        Assert.Contains("BridgeSafeObjectTag(deck)", body);
+        Assert.DoesNotContain("deck.tag", body);
+    }
+
+    [Fact]
+    public void NewMatchCleanup_AliasRetryStateBelongsToCleanupOwner()
+    {
+        var start = Script.IndexOf("function BridgeReturnPreviousGameCardsToLibraries", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeTraceStart", start, StringComparison.Ordinal);
+        if (end <= start)
+        {
+            end = Script.IndexOf("\nfunction ", start + 1, StringComparison.Ordinal);
+        }
+        Assert.True(start >= 0 && end > start);
+        var body = Script[start..end];
+        Assert.Contains("cleanupOwner.aliasSettleAttemptsByGuid", body);
+        Assert.DoesNotContain("local aliasSettleAttempts", body);
+    }
 }
