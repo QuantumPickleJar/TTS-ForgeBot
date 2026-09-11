@@ -776,8 +776,8 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     {guid='guid-b', nickname='Card B', index=1}
                 }
             end
-            BridgeRecordContainedCardIdentity(':a', 'grave-deck', 'guid-a', 'forge-player-1', 'graveyard', 'Card A')
-            BridgeRecordContainedCardIdentity(':b', 'grave-deck', 'guid-b', 'forge-player-1', 'graveyard', 'Card B')
+            recordA = BridgeRecordContainedCardIdentity(':a', 'grave-deck', 'guid-a', 'forge-player-1', 'graveyard', 'Card A')
+            recordB = BridgeRecordContainedCardIdentity(':b', 'grave-deck', 'guid-b', 'forge-player-1', 'graveyard', 'Card B')
             local expectedRebind = BridgeCollectGraveyardExpectedInstances('forge-player-1', deck, nil, false)
             deck.getObjects = function()
                 return {
@@ -787,7 +787,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
             end
             local ok = BridgeRecordGraveyardContainerEntries('forge-player-1', deck, expectedRebind)
             rebindOk = ok
-            rebindFailure = BridgeState.lastGraveyardRebindFailure
+            rebindFailure = tostring(BridgeState.lastGraveyardRebindFailure)
             a = BridgeState.physicalContainerByInstanceId[':a']
             b = BridgeState.physicalContainerByInstanceId[':b']
             inverseA = BridgeState.physicalContainedInstanceIdByGuid['guid-b']
@@ -808,6 +808,93 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Assert.Equal("graveyard", lua.Globals.Get("zoneA").String);
         Assert.Equal("forge-player-1", lua.Globals.Get("seatB").String);
         Assert.Equal("graveyard", lua.Globals.Get("zoneB").String);
+    }
+
+    [Fact]
+    public void MentalNoteThenSupplierRebindRepublishesExistingAndIncomingGraveyardCardsAtomically()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.lastAppliedEventSequence = 112
+            BridgeState.eventSessionId = 'mental-note-supplier-session'
+            local names = {
+                [':old-a'] = 'Harmonized Trio', [':old-b'] = 'Island',
+                [':supplier'] = 'Stitcher\'s Supplier', [':cruise'] = 'Treasure Cruise',
+                [':swamp'] = 'Swamp'
+            }
+            for instanceId, cardName in pairs(names) do
+                BridgeState.cardNameByInstanceId[instanceId] = cardName
+            end
+            local oldA = BridgeTestCreateCard(':old-a', names[':old-a'], 'old-a-loose')
+            local oldB = BridgeTestCreateCard(':old-b', names[':old-b'], 'old-b-loose')
+            BridgeTestQueueExtractionCards({oldA, oldB})
+            BridgeTestSetEventQueue(
+                {sequence=113, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':old-a', cardName=names[':old-a'], forgeSequence=120},
+                {sequence=114, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':old-b', cardName=names[':old-b'], forgeSequence=120}
+            )
+            BridgeProcessEventQueue()
+            oldGuidA = BridgeState.physicalContainerByInstanceId[':old-a'].cardGuid
+            oldGuidB = BridgeState.physicalContainerByInstanceId[':old-b'].cardGuid
+
+            local supplier = BridgeTestCreateCard(':supplier', names[':supplier'], 'supplier-loose')
+            local cruise = BridgeTestCreateCard(':cruise', names[':cruise'], 'cruise-loose')
+            local swamp = BridgeTestCreateCard(':swamp', names[':swamp'], 'swamp-loose')
+            BridgeTestQueueExtractionCards({supplier, cruise, swamp})
+            BridgeTestSetEventQueue(
+                {sequence=115, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':supplier', cardName=names[':supplier'], forgeSequence=127},
+                {sequence=116, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':cruise', cardName=names[':cruise'], forgeSequence=127},
+                {sequence=117, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':swamp', cardName=names[':swamp'], forgeSequence=127}
+            )
+            BridgeProcessEventQueue()
+            local expected = {}
+            table.insert(expected, ':old-a')
+            table.insert(expected, ':old-b')
+            table.insert(expected, ':supplier')
+            table.insert(expected, ':cruise')
+            table.insert(expected, ':swamp')
+            finalMappingCount = 0
+            allFinalRepresentations = true
+            noLooseAliases = true
+            for _, instanceId in ipairs(expected) do
+                local mapping = BridgeState.physicalContainerByInstanceId[instanceId]
+                local guid = mapping and mapping.cardGuid or nil
+                local inverse = guid and BridgeState.physicalContainedInstanceIdByGuid[guid] or nil
+                local seat = guid and BridgeState.physicalSeatByGuid[guid] or nil
+                local zone = guid and BridgeState.physicalZoneByGuid[guid] or nil
+                local verified = BridgeVerifyFinalPhysicalRepresentation(instanceId, 'forge-player-1', 'graveyard')
+                if mapping == nil or guid == nil or inverse ~= instanceId
+                    or seat ~= 'forge-player-1' or zone ~= 'graveyard' or not verified then
+                    allFinalRepresentations = false
+                else
+                    finalMappingCount = finalMappingCount + 1
+                end
+                if BridgeState.physicalByInstanceId[instanceId] ~= nil
+                    or BridgeState.physicalInstanceIdByGuid[guid] ~= nil then
+                    noLooseAliases = false
+                end
+            end
+            nativeCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.getObjects() or {})
+            duplicateCount = BridgeTestDuplicateGraveyardInstanceCount()
+            mutationCommits = BridgeTestCountLogToken('MUTATION_COMMIT')
+            oldGuidAChanged = BridgeState.physicalContainerByInstanceId[':old-a'].cardGuid ~= oldGuidA
+            oldGuidBChanged = BridgeState.physicalContainerByInstanceId[':old-b'].cardGuid ~= oldGuidB
+            finalApplied = BridgeState.lastAppliedEventSequence
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.Equal(117, lua.Globals.Get("finalApplied").Number);
+        Assert.Equal(5, lua.Globals.Get("finalMappingCount").Number);
+        Assert.True(lua.Globals.Get("allFinalRepresentations").Boolean,
+            $"final representations failed; logs={CapturedLogsTail(lua)}");
+        Assert.True(lua.Globals.Get("noLooseAliases").Boolean,
+            $"stale loose aliases survived; logs={CapturedLogsTail(lua)}");
+        Assert.Equal(5, lua.Globals.Get("nativeCount").Number);
+        Assert.Equal(0, lua.Globals.Get("duplicateCount").Number);
+        Assert.True(lua.Globals.Get("oldGuidAChanged").Boolean);
+        Assert.True(lua.Globals.Get("oldGuidBChanged").Boolean);
+        Assert.Equal(2, lua.Globals.Get("mutationCommits").Number);
+        Assert.Equal("nil", lua.Globals.Get("desyncState").String);
     }
 
     [Fact]

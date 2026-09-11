@@ -260,12 +260,15 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void CombatActionsWithExactIdentityNeverFallBackToSpentSameNameCards()
     {
-        var start = Script.IndexOf("local fallbackMatches = {}", StringComparison.Ordinal);
-        var end = Script.IndexOf("if action.cardInstanceId == nil then", start, StringComparison.Ordinal);
-        Assert.True(start >= 0 && end > start);
-        var body = Script[start..end];
-        Assert.Contains("combatSelection and action.cardInstanceId ~= nil", body);
-        Assert.Contains("suppressing combat action without exact physical mapping", body);
+        var exactStart = Script.IndexOf("if exactMappingContradictsActionSource then", StringComparison.Ordinal);
+        var fallbackStart = Script.IndexOf("local fallbackMatches = {}", exactStart, StringComparison.Ordinal);
+        Assert.True(exactStart >= 0 && fallbackStart > exactStart);
+        var exactBody = Script[exactStart..fallbackStart];
+        Assert.Contains("local combatSelection = combatActionKind == \"choose_attacker\"", Script);
+        Assert.Contains("if combatSelection and mappedPhysicalZone ~= \"battlefield\" then", Script);
+        Assert.Contains("suppressing stale exact action", exactBody);
+        Assert.Contains("BridgeResolveExactActionPhysical", exactBody);
+        Assert.DoesNotContain("fallbackMatches", exactBody);
     }
 
     [Fact]
@@ -2484,7 +2487,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeClearHighlights()", renderer);
         Assert.Contains("presentationInstanceId and BridgeState.physicalByInstanceId[presentationInstanceId]", renderer);
         Assert.Contains("BridgeState.actionByGuid[guid] = action", renderer);
-        Assert.Contains("action.sourceZone", renderer);
+        Assert.Contains("action.sourceZone", Script);
         Assert.DoesNotContain("currentTypes contains Creature", renderer);
     }
 

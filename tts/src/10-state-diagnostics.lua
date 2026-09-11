@@ -686,8 +686,15 @@ function BridgeStageSeatCardsForBootstrap(snapshot, callback)
                 end
             end
             local isInHand = handSeatId ~= nil
-            local trackedInstanceId = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
-            local trackedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
+            -- A replacement session may leave a native Card on the table while
+            -- its old custom variables are being retired.  Only an inverse
+            -- published for the active Forge session is eligible to preserve
+            -- the object in place; a foreign inverse must not turn into a
+            -- source card for the new snapshot.
+            local trackedInstanceId = guid
+                and BridgeSessionScopedPhysicalInstanceForGuid(guid, BridgeState.eventSessionId) or nil
+            local trackedZone = trackedInstanceId ~= nil
+                and BridgeState.physicalZoneByGuid[guid] or nil
             -- During a same-session resync, retain live public cards in place.
             -- Moving them into the library would erase their exact identity
             -- before snapshot reconciliation and force a duplicate-name deck
@@ -759,8 +766,9 @@ function BridgeDeckContainsTrackedCardForSeat(deck, seatId)
     if not ok then return false end
     for _, entry in ipairs(entries) do
         local guid = entry and entry.guid or nil
+        local instanceId = guid and BridgeSessionScopedPhysicalInstanceForGuid(guid, BridgeState.eventSessionId) or nil
         local mappedSeat = guid and BridgeState.physicalSeatByGuid[guid] or nil
-        if mappedSeat == seatId then return true end
+        if instanceId ~= nil and mappedSeat == seatId then return true end
     end
     return false
 end
@@ -771,7 +779,7 @@ function BridgeLibraryEntries(deck)
     BridgeStartupPerfCounter("deckGetObjectsCalls", 1)
     local ok = pcall(function() entries = deck.getObjects() or {} end)
     if not ok then return nil end
-    return entries
+    return BridgeNormalizeNumericSequence(entries)
 end
 
 function BridgeLibraryContainsGuid(deck, guid)
@@ -2146,7 +2154,10 @@ function BridgeBindHandMappingsForSnapshot(seatSnapshot, callback)
     BridgeState.physicalContainerByInstanceId = nextContainer
     BridgeState.physicalContainedInstanceIdByGuid = nextContained
     BridgeState.physicalSlotByInstanceId = nextSlots
-    for _, item in ipairs(candidates) do BridgeWritePhysicalIdentity(item.object, item.instanceId) end
+    for _, item in ipairs(candidates) do
+        BridgeWritePhysicalIdentity(item.object, item.instanceId)
+        BridgeWritePhysicalSessionIdentity(item.object, BridgeState.eventSessionId)
+    end
     BridgeAdvancePhysicalPresentationGeneration("hand-bindings-committed")
     local published = candidates
     callback(true, nil, {status="SUCCESS", verifiedHandMappings=#published, expectedHandMappings=#candidates})

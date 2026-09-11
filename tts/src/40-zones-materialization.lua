@@ -86,7 +86,8 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
                 sourceZone = "hand", object = object, guid = guid,
                 cardName = BridgePhysicalCanonicalCardName(object),
                 normalizedName = BridgeNormalizeCardName(BridgePhysicalCanonicalCardName(object)),
-                instanceId = BridgeReadCurrentSessionPhysicalIdentity(object) or BridgeState.physicalInstanceIdByGuid[guid]
+                instanceId = BridgeReadCurrentSessionPhysicalIdentity(object)
+                    or BridgeSessionScopedPhysicalInstanceForGuid(guid, BridgeState.eventSessionId)
             })
         end
     end
@@ -103,7 +104,8 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
                     sourceZone = zone, object = object, guid = guid,
                     cardName = asset.cardName or BridgePhysicalCanonicalCardName(object),
                     normalizedName = BridgeNormalizeCardName(asset.cardName or BridgePhysicalCanonicalCardName(object)),
-                    instanceId = BridgeReadCurrentSessionPhysicalIdentity(object) or BridgeState.physicalInstanceIdByGuid[guid]
+                    instanceId = BridgeReadCurrentSessionPhysicalIdentity(object)
+                        or BridgeSessionScopedPhysicalInstanceForGuid(guid, BridgeState.eventSessionId)
                 })
                 knownSourceGuid[guid] = true
             end
@@ -512,8 +514,7 @@ function BridgeBuildSeatGraveyardLedger(seatId)
                 cardName = name,
                 normalizedName = normalized,
                 index = tonumber(entry.index or -1) or -1,
-                instanceId = BridgeState.physicalContainedInstanceIdByGuid[guid]
-                    or BridgeState.physicalInstanceIdByGuid[guid]
+                instanceId = BridgeSessionScopedPhysicalInstanceForGuid(guid, BridgeState.eventSessionId)
             }
             ledger.byName[normalized] = ledger.byName[normalized] or {}
             table.insert(ledger.byName[normalized], item)
@@ -6189,7 +6190,6 @@ function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
             ordered[orderedIndex] = entry
         end
         local assignments = {}
-        local assignmentInstances = {}
         for index = 1, #entries do
             local entry = ordered[index] or entries[index]
             local guid = entry and (entry.guid or entry.GUID) or nil
@@ -6201,35 +6201,15 @@ function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
                     .. ":guid=" .. tostring(guid) .. ":instance=" .. tostring(expectedInstanceId)
                 return false
             end
-            assignments[index] = {instanceId=expectedInstanceId, cardName=expectedCardName, guid=guid}
-            assignmentInstances[tostring(expectedInstanceId)] = true
+            assignments[index] = {
+                instanceId=expectedInstanceId, cardName=expectedCardName,
+                cardGuid=guid, deckGuid=deckGuid, seatId=seatId, zoneName="graveyard"
+            }
         end
-        local needsAtomicRebind = false
-        for _, assignment in ipairs(assignments) do
-            local owner = BridgeState.physicalContainedInstanceIdByGuid[assignment.guid]
-            if owner ~= nil and owner ~= assignment.instanceId then needsAtomicRebind = true; break end
-        end
-        if needsAtomicRebind then
-            for instanceId in pairs(assignmentInstances) do
-                local mapping = BridgeState.physicalContainerByInstanceId[instanceId]
-                if mapping ~= nil then
-                    local oldGuid = mapping.cardGuid
-                    if oldGuid ~= nil and BridgeState.physicalContainedInstanceIdByGuid[oldGuid] == instanceId then
-                        BridgeState.physicalContainedInstanceIdByGuid[oldGuid] = nil
-                        BridgeState.physicalSeatByGuid[oldGuid] = nil
-                        BridgeState.physicalZoneByGuid[oldGuid] = nil
-                    end
-                    BridgeState.physicalContainerByInstanceId[instanceId] = nil
-                end
-            end
-        end
-        for index, assignment in ipairs(assignments) do
-            if not BridgeRecordContainedCardIdentity(assignment.instanceId, deckGuid, assignment.guid,
-                    seatId, "graveyard", assignment.cardName) then
-                BridgeState.lastGraveyardRebindFailure = "index=" .. tostring(index)
-                    .. ":guid=" .. tostring(assignment.guid) .. ":instance=" .. tostring(assignment.instanceId)
-                return false
-            end
+        if not BridgeRecordContainedCardIdentitySet(assignments) then
+            BridgeState.lastGraveyardRebindFailure = "contained-identity-set-publication-failed:"
+                .. tostring(BridgeState.lastContainedIdentitySetFailure or "unknown")
+            return false
         end
         return true
     end
@@ -6248,8 +6228,9 @@ function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
     for _, entry in ipairs(entries) do
         local cardGuid = entry and (entry.guid or entry.GUID) or nil
         local entryName = entry and (entry.nickname or entry.name) or nil
-        local instanceId = cardGuid and (BridgeState.physicalContainedInstanceIdByGuid[cardGuid]
-            or BridgeState.physicalInstanceIdByGuid[cardGuid]) or nil
+        local instanceId = cardGuid
+            and BridgeSessionScopedPhysicalInstanceForGuid(cardGuid, BridgeState.eventSessionId)
+            or nil
 
         -- Pass 1: Try to match by existing GUID first (cards already in container before merge)
         if instanceId ~= nil then
@@ -6498,7 +6479,8 @@ function BridgeCollectGraveyardExpectedInstances(seatId, container, incomingInst
     local expectedCount = 0
     local seen = {}
     local function addInstance(instanceId)
-        if instanceId == nil or seen[tostring(instanceId)] then return end
+        if instanceId == nil or seen[tostring(instanceId)]
+            or not BridgeCardInstanceBelongsToSession(instanceId, BridgeState.eventSessionId) then return end
         local cardName = BridgeState.cardNameByInstanceId[instanceId]
         expectedCount = expectedCount + 1
         expected[expectedCount] = {instanceId = instanceId, cardName = cardName}
@@ -6508,13 +6490,16 @@ function BridgeCollectGraveyardExpectedInstances(seatId, container, incomingInst
     if entries ~= nil then
         for _, entry in ipairs(entries) do
             local guid = entry and (entry.guid or entry.GUID) or nil
-            local instanceId = guid and (BridgeState.physicalContainedInstanceIdByGuid[guid]
-                or BridgeState.physicalInstanceIdByGuid[guid]) or nil
+            local instanceId = guid
+                and BridgeSessionScopedPhysicalInstanceForGuid(guid, BridgeState.eventSessionId)
+                or nil
             addInstance(instanceId)
         end
     else
         local guid = container and BridgeSafeObjectGuid(container) or nil
-        local instanceId = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+        local instanceId = guid
+            and BridgeSessionScopedPhysicalInstanceForGuid(guid, BridgeState.eventSessionId)
+            or nil
         addInstance(instanceId)
     end
     -- The inventory can expose freshly reassigned contained GUIDs before the
@@ -6536,7 +6521,7 @@ function BridgeCollectGraveyardExpectedInstances(seatId, container, incomingInst
                 if guid ~= nil
                     and tostring(BridgeState.physicalSeatByGuid[guid] or "") == tostring(seatId)
                     and tostring(BridgeState.physicalZoneByGuid[guid] or "") == "graveyard" then
-                    addInstance(BridgeState.physicalInstanceIdByGuid[guid])
+                    addInstance(BridgeSessionScopedPhysicalInstanceForGuid(guid, BridgeState.eventSessionId))
                 end
             end
         end

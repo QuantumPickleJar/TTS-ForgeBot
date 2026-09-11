@@ -868,6 +868,282 @@ public sealed class EmbodimentReconciliationEngineTests
     }
 
     [Fact]
+    public void ReplacementSessionRebuildsFortyCardSourceAndReattachesMulliganWithoutForeignIdentity()
+    {
+        var lua = NewProbe(true);
+        lua.DoString(@"
+            local oldCard = {tag='Card', guid='old-loose-guid', name='Old Stale Card', vars={
+                bridgeCardInstanceId='forge:old-session:99', bridgeSessionId='old-session'}}
+            oldCard.getGUID = function() return oldCard.guid end
+            oldCard.getName = function() return oldCard.name end
+            oldCard.getVar = function(key) return oldCard.vars[key] end
+            oldCard.setVar = function(key, value) oldCard.vars[key] = value end
+            oldCard.getPosition = function() return {x=0,y=2,z=-8} end
+            oldCard.setPosition = function(position) oldCard.position = position end
+            oldCard.setRotation = function(rotation) oldCard.rotation = rotation end
+            oldCard.getRotation = function() return {x=0,y=0,z=0} end
+
+            local entries = {}
+            local hand = {}
+            local cardsByGuid = {}
+            local function sourceName(index) return 'Replacement Card ' .. tostring(index) end
+            for index = 1, 40 do
+                table.insert(entries, {guid='source-' .. tostring(index), nickname=sourceName(index), index=index - 1})
+            end
+            local deck = {tag='Deck', position={x=1.7772,y=2,z=-8.7126}}
+            deck.getGUID = function() return 'replacement-library' end
+            deck.getName = function() return 'Replacement Library' end
+            deck.getPosition = function() return deck.position end
+            deck.getObjects = function()
+                -- TTS returns a fresh inventory description.  Keeping the
+                -- probe's backing inventory separate prevents production
+                -- sorting from mutating the native source collection.
+                local observed = {}
+                for index = 1, #entries do table.insert(observed, entries[index]) end
+                return observed
+            end
+            deck.takeObject = function(args)
+                local selectedIndex = nil
+                for index = 1, #entries do
+                    local entry = entries[index]
+                    if tostring(entry.guid) == tostring(args.guid) then selectedIndex = index; break end
+                end
+                if selectedIndex == nil then error('exact replacement source was not found') end
+                local entry = entries[selectedIndex]
+                for index = selectedIndex, #entries - 1 do entries[index] = entries[index + 1] end
+                entries[#entries] = nil
+                local card = {tag='Card', guid=entry.guid, name=entry.nickname, vars={}, inHand=false,
+                    position={x=1.7772,y=2,z=-8.7126}}
+                card.getGUID = function() return card.guid end
+                card.getName = function() return card.name end
+                card.getVar = function(key) return card.vars[key] end
+                card.setVar = function(key, value) card.vars[key] = value end
+                card.getPosition = function() return card.position end
+                card.setPosition = function(position)
+                    card.position = position
+                    if card.inHand ~= true then table.insert(hand, card); card.inHand = true end
+                end
+                card.setPositionSmooth = function(position) card.position = position end
+                card.setRotation = function(rotation) card.rotation = rotation end
+                card.getRotation = function() return {x=0,y=0,z=0} end
+                cardsByGuid[card.guid] = card
+                -- TTS accepts the extracted card at the requested hand
+                -- position before the bridge's identity publication callback.
+                table.insert(hand, card)
+                card.inHand = true
+                args.callback_function(card)
+            end
+            function getObjectFromGUID(guid)
+                if guid == 'replacement-library' then return deck end
+                if guid == 'old-loose-guid' then return oldCard end
+                return cardsByGuid[guid]
+            end
+
+            -- The replacement session is already announced, but every live
+            -- bridge advertisement and committed ledger entry is still from
+            -- the old session (the captured recovery topology).
+            BridgeState.eventSessionId = 'replacement-session'
+            BridgeState.physicalOwnershipSessionId = 'old-session'
+            BridgeState.eventSessionGeneration = 7
+            BridgeState.physicalTransactionGeneration = 11
+            BridgeState.physicalByInstanceId = {['forge:old-session:99']='old-loose-guid'}
+            BridgeState.physicalInstanceIdByGuid = {['old-loose-guid']='forge:old-session:99'}
+            BridgeState.physicalSeatByGuid = {['old-loose-guid']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['old-loose-guid']='library'}
+            BridgeState.physicalContainerByInstanceId = {
+                ['forge:old-session:98']={deckGuid='old-library', cardGuid='old-contained-guid',
+                    seatId='forge-player-1', zoneName='library'}}
+            BridgeState.physicalContainedInstanceIdByGuid = {['old-contained-guid']='forge:old-session:98'}
+            BridgeState.physicalSlotByInstanceId = {['forge:old-session:98']={slotIndex=2}}
+            BridgeState.cardNameByInstanceId = {['forge:old-session:99']='Old Stale Card'}
+            BridgeState.committedPhysicalLedger = {
+                ownerSessionId='old-session', ownerEventSessionGeneration=7,
+                ownerPhysicalTransactionGeneration=11,
+                physicalByInstanceId={['forge:old-session:99']='old-loose-guid'},
+                physicalInstanceIdByGuid={['old-loose-guid']='forge:old-session:99'},
+                physicalSeatByGuid={['old-loose-guid']='forge-player-1'},
+                physicalZoneByGuid={['old-loose-guid']='library'},
+                physicalContainerByInstanceId={['forge:old-session:98']={deckGuid='old-library', cardGuid='old-contained-guid',
+                    seatId='forge-player-1', zoneName='library'}},
+                physicalContainedInstanceIdByGuid={['old-contained-guid']='forge:old-session:98'},
+                physicalSlotByInstanceId={['forge:old-session:98']={slotIndex=2}}
+            }
+
+            BRIDGE_SEATS['forge-player-1'].libraryZoneGuid = 'replacement-library'
+            testObjects = {deck, oldCard}
+            function BridgeTryGetSeatHandObjects(seatId) return hand end
+            function BridgeTryGetSeatHandTransform(seatId)
+                return {position={x=2,y=3,z=-8}, rotation={x=0,y=0,z=0}}, nil
+            end
+            function BridgeEnsureNativeGraveyardContainer(seatId) return true, nil end
+            function BridgeFindGraveyardContainer(seatId) return nil end
+            function BridgeRequireArtBearingLibraryCard(object, seatId, cardInstanceId) return true end
+            function BridgeSetPhysicalFaceDown(object, seat, faceDown) end
+            function BridgeStopOnDesync(reason) desyncReason = reason end
+            function BridgeWaitFrames(callback, frames) callback() end
+            function BridgeWaitTime(callback, seconds) end
+            function BridgeVerifyLibraryIdentityStability(callback) callback(true, nil) end
+            function BridgeAnnotateSnapshotBattlefieldKinds(snapshot, callback) callback(true, nil) end
+            function BridgeApplySeatSnapshotVisualState(snapshot) end
+            function BridgePollEvents(generation) eventPollGeneration = generation end
+            function BridgeGetEmbodimentSnapshot(callback) callback(true, snapshot, nil) end
+            function BridgeGetDecision(callback)
+                callback(true, {decisionId='forge-tui-1', sessionId='replacement-session', kind='mulligan',
+                    mulliganStage='keep_or_mulligan', seatId='forge-player-1', eventCursor=54,
+                    forgeSequence=3, actions={{actionId='keep', type='keep_hand', isPresentationAuthorized=true}}}, nil)
+            end
+            function BridgeSetStatus(headline, detail) end
+            function BridgeSetupStage(stage, detail) end
+            function BridgeRecordDecisionLifecycle(decision, origin, state, reason) end
+            function BridgeCheckProjectionCoherence(decision, source) end
+            function BridgeCheckOpeningHandReadiness(seatId) return true, 7, 7, nil end
+            function BridgeTurnLabel() return 'Turn 1' end
+            function BridgeRetireChoiceTransactionsForDecision(decisionId) end
+            function BridgeCreatureTypeClearDraft(reason) end
+            function BridgeGraveyardClear(reason) end
+            function BridgeDecisionHasUnauthorizedPresentationAction(decision) return false end
+            function BridgeShouldDeferDecision(decision) return false, 54, 54, nil end
+            function BridgeRenderDecision(decision, force) presentedDecisionKind = decision.kind end
+            function BridgeDecisionPhysicalMappingsReady(decision) return true, nil end
+
+            local libraryCards = {}
+            local handCards = {}
+            for index = 1, 40 do
+                local desired = {cardInstanceId='forge:replacement-session:' .. tostring(index),
+                    cardName=sourceName(index), zonePosition=index}
+                if index <= 7 then table.insert(handCards, desired) else table.insert(libraryCards, desired) end
+            end
+            local replacementSeat = {seatId='forge-player-1', zones={}}
+            table.insert(replacementSeat.zones, {name='library', cards=libraryCards})
+            table.insert(replacementSeat.zones, {name='hand', cards=handCards})
+            snapshot = {sessionId='replacement-session', eventCursor=54, forgeSequence=3, seats={}}
+            table.insert(snapshot.seats, replacementSeat)
+
+            -- A late callback from the old transaction is fenced by the
+            -- session/transaction generations after the new barrier.
+            function staleOldCallback()
+                if not BridgePhysicalPresentationIsCurrent('old-session', 11) then
+                    staleCallbackRejected = true
+                    return
+                end
+                BridgeState.physicalByInstanceId['forge:old-session:99'] = 'old-loose-guid'
+            end
+
+            resyncStarted = BridgeResyncFromAuthoritativeSnapshot('manual')
+            for index = 1, 24 do
+                BridgeState.updateTick = (BridgeState.updateTick or 0) + 1
+                BridgeState.resyncUpdateTick = (BridgeState.resyncUpdateTick or 0) + 1
+                BridgePumpEmbodimentTransaction()
+            end
+            staleOldCallback()
+            remainingSourceCount = #entries
+            replacementHandCount = #hand
+            replacementLibraryCount = #deck.getObjects()
+            oldCardInstanceAfter = oldCard.getVar('bridgeCardInstanceId')
+            oldCardSessionAfter = oldCard.getVar('bridgeSessionId')
+            oldLooseAfter = BridgeState.physicalByInstanceId['forge:old-session:99']
+            oldContainedAfter = BridgeState.physicalContainedInstanceIdByGuid['old-contained-guid']
+            oldSlotAfter = BridgeState.physicalSlotByInstanceId['forge:old-session:98']
+            newHandMappings = 0
+            newLibraryMappings = 0
+            foreignMappings = 0
+            exactNewHandMappings = true
+            exactNewLibraryMappings = true
+            for instanceId, guid in pairs(BridgeState.physicalByInstanceId or {}) do
+                if string.find(instanceId, 'forge:replacement-session:', 1, true) == 1 then
+                    if BridgeState.physicalZoneByGuid[guid] == 'hand' then
+                        newHandMappings = newHandMappings + 1
+                    else
+                        exactNewHandMappings = false
+                    end
+                else foreignMappings = foreignMappings + 1 end
+            end
+            for instanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+                if string.find(instanceId, 'forge:replacement-session:', 1, true) == 1
+                    and mapping.zoneName == 'library' then newLibraryMappings = newLibraryMappings + 1
+                else
+                    if string.find(instanceId, 'forge:replacement-session:', 1, true) == 1 then exactNewLibraryMappings = false end
+                    foreignMappings = foreignMappings + 1
+                end
+            end
+            for _, instanceId in pairs(BridgeState.physicalInstanceIdByGuid or {}) do
+                if string.find(tostring(instanceId), 'forge:replacement-session:', 1, true) ~= 1 then foreignMappings = foreignMappings + 1 end
+            end
+            for _, instanceId in pairs(BridgeState.physicalContainedInstanceIdByGuid or {}) do
+                if string.find(tostring(instanceId), 'forge:replacement-session:', 1, true) ~= 1 then foreignMappings = foreignMappings + 1 end
+            end
+            for guid, _ in pairs(BridgeState.physicalSeatByGuid or {}) do
+                local instanceId = BridgeState.physicalInstanceIdByGuid[guid]
+                    or BridgeState.physicalContainedInstanceIdByGuid[guid]
+                if instanceId == nil or string.find(tostring(instanceId), 'forge:replacement-session:', 1, true) ~= 1 then foreignMappings = foreignMappings + 1 end
+            end
+            for guid, _ in pairs(BridgeState.physicalZoneByGuid or {}) do
+                local instanceId = BridgeState.physicalInstanceIdByGuid[guid]
+                    or BridgeState.physicalContainedInstanceIdByGuid[guid]
+                if instanceId == nil or string.find(tostring(instanceId), 'forge:replacement-session:', 1, true) ~= 1 then foreignMappings = foreignMappings + 1 end
+            end
+            for instanceId, _ in pairs(BridgeState.physicalSlotByInstanceId or {}) do
+                if string.find(tostring(instanceId), 'forge:replacement-session:', 1, true) ~= 1 then foreignMappings = foreignMappings + 1 end
+            end
+            for index = 1, 7 do
+                local object = hand[index]
+                local expected = 'forge:replacement-session:' .. tostring(index)
+                if object == nil or BridgeReadPhysicalIdentity(object) ~= expected
+                    or BridgeState.physicalZoneByGuid[object.guid] ~= 'hand' then exactNewHandMappings = false end
+            end
+            for index = 8, 40 do
+                local expected = 'forge:replacement-session:' .. tostring(index)
+                local mapping = BridgeState.physicalContainerByInstanceId[expected]
+                local guid = mapping and mapping.cardGuid or nil
+                if mapping == nil or mapping.deckGuid ~= 'replacement-library'
+                    or mapping.zoneName ~= 'library' or guid ~= 'source-' .. tostring(index)
+                    or BridgeState.physicalContainedInstanceIdByGuid[guid] ~= expected then
+                    exactNewLibraryMappings = false
+                end
+            end
+
+            local staleTx = BridgeBeginEmbodimentTransaction('replacement-session', 'late-old-ledger', false, nil)
+            if staleTx ~= nil then
+                staleTx.committedPhysicalLedger = {
+                    ownerSessionId='old-session', physicalByInstanceId={['forge:old-session:77']='old-late-guid'},
+                    physicalInstanceIdByGuid={['old-late-guid']='forge:old-session:77'}, physicalSeatByGuid={},
+                    physicalZoneByGuid={}, physicalContainerByInstanceId={}, physicalContainedInstanceIdByGuid={},
+                    physicalSlotByInstanceId={}}
+                BridgeFinishEmbodimentTransaction(staleTx, false, 'late old transaction')
+                staleRollbackRejected = BridgeState.lastEmbodimentTransaction.ledgerRollbackSkipped == true
+                oldLateAfter = BridgeState.physicalByInstanceId['forge:old-session:77']
+            else
+                staleTransactionMissing = true
+            end
+        ");
+
+        Assert.True(lua.Globals.Get("resyncStarted").Boolean);
+        Assert.True(lua.Globals.Get("staleCallbackRejected").Boolean);
+        Assert.Equal(7, lua.Globals.Get("replacementHandCount").Number);
+        Assert.Equal(33, lua.Globals.Get("replacementLibraryCount").Number);
+        Assert.Equal(33, lua.Globals.Get("remainingSourceCount").Number);
+        Assert.Equal(7, lua.Globals.Get("newHandMappings").Number);
+        Assert.Equal(33, lua.Globals.Get("newLibraryMappings").Number);
+        Assert.True(lua.Globals.Get("exactNewHandMappings").Boolean);
+        Assert.True(lua.Globals.Get("exactNewLibraryMappings").Boolean);
+        Assert.Equal(0, lua.Globals.Get("foreignMappings").Number);
+        Assert.True(lua.Globals.Get("oldCardInstanceAfter").IsNil());
+        Assert.True(lua.Globals.Get("oldCardSessionAfter").IsNil());
+        Assert.True(lua.Globals.Get("oldLooseAfter").IsNil());
+        Assert.True(lua.Globals.Get("oldContainedAfter").IsNil());
+        Assert.True(lua.Globals.Get("oldSlotAfter").IsNil());
+        Assert.True(lua.Globals.Get("oldLateAfter").IsNil());
+        Assert.True(lua.Globals.Get("staleRollbackRejected").Boolean);
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal(54, state.Get("lastAppliedEventSequence").Number);
+        Assert.True(state.Get("eventPolling").Boolean);
+        Assert.False(state.Get("resyncInFlight").Boolean);
+        Assert.Equal("mulligan", state.Get("lastDecision").Table.Get("kind").String);
+        Assert.Equal("replacement-session", state.Get("physicalOwnershipSessionId").String);
+    }
+
+    [Fact]
     public void SlotLocatorRefreshAfterLibraryMutationUsesCurrentDeckTopology()
     {
         var lua = NewProbe();
@@ -918,7 +1194,7 @@ public sealed class EmbodimentReconciliationEngineTests
         Assert.Contains("generation is stale", lua.Globals.Get("resolveError").String);
     }
 
-    private static Script NewProbe()
+    private static Script NewProbe(bool ttsArraySemantics = false)
     {
         var lua = new Script();
         lua.DoString(@"
@@ -926,7 +1202,7 @@ public sealed class EmbodimentReconciliationEngineTests
             function broadcastToAll(message, color) end
             function printToAll(message, color) end
             function getObjectFromGUID(guid) return nil end
-            function getAllObjects() return {} end
+            function getAllObjects() return testObjects or {} end
             function Wait(frames) end
             Time = {waitForSeconds=function(seconds, callback) callback() end}
             JSON = {encode=function(value) return '{}' end, decode=function(value) return {} end}
@@ -941,6 +1217,59 @@ public sealed class EmbodimentReconciliationEngineTests
                 return result
             end
         ");
+        if (ttsArraySemantics)
+        {
+            lua.DoString(@"
+                local function arrayLength(values)
+                    local length = 0
+                    while values[length + 1] ~= nil do length = length + 1 end
+                    return length
+                end
+                local arrayMeta = {__len = function(values) return arrayLength(values) end}
+                table.insert = function(values, indexOrValue, optionalValue)
+                    setmetatable(values, arrayMeta)
+                    local length = arrayLength(values)
+                    if optionalValue == nil then
+                        values[length + 1] = indexOrValue
+                        return
+                    end
+                    local insertIndex = tonumber(indexOrValue) or (length + 1)
+                    for index = length + 1, insertIndex + 1, -1 do values[index] = values[index - 1] end
+                    values[insertIndex] = optionalValue
+                end
+                table.remove = function(values, position)
+                    local length = arrayLength(values)
+                    local removeIndex = tonumber(position) or length
+                    local removed = values[removeIndex]
+                    for index = removeIndex, length - 1 do values[index] = values[index + 1] end
+                    values[length] = nil
+                    return removed
+                end
+                table.sort = function(values, compare)
+                    local length = arrayLength(values)
+                    for index = 2, length do
+                        local value = values[index]
+                        local cursor = index - 1
+                        while cursor >= 1 and compare(value, values[cursor]) do
+                            values[cursor + 1] = values[cursor]
+                            cursor = cursor - 1
+                        end
+                        values[cursor + 1] = value
+                    end
+                end
+                local rawIpairs = ipairs
+                ipairs = function(values)
+                    if type(values) ~= 'table' then return rawIpairs(values) end
+                    local index = 0
+                    return function(state, last)
+                        index = index + 1
+                        local value = state[index]
+                        if value ~= nil then return index, value end
+                        return nil
+                    end, values, 0
+                end
+            ");
+        }
         lua.DoString(GlobalScript);
         lua.DoString(@"
             BridgeState.eventSessionId = 'session'

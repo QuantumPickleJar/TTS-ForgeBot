@@ -87,6 +87,10 @@ public sealed class StitchersSupplierThreeCardMillRegressionTests
             local n=0
             local deck={tag='Deck',getGUID=function() return 'unstable-deck' end}
             deck.getObjects=function() n=n+1; return {{guid='unstable-'..tostring(n),index=1}} end
+            -- Current settlement deliberately reacquires the native Deck by
+            -- GUID after each observation. Keep that lookup available so this
+            -- test exercises bounded instability rather than deck loss.
+            function getObjectFromGUID(guid) if guid=='unstable-deck' then return deck end end
             function BridgeWaitFrames(callback,frames) callback() end
             settled,settleError=nil,nil
             BridgeVerifyGraveyardDeckSettlement(deck,4,function(ok,reason) settled=ok; settleError=reason end)
