@@ -104,9 +104,15 @@ end
 function BridgeRevealCardArt(entry)
     if BridgeResolveCanonicalCardArt ~= nil then
         local ok, image = pcall(BridgeResolveCanonicalCardArt, entry.cardFaceIdentity, entry.cardName)
-        if ok and image ~= nil and tostring(image) ~= "" then return tostring(image) end
+        if ok and image ~= nil and tostring(image) ~= "" then return tostring(image), "canonical" end
     end
-    return entry.imageUrl or entry.image or nil
+    if entry.imageUrl ~= nil and tostring(entry.imageUrl) ~= "" then
+        return tostring(entry.imageUrl), "producer-url"
+    end
+    if entry.image ~= nil and tostring(entry.image) ~= "" then
+        return tostring(entry.image), "physical-custom-face"
+    end
+    return nil, "fallback-text"
 end
 
 function BridgeApplyRevealPresentation(presentation, appliedEventSequence)
@@ -201,9 +207,13 @@ function BridgeRenderRevealSurface()
     BridgeUiSet("BridgeHudRevealHeading", "text", "REVEALED CARDS (" .. tostring(#cards) .. ")")
     BridgeUiSet("BridgeHudRevealReason", "text", tostring(presentation.reason or presentation.sourceName or ""))
     local endIndex = math.min(#cards, offset + BRIDGE_REVEAL_SURFACE_SLOTS - 1)
+    local artSources = {}
     for slot = 1, BRIDGE_REVEAL_SURFACE_SLOTS do
         local entry = cards[offset + slot - 1]
-        local image = entry and BridgeRevealCardArt(entry) or nil
+        local image, source
+        if entry ~= nil then
+            image, source = BridgeRevealCardArt(entry)
+        end
         BridgeUiSet("BridgeHudRevealCard" .. tostring(slot), "active", entry ~= nil and "true" or "false")
         BridgeUiSet("BridgeHudRevealImage" .. tostring(slot), "active", image ~= nil and "true" or "false")
         BridgeUiSet("BridgeHudRevealImage" .. tostring(slot), "image", image or "")
@@ -211,6 +221,10 @@ function BridgeRenderRevealSurface()
         BridgeUiSet("BridgeHudRevealFallback" .. tostring(slot), "text", entry and tostring(entry.cardName or "Revealed card") or "")
         BridgeUiSet("BridgeHudRevealCard" .. tostring(slot), "tooltip", entry and tostring(entry.cardName or "Revealed card") or "")
         BridgeUiSet("BridgeHudRevealCardButton" .. tostring(slot), "active", entry ~= nil and "true" or "false")
+        if entry ~= nil and source then
+            if artSources[source] == nil then artSources[source] = 0 end
+            artSources[source] = artSources[source] + 1
+        end
     end
     BridgeUiSet("BridgeHudRevealPrev", "active", offset > 1 and "true" or "false")
     BridgeUiSet("BridgeHudRevealNext", "active", endIndex < #cards and "true" or "false")
@@ -218,4 +232,14 @@ function BridgeRenderRevealSurface()
         and (tostring(offset) .. "-" .. tostring(endIndex) .. " / " .. tostring(#cards)) or "")
     BridgeUiSet("BridgeHudRevealClose", "active", not BridgeRevealIsDecisionBound(presentation) and "true" or "false")
     BridgeUiSet("BridgeHudRevealClose", "text", presentation.acknowledgmentRequired == true and "ACKNOWLEDGE" or "CLOSE")
+    
+    -- Display art resolution diagnostics
+    local artSourceStr = ""
+    for _, source in ipairs({"canonical", "producer-url", "physical-custom-face", "fallback-text"}) do
+        if artSources[source] and artSources[source] > 0 then
+            if artSourceStr ~= "" then artSourceStr = artSourceStr .. " | " end
+            artSourceStr = artSourceStr .. source .. ":" .. tostring(artSources[source])
+        end
+    end
+    BridgeUiSet("BridgeHudRevealArtSource", "text", artSourceStr)
 end

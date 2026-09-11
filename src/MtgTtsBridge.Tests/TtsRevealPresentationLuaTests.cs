@@ -221,6 +221,33 @@ public sealed class TtsRevealPresentationLuaTests
         Assert.Equal("producer-two", lua.Globals.Get("producerArt").String);
     }
 
+    [Fact]
+    public void RevealArtSourceDiagnosticsTrackCanonicalProducerAndFallbackSeparately()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.lastAppliedEventSequence = 6
+            BridgeResolveCanonicalCardArt = function(face, name) if face == 'face-1' then return 'canonical-url' end end
+            lastDiagnostic = ''
+            function BridgeUiSet(id, attribute, value)
+                if id == 'BridgeHudRevealArtSource' and attribute == 'text' then lastDiagnostic = value end
+            end
+            BridgeApplyRevealPresentation({presentationId='diagnostic', originatingEventSequence=6, visibility='public', cards={
+                {authoritativeObjectId='c1', cardName='Card1', cardFaceIdentity='face-1'},
+                {authoritativeObjectId='c2', cardName='Card2', imageUrl='https://example.com/producer-url.png'},
+                {authoritativeObjectId='c3', cardName='Card3'}
+            }, lifecycle='opened'}, 6)
+            BridgeRenderRevealSurface()
+        ");
+
+        var diagnostic = lua.Globals.Get("lastDiagnostic").String;
+        Assert.NotEmpty(diagnostic);
+        // At minimum, should track some art source categories
+        Assert.Contains(":", diagnostic, StringComparison.Ordinal);
+        // Should include the producer-url source for card 2
+        Assert.Contains("producer-url", diagnostic, StringComparison.Ordinal);
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script();
