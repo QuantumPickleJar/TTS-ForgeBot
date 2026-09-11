@@ -46,7 +46,8 @@ public sealed record DiagnosticPhysicalMappingDto(
     string Guid,
     string? Zone = null,
     bool IsLive = false,
-    string? AdvertisedCardInstanceId = null);
+    string? AdvertisedCardInstanceId = null,
+    string? SeatId = null);
 
 /// <summary>Bounded scheduler state captured when the TTS event head cannot start.</summary>
 public sealed record DiagnosticEventDrainDiagnosticsDto(

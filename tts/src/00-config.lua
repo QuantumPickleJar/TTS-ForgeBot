@@ -3978,7 +3978,7 @@ function BridgeWakePhysicalReadinessDependency(generation, reason)
     return true
 end
 
-function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
+function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName, allowContainedExtraction)
     if cardInstanceId == nil or guid == nil or tostring(guid) == "" then
         BridgeLog("[Bridge] refusing incomplete Forge mapping")
         return false
@@ -4014,6 +4014,24 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
     local previousGuid = BridgeState.physicalByInstanceId[cardInstanceId]
     local previousContainer = BridgeState.physicalContainerByInstanceId[cardInstanceId]
     if previousContainer ~= nil then
+        -- getObjectFromGUID may continue to expose a Card-shaped proxy after
+        -- the exact GUID has become contained by a native Deck.  That proxy
+        -- is not evidence of a new loose representation and must never
+        -- overwrite the contained graveyard/library mapping during a later
+        -- snapshot observation.  The only caller allowed to leave a proven
+        -- container is the exact owned extraction callback.
+        local containedGuid = previousContainer.cardGuid
+        local containingDeck = previousContainer.deckGuid ~= nil
+            and BridgeGetLiveObjectByGuid(previousContainer.deckGuid) or nil
+        local stillContained = containedGuid ~= nil
+            and BridgeState.physicalContainedInstanceIdByGuid[containedGuid] == cardInstanceId
+            and BridgeSafeObjectTag(containingDeck) == "Deck"
+            and BridgeLibraryContainsGuid(containingDeck, containedGuid)
+        if stillContained and allowContainedExtraction ~= true then
+            BridgeLog("[Bridge] refusing contained proxy as loose card instance=" .. tostring(cardInstanceId)
+                .. " guid=" .. tostring(guid) .. " deck=" .. tostring(previousContainer.deckGuid))
+            return false
+        end
         if previousContainer.cardGuid ~= nil
             and BridgeState.physicalContainedInstanceIdByGuid[previousContainer.cardGuid] == cardInstanceId then
             BridgeState.physicalContainedInstanceIdByGuid[previousContainer.cardGuid] = nil

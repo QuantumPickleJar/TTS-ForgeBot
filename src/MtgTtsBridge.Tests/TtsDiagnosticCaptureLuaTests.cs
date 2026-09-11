@@ -91,7 +91,7 @@ public sealed class TtsDiagnosticCaptureLuaTests
                 kind = 'main_priority', eventCursor = 22,
                 actions = {{actionId = 'pass-12', type = 'pass_priority'}}
             }
-            BridgeState.ui = {reportCaptureInFlight = false, reportCaptureToken = 0, reportCategoryIndex = 1}
+            BridgeState.ui = {reportCaptureInFlight = false, reportCaptureToken = 0, reportCategoryIndex = 1, reportPanelVisible = true}
             eventPollCalls = 0; decisionGets = 0; accepted = 0; submitted = 0
             function BridgePollEvents(generation) eventPollCalls = eventPollCalls + 1 end
             function BridgeAcceptDecision(decision, origin, sessionId, presentationGeneration) accepted = accepted + 1 end
@@ -115,6 +115,7 @@ public sealed class TtsDiagnosticCaptureLuaTests
 
         var bridgeState = lua.Globals.Get("BridgeState").Table;
         Assert.False(bridgeState.Get("ui").Table.Get("reportCaptureInFlight").Boolean);
+        Assert.False(bridgeState.Get("ui").Table.Get("reportPanelVisible").Boolean);
         Assert.Equal(0, lua.Globals.Get("decisionGets").Number);
         Assert.Equal(0, lua.Globals.Get("accepted").Number);
         Assert.Equal(0, lua.Globals.Get("submitted").Number);
@@ -134,7 +135,7 @@ public sealed class TtsDiagnosticCaptureLuaTests
                 eventCursor = 22, kind = 'main_priority',
                 actions = {{actionId = 'pass-12', type = 'pass_priority'}}
             }
-            BridgeState.ui = {reportCaptureInFlight = false, reportCaptureToken = 0, resyncInFlight = false, reportCategoryIndex = 1}
+            BridgeState.ui = {reportCaptureInFlight = false, reportCaptureToken = 0, resyncInFlight = false, reportCategoryIndex = 1, reportPanelVisible = true}
             BridgeState.desyncLatched = false
             BridgeState.physicalTransactionGeneration = 7
             BridgeState.schedulerOwner = 'NORMAL'
@@ -177,6 +178,7 @@ public sealed class TtsDiagnosticCaptureLuaTests
         var ui = state.Get("ui").Table;
         Assert.True(lua.Globals.Get("captureInFlightWhilePending").Boolean);
         Assert.True(ui.Get("reportCaptureInFlight").Boolean == false);
+        Assert.False(ui.Get("reportPanelVisible").Boolean);
         Assert.True(lua.Globals.Get("blockedWhilePending").IsNil());
         Assert.Equal("desync-latched", lua.Globals.Get("blockedAfterCompletion").String);
         Assert.Equal(1, lua.Globals.Get("resyncCalls").Number);
@@ -325,7 +327,7 @@ public sealed class TtsDiagnosticCaptureLuaTests
         lua.DoString(@"
             BridgeState.eventSessionId = 'replacement-session'
             BridgeState.eventSessionGeneration = 9
-            BridgeState.ui = {reportCaptureInFlight = false, reportCaptureToken = 0, reportCategoryIndex = 1}
+            BridgeState.ui = {reportCaptureInFlight = false, reportCaptureToken = 0, reportCategoryIndex = 1, reportPanelVisible = true}
             BridgeState.terminalRecoveryError = {
                 sessionId='replacement-session', sessionGeneration=9,
                 kind='decision_provenance_lag', detail='decision cursor did not converge',
@@ -480,8 +482,10 @@ public sealed class TtsDiagnosticCaptureLuaTests
 
         Assert.Equal(0, lua.Globals.Get("recoveryCalls").Number);
         Assert.Equal(2, lua.Globals.Get("BridgeState").Table.Get("ui").Table.Get("reportCaptureToken").Number);
-        Assert.Equal(lua.Globals.Get("lifecycleBeforeStaleCallback").Number,
-            lua.Globals.Get("lifecycleAfterStaleCallback").Number);
+        Assert.True(lua.Globals.Get("lifecycleAfterStaleCallback").Number
+            > lua.Globals.Get("lifecycleBeforeStaleCallback").Number);
+        var lifecycle = lua.Globals.Get("BridgeState").Table.Get("diagnosticCaptureLifecycle").Table;
+        Assert.Contains(lifecycle.Values, item => item.Table.Get("stage").String == "DIAG_CAPTURE_FENCE_REJECTED");
     }
 
     [Fact]

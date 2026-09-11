@@ -5305,7 +5305,7 @@ local function BridgeApplyStructuredCardMoveCore(event)
             end
             local takenGuid = BridgeSafeObjectGuid(taken)
             local recorded = BridgeRecordLooseCardIdentity(event.cardInstanceId, takenGuid,
-                event.seatId, event.destinationZone)
+                event.seatId, event.destinationZone, true)
             if not recorded then
                 BridgeStopOnDesync("contained graveyard extraction could not rebind exact Card")
                 return
@@ -6701,6 +6701,33 @@ function BridgeCompletePendingGraveyardMerge(merge, callback)
             merge.containmentTransition.cardInstanceId = merge.cardInstanceId
             BridgeMarkPhysicalContainmentProven(merge.containmentTransition,
                 settledTarget, merge.containmentOwner)
+        end
+        -- A dispatched putObject is not a committed zone transition.  The
+        -- loose battlefield/stack mapping must have been replaced by this
+        -- exact contained graveyard representation before the event owner is
+        -- allowed to report physical completion.
+        local mergeInstanceIncluded = false
+        for _, expected in ipairs(merge.expectedInstances or {}) do
+            if tostring(expected.instanceId or expected[1] or "") == tostring(merge.cardInstanceId or "") then
+                mergeInstanceIncluded = true
+                break
+            end
+        end
+        -- Atomic base formation can intentionally defer a public stack
+        -- arrival. Its transaction performs the final postcondition after
+        -- that deferred event joins the same Deck. Ordinary one-card merges
+        -- include the incoming instance here and must prove it now.
+        if mergeInstanceIncluded then
+            local representationOk, representationError = BridgeVerifyFinalPhysicalRepresentation(
+                merge.cardInstanceId, merge.seatId, "graveyard")
+            if not representationOk then
+                local reason = "graveyard-final-representation:" .. tostring(merge.cardInstanceId)
+                    .. ":" .. tostring(representationError)
+                BridgeState.resyncLastBlockingPredicate = reason
+                BridgeStopOnDesync(reason)
+                finish(false, reason)
+                return
+            end
         end
         local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(
             merge.seatId, "after-merge", merge.containmentOwner)

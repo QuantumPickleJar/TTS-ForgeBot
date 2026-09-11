@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: c35dec6122f6a9863e0102694b9aa1c7c064cc8c1e6111e7439b0e256abc1dac
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "c35dec6122f6a9863e0102694b9aa1c7c064cc8c1e6111e7439b0e256abc1dac"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 2c6a98eb749bed607ad2a9d8f09a32f480639a2406c346e2dfe96f8ded244958
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "2c6a98eb749bed607ad2a9d8f09a32f480639a2406c346e2dfe96f8ded244958"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -3981,7 +3981,7 @@ function BridgeWakePhysicalReadinessDependency(generation, reason)
     return true
 end
 
-function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
+function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName, allowContainedExtraction)
     if cardInstanceId == nil or guid == nil or tostring(guid) == "" then
         BridgeLog("[Bridge] refusing incomplete Forge mapping")
         return false
@@ -4017,6 +4017,24 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
     local previousGuid = BridgeState.physicalByInstanceId[cardInstanceId]
     local previousContainer = BridgeState.physicalContainerByInstanceId[cardInstanceId]
     if previousContainer ~= nil then
+        -- getObjectFromGUID may continue to expose a Card-shaped proxy after
+        -- the exact GUID has become contained by a native Deck.  That proxy
+        -- is not evidence of a new loose representation and must never
+        -- overwrite the contained graveyard/library mapping during a later
+        -- snapshot observation.  The only caller allowed to leave a proven
+        -- container is the exact owned extraction callback.
+        local containedGuid = previousContainer.cardGuid
+        local containingDeck = previousContainer.deckGuid ~= nil
+            and BridgeGetLiveObjectByGuid(previousContainer.deckGuid) or nil
+        local stillContained = containedGuid ~= nil
+            and BridgeState.physicalContainedInstanceIdByGuid[containedGuid] == cardInstanceId
+            and BridgeSafeObjectTag(containingDeck) == "Deck"
+            and BridgeLibraryContainsGuid(containingDeck, containedGuid)
+        if stillContained and allowContainedExtraction ~= true then
+            BridgeLog("[Bridge] refusing contained proxy as loose card instance=" .. tostring(cardInstanceId)
+                .. " guid=" .. tostring(guid) .. " deck=" .. tostring(previousContainer.deckGuid))
+            return false
+        end
         if previousContainer.cardGuid ~= nil
             and BridgeState.physicalContainedInstanceIdByGuid[previousContainer.cardGuid] == cardInstanceId then
             BridgeState.physicalContainedInstanceIdByGuid[previousContainer.cardGuid] = nil
@@ -20441,7 +20459,7 @@ local function BridgeApplyStructuredCardMoveCore(event)
             end
             local takenGuid = BridgeSafeObjectGuid(taken)
             local recorded = BridgeRecordLooseCardIdentity(event.cardInstanceId, takenGuid,
-                event.seatId, event.destinationZone)
+                event.seatId, event.destinationZone, true)
             if not recorded then
                 BridgeStopOnDesync("contained graveyard extraction could not rebind exact Card")
                 return
@@ -21837,6 +21855,33 @@ function BridgeCompletePendingGraveyardMerge(merge, callback)
             merge.containmentTransition.cardInstanceId = merge.cardInstanceId
             BridgeMarkPhysicalContainmentProven(merge.containmentTransition,
                 settledTarget, merge.containmentOwner)
+        end
+        -- A dispatched putObject is not a committed zone transition.  The
+        -- loose battlefield/stack mapping must have been replaced by this
+        -- exact contained graveyard representation before the event owner is
+        -- allowed to report physical completion.
+        local mergeInstanceIncluded = false
+        for _, expected in ipairs(merge.expectedInstances or {}) do
+            if tostring(expected.instanceId or expected[1] or "") == tostring(merge.cardInstanceId or "") then
+                mergeInstanceIncluded = true
+                break
+            end
+        end
+        -- Atomic base formation can intentionally defer a public stack
+        -- arrival. Its transaction performs the final postcondition after
+        -- that deferred event joins the same Deck. Ordinary one-card merges
+        -- include the incoming instance here and must prove it now.
+        if mergeInstanceIncluded then
+            local representationOk, representationError = BridgeVerifyFinalPhysicalRepresentation(
+                merge.cardInstanceId, merge.seatId, "graveyard")
+            if not representationOk then
+                local reason = "graveyard-final-representation:" .. tostring(merge.cardInstanceId)
+                    .. ":" .. tostring(representationError)
+                BridgeState.resyncLastBlockingPredicate = reason
+                BridgeStopOnDesync(reason)
+                finish(false, reason)
+                return
+            end
         end
         local shapeOk, shapeReason = BridgeAssertGraveyardObjectShape(
             merge.seatId, "after-merge", merge.containmentOwner)
@@ -24118,10 +24163,29 @@ function BridgeHudReportPhysicalMappings()
             cardInstanceId = cardInstanceId,
             guid = guid,
             zone = BridgeState.physicalZoneByGuid[guid],
+            seatId = BridgeState.physicalSeatByGuid[guid],
             isLive = object ~= nil,
             advertisedCardInstanceId = BridgeReadPhysicalIdentity(object)
         })
         seenGuids[guid] = true
+    end
+    -- Contained cards are authoritative physical representations too.  Report
+    -- them separately so diagnostics can detect a stale loose mapping which
+    -- contradicts a native Deck-contained graveyard/library identity.
+    for cardInstanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+        local guid = mapping and mapping.cardGuid or nil
+        local deck = mapping and mapping.deckGuid and BridgeGetLiveObjectByGuid(mapping.deckGuid) or nil
+        if guid ~= nil then
+            table.insert(mappings, {
+                cardInstanceId = cardInstanceId,
+                guid = guid,
+                zone = BridgeState.physicalZoneByGuid[guid],
+                seatId = BridgeState.physicalSeatByGuid[guid],
+                isLive = BridgeSafeObjectTag(deck) == "Deck" and BridgeLibraryContainsGuid(deck, guid),
+                advertisedCardInstanceId = BridgeState.physicalContainedInstanceIdByGuid[guid]
+            })
+            seenGuids[guid] = true
+        end
     end
     -- A mapped table entry cannot reveal an extra physical duplicate.  Only
     -- inspect cards that explicitly advertise a Bridge identity; foreign or
@@ -24136,6 +24200,7 @@ function BridgeHudReportPhysicalMappings()
                         cardInstanceId = advertised,
                         guid = guid,
                         zone = nil,
+                        seatId = BridgeState.physicalSeatByGuid[guid],
                         isLive = true,
                         advertisedCardInstanceId = advertised
                     })
@@ -24307,16 +24372,28 @@ function BridgeHudSubmitReport(category, summary)
 
     local function finish(ok, body, err, recoveryReason, lifecycleStage)
         if completed then return end
-        if requestUi.reportCaptureToken ~= captureToken then return end
+        if lifecycleStage == "DIAG_CAPTURE_CALLBACK" then
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_HTTP_CALLBACK", captureToken, "http-callback")
+        end
+        if requestUi.reportCaptureToken ~= captureToken then
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FENCE_REJECTED", captureToken, "capture-token-replaced")
+            return
+        end
         if not BridgeRuntimeIsCurrent(requestEpoch)
             or BridgeState.ui ~= requestUi
             or BridgeState.eventSessionId ~= requestSession then
             BridgeLog("[Bridge] diagnostic capture completion ignored by runtime/session fence")
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FENCE_REJECTED", captureToken, "runtime-or-session-replaced")
             return
         end
         completed = true
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FENCE_ACCEPTED", captureToken, "capture-owner-current")
         BridgeRecordDiagnosticCaptureLifecycle(lifecycleStage or "DIAG_CAPTURE_CALLBACK", captureToken, recoveryReason or "callback")
         requestUi.reportCaptureInFlight = false
+        -- The report surface is modal in the HUD. Leaving it open after the
+        -- HTTP callback can consume ordinary action controls and look like a
+        -- gameplay lock even though polling and choice ownership are healthy.
+        requestUi.reportPanelVisible = false
         if ok and body ~= nil and body.success == true then
             local reportId = tostring(body.reportId or "unknown")
             local reportPath = tostring(body.reportPath or "BugReports")
@@ -24330,6 +24407,7 @@ function BridgeHudSubmitReport(category, summary)
             BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FAILED", captureToken, detail)
         end
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_CLEANUP_COMPLETED", captureToken, "capture-state-released")
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_RELEASED", captureToken, "capture-ui-released")
         BridgeUiMarkDirty("report-capture-result")
         -- A report is an observer. Completion must not restart pollers,
         -- refresh a decision, or rebuild presentation; normal liveness and

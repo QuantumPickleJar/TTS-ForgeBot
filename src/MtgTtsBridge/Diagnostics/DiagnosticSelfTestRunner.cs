@@ -167,9 +167,10 @@ public sealed class DiagnosticSelfTestRunner
     {
         if (snapshot is null) return Check("snapshot_card_mappings", "info", "unavailable", "No snapshot is available for mapping comparison.");
         var referenced = ReferencedPhysicalCardInstanceIds(snapshot);
+        var expectedPhysicalLocations = ExpectedPhysicalLocations(snapshot);
         if (request.PhysicalMappings is not null)
         {
-            var audit = AuditPhysicalMappings(referenced, request.PhysicalMappings);
+            var audit = AuditPhysicalMappings(referenced, request.PhysicalMappings, expectedPhysicalLocations);
             if (!audit.IsCoherent)
             {
                 return Check("snapshot_card_mappings", "error", "fail",
@@ -180,6 +181,7 @@ public sealed class DiagnosticSelfTestRunner
                         ["duplicateCardInstanceIds"] = audit.DuplicateInstances,
                         ["duplicateGuids"] = audit.DuplicateGuids,
                         ["invalidMappings"] = audit.Invalid,
+                        ["wrongZoneOrSeatMappings"] = audit.WrongLocations,
                         ["referencedCount"] = referenced.Length
                     });
             }
@@ -381,12 +383,28 @@ public sealed class DiagnosticSelfTestRunner
         !string.Equals(zoneName, "library", StringComparison.OrdinalIgnoreCase)
         && !string.Equals(zoneName, "hand", StringComparison.OrdinalIgnoreCase);
 
-    private sealed record MappingAudit(string[] Missing, string[] DuplicateInstances, string[] DuplicateGuids, string[] Invalid)
+    private static IReadOnlyDictionary<string, (string Zone, string SeatId)> ExpectedPhysicalLocations(GameSnapshotDto snapshot)
     {
-        public bool IsCoherent => Missing.Length == 0 && DuplicateInstances.Length == 0 && DuplicateGuids.Length == 0 && Invalid.Length == 0;
+        return snapshot.Seats
+            .SelectMany(seat => seat.Zones
+                .Where(zone => ZoneRequiresPhysicalMapping(zone.Name))
+                .SelectMany(zone => zone.Cards.Where(IsPhysicalCard)
+                    .Select(card => (card.CardInstanceId, Zone: zone.Name, SeatId: seat.SeatId))))
+            .Concat(snapshot.Stack.Where(IsPhysicalCard)
+                .Select(card => (card.CardInstanceId, Zone: "stack", SeatId: card.ControllerSeatId ?? card.OwnerSeatId ?? string.Empty)))
+            .GroupBy(item => item.CardInstanceId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => (group.First().Zone, group.First().SeatId), StringComparer.Ordinal);
     }
 
-    private static MappingAudit AuditPhysicalMappings(string[] referenced, IReadOnlyList<DiagnosticPhysicalMappingDto> mappings)
+    private sealed record MappingAudit(string[] Missing, string[] DuplicateInstances, string[] DuplicateGuids, string[] Invalid, string[] WrongLocations)
+    {
+        public bool IsCoherent => Missing.Length == 0 && DuplicateInstances.Length == 0 && DuplicateGuids.Length == 0 && Invalid.Length == 0 && WrongLocations.Length == 0;
+    }
+
+    private static MappingAudit AuditPhysicalMappings(
+        string[] referenced,
+        IReadOnlyList<DiagnosticPhysicalMappingDto> mappings,
+        IReadOnlyDictionary<string, (string Zone, string SeatId)>? expectedPhysicalLocations = null)
     {
         var duplicateInstances = mappings.GroupBy(item => item.CardInstanceId, StringComparer.Ordinal)
             .Where(group => group.Count() > 1).Select(group => group.Key).ToArray();
@@ -401,13 +419,22 @@ public sealed class DiagnosticSelfTestRunner
             .GroupBy(item => item.CardInstanceId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
         var missing = referenced.Where(item => !mappingByInstance.ContainsKey(item)).ToArray();
-        return new MappingAudit(missing, duplicateInstances, duplicateGuids, invalid);
+        var wrongLocations = expectedPhysicalLocations is null
+            ? []
+            : expectedPhysicalLocations
+                .Where(expected => mappingByInstance.TryGetValue(expected.Key, out var mapping)
+                    && (!string.Equals(mapping.Zone, expected.Value.Zone, StringComparison.OrdinalIgnoreCase)
+                        || (!string.IsNullOrWhiteSpace(mapping.SeatId)
+                            && !string.Equals(mapping.SeatId, expected.Value.SeatId, StringComparison.Ordinal))))
+                .Select(item => item.Key)
+                .ToArray();
+        return new MappingAudit(missing, duplicateInstances, duplicateGuids, invalid, wrongLocations);
     }
 
     private static bool RequestMappingsCoherent(GameSnapshotDto snapshot, DiagnosticReportRequestDto request)
     {
         var referenced = ReferencedPhysicalCardInstanceIds(snapshot);
-        if (request.PhysicalMappings is not null) return AuditPhysicalMappings(referenced, request.PhysicalMappings).IsCoherent;
+        if (request.PhysicalMappings is not null) return AuditPhysicalMappings(referenced, request.PhysicalMappings, ExpectedPhysicalLocations(snapshot)).IsCoherent;
         if (request.MappedCardInstanceIds is null) return false;
         var mapped = request.MappedCardInstanceIds.ToHashSet(StringComparer.Ordinal);
         return referenced.All(mapped.Contains);

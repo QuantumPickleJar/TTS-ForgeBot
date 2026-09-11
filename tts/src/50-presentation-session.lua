@@ -2188,10 +2188,29 @@ function BridgeHudReportPhysicalMappings()
             cardInstanceId = cardInstanceId,
             guid = guid,
             zone = BridgeState.physicalZoneByGuid[guid],
+            seatId = BridgeState.physicalSeatByGuid[guid],
             isLive = object ~= nil,
             advertisedCardInstanceId = BridgeReadPhysicalIdentity(object)
         })
         seenGuids[guid] = true
+    end
+    -- Contained cards are authoritative physical representations too.  Report
+    -- them separately so diagnostics can detect a stale loose mapping which
+    -- contradicts a native Deck-contained graveyard/library identity.
+    for cardInstanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+        local guid = mapping and mapping.cardGuid or nil
+        local deck = mapping and mapping.deckGuid and BridgeGetLiveObjectByGuid(mapping.deckGuid) or nil
+        if guid ~= nil then
+            table.insert(mappings, {
+                cardInstanceId = cardInstanceId,
+                guid = guid,
+                zone = BridgeState.physicalZoneByGuid[guid],
+                seatId = BridgeState.physicalSeatByGuid[guid],
+                isLive = BridgeSafeObjectTag(deck) == "Deck" and BridgeLibraryContainsGuid(deck, guid),
+                advertisedCardInstanceId = BridgeState.physicalContainedInstanceIdByGuid[guid]
+            })
+            seenGuids[guid] = true
+        end
     end
     -- A mapped table entry cannot reveal an extra physical duplicate.  Only
     -- inspect cards that explicitly advertise a Bridge identity; foreign or
@@ -2206,6 +2225,7 @@ function BridgeHudReportPhysicalMappings()
                         cardInstanceId = advertised,
                         guid = guid,
                         zone = nil,
+                        seatId = BridgeState.physicalSeatByGuid[guid],
                         isLive = true,
                         advertisedCardInstanceId = advertised
                     })
@@ -2377,16 +2397,28 @@ function BridgeHudSubmitReport(category, summary)
 
     local function finish(ok, body, err, recoveryReason, lifecycleStage)
         if completed then return end
-        if requestUi.reportCaptureToken ~= captureToken then return end
+        if lifecycleStage == "DIAG_CAPTURE_CALLBACK" then
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_HTTP_CALLBACK", captureToken, "http-callback")
+        end
+        if requestUi.reportCaptureToken ~= captureToken then
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FENCE_REJECTED", captureToken, "capture-token-replaced")
+            return
+        end
         if not BridgeRuntimeIsCurrent(requestEpoch)
             or BridgeState.ui ~= requestUi
             or BridgeState.eventSessionId ~= requestSession then
             BridgeLog("[Bridge] diagnostic capture completion ignored by runtime/session fence")
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FENCE_REJECTED", captureToken, "runtime-or-session-replaced")
             return
         end
         completed = true
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FENCE_ACCEPTED", captureToken, "capture-owner-current")
         BridgeRecordDiagnosticCaptureLifecycle(lifecycleStage or "DIAG_CAPTURE_CALLBACK", captureToken, recoveryReason or "callback")
         requestUi.reportCaptureInFlight = false
+        -- The report surface is modal in the HUD. Leaving it open after the
+        -- HTTP callback can consume ordinary action controls and look like a
+        -- gameplay lock even though polling and choice ownership are healthy.
+        requestUi.reportPanelVisible = false
         if ok and body ~= nil and body.success == true then
             local reportId = tostring(body.reportId or "unknown")
             local reportPath = tostring(body.reportPath or "BugReports")
@@ -2400,6 +2432,7 @@ function BridgeHudSubmitReport(category, summary)
             BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FAILED", captureToken, detail)
         end
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_CLEANUP_COMPLETED", captureToken, "capture-state-released")
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_RELEASED", captureToken, "capture-ui-released")
         BridgeUiMarkDirty("report-capture-result")
         -- A report is an observer. Completion must not restart pollers,
         -- refresh a decision, or rebuild presentation; normal liveness and

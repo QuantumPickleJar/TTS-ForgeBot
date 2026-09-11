@@ -498,6 +498,29 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public void SelfTests_RejectMappingWhoseLiveZoneContradictsAuthoritativeSnapshot()
+    {
+        var card = new GameCardSnapshotDto(
+            "graveyard-card", 27, "Grave Researcher", "Grave Researcher", "graveyard", 0,
+            "forge-player-1", "forge-player-1", false, false, false,
+            new Dictionary<string, int>(), []);
+        var seat = new GameSeatSnapshotDto(
+            "forge-player-1", 1, "Human", 20, 0, new Dictionary<string, int>(),
+            [new GameZoneSnapshotDto("graveyard", [card])]);
+        var snapshot = new GameSnapshotDto("session", 4, "GameEventCardChangeZone", [seat], [], EventCursor: 4);
+
+        var result = new DiagnosticSelfTestRunner().Run(
+            null, null, snapshot,
+            new DiagnosticReportRequestDto(SessionId: "session", PhysicalMappings:
+            [new DiagnosticPhysicalMappingDto("graveyard-card", "battlefield-guid", "battlefield", true, "graveyard-card", "forge-player-1")]),
+            new BridgeProcessIdentity());
+
+        var mapping = Assert.Single(result.Checks, check => check.Id == "snapshot_card_mappings");
+        Assert.Equal("fail", mapping.Status);
+        Assert.Contains("graveyard-card", Assert.IsType<string[]>(mapping.Evidence!["wrongZoneOrSeatMappings"]));
+    }
+
+    [Fact]
     public void SelfTests_FailActiveUnscopedTerminalRecoveryAfterReplacement()
     {
         using var terminalDocument = JsonDocument.Parse("{\"kind\":\"protocol_recovery_error\",\"detail\":\"old failure\"}");

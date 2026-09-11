@@ -8,6 +8,72 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.lua"));
 
     [Fact]
+    public void ContainedGraveyardProxyCannotOverwriteExactContainedIdentityAsLooseBattlefieldCard()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
+            bridgeTest.graveyardDeck.entries = {{guid='contained-27', instanceId=':27', name='Grave Researcher'}}
+            BridgeState.physicalContainerByInstanceId[':27'] = {
+                deckGuid='grave-deck', cardGuid='contained-27', locatorType='GUID_LOCATOR',
+                seatId='forge-player-1', zoneName='graveyard', cardName='Grave Researcher'
+            }
+            BridgeState.physicalContainedInstanceIdByGuid['contained-27'] = ':27'
+            BridgeState.physicalSeatByGuid['contained-27'] = 'forge-player-1'
+            BridgeState.physicalZoneByGuid['contained-27'] = 'graveyard'
+            local retainedProxy = BridgeTestCreateCard(':27', 'Grave Researcher', 'contained-27')
+            retainedProxy._inDeck = true
+            proxyAccepted = BridgeRecordLooseCardIdentity(':27', 'contained-27', 'forge-player-1', 'battlefield')
+            containerStillPresent = BridgeState.physicalContainerByInstanceId[':27'] ~= nil
+            containedOwner = BridgeState.physicalContainedInstanceIdByGuid['contained-27']
+            containedZone = BridgeState.physicalZoneByGuid['contained-27']
+            looseGuid = BridgeState.physicalByInstanceId[':27']
+        ");
+
+        Assert.False(lua.Globals.Get("proxyAccepted").Boolean);
+        Assert.True(lua.Globals.Get("containerStillPresent").Boolean);
+        Assert.Equal(":27", lua.Globals.Get("containedOwner").String);
+        Assert.Equal("graveyard", lua.Globals.Get("containedZone").String);
+        Assert.True(lua.Globals.Get("looseGuid").IsNil());
+    }
+
+    [Fact]
+    public void ExistingGraveyardMergeReplacesLooseBattlefieldMappingWithContainedIdentity()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.cardNameByInstanceId[':33'] = 'Harmonized Trio'
+            BridgeState.cardNameByInstanceId[':27'] = 'Grave Researcher'
+            BridgeTestSeedExistingDeck({instanceId=':33', cardName='Harmonized Trio'})
+            local researcher = BridgeTestCreateCard(':27', 'Grave Researcher', 'e7460b')
+            researcher._inLibrary = false
+            BridgeRecordLooseCardIdentity(':27', 'e7460b', 'forge-player-1', 'battlefield')
+            mergeCompleted = false
+            mergeOk, mergeError = BridgeMoveToGraveyard({
+                sequence=243, seatId='forge-player-1', sourceZone='battlefield',
+                destinationZone='graveyard', cardInstanceId=':27'
+            }, researcher, function(ok, err) mergeCompleted = ok == true; mergeCompletionError = err end)
+            contained = BridgeState.physicalContainerByInstanceId[':27']
+            looseGuid = BridgeState.physicalByInstanceId[':27']
+            containedOwner = contained and BridgeState.physicalContainedInstanceIdByGuid[contained.cardGuid] or nil
+            containedZone = contained and BridgeState.physicalZoneByGuid[contained.cardGuid] or nil
+            containedSeat = contained and BridgeState.physicalSeatByGuid[contained.cardGuid] or nil
+            nativeCount = BridgeTestGraveyardInstanceCount(':27')
+        ");
+
+        Assert.True(lua.Globals.Get("mergeOk").Boolean, lua.Globals.Get("mergeError").ToPrintString());
+        Assert.True(lua.Globals.Get("mergeCompleted").Boolean, lua.Globals.Get("mergeCompletionError").ToPrintString());
+        Assert.Equal(1, lua.Globals.Get("nativeCount").Number);
+        Assert.True(lua.Globals.Get("contained").IsNotNil());
+        Assert.True(lua.Globals.Get("looseGuid").IsNil());
+        Assert.Equal(":27", lua.Globals.Get("containedOwner").String);
+        Assert.Equal("graveyard", lua.Globals.Get("containedZone").String);
+        Assert.Equal("forge-player-1", lua.Globals.Get("containedSeat").String);
+    }
+
+    [Fact]
     public void ExactCostCandidateNeverFallsBackToSameNameBattlefieldCard()
     {
         var lua = NewProbe();
