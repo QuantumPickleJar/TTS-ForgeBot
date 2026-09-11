@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: f160e84a582feef6ce2310c0224136a414d52e3113f8e653868c38783a85714d
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "f160e84a582feef6ce2310c0224136a414d52e3113f8e653868c38783a85714d"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 67f69aed6ad65e2ad675ee34a8fd0ab2fa57083effb2d03894c50d39241b307a
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "67f69aed6ad65e2ad675ee34a8fd0ab2fa57083effb2d03894c50d39241b307a"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -4033,9 +4033,13 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName)
                 .. " from guid=" .. tostring(previousGuid) .. " to guid=" .. tostring(guid))
             return false
         end
-        BridgeState.physicalInstanceIdByGuid[previousGuid] = nil
-        BridgeState.physicalSeatByGuid[previousGuid] = nil
-        BridgeState.physicalZoneByGuid[previousGuid] = nil
+        local previousOwner = BridgeState.physicalInstanceIdByGuid[previousGuid]
+        if previousOwner == nil or previousOwner == cardInstanceId then
+            if previousOwner == cardInstanceId then BridgeState.physicalInstanceIdByGuid[previousGuid] = nil end
+            BridgeState.physicalSeatByGuid[previousGuid] = nil
+            BridgeState.physicalZoneByGuid[previousGuid] = nil
+            BridgeState.physicalTappedByGuid[previousGuid] = nil
+        end
     end
     local previousInstanceId = BridgeState.physicalInstanceIdByGuid[guid]
     if previousInstanceId ~= nil and previousInstanceId ~= cardInstanceId then
@@ -4093,15 +4097,26 @@ function BridgeRecordContainedCardIdentity(cardInstanceId, containingDeckGuid, c
     end
     local previousGuid = BridgeState.physicalByInstanceId[cardInstanceId]
     if previousGuid ~= nil then
-        BridgeState.physicalInstanceIdByGuid[previousGuid] = nil
-        BridgeState.physicalSeatByGuid[previousGuid] = nil
-        BridgeState.physicalZoneByGuid[previousGuid] = nil
+        local previousOwner = BridgeState.physicalInstanceIdByGuid[previousGuid]
+        if previousOwner == nil or previousOwner == cardInstanceId then
+            if previousOwner == cardInstanceId then
+                BridgeState.physicalInstanceIdByGuid[previousGuid] = nil
+            end
+            BridgeState.physicalSeatByGuid[previousGuid] = nil
+            BridgeState.physicalZoneByGuid[previousGuid] = nil
+            BridgeState.physicalTappedByGuid[previousGuid] = nil
+        end
         BridgeState.physicalByInstanceId[cardInstanceId] = nil
     end
     local previousContainer = BridgeState.physicalContainerByInstanceId[cardInstanceId]
-    if previousContainer ~= nil and previousContainer.cardGuid ~= containedCardGuid
-        and BridgeState.physicalContainedInstanceIdByGuid[previousContainer.cardGuid] == cardInstanceId then
-        BridgeState.physicalContainedInstanceIdByGuid[previousContainer.cardGuid] = nil
+    if previousContainer ~= nil and previousContainer.cardGuid ~= containedCardGuid then
+        local oldContainedGuid = previousContainer.cardGuid
+        if oldContainedGuid ~= nil
+            and BridgeState.physicalContainedInstanceIdByGuid[oldContainedGuid] == cardInstanceId then
+            BridgeState.physicalContainedInstanceIdByGuid[oldContainedGuid] = nil
+            BridgeState.physicalSeatByGuid[oldContainedGuid] = nil
+            BridgeState.physicalZoneByGuid[oldContainedGuid] = nil
+        end
     end
     local changed = previousContainer == nil
         or previousContainer.deckGuid ~= containingDeckGuid
@@ -4388,10 +4403,13 @@ function BridgeRecordLibraryContainedState(cardInstanceId, seatId, cardName, con
     end
     local existingGuid = BridgeState.physicalByInstanceId[cardInstanceId]
     if existingGuid ~= nil then
-        BridgeState.physicalInstanceIdByGuid[existingGuid] = nil
-        BridgeState.physicalSeatByGuid[existingGuid] = nil
-        BridgeState.physicalZoneByGuid[existingGuid] = nil
-        BridgeState.physicalTappedByGuid[existingGuid] = nil
+        local existingOwner = BridgeState.physicalInstanceIdByGuid[existingGuid]
+        if existingOwner == nil or existingOwner == cardInstanceId then
+            if existingOwner == cardInstanceId then BridgeState.physicalInstanceIdByGuid[existingGuid] = nil end
+            BridgeState.physicalSeatByGuid[existingGuid] = nil
+            BridgeState.physicalZoneByGuid[existingGuid] = nil
+            BridgeState.physicalTappedByGuid[existingGuid] = nil
+        end
         BridgeAdvancePhysicalPresentationGeneration("card-contained")
     end
     local existingContainer = BridgeState.physicalContainerByInstanceId[cardInstanceId]
@@ -4400,8 +4418,10 @@ function BridgeRecordLibraryContainedState(cardInstanceId, seatId, cardName, con
             BridgeState.physicalContainedInstanceIdByGuid[existingContainer.cardGuid] = nil
         end
         BridgeState.physicalContainerByInstanceId[cardInstanceId] = nil
-        BridgeState.physicalSeatByGuid[existingContainer.cardGuid] = nil
-        BridgeState.physicalZoneByGuid[existingContainer.cardGuid] = nil
+        if BridgeState.physicalContainedInstanceIdByGuid[existingContainer.cardGuid] == cardInstanceId then
+            BridgeState.physicalSeatByGuid[existingContainer.cardGuid] = nil
+            BridgeState.physicalZoneByGuid[existingContainer.cardGuid] = nil
+        end
         BridgeAdvancePhysicalPresentationGeneration("card-contained-library")
     end
     BridgeState.physicalByInstanceId[cardInstanceId] = nil
@@ -6137,6 +6157,7 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
         end
         for _, object in ipairs(getAllObjects()) do addCandidate(object) end
 
+        local aliasSettleAttempts = {}
         local function insertCandidate(index)
             if index > #candidates then
                 if #candidates > 0 then
@@ -6153,6 +6174,30 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
             local alreadyContained = BridgeFindLibraryDeckContainingGuid(candidate.seatId, candidate.guid)
             if alreadyContained ~= nil then
                 if cleanupOwner ~= nil then
+                    local liveAlias = BridgeGetLiveObjectByGuid ~= nil
+                        and BridgeGetLiveObjectByGuid(candidate.guid) or candidate.object
+                    if liveAlias ~= nil and BridgeObjectIsUsable(liveAlias) and liveAlias.tag == "Card" then
+                        local settleAttempt = (aliasSettleAttempts[candidate.guid] or 0) + 1
+                        aliasSettleAttempts[candidate.guid] = settleAttempt
+                        if settleAttempt <= 30 then
+                            BridgeRecordPhysicalMutationJournal({
+                                transitionToken = cleanupOwner.token,
+                                generation = BridgeState.physicalTransactionGeneration or 0,
+                                operation = "CardToLibrary", cardGuid = candidate.guid,
+                                destinationDeck = BridgeSafeObjectGuid(alreadyContained),
+                                containmentProven = true, looseAliasStillVisible = true,
+                                classification = "transitional_alias",
+                                finalDisposition = "awaiting_cleanup_settlement"
+                            })
+                            BridgeWaitFrames(function() insertCandidate(index) end, 2)
+                            return
+                        end
+                        if callback then
+                            callback(false, "new-match cleanup found persistent loose/contained duplicate GUID "
+                                .. tostring(candidate.guid))
+                        end
+                        return
+                    end
                     cleanupOwner.provenContainedGuids = cleanupOwner.provenContainedGuids or {}
                     cleanupOwner.provenContainedGuids[candidate.guid] = true
                 end
@@ -21204,6 +21249,8 @@ function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
             end
             ordered[orderedIndex] = entry
         end
+        local assignments = {}
+        local assignmentInstances = {}
         for index = 1, #entries do
             local entry = ordered[index] or entries[index]
             local guid = entry and (entry.guid or entry.GUID) or nil
@@ -21215,10 +21262,33 @@ function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
                     .. ":guid=" .. tostring(guid) .. ":instance=" .. tostring(expectedInstanceId)
                 return false
             end
-            if not BridgeRecordContainedCardIdentity(expectedInstanceId, deckGuid, guid,
-                    seatId, "graveyard", expectedCardName) then
+            assignments[index] = {instanceId=expectedInstanceId, cardName=expectedCardName, guid=guid}
+            assignmentInstances[tostring(expectedInstanceId)] = true
+        end
+        local needsAtomicRebind = false
+        for _, assignment in ipairs(assignments) do
+            local owner = BridgeState.physicalContainedInstanceIdByGuid[assignment.guid]
+            if owner ~= nil and owner ~= assignment.instanceId then needsAtomicRebind = true; break end
+        end
+        if needsAtomicRebind then
+            for instanceId in pairs(assignmentInstances) do
+                local mapping = BridgeState.physicalContainerByInstanceId[instanceId]
+                if mapping ~= nil then
+                    local oldGuid = mapping.cardGuid
+                    if oldGuid ~= nil and BridgeState.physicalContainedInstanceIdByGuid[oldGuid] == instanceId then
+                        BridgeState.physicalContainedInstanceIdByGuid[oldGuid] = nil
+                        BridgeState.physicalSeatByGuid[oldGuid] = nil
+                        BridgeState.physicalZoneByGuid[oldGuid] = nil
+                    end
+                    BridgeState.physicalContainerByInstanceId[instanceId] = nil
+                end
+            end
+        end
+        for index, assignment in ipairs(assignments) do
+            if not BridgeRecordContainedCardIdentity(assignment.instanceId, deckGuid, assignment.guid,
+                    seatId, "graveyard", assignment.cardName) then
                 BridgeState.lastGraveyardRebindFailure = "index=" .. tostring(index)
-                    .. ":guid=" .. tostring(guid) .. ":instance=" .. tostring(expectedInstanceId)
+                    .. ":guid=" .. tostring(assignment.guid) .. ":instance=" .. tostring(assignment.instanceId)
                 return false
             end
         end
@@ -21789,7 +21859,13 @@ function BridgeVerifyFinalPhysicalRepresentation(instanceId, seatId, zoneName)
         end
         if BridgeState.physicalSeatByGuid[mapping.cardGuid] ~= seatId
             or BridgeState.physicalZoneByGuid[mapping.cardGuid] ~= zoneName then
-            return false, "contained GUID final representation has incorrect seat or zone"
+            local inverse = BridgeState.physicalContainedInstanceIdByGuid[mapping.cardGuid]
+            return false, string.format(
+                "contained GUID final representation has incorrect seat or zone instance=%s cardGuid=%s deckGuid=%s mappingSeat=%s mappingZone=%s inverse=%s physicalSeat=%s physicalZone=%s",
+                tostring(instanceId), tostring(mapping.cardGuid), tostring(mapping.deckGuid),
+                tostring(mapping.seatId), tostring(mapping.zoneName), tostring(inverse),
+                tostring(BridgeState.physicalSeatByGuid[mapping.cardGuid]),
+                tostring(BridgeState.physicalZoneByGuid[mapping.cardGuid]))
         end
     elseif mapping.locatorType ~= "SLOT_LOCATOR" then
         return false, "contained final representation has unknown locator type"

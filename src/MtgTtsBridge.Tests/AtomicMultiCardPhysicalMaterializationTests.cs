@@ -697,6 +697,54 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void GraveyardRebindPermutationDoesNotClobberCurrentGuidMetadata()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'rebind-permutation-session'
+            local deck = bridgeTest.graveyardDeck
+            deck.getObjects = function()
+                return {
+                    {guid='guid-a', nickname='Card A', index=0},
+                    {guid='guid-b', nickname='Card B', index=1}
+                }
+            end
+            BridgeRecordContainedCardIdentity(':a', 'grave-deck', 'guid-a', 'forge-player-1', 'graveyard', 'Card A')
+            BridgeRecordContainedCardIdentity(':b', 'grave-deck', 'guid-b', 'forge-player-1', 'graveyard', 'Card B')
+            local expectedRebind = BridgeCollectGraveyardExpectedInstances('forge-player-1', deck, nil, false)
+            deck.getObjects = function()
+                return {
+                    {guid='guid-b', nickname='Card A', index=0},
+                    {guid='guid-a', nickname='Card B', index=1}
+                }
+            end
+            local ok = BridgeRecordGraveyardContainerEntries('forge-player-1', deck, expectedRebind)
+            rebindOk = ok
+            rebindFailure = BridgeState.lastGraveyardRebindFailure
+            a = BridgeState.physicalContainerByInstanceId[':a']
+            b = BridgeState.physicalContainerByInstanceId[':b']
+            inverseA = BridgeState.physicalContainedInstanceIdByGuid['guid-b']
+            inverseB = BridgeState.physicalContainedInstanceIdByGuid['guid-a']
+            seatA = BridgeState.physicalSeatByGuid['guid-b']
+            zoneA = BridgeState.physicalZoneByGuid['guid-b']
+            seatB = BridgeState.physicalSeatByGuid['guid-a']
+            zoneB = BridgeState.physicalZoneByGuid['guid-a']
+        ");
+
+        Assert.True(lua.Globals.Get("rebindOk").Boolean,
+            $"rebindFailure={lua.Globals.Get("rebindFailure").ToPrintString()}; logs={CapturedLogsTail(lua)}");
+        Assert.Equal("guid-b", lua.Globals.Get("a").Table.Get("cardGuid").String);
+        Assert.Equal("guid-a", lua.Globals.Get("b").Table.Get("cardGuid").String);
+        Assert.Equal(":a", lua.Globals.Get("inverseA").String);
+        Assert.Equal(":b", lua.Globals.Get("inverseB").String);
+        Assert.Equal("forge-player-1", lua.Globals.Get("seatA").String);
+        Assert.Equal("graveyard", lua.Globals.Get("zoneA").String);
+        Assert.Equal("forge-player-1", lua.Globals.Get("seatB").String);
+        Assert.Equal("graveyard", lua.Globals.Get("zoneB").String);
+    }
+
+    [Fact]
     public void RecoveryMergesLooseMillCardIntoExistingDeckWithoutDroppingCommittedEntries()
     {
         var lua = NewProbe();

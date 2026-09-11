@@ -6159,6 +6159,8 @@ function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
             end
             ordered[orderedIndex] = entry
         end
+        local assignments = {}
+        local assignmentInstances = {}
         for index = 1, #entries do
             local entry = ordered[index] or entries[index]
             local guid = entry and (entry.guid or entry.GUID) or nil
@@ -6170,10 +6172,33 @@ function BridgeRecordGraveyardContainerEntries(seatId, deck, expectedInstances)
                     .. ":guid=" .. tostring(guid) .. ":instance=" .. tostring(expectedInstanceId)
                 return false
             end
-            if not BridgeRecordContainedCardIdentity(expectedInstanceId, deckGuid, guid,
-                    seatId, "graveyard", expectedCardName) then
+            assignments[index] = {instanceId=expectedInstanceId, cardName=expectedCardName, guid=guid}
+            assignmentInstances[tostring(expectedInstanceId)] = true
+        end
+        local needsAtomicRebind = false
+        for _, assignment in ipairs(assignments) do
+            local owner = BridgeState.physicalContainedInstanceIdByGuid[assignment.guid]
+            if owner ~= nil and owner ~= assignment.instanceId then needsAtomicRebind = true; break end
+        end
+        if needsAtomicRebind then
+            for instanceId in pairs(assignmentInstances) do
+                local mapping = BridgeState.physicalContainerByInstanceId[instanceId]
+                if mapping ~= nil then
+                    local oldGuid = mapping.cardGuid
+                    if oldGuid ~= nil and BridgeState.physicalContainedInstanceIdByGuid[oldGuid] == instanceId then
+                        BridgeState.physicalContainedInstanceIdByGuid[oldGuid] = nil
+                        BridgeState.physicalSeatByGuid[oldGuid] = nil
+                        BridgeState.physicalZoneByGuid[oldGuid] = nil
+                    end
+                    BridgeState.physicalContainerByInstanceId[instanceId] = nil
+                end
+            end
+        end
+        for index, assignment in ipairs(assignments) do
+            if not BridgeRecordContainedCardIdentity(assignment.instanceId, deckGuid, assignment.guid,
+                    seatId, "graveyard", assignment.cardName) then
                 BridgeState.lastGraveyardRebindFailure = "index=" .. tostring(index)
-                    .. ":guid=" .. tostring(guid) .. ":instance=" .. tostring(expectedInstanceId)
+                    .. ":guid=" .. tostring(assignment.guid) .. ":instance=" .. tostring(assignment.instanceId)
                 return false
             end
         end
@@ -6744,7 +6769,13 @@ function BridgeVerifyFinalPhysicalRepresentation(instanceId, seatId, zoneName)
         end
         if BridgeState.physicalSeatByGuid[mapping.cardGuid] ~= seatId
             or BridgeState.physicalZoneByGuid[mapping.cardGuid] ~= zoneName then
-            return false, "contained GUID final representation has incorrect seat or zone"
+            local inverse = BridgeState.physicalContainedInstanceIdByGuid[mapping.cardGuid]
+            return false, string.format(
+                "contained GUID final representation has incorrect seat or zone instance=%s cardGuid=%s deckGuid=%s mappingSeat=%s mappingZone=%s inverse=%s physicalSeat=%s physicalZone=%s",
+                tostring(instanceId), tostring(mapping.cardGuid), tostring(mapping.deckGuid),
+                tostring(mapping.seatId), tostring(mapping.zoneName), tostring(inverse),
+                tostring(BridgeState.physicalSeatByGuid[mapping.cardGuid]),
+                tostring(BridgeState.physicalZoneByGuid[mapping.cardGuid]))
         end
     elseif mapping.locatorType ~= "SLOT_LOCATOR" then
         return false, "contained final representation has unknown locator type"

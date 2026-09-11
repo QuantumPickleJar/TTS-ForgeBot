@@ -1686,6 +1686,7 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
         end
         for _, object in ipairs(getAllObjects()) do addCandidate(object) end
 
+        local aliasSettleAttempts = {}
         local function insertCandidate(index)
             if index > #candidates then
                 if #candidates > 0 then
@@ -1702,6 +1703,30 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
             local alreadyContained = BridgeFindLibraryDeckContainingGuid(candidate.seatId, candidate.guid)
             if alreadyContained ~= nil then
                 if cleanupOwner ~= nil then
+                    local liveAlias = BridgeGetLiveObjectByGuid ~= nil
+                        and BridgeGetLiveObjectByGuid(candidate.guid) or candidate.object
+                    if liveAlias ~= nil and BridgeObjectIsUsable(liveAlias) and liveAlias.tag == "Card" then
+                        local settleAttempt = (aliasSettleAttempts[candidate.guid] or 0) + 1
+                        aliasSettleAttempts[candidate.guid] = settleAttempt
+                        if settleAttempt <= 30 then
+                            BridgeRecordPhysicalMutationJournal({
+                                transitionToken = cleanupOwner.token,
+                                generation = BridgeState.physicalTransactionGeneration or 0,
+                                operation = "CardToLibrary", cardGuid = candidate.guid,
+                                destinationDeck = BridgeSafeObjectGuid(alreadyContained),
+                                containmentProven = true, looseAliasStillVisible = true,
+                                classification = "transitional_alias",
+                                finalDisposition = "awaiting_cleanup_settlement"
+                            })
+                            BridgeWaitFrames(function() insertCandidate(index) end, 2)
+                            return
+                        end
+                        if callback then
+                            callback(false, "new-match cleanup found persistent loose/contained duplicate GUID "
+                                .. tostring(candidate.guid))
+                        end
+                        return
+                    end
                     cleanupOwner.provenContainedGuids = cleanupOwner.provenContainedGuids or {}
                     cleanupOwner.provenContainedGuids[candidate.guid] = true
                 end
