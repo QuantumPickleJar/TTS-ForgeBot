@@ -95,6 +95,27 @@ public sealed class StitchersSupplierThreeCardMillRegressionTests
         Assert.Contains("did not stabilize", lua.Globals.Get("settleError").String);
     }
 
+    [Fact]
+    public void GraveyardSettlementReacquiresNativeDeckBetweenFrames()
+    {
+        var lua=NewProbe();
+        lua.DoString(@"
+            local reads=0
+            local deck={tag='Deck',getGUID=function() return 'reacquire-deck' end,
+                getObjects=function() return {{guid='contained',index=1}} end}
+            function getObjectFromGUID(guid)
+                reads=reads+1
+                if reads <= 1 then return deck end
+                return nil
+            end
+            function BridgeWaitFrames(callback,frames) callback() end
+            settled,settleError=nil,nil
+            BridgeVerifyGraveyardDeckSettlement(deck,4,function(ok,reason) settled=ok; settleError=reason end)
+        ");
+        Assert.False(lua.Globals.Get("settled").Boolean);
+        Assert.Contains("became unavailable", lua.Globals.Get("settleError").String);
+    }
+
     private static Script NewProbe()
     {
         var lua=new Script();

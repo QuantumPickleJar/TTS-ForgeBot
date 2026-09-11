@@ -6240,6 +6240,10 @@ function BridgeVerifyGraveyardDeckSettlement(deck, maxRetries, callback, sampleO
     local finished = false
     local retryCount = 0
     local lastInventory = nil
+    -- A Deck returned by group() is only a native transition result. It can be
+    -- replaced before the next frame, so settlement must retain its GUID, not
+    -- the userdata itself.
+    local stableDeckGuid = BridgeSafeObjectGuid(deck)
     maxRetries = maxRetries or 5
 
     local function finish(ok, reason, inventory)
@@ -6248,7 +6252,7 @@ function BridgeVerifyGraveyardDeckSettlement(deck, maxRetries, callback, sampleO
         if callback ~= nil then callback(ok, reason, inventory) end
     end
 
-    if BridgeSafeObjectTag(deck) ~= "Deck" then
+    if stableDeckGuid == nil or BridgeSafeObjectTag(deck) ~= "Deck" then
         finish(false, "target is not a usable Deck")
         return
     end
@@ -6261,12 +6265,13 @@ function BridgeVerifyGraveyardDeckSettlement(deck, maxRetries, callback, sampleO
         -- transaction's animation fence.
         local ok, callbackError = xpcall(function()
             if finished then return end
-            if BridgeSafeObjectTag(deck) ~= "Deck" then
+            local observedDeck = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(stableDeckGuid) or nil
+            if BridgeSafeObjectTag(observedDeck) ~= "Deck" then
                 finish(false, "target Deck became unavailable during settlement")
                 return
             end
             retryCount = retryCount + 1
-            local entries = BridgeLibraryEntries(deck)
+            local entries = BridgeLibraryEntries(observedDeck)
             if entries == nil then
                 finish(false, "could not read Deck inventory at retry " .. tostring(retryCount))
                 return
