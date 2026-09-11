@@ -1314,20 +1314,22 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
             local tx = {
                 token='session:1:1:300', sessionId='session', eventSessionGeneration=1,
                 physicalTransactionGeneration=1, forgeSequence=17, firstEventSequence=300,
-                lastEventSequence=303, state='APPLYING', events={
-                    {sequence=301, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':mill-a', cardName='Mental Note', forgeSequence=17},
-                    {sequence=302, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':mill-b', cardName='Harmonized Trio', forgeSequence=17},
-                    {sequence=303, kind='card_moved', seatId='forge-player-1', sourceZone='stack', destinationZone='graveyard', cardInstanceId=':note', cardName='Mental Note', forgeSequence=17}
-                },
+                lastEventSequence=303, state='APPLYING', events={},
                 eventCount=3,
                 pendingPhysicalEvents={}
             }
+            tx.events[1] = {sequence=301, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':mill-a', cardName='Mental Note', forgeSequence=17}
+            tx.events[2] = {sequence=302, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':mill-b', cardName='Harmonized Trio', forgeSequence=17}
+            tx.events[3] = {sequence=303, kind='card_moved', seatId='forge-player-1', sourceZone='stack', destinationZone='graveyard', cardInstanceId=':note', cardName='Mental Note', forgeSequence=17}
             local existingGraveyard = {':g1', ':g2', ':g3'}
             BridgeZoneLedger = function(seatId, zone)
                 if seatId == 'forge-player-1' and zone == 'graveyard' then
                     return existingGraveyard
                 end
                 return {}
+            end
+            BridgeLogAtomicGraveyardTopology = function(seatId, batch, phase)
+                return {graveyardEntries={}}
             end
             BridgeBuildAtomicLibraryToGraveyardBatches(tx)
             local batch = tx.graveyardMutationBatchesBySeatId['forge-player-1']

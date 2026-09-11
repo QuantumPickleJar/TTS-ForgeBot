@@ -21,14 +21,14 @@ public sealed class TtsEventQueueLivelockTests
             BridgeState.physicalZoneByGuid['stack-35'] = 'stack'
             ownsSemantic = BridgeEventOwnsCommittedZoneTransition({kind='spell_resolved'})
             ownsStructured = BridgeEventOwnsCommittedZoneTransition({kind='card_moved'})
-            BridgeApplyCommittedZoneLedger({
-                {kind='spell_resolved', seatId='forge-player-1', cardInstanceId=':35', sourceZone='stack', destinationZone='graveyard'}
-            }, 1)
+            semanticEvent = {kind='spell_resolved', seatId='forge-player-1', cardInstanceId=':35', sourceZone='stack', destinationZone='graveyard'}
+            BridgeApplyCommittedZoneLedger({semanticEvent}, 1)
             semanticStillStack = BridgeZoneLedger('forge-player-1', 'stack')[1]
             semanticGraveyardCount = #(BridgeZoneLedger('forge-player-1', 'graveyard'))
-            BridgeApplyCommittedZoneLedger({
-                {kind='card_moved', seatId='forge-player-1', cardInstanceId=':35', sourceZone='stack', destinationZone='graveyard'}
-            }, 1)
+            structuredEvent = {kind='card_moved', seatId='forge-player-1', cardInstanceId=':35', sourceZone='stack', destinationZone='graveyard'}
+            structuredList = {}
+            structuredList[1] = structuredEvent
+            BridgeApplyCommittedZoneLedger(structuredList, 1)
             structuredStackCount = #(BridgeZoneLedger('forge-player-1', 'stack'))
             structuredGraveyard = BridgeZoneLedger('forge-player-1', 'graveyard')[1]
         ");
@@ -1154,6 +1154,7 @@ public sealed class TtsEventQueueLivelockTests
             BridgeState.resyncInFlight = false
             BridgeState.resyncScheduled = false
             BridgeState.resyncCircuitOpen = false
+            BridgeState.hudResyncPending = true
             BridgeState.ui = {resyncInFlight=false, fastForwardActive=false, autoAdvanceMode='NORMAL'}
             snapshotAttempts = 0
             function BridgeWaitFrames(callback, frames)
@@ -1189,6 +1190,7 @@ public sealed class TtsEventQueueLivelockTests
         Assert.True(state.Get("desyncLatched").Boolean);
         Assert.False(state.Get("resyncInFlight").Boolean);
         Assert.False(state.Get("resyncScheduled").Boolean);
+        Assert.False(state.Get("hudResyncPending").Boolean);
         Assert.Equal("RESYNC AVAILABLE", lua.Globals.Get("lastStatusHeadline").String);
         Assert.True(lua.Globals.Get("explicitStarted").Boolean);
         Assert.Equal(2, lua.Globals.Get("attemptsAfterExplicit").Number);

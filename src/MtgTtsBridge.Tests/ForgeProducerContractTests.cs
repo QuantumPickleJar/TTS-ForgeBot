@@ -4,10 +4,26 @@ namespace MtgTtsBridge.Tests;
 
 public sealed class ForgeProducerContractTests
 {
-    private static readonly string RepositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    private static readonly string RepositoryRoot = FindRepositoryRoot();
     private static readonly string Patch = File.ReadAllText(Path.Combine(RepositoryRoot, "tools", "forge", "bridge-headless.patch"));
     private static readonly string Bootstrap = File.ReadAllText(Path.Combine(RepositoryRoot, "tools", "forge", "bootstrap.ps1"));
     private static readonly string Launcher = File.ReadAllText(Path.Combine(RepositoryRoot, "tools", "Start-ForgeBot.ps1"));
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "tools", "forge", "bridge-headless.patch")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Could not locate the repository root from the test output directory.");
+    }
 
     [Fact]
     public void TrackedBridgeStateFeed_EmitsTheStructuredCharacteristicAndPlayerContract()
@@ -409,6 +425,17 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void DelveSelectionRequiresPayableSubsetAndGuardsUnpaidResidual()
+    {
+        Assert.Contains("minimumDelveSelection(genericAmount)", Patch);
+        Assert.Contains("DELVE - Choose cards from your graveyard to exile", Patch);
+        Assert.Contains("minDelve=", Patch);
+        Assert.Contains("ManaCostBeingPaid candidate", Patch);
+        Assert.Contains("if (!manaAccepted || !toPay.isPaid())", Patch);
+        Assert.Contains("handleOfferingConvokeAndDelve(ability, cardsToDelve, true)", Patch);
+    }
+
+    [Fact]
     public void PreparedSpellEnumerationWalksTheExactPreparedSourceRelation()
     {
         var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
@@ -460,6 +487,8 @@ public sealed class ForgeProducerContractTests
     {
         Assert.Contains("forge-headless-bridge-build.json", Bootstrap);
         Assert.Contains("Get-ForgeExpectedSources", Bootstrap);
+        Assert.Contains("--ignore-whitespace --check", Bootstrap);
+        Assert.Contains("--recount --ignore-whitespace $patchPath", Bootstrap);
         Assert.Contains("clean verification worktree", Bootstrap);
         Assert.Contains("Reconstructed patch-touched Forge sources", Bootstrap);
         Assert.Contains("patch-touched file has unrelated local edits", Bootstrap);

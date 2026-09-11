@@ -318,9 +318,19 @@ index d1a05bf2c6093b29a352b06e450dd6b1c79a5e8d..7f2568f000e7d9e58a02b9969d8227a6
 +                // Filtering every CostTapType through CAN_TAP both exposed
 +                // illegal candidates and diverged from CostTapType.canPay.
 +                list = CardLists.filter(list, sourceAbility.isCrew() ? CardPredicates.CAN_CREW : CardPredicates.CAN_TAP);
-                 int amount = part.getAbilityAmount(sourceAbility);
-                 boolean hasPaid = payCostPart(controller, p, sourceAbility, hcd.isEffect(), (CostPartWithList)part, amount, list, Localizer.getInstance().getMessage("lblTap") + orString);
-                 if (!hasPaid) { return false; }
+                int amount = part.getAbilityAmount(sourceAbility);
+                boolean hasPaid = payCostPart(controller, p, sourceAbility, hcd.isEffect(), (CostPartWithList)part, amount, list, Localizer.getInstance().getMessage("lblTap") + orString);
+                if (!hasPaid) { return false; }
+@@ -502,3 +502,6 @@ public class PlaySpellAbility {
+-            if (!controller.applyManaToCost(toPay, ability, prompt, matrix, effect)) {
++            boolean manaAccepted = controller.applyManaToCost(toPay, ability, prompt, matrix, effect);
++            // A controller must not report a successful payment while an
++            // unpaid shard remains.  In particular, an insufficient Delve
++            // subset can otherwise let provisional cards be exiled before a
++            // later cast failure strands the spell on the stack.
++            if (!manaAccepted || !toPay.isPaid()) {
+                 return handleOfferingConvokeAndDelve(ability, cardsToDelve, true);
+             }
 diff --git a/forge-gui/src/main/java/forge/model/FModel.java b/forge-gui/src/main/java/forge/model/FModel.java
 index 922d78e12047b32f9d498f5cd93d6c60de33c691..386e7bebbd346e971dcb48f178373b9c1f7ca270 100644
 --- a/forge-gui/src/main/java/forge/model/FModel.java
@@ -484,7 +494,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710badf83c9
 --- /dev/null
 +++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
-@@ -0,0 +1,534 @@
+@@ -0,0 +1,635 @@
 +package forge.headless;
 +
 +import com.google.common.collect.Multiset;
@@ -1155,7 +1165,7 @@ diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.jav
 index 0d731bb..492e31d 100644
 --- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 +++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-@@ -3,17 +3,34 @@ package forge.headless;
+@@ -3,17 +3,35 @@ package forge.headless;
  import com.google.common.collect.Multimap;
  import forge.LobbyPlayer;
  import forge.ai.ComputerUtilMana;
@@ -1183,6 +1193,7 @@ index 0d731bb..492e31d 100644
 +import forge.game.cost.CostTapType;
 +import forge.game.cost.PaymentDecision;
 +import forge.game.mana.ManaConversionMatrix;
++import forge.game.mana.ManaCostBeingPaid;
  import forge.game.phase.PhaseHandler;
  import forge.game.player.Player;
 +import forge.game.player.PlayerActionConfirmMode;
@@ -1986,7 +1997,7 @@ index 0d731bb..492e31d 100644
  
                      // Add the blocker
                      combat.addBlocker(attacker, blocker);
-@@ -1465,122 +1895,562 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1465,122 +1895,583 @@ public class PlayerControllerTUI extends PlayerControllerAi {
  
      @Override
      public boolean confirmTrigger(forge.game.trigger.WrappedAbility wrapper) {
@@ -2265,10 +2276,37 @@ index 0d731bb..492e31d 100644
 +        CardCollection result = new CardCollection();
 +        stagePaymentContext("nonmana_payment");
 +        emitCostComponentsRecord(activePaymentAbility, "graveyard", 0, genericAmount);
-+        result.addAll(chooseEntitiesThroughTui("cost_selection", grave, 0, genericAmount,
-+            "Choose graveyard cards to exile for Delve", false,
-+            "costKind=delve sourceZone=graveyard"));
++        int minimumDelve = minimumDelveSelection(genericAmount);
++        result.addAll(chooseEntitiesThroughTui("cost_selection", grave, minimumDelve, genericAmount,
++            "DELVE - Choose cards from your graveyard to exile. Each card pays {1} of this spell's generic mana cost.", false,
++            "costKind=delve sourceZone=graveyard minDelve=" + minimumDelve));
 +        return result;
++    }
++
++    /**
++     * Determine the smallest Delve selection that leaves a payable mana cost.
++     * This is only a validation aid for the interactive Done boundary; Forge's
++     * normal payment engine still owns the actual payment and zone changes.
++     */
++    private int minimumDelveSelection(int genericAmount) {
++        // Missing payment context is not evidence that zero cards are enough.
++        // Keep the choice conservative; the normal Forge payment path remains
++        // authoritative and will reject an impossible payment without exiling
++        // provisional cards.
++        if (activePaymentAbility == null || activePaymentAbility.getPayCosts() == null) return genericAmount;
++        ManaCost totalMana = activePaymentAbility.getPayCosts().getTotalMana();
++        int originalGeneric = totalMana.getGenericCost();
++        int preDelveReduction = Math.max(0, originalGeneric - genericAmount);
++        ManaCostBeingPaid base = new ManaCostBeingPaid(totalMana);
++        base.decreaseGenericMana(preDelveReduction);
++        for (int selected = 0; selected <= genericAmount; selected++) {
++            ManaCostBeingPaid candidate = new ManaCostBeingPaid(base);
++            candidate.decreaseGenericMana(selected);
++            if (ComputerUtilMana.canPayManaCost(candidate, activePaymentAbility, player, false)) {
++                return selected;
++            }
++        }
++        return genericAmount;
 +    }
  
 -        // Get cards in hand
@@ -2629,9 +2667,6 @@ index 0d731bb..492e31d 100644
 +    }
 +
  }
-
-
-
 diff --git a/forge-headless/src/main/java/forge/headless/TUICommand.java b/forge-headless/src/main/java/forge/headless/TUICommand.java
 index 3626ea898c0da5a6d8d849b37419094c42641bbf..b0e8729cd1719a817451862b8910eb302b24cdbd 100644
 --- a/forge-headless/src/main/java/forge/headless/TUICommand.java

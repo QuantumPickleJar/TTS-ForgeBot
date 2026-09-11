@@ -80,12 +80,21 @@ function Get-NormalizedTextHash([string]$path) {
 function Get-ForgeExpectedSources([string]$forgePath, [string]$upstreamCommit, [string]$patchPath) {
     $worktree = Join-Path ([System.IO.Path]::GetTempPath()) ('forge-patch-check-' + [guid]::NewGuid())
     New-Item -ItemType Directory -Force -Path $worktree | Out-Null
+    $previousErrorAction = $ErrorActionPreference
+    # Windows PowerShell promotes native git stderr (including successful
+    # progress such as "Preparing worktree") to ErrorRecord objects.  These
+    # commands are checked by exit code below, so keep their diagnostic stream
+    # non-terminating while the verification worktree is created/applied.
+    $ErrorActionPreference = 'Continue'
     try {
         $null = & git -C $forgePath worktree add --detach $worktree $upstreamCommit
         if ($LASTEXITCODE -ne 0) { throw "Failed to create clean Forge verification worktree." }
-        $null = & git -C $worktree apply --recount --check $patchPath
+        # The patch is generated from Forge sources whose checkout line-ending
+        # policy can differ from the clean verification worktree. Ignore only
+        # whitespace while retaining Git's full context and hunk validation.
+        $null = & git -C $worktree apply --recount --ignore-whitespace --check $patchPath
         if ($LASTEXITCODE -ne 0) { throw "Current bridge patch does not apply to upstream Forge commit $upstreamCommit." }
-        $null = & git -C $worktree apply --recount $patchPath
+        $null = & git -C $worktree apply --recount --ignore-whitespace $patchPath
         if ($LASTEXITCODE -ne 0) { throw 'Failed to apply the current Forge bridge patch in the clean verification worktree.' }
 
         $expected = [ordered]@{}
@@ -111,6 +120,7 @@ function Get-ForgeExpectedSources([string]$forgePath, [string]$upstreamCommit, [
         if (Test-Path -LiteralPath $worktree) {
             Remove-Item -LiteralPath $worktree -Recurse -Force -ErrorAction SilentlyContinue
         }
+        $ErrorActionPreference = $previousErrorAction
     }
 }
 
@@ -124,8 +134,14 @@ if (-not (Test-Path (Join-Path $forgeDirectory '.git'))) {
 
 Push-Location $forgeDirectory
 try {
-    & git fetch origin $Ref
-    if ($LASTEXITCODE -ne 0) { throw "Failed to fetch Forge ref '$Ref'." }
+    # Git writes normal fetch progress (for example, `From ...`) to stderr.
+    # With ErrorActionPreference=Stop PowerShell otherwise treats that
+    # successful diagnostic stream as a terminating error before the actual
+    # exit code can be checked.
+    $fetchOutput = & cmd.exe /d /c "git fetch origin $Ref 2>&1"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to fetch Forge ref '$Ref'.`n$($fetchOutput -join [Environment]::NewLine)"
+    }
     $currentCommit = (& git rev-parse HEAD).Trim()
     $requestedCommit = (& git rev-parse FETCH_HEAD).Trim()
     $hasLocalChanges = -not [string]::IsNullOrWhiteSpace((& git status --porcelain) -join '')
@@ -179,7 +195,10 @@ try {
         $currentNormalizedHash = if (Test-Path -LiteralPath $target -PathType Leaf) { Get-NormalizedTextHash $target } else { $null }
         $currentIsBase = $false
         if ($currentHash -ne $null) {
-            & git diff --quiet $commit -- $relative
+            # `git diff --quiet` can still emit line-ending warnings on a
+            # Windows checkout; use cmd redirection so a successful probe is
+            # not mistaken for a terminating PowerShell error.
+            $null = & cmd.exe /d /c "git diff --quiet $commit -- $relative 2>&1"
             $currentIsBase = $LASTEXITCODE -eq 0
         }
         if ($currentNormalizedHash -ne $expectedNormalizedHash -and -not $currentIsBase) {
