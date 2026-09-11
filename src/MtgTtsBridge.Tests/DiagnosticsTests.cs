@@ -498,6 +498,25 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public void SelfTests_FailActiveUnscopedTerminalRecoveryAfterReplacement()
+    {
+        using var terminalDocument = JsonDocument.Parse("{\"kind\":\"protocol_recovery_error\",\"detail\":\"old failure\"}");
+        var result = new DiagnosticSelfTestRunner().Run(
+            new AdapterStateDto("session-new", "awaiting_human_decision", null, null),
+            new EventBatchDto(0, 1, 54, false, []),
+            new GameSnapshotDto("session-new", 1, "current", [], [], EventCursor: 54),
+            new DiagnosticReportRequestDto(
+                SessionId: "session-new",
+                EventDrainDiagnostics: new DiagnosticEventDrainDiagnosticsDto(TerminalRecoveryError: true),
+                TerminalRecovery: terminalDocument.RootElement.Clone()),
+            new BridgeProcessIdentity());
+
+        var check = Assert.Single(result.Checks, item => item.Id == "active_terminal_recovery_current_session");
+        Assert.Equal("fail", check.Status);
+        Assert.Equal("UNSCOPED_ACTIVE_TERMINAL_RECOVERY", check.Evidence!["failure"]);
+    }
+
+    [Fact]
     public void SelfTests_FailTerminalRecoveryWhenResyncStillInFlight()
     {
         var request = new DiagnosticReportRequestDto(

@@ -371,6 +371,77 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void ChunkedMurderousCutTargetMenuPublishesAllTargetsExactlyOnce()
+    {
+        var variants = new[]
+        {
+            new[]
+            {
+                "=== Choose Target for Murderous Cut ===\nSelect a target:\n",
+                "  0. Harmonized Trio [id=32] (1/1) [Player 1]\n",
+                "  1. Gray Ogre [id=72] (2/2) [AI-tts-ai]\n  2. Raging Goblin [id=77] (1/1) [AI-tts-ai]\n",
+                "Enter target (0-2, or q to cancel): "
+            },
+            new[]
+            {
+                "=== Choose Target for Murderous Cut ===\nSelect a target:\n0. Harmonized Trio [id=32] (1/1) [Player 1]\n",
+                "1. Gray Ogre [id=72] (2/2) [AI-tts-ai]\n",
+                "2. Raging Goblin [id=77] (1/1) [AI-tts-ai]\nEnter target (0-2, or q to cancel): "
+            },
+            new[]
+            {
+                "=== Choose Target for Murderous Cut ===\nSelect a target:\n0. Harmonized Trio [id=32] (1/1) [Player 1]\n1. Gray Ogre [id=72] (2/2) [AI-tts-ai]\n2. Raging Goblin [id=77] (1/1) [AI-tts-ai]\n",
+                "Enter target (0-2, or q to cancel): "
+            },
+            new[]
+            {
+                "=== Choose Target for Murderous Cut ===\nSelect a target:\n0. Harmonized Trio [id=32] (1/1) [Player 1]\n1. Gray Ogre [id=72] (2/2) [AI-tts-ai]\n2. Raging Goblin [id=77] (1/1) [AI-tts-ai]\nEnter target (0-2, or q to cancel): "
+            }
+        };
+
+        foreach (var chunks in variants)
+        {
+            var parser = new ForgeTuiParser(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Player 1"] = "forge-player-1",
+                ["AI-tts-ai"] = "forge-player-2"
+            });
+            var decisions = new List<ForgeTuiDecision>();
+            foreach (var chunk in chunks)
+            {
+                var result = parser.Append(chunk);
+                if (result.ParsedDecision is ForgeTuiDecision decision) decisions.Add(decision);
+            }
+
+            var published = Assert.Single(decisions);
+            Assert.Equal("target_selection", published.Decision.Kind);
+            Assert.Equal(4, published.Decision.Actions.Count);
+            Assert.Contains(published.Decision.Actions, action => action.CardInstanceId == "forge-object:32");
+            Assert.Contains(published.Decision.Actions, action => action.CardInstanceId == "forge-object:72");
+            Assert.Contains(published.Decision.Actions, action => action.CardInstanceId == "forge-object:77");
+            var cancel = Assert.Single(published.Decision.Actions, action => action.Type == "cancel_cast");
+            Assert.Equal("q", published.Inputs[cancel.ActionId]);
+        }
+    }
+
+    [Fact]
+    public void TargetHeaderAndPartialRowsNeverPublishEarlyOrLeakGenericDecision()
+    {
+        var parser = new ForgeTuiParser();
+        Assert.Null(parser.Append("=== Choose Target for Murderous Cut ===\nSelect a target:\n").ParsedDecision);
+        Assert.Null(parser.Append("0. Harmonized Trio [id=32] (1/1) [Player 1]\n").ParsedDecision);
+        Assert.Null(parser.Append("1. Gray Ogre [id=72] (2/2) [AI-tts-ai]\n").ParsedDecision);
+
+        var result = parser.Append(
+            "2. Raging Goblin [id=77] (1/1) [AI-tts-ai]\n" +
+            "Enter target (0-2, or q to cancel): ");
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision);
+        Assert.Equal("target_selection", decision.Decision.Kind);
+        Assert.DoesNotContain("generic_numeric_selection", decision.Decision.Kind);
+        Assert.Equal(4, decision.Decision.Actions.Count);
+    }
+
+    [Fact]
     public void GenericChooseOneHeaderStreamedBeforeOptions_WaitsForFollowupChunk()
     {
         var parser = new ForgeTuiParser();

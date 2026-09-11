@@ -26,7 +26,9 @@ public sealed record DiagnosticReportRequestDto(
     DiagnosticPerformanceSummaryDto? PerformanceSummary = null,
     IReadOnlyList<TtsPerformanceTraceRecordDto>? RecentTtsTrace = null,
     IReadOnlyList<DiagnosticCaptureLifecycleRecordDto>? DiagnosticCaptureLifecycle = null,
-    DiagnosticEventDrainDiagnosticsDto? EventDrainDiagnostics = null);
+    DiagnosticEventDrainDiagnosticsDto? EventDrainDiagnostics = null,
+    JsonElement? TerminalRecovery = null,
+    JsonElement? RetiredTerminalRecovery = null);
 
 public sealed record DiagnosticPresentedResultDto(
     bool Presented = false,
@@ -101,7 +103,9 @@ public sealed record DiagnosticEventDrainDiagnosticsDto(
     int DuplicateRealGuidCount = 0,
     string? FirstBlockingObservation = null,
     string? FirstActualFailure = null,
-    string? CurrentObservedBlocker = null);
+    string? CurrentObservedBlocker = null,
+    string? EventSessionId = null,
+    int? EventSessionGeneration = null);
 
 public sealed record DiagnosticLibraryMappingDto(
     int ExpectedLibraryMappings = 0,

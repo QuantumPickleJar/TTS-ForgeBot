@@ -698,6 +698,7 @@ function BridgeCancelSelection(object, playerColor, altClick)
         if not ok then return end
     end
     local decision = BridgeState.lastDecision
+    BridgeRecordCancelAction("CLICK_RECEIVED", decision, nil, nil)
     if BridgeIsStructuredForgeToggleChoice(decision) then
         -- Forge owns the selected set for a structured collection. There is
         -- no generic cancel action in this protocol, so never visually clear
@@ -706,6 +707,7 @@ function BridgeCancelSelection(object, playerColor, altClick)
         BridgeLog("[Bridge] STRUCTURED_CANCEL_BLOCKED decision=" .. tostring(decision.decisionId)
             .. " reason=no_forge_cancel_action")
         BridgeShowError("Forge-owned selection cannot be cancelled here; deselect cards through Forge choices")
+        BridgeRecordCancelAction("SUBMIT_REJECTED", decision, nil, "structured-selection-no-cancel-action")
         return
     end
     if decision ~= nil and decision.allowsCancel == true then
@@ -718,8 +720,10 @@ function BridgeCancelSelection(object, playerColor, altClick)
         end
         if cancelAction == nil then
             BridgeShowError("Forge supplied no current cast-cancel action")
+            BridgeRecordCancelAction("SUBMIT_REJECTED", decision, nil, "cancel-action-missing")
             return
         end
+        BridgeRecordCancelAction("SUBMIT_STARTED", decision, cancelAction, "hud-cancel")
         BridgeClaimHumanTtsColor(decision.seatId, playerColor)
         BridgeClearHighlights()
         BridgeResetSelectionState()

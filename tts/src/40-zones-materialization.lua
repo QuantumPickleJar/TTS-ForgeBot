@@ -1650,6 +1650,8 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         return
     end
 
+    local previousSessionId = BridgeState.eventSessionId
+    local previousSessionGeneration = BridgeState.eventSessionGeneration
     local replacingMatch = BridgeState.eventSessionId ~= nil and BridgeState.eventSessionId ~= sessionId
     local replacingPhysicalOwnership = BridgeState.physicalOwnershipSessionId ~= nil
         and BridgeState.physicalOwnershipSessionId ~= sessionId
@@ -1716,6 +1718,11 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     if BridgeRetireStaleTerminalRecoveryError ~= nil then
         BridgeRetireStaleTerminalRecoveryError("session-prepare")
     end
+    if (replacingMatch or replacingPhysicalOwnership)
+        and BridgeMarkUnscopedTerminalRecoveryErrorForReplacement ~= nil then
+        BridgeMarkUnscopedTerminalRecoveryErrorForReplacement(previousSessionId, previousSessionGeneration,
+            sessionId, BridgeState.eventSessionGeneration)
+    end
     BridgeState.hudResyncPending = false
     -- This is the ownership barrier for all physical CardInstance mappings.
     -- A session id can be announced before bootstrap enters this function;
@@ -1733,7 +1740,6 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         BridgeState.resyncCircuitOpen = false
         BridgeState.resyncSnapshotFingerprint = nil
         BridgeState.resyncSnapshotRepeatCount = 0
-        BridgeState.terminalRecoveryError = nil
         BridgeState.staleDecisionFault = nil
         BridgeState.staleDecisionFaultsByKey = {}
         BridgeState.staleDecisionRetryKey = nil

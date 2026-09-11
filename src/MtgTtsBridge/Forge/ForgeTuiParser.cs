@@ -50,6 +50,18 @@ public sealed partial class ForgeTuiParser
         var promptContext = text[..prompt.Index];
         var definition = FindPromptDefinition(promptContext);
         var inferredKind = InferKindFromPrompt(promptContext, prompt.Value);
+
+        // A target header (for example, "Select a target:") is descriptive
+        // output, not the input boundary. Forge can stream that header and one
+        // or more target rows before it prints the final Enter target prompt.
+        // Publishing at the header would expose a partial decision and allow
+        // the next chunk to become a second, unrelated numeric decision.
+        if (definition is not null
+            && definition.Value.Definition.Kind is "target_selection" or "defender_selection" or "player_selection"
+            && !ExplicitNumericInputPromptRegex().IsMatch(prompt.Value))
+        {
+            return ForgeTuiParserResult.None;
+        }
         var optionMatches = MenuOptionRegex().Matches(promptContext);
         var actions = optionMatches
             .Where(match => definition is null || match.Index > definition.Value.Index)

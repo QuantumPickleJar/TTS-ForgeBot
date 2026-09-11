@@ -2892,6 +2892,89 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void LegacyUnscopedTerminalRecoveryRetiresOnlyAfterVerifiedReplacementBootstrap()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "LegacyUnscopedTerminalRecoveryRetiresOnlyAfterVerifiedReplacementBootstrap.probe.lua", @"
+            BridgeState.eventSessionId = 'old-session'
+            BridgeState.eventSessionGeneration = 5
+            BridgeState.statusHeadline = 'PROTOCOL RECOVERY ERROR'
+            BridgeState.terminalRecoveryError = {kind='protocol_recovery_error', detail='old failure'}
+            visibleWhileOld = BridgeCurrentTerminalRecoveryError()
+            BridgeState.eventSessionId = 'new-session'
+            BridgeState.eventSessionGeneration = 6
+            BridgeMarkUnscopedTerminalRecoveryErrorForReplacement('old-session', 5, 'new-session', 6)
+            suppressedDuringBootstrap = BridgeCurrentTerminalRecoveryError()
+            BridgeState.embodimentEpoch = 7
+            BridgeState.embodimentTransactionToken = 42
+            tx = {reason='initial-bootstrap', targetSessionId='new-session', runtimeEpoch=BRIDGE_RUNTIME_EPOCH,
+                epoch=7, token=42, phase='COMMIT'}
+            BridgeState.embodimentTransaction = tx
+            finished = BridgeFinishEmbodimentTransaction(tx, true, nil)
+            retired = BridgeState.terminalRecoveryErrorRetired ~= nil
+            presentationReleased = BridgeState.statusHeadline == 'MATCH ACTIVE'
+            currentAfterCommit = BridgeCurrentTerminalRecoveryError()
+            retiredRecord = BridgeState.terminalRecoveryErrorRetired
+            headlineAfterCommit = BridgeState.statusHeadline
+        ");
+
+        Assert.False(lua.Globals.Get("visibleWhileOld").IsNil());
+        Assert.True(lua.Globals.Get("suppressedDuringBootstrap").IsNil());
+        Assert.True(lua.Globals.Get("finished").Boolean);
+        Assert.True(lua.Globals.Get("retired").Boolean);
+        Assert.True(lua.Globals.Get("presentationReleased").Boolean);
+        Assert.True(lua.Globals.Get("currentAfterCommit").IsNil());
+        Assert.Equal("protocol_recovery_error", lua.Globals.Get("retiredRecord").Table.Get("kind").String);
+        Assert.Equal("verified-replacement-bootstrap", lua.Globals.Get("retiredRecord").Table.Get("reason").String);
+        Assert.Equal("MATCH ACTIVE", lua.Globals.Get("headlineAfterCommit").String);
+    }
+
+    [Fact]
+    public void ScopedOldTerminalRecoveryIsRetiredAndCurrentTerminalStillBlocksGameplay()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "ScopedOldTerminalRecoveryIsRetiredAndCurrentTerminalStillBlocksGameplay.probe.lua", @"
+            BridgeState.eventSessionId = 'new-session'
+            BridgeState.eventSessionGeneration = 6
+            BridgeState.terminalRecoveryError = {sessionId='old-session', sessionGeneration=5,
+                kind='protocol_recovery_error', detail='old failure'}
+            retiredOld = BridgeRetireStaleTerminalRecoveryError('session-prepare')
+            oldCurrent = BridgeCurrentTerminalRecoveryError()
+            BridgeState.terminalRecoveryError = {sessionId='new-session', sessionGeneration=6,
+                kind='protocol_recovery_error', detail='current failure'}
+            current = BridgeCurrentTerminalRecoveryError()
+            BridgeRefreshStatusPanel = function() end
+            BridgeSetStatus('MATCH ACTIVE', 'new session')
+            headline = BridgeState.statusHeadline
+        ");
+
+        Assert.True(lua.Globals.Get("retiredOld").Boolean);
+        Assert.True(lua.Globals.Get("oldCurrent").IsNil());
+        Assert.False(lua.Globals.Get("current").IsNil());
+        Assert.Equal("PROTOCOL RECOVERY ERROR", lua.Globals.Get("headline").String);
+    }
+
+    [Fact]
+    public void StaleOldGenerationDecisionFaultCannotRecreateTerminalRecoveryAfterReplacement()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "StaleOldGenerationDecisionFaultCannotRecreateTerminalRecoveryAfterReplacement.probe.lua", @"
+            BridgeState.eventSessionId = 'new-session'
+            BridgeState.eventSessionGeneration = 6
+            BridgeState.eventPolling = true
+            BridgeStopOnDecisionProvenanceLag('late old callback', {
+                sessionId='old-session', sessionGeneration=5, decisionId='old-decision',
+                key='old-callback', eventCursor=10, appliedEventCursor=9
+            })
+            terminal = BridgeCurrentTerminalRecoveryError()
+            polling = BridgeState.eventPolling
+        ");
+
+        Assert.True(lua.Globals.Get("terminal").IsNil());
+        Assert.True(lua.Globals.Get("polling").Boolean);
+    }
+
+    [Fact]
     public void HudResyncHandlerForwardsExplicitHudOriginExactlyOnce()
     {
         var lua = NewQueueProbe();

@@ -336,6 +336,15 @@ end
 function BridgeCurrentTerminalRecoveryError()
     local error = BridgeState.terminalRecoveryError
     if error == nil then return nil end
+    -- A legacy error without ownership cannot be safely discarded while its
+    -- failed match still owns the table. Once a distinct replacement session
+    -- owns bootstrap, it must not gate that replacement's physical proof.
+    if error.replacementBootstrapSessionId ~= nil
+        and error.replacementBootstrapSessionId == BridgeState.eventSessionId
+        and (error.replacementBootstrapSessionGeneration == nil
+            or error.replacementBootstrapSessionGeneration == BridgeState.eventSessionGeneration) then
+        return nil
+    end
     if BridgeState.eventSessionId ~= nil then
         local expectedSessionId = error.sessionId or error.sourceSessionId
         if expectedSessionId ~= nil and expectedSessionId ~= BridgeState.eventSessionId then
@@ -361,7 +370,8 @@ function BridgeDiagnosticPresentedResult()
         reason = result and result.reason or nil,
         presentationGeneration = result and result.presentationGeneration or nil,
         terminalRecoveryError = terminal ~= nil,
-        terminalRecovery = terminal and BridgeDiagnosticSnapshot(terminal) or nil
+        terminalRecovery = terminal and BridgeDiagnosticSnapshot(terminal) or nil,
+        retiredTerminalRecovery = BridgeDiagnosticSnapshot(BridgeState.terminalRecoveryErrorRetired or {})
     }
 end
 
@@ -1035,7 +1045,11 @@ function BridgeEventDrainQueueState()
         bootstrapping = BridgeState.bootstrapping == true,
         terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
         terminalRecovery = BridgeDiagnosticSnapshot(BridgeCurrentTerminalRecoveryError() or {}),
+        retiredTerminalRecovery = BridgeDiagnosticSnapshot(BridgeState.terminalRecoveryErrorRetired or {}),
+        eventSessionId = BridgeState.eventSessionId,
+        eventSessionGeneration = BridgeState.eventSessionGeneration,
         decisionAcceptanceRejections = BridgeDiagnosticSnapshot(BridgeState.decisionAcceptanceRejections or {}),
+        cancelActionJournal = BridgeDiagnosticSnapshot(BridgeState.cancelActionJournal or {}),
         lastActionPhysicalResolution = BridgeDiagnosticSnapshot(BridgeState.lastActionPhysicalResolution or {}),
         resyncToken = BridgeState.resyncToken,
         resyncOrigin = BridgeState.resyncOrigin,
@@ -1496,8 +1510,95 @@ function BridgeRecordDecisionRejection(decision, origin, reason, expectedSession
         tostring(record.lastAppliedEventSequence), tostring(record.decisionForgeSequence), tostring(record.lastAppliedForgeSequence)))
 end
 
+-- Keep cancellation observable without making report capture part of the
+-- gameplay path.  Only decision/action ownership metadata is retained.
+function BridgeRecordCancelAction(stage, decision, action, reason)
+    BridgeState.cancelActionJournal = BridgeState.cancelActionJournal or {}
+    local record = {
+        timestamp = os.clock(), stage = tostring(stage or "unknown"),
+        decisionId = decision and decision.decisionId or nil,
+        decisionKind = decision and decision.kind or nil,
+        cancelActionId = action and action.actionId or nil,
+        submitting = BridgeState.submitting == true,
+        sessionId = BridgeState.eventSessionId,
+        presentationGeneration = BridgeState.decisionPresentationGeneration,
+        reason = reason and tostring(reason) or nil
+    }
+    table.insert(BridgeState.cancelActionJournal, record)
+    while #BridgeState.cancelActionJournal > 24 do table.remove(BridgeState.cancelActionJournal, 1) end
+    BridgeLog(string.format("[Bridge] CANCEL_%s decision=%s action=%s reason=%s",
+        tostring(stage), tostring(record.decisionId), tostring(record.cancelActionId), tostring(record.reason or "")))
+end
+
+function BridgeRetireTerminalRecoveryError(error, reason)
+    if error == nil then return false end
+    BridgeState.terminalRecoveryErrorRetired = {
+        kind = error.kind,
+        detail = error.detail or error.reason,
+        sessionId = error.sessionId or error.sourceSessionId,
+        sessionGeneration = error.sessionGeneration,
+        recoveryToken = error.recoveryToken,
+        physicalTransactionGeneration = error.physicalTransactionGeneration,
+        decisionId = error.decisionId,
+        eventCursor = error.eventCursor,
+        appliedEventCursor = error.appliedEventCursor,
+        creationStage = error.creationStage,
+        createdAt = error.createdAt,
+        retiredAt = os.clock(),
+        retiredSessionId = BridgeState.eventSessionId,
+        retiredSessionGeneration = BridgeState.eventSessionGeneration,
+        reason = reason or "replacement-session"
+    }
+    if BridgeState.terminalRecoveryError == error then
+        BridgeState.terminalRecoveryError = nil
+    end
+    if BridgeUiMarkDirty ~= nil then BridgeUiMarkDirty("terminal-recovery-retired") end
+    return true
+end
+
+function BridgeMarkUnscopedTerminalRecoveryErrorForReplacement(previousSessionId, previousGeneration, sessionId, generation)
+    local error = BridgeState.terminalRecoveryError
+    if error == nil then return false end
+    if error.sessionId ~= nil or error.sourceSessionId ~= nil or error.sessionGeneration ~= nil then return false end
+    error.replacementBootstrapSessionId = sessionId
+    error.replacementBootstrapSessionGeneration = generation
+    error.legacyObservedSessionId = previousSessionId
+    error.legacyObservedSessionGeneration = previousGeneration
+    error.legacyReplacementPending = true
+    return true
+end
+
+function BridgeRetireTerminalRecoveryErrorAfterVerifiedReplacementBootstrap(tx)
+    local error = BridgeState.terminalRecoveryError
+    if error == nil or tx == nil or tx.reason ~= "initial-bootstrap" then return false end
+    if tx.targetSessionId == nil or tx.targetSessionId ~= BridgeState.eventSessionId then return false end
+    if error.replacementBootstrapSessionId ~= BridgeState.eventSessionId then return false end
+    if error.replacementBootstrapSessionGeneration ~= nil
+        and error.replacementBootstrapSessionGeneration ~= BridgeState.eventSessionGeneration then return false end
+    -- Never retire an error created by this replacement bootstrap itself.
+    if error.sessionId == BridgeState.eventSessionId
+        and (error.sessionGeneration == nil or error.sessionGeneration == BridgeState.eventSessionGeneration) then
+        return false
+    end
+    return BridgeRetireTerminalRecoveryError(error, "verified-replacement-bootstrap")
+end
+
+function BridgeReleaseTerminalPresentationAfterVerifiedReplacementBootstrap(tx)
+    if tx == nil or tx.reason ~= "initial-bootstrap" then return false end
+    if tx.targetSessionId == nil or tx.targetSessionId ~= BridgeState.eventSessionId then return false end
+    if BridgeCurrentTerminalRecoveryError() ~= nil then return false end
+    if BridgeState.statusHeadline == "PROTOCOL RECOVERY ERROR" and BridgeSetStatus ~= nil then
+        -- The terminal guard rewrites status at write time. A verified
+        -- replacement must actively recompute that stale presentation, while
+        -- a genuinely current terminal record remains protected above.
+        BridgeSetStatus("MATCH ACTIVE", "Replacement session bootstrap verified.")
+        return true
+    end
+    return false
+end
+
 -- Terminal recovery failures belong to the authoritative session/generation
--- which produced them.  Keep the raw record for diagnostics, but never let a
+-- which produced them. Keep the raw record for diagnostics, but never let a
 -- stale callback make a replacement session look terminal.
 function BridgeRetireStaleTerminalRecoveryError(reason)
     local error = BridgeState.terminalRecoveryError
@@ -1509,14 +1610,7 @@ function BridgeRetireStaleTerminalRecoveryError(reason)
     local stale = (ownerSession ~= nil and session ~= nil and ownerSession ~= session)
         or (ownerGeneration ~= nil and generation ~= nil and ownerGeneration ~= generation)
     if stale then
-        BridgeState.terminalRecoveryErrorRetired = {
-            kind = error.kind,
-            sessionId = ownerSession,
-            sessionGeneration = ownerGeneration,
-            reason = reason or "replacement-session"
-        }
-        BridgeState.terminalRecoveryError = nil
-        return true
+        return BridgeRetireTerminalRecoveryError(error, reason)
     end
     return false
 end
@@ -2068,6 +2162,8 @@ function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
     if ok then
         tx.candidatePhysicalLedger = BridgeCapturePhysicalLedger()
         BridgeState.committedPhysicalLedger = tx.candidatePhysicalLedger
+        BridgeRetireTerminalRecoveryErrorAfterVerifiedReplacementBootstrap(tx)
+        BridgeReleaseTerminalPresentationAfterVerifiedReplacementBootstrap(tx)
     elseif tx.committedPhysicalLedger ~= nil
         and (tx.committedPhysicalLedger.ownerSessionId == nil
             or tx.targetSessionId == nil
@@ -3134,9 +3230,11 @@ BridgeState = {
     yieldPolicyOwnTurn = false,
     decisionLifecycle = {},
     decisionAcceptanceRejections = {},
+    cancelActionJournal = {},
     staleDecisionFault = nil,
     staleDecisionFaultsByKey = {},
     terminalRecoveryError = nil,
+    terminalRecoveryErrorRetired = nil,
     diagnosticCaptureLifecycle = {},
     revealedPresentationsByKey = {},
     revealedPresentationOrder = {},
@@ -3486,7 +3584,8 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.recoveryTrigger = nil
     BridgeState.recoveryCause = nil
     BridgeState.desyncFailureCount = 0
-    BridgeState.terminalRecoveryError = nil
+    -- Retire terminal state only after a replacement session has verified its
+    -- own bootstrap; an old failure must remain diagnosable until then.
     BridgeState.staleDecisionFault = nil
     BridgeState.staleDecisionFaultsByKey = {}
     BridgeState.staleDecisionRetryKey = nil

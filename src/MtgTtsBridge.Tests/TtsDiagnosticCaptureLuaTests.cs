@@ -329,7 +329,12 @@ public sealed class TtsDiagnosticCaptureLuaTests
             BridgeState.terminalRecoveryError = {
                 sessionId='replacement-session', sessionGeneration=9,
                 kind='decision_provenance_lag', detail='decision cursor did not converge',
-                decisionId='forge-tui-1', eventCursor=19, creationStage='decision-poll'
+                decisionId='forge-tui-1', eventCursor=19, creationStage='decision-poll',
+                physicalTransactionGeneration=12, recoveryToken=7
+            }
+            BridgeState.terminalRecoveryErrorRetired = {
+                kind='protocol_recovery_error', detail='old recovery', sessionId='old-session',
+                sessionGeneration=8, reason='verified-replacement-bootstrap'
             }
             function BridgeWaitTime(callback, delay) end
             function BridgeHudReportSummaryText() return 'probe' end
@@ -348,11 +353,16 @@ public sealed class TtsDiagnosticCaptureLuaTests
         ");
 
         var terminal = lua.Globals.Get("submittedPayload").Table.Get("terminalRecovery").Table;
+        var retired = lua.Globals.Get("submittedPayload").Table.Get("retiredTerminalRecovery").Table;
         Assert.Equal(1, lua.Globals.Get("submissions").Number);
         Assert.Equal("decision_provenance_lag", terminal.Get("kind").String);
         Assert.Equal("replacement-session", terminal.Get("sessionId").String);
         Assert.Equal(9, terminal.Get("sessionGeneration").Number);
         Assert.Equal("decision-poll", terminal.Get("creationStage").String);
+        Assert.Equal(12, terminal.Get("physicalTransactionGeneration").Number);
+        Assert.Equal(7, terminal.Get("recoveryToken").Number);
+        Assert.Equal("old-session", retired.Get("sessionId").String);
+        Assert.Equal("verified-replacement-bootstrap", retired.Get("reason").String);
     }
 
     [Fact]
@@ -721,6 +731,54 @@ public sealed class TtsDiagnosticCaptureLuaTests
         ");
 
         Assert.True(lua.Globals.Get("blocked").IsNil());
+    }
+
+    [Fact]
+    public void HudCancelSubmitsCurrentForgeCancelActionAndRecordsOutcome()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'cancel-session'
+            BridgeState.desyncLatched = false
+            BridgeState.choiceProtocolPaused = false
+            BridgeState.submitting = false
+            BridgeState.choiceTransactions = {}
+            BridgeState.lastDecision = {
+                decisionId = 'forge-tui-19', sessionId = 'cancel-session',
+                kind = 'target_selection', allowsCancel = true,
+                seatId = 'forge-player-1', actions = {
+                    {actionId = 'forge-tui-19-choice-0', type = 'choose_target'},
+                    {actionId = 'forge-tui-19-cancel', type = 'cancel_cast'}
+                }
+            }
+            BridgeState.cancelActionJournal = {}
+            BridgeClaimHumanTtsColor = function() end
+            BridgeClearHighlights = function() end
+            BridgeResetSelectionState = function() end
+            submitted = 0
+            submittedDecision = nil
+            submittedAction = nil
+            function BridgeSubmitChoice(decisionId, actionId, source)
+                submitted = submitted + 1
+                submittedDecision = decisionId
+                submittedAction = actionId
+            end
+            BridgeCancelSelection(nil, 'White', false)
+        ");
+
+        Assert.Equal(1, lua.Globals.Get("submitted").Number);
+        Assert.Equal("forge-tui-19", lua.Globals.Get("submittedDecision").String);
+        Assert.Equal("forge-tui-19-cancel", lua.Globals.Get("submittedAction").String);
+        lua.DoString(@"
+            sawCancelClick = false
+            sawCancelStarted = false
+            for _, record in ipairs(BridgeState.cancelActionJournal or {}) do
+                if record.stage == 'CLICK_RECEIVED' then sawCancelClick = true end
+                if record.stage == 'SUBMIT_STARTED' then sawCancelStarted = true end
+            end
+        ");
+        Assert.True(lua.Globals.Get("sawCancelClick").Boolean);
+        Assert.True(lua.Globals.Get("sawCancelStarted").Boolean);
     }
 
     private static Script NewProbe()

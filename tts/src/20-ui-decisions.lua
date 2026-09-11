@@ -1013,7 +1013,11 @@ function BridgeStopOnDecisionProvenanceLag(detail, fault)
         appliedEventCursor = fault and fault.appliedEventCursor or nil,
         payloadHash = fault and fault.payloadHash or nil,
         createdAt = os.clock(),
-        creationStage = BridgeState.bootstrapStage or BridgeState.resyncStage or "decision-poll"
+        createdAtUpdateTick = BridgeState.updateTick,
+        creationStage = BridgeState.bootstrapStage or BridgeState.resyncStage or "decision-poll",
+        physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
+        recoveryToken = BridgeState.resyncToken,
+        source = "decision-provenance-lag"
     }
     BridgeState.gameEnded = nil
     BridgeState.resultSourceEventId = nil
@@ -1921,6 +1925,10 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         end
         if not ok then
             activeTransaction.state = "rejected"
+            if activeTransaction.actionType == "cancel_cast" then
+                BridgeRecordCancelAction("SUBMIT_REJECTED", BridgeState.lastDecision,
+                    { actionId = actionId }, tostring(body and body.errorCode or err or "request-failed"))
+            end
             local rejectedDecision = BridgeState.lastDecision
             if rejectedDecision ~= nil and rejectedDecision.decisionId == decisionId then
                 BridgeRecordDecisionLifecycle(rejectedDecision, activeTransaction.source, "CHOICE_REJECTED",
@@ -1969,6 +1977,10 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         end
 
         activeTransaction.state = "accepted"
+        if activeTransaction.actionType == "cancel_cast" then
+            BridgeRecordCancelAction("SUBMIT_ACCEPTED", BridgeState.lastDecision,
+                { actionId = actionId }, "forge-accepted")
+        end
         local acceptedDecision = BridgeState.lastDecision
         if acceptedDecision ~= nil and acceptedDecision.decisionId == decisionId then
             BridgeRecordDecisionLifecycle(acceptedDecision, activeTransaction.source, "CHOICE_ACCEPTED",

@@ -46,6 +46,7 @@ public sealed class DiagnosticSelfTestRunner
             CheckResultPresentationInvariants(adapterState, request),
             CheckRecoveryInvariants(eventBatch, snapshot, request),
             CheckTerminalStatusHonesty(request),
+            CheckActiveTerminalRecoveryOwnership(request),
             CheckGenerationChurn(adapterState, eventBatch, snapshot, request)
         };
         return new DiagnosticSelfTestResult(checks);
@@ -293,6 +294,22 @@ public sealed class DiagnosticSelfTestRunner
                 new Dictionary<string, object?> { ["failure"] = "MATCH_ACTIVE_WITH_TERMINAL_RECOVERY_ERROR", ["status"] = request.Status });
         }
         return Check("terminal_status_honesty", "info", "pass", "Terminal recovery is not presented as an active match.", new Dictionary<string, object?> { ["status"] = request.Status });
+    }
+
+    private static DiagnosticSelfTestCheck CheckActiveTerminalRecoveryOwnership(DiagnosticReportRequestDto request)
+    {
+        if (request.EventDrainDiagnostics?.TerminalRecoveryError != true)
+            return Check("active_terminal_recovery_current_session", "info", "pass", "No active terminal recovery error is reported.");
+        if (request.TerminalRecovery is not { ValueKind: System.Text.Json.JsonValueKind.Object } terminal
+            || !terminal.TryGetProperty("sessionId", out var owner)
+            || string.IsNullOrWhiteSpace(owner.GetString()))
+            return Check("active_terminal_recovery_current_session", "error", "fail",
+                "Active terminal recovery lacks session ownership.", new Dictionary<string, object?> { ["failure"] = "UNSCOPED_ACTIVE_TERMINAL_RECOVERY" });
+        if (!string.IsNullOrWhiteSpace(request.SessionId)
+            && !string.Equals(owner.GetString(), request.SessionId, StringComparison.Ordinal))
+            return Check("active_terminal_recovery_current_session", "error", "fail",
+                "Active terminal recovery belongs to a different session.", new Dictionary<string, object?> { ["ownerSessionId"] = owner.GetString(), ["currentSessionId"] = request.SessionId });
+        return Check("active_terminal_recovery_current_session", "info", "pass", "Active terminal recovery belongs to the current TTS session.");
     }
 
     private static DiagnosticSelfTestCheck CheckGenerationChurn(
