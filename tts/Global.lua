@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: ae1c79041c91ae6561e265af28d986ab7c4470ed43346c63fc2d417c7deccf77
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "ae1c79041c91ae6561e265af28d986ab7c4470ed43346c63fc2d417c7deccf77"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 141419ecb281bbc300687534b16b18c24ea264f1beef6726095dadecd4d31d7a
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "141419ecb281bbc300687534b16b18c24ea264f1beef6726095dadecd4d31d7a"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -3251,8 +3251,10 @@ BridgeState = {
     revealedPresentationsByKey = {},
     revealedPresentationOrder = {},
     dismissedRevealKeys = {},
+    dismissedRevealOrder = {},
     activeRevealPresentationKey = nil,
     revealSurfaceOffset = 1,
+    revealPresentationGeneration = 0,
     diagnosticCaptureFollowupToken = nil,
     diagnosticCaptureFollowupUntil = 0,
     resyncNoProgress = {
@@ -3677,7 +3679,10 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.revealedPresentationsByKey = {}
     BridgeState.revealedPresentationOrder = {}
     BridgeState.dismissedRevealKeys = {}
+    BridgeState.dismissedRevealOrder = {}
     BridgeState.activeRevealPresentationKey = nil
+    BridgeState.revealSurfaceOffset = 1
+    BridgeState.revealPresentationGeneration = (BridgeState.revealPresentationGeneration or 0) + 1
     BridgeState.stackSummary = {}
     BridgeState.stackObjects = {}
     BridgeState.combatSelectedByGuid = {}
@@ -11544,6 +11549,7 @@ function BridgeEnsureDecisionOptionControls(decision, representedActionIds)
 -- Read-only projection of structured Forge reveal payloads. This surface is
 -- separate from zones, decisions, combat highlights, and the event cursor.
 BRIDGE_REVEAL_SURFACE_SLOTS = 6
+BRIDGE_REVEAL_AUTO_DISMISS_SECONDS = 10
 
 local function BridgeRevealUiDirty(reason)
     local ui = BridgeState.ui
@@ -11562,6 +11568,76 @@ end
 
 local function BridgeRevealKey(presentation, eventSequence)
     return tostring(presentation.presentationId or "") .. "@" .. tostring(eventSequence or presentation.originatingEventSequence or 0)
+end
+
+local function BridgeRevealIsDecisionBound(presentation)
+    return presentation ~= nil and (presentation.associatedDecisionId ~= nil or presentation.acknowledgmentRequired == true)
+end
+
+local function BridgeRevealRemoveOrderKey(key)
+    local order = BridgeState.revealedPresentationOrder or {}
+    for index = #order, 1, -1 do
+        if order[index] == key then
+            for shift = index, #order - 1 do order[shift] = order[shift + 1] end
+            order[#order] = nil
+        end
+    end
+end
+
+local function BridgeRevealPruneDismissedKeys()
+    local order = BridgeState.dismissedRevealOrder or {}
+    while #order > 64 do
+        local stale = order[1]
+        for shift = 1, #order - 1 do order[shift] = order[shift + 1] end
+        order[#order] = nil
+        BridgeState.dismissedRevealKeys[stale] = nil
+    end
+    BridgeState.dismissedRevealOrder = order
+end
+
+local function BridgeRevealRetire(key, rememberDismissal)
+    if key == nil then return end
+    BridgeState.revealedPresentationsByKey[key] = nil
+    BridgeRevealRemoveOrderKey(key)
+    if BridgeState.activeRevealPresentationKey == key then BridgeState.activeRevealPresentationKey = nil end
+    if rememberDismissal then
+        if BridgeState.dismissedRevealKeys[key] ~= true then
+            BridgeState.dismissedRevealKeys[key] = true
+            BridgeState.dismissedRevealOrder = BridgeState.dismissedRevealOrder or {}
+            table.insert(BridgeState.dismissedRevealOrder, key)
+            BridgeRevealPruneDismissedKeys()
+        end
+    end
+end
+
+function BridgeHudRevealInteract(player, value, id)
+    local key = BridgeState.activeRevealPresentationKey
+    local presentation = key and BridgeState.revealedPresentationsByKey[key] or nil
+    if presentation == nil then return false end
+    presentation.pinnedByUser = true
+    BridgeRevealUiDirty("reveal-pinned")
+    return true
+end
+
+local function BridgeScheduleRevealAutoDismiss(key, presentation)
+    if BridgeRevealIsDecisionBound(presentation) then return end
+    BridgeState.revealPresentationGeneration = (BridgeState.revealPresentationGeneration or 0) + 1
+    local token = BridgeState.revealPresentationGeneration
+    presentation.revealPresentationToken = token
+    presentation.openedAt = Time and Time.time or nil
+    presentation.autoDismissDeadline = (presentation.openedAt or 0) + BRIDGE_REVEAL_AUTO_DISMISS_SECONDS
+    local sessionId, sessionGeneration = BridgeState.eventSessionId, BridgeState.eventSessionGeneration
+    local schedule = BridgeWaitTime or function(callback, delay) Wait.time(callback, delay) end
+    schedule(function()
+        local active = BridgeState.activeRevealPresentationKey
+        local current = active and BridgeState.revealedPresentationsByKey[active] or nil
+        if active ~= key or current ~= presentation or current.revealPresentationToken ~= token
+            or current.pinnedByUser == true
+            or BridgeState.eventSessionId ~= sessionId
+            or BridgeState.eventSessionGeneration ~= sessionGeneration then return end
+        BridgeRevealRetire(key, true)
+        BridgeRevealUiDirty("reveal-auto-dismissed")
+    end, BRIDGE_REVEAL_AUTO_DISMISS_SECONDS)
 end
 
 function BridgeRevealViewerMaySee(presentation)
@@ -11589,15 +11665,17 @@ function BridgeApplyRevealPresentation(presentation, appliedEventSequence)
     if BridgeState.dismissedRevealKeys[key] == true then return false end
     local lifecycle = string.lower(tostring(presentation.lifecycle or "opened"))
     if lifecycle == "resolved" or lifecycle == "dismissed" then
-        BridgeState.dismissedRevealKeys[key] = true
-        if BridgeState.activeRevealPresentationKey == key then BridgeState.activeRevealPresentationKey = nil end
+        BridgeRevealRetire(key, true)
         BridgeRevealUiDirty("reveal-closed")
         return true
     end
+    local priorKey = BridgeState.activeRevealPresentationKey
+    if priorKey ~= nil and priorKey ~= key then BridgeRevealRetire(priorKey, true) end
     if BridgeState.revealedPresentationsByKey[key] == nil then table.insert(BridgeState.revealedPresentationOrder, key) end
     BridgeState.revealedPresentationsByKey[key] = presentation
     BridgeState.activeRevealPresentationKey = key
     BridgeState.revealSurfaceOffset = 1
+    if presentation.revealPresentationToken == nil then BridgeScheduleRevealAutoDismiss(key, presentation) end
     BridgeRevealUiDirty("reveal-updated")
     return true
 end
@@ -11607,9 +11685,7 @@ function BridgeResolveRevealForDecision(decision)
     local presentation = key and BridgeState.revealedPresentationsByKey[key] or nil
     if presentation == nil or presentation.associatedDecisionId == nil then return end
     if decision == nil or decision.decisionId ~= presentation.associatedDecisionId then
-        BridgeState.dismissedRevealKeys[key] = true
-        BridgeState.revealedPresentationsByKey[key] = nil
-        BridgeState.activeRevealPresentationKey = nil
+        BridgeRevealRetire(key, true)
         BridgeRevealUiDirty("reveal-decision-ended")
     end
 end
@@ -11628,6 +11704,7 @@ function BridgeHudRevealScroll(player, value, id)
     local key = BridgeState.activeRevealPresentationKey
     local presentation = key and BridgeState.revealedPresentationsByKey[key] or nil
     if presentation == nil then return end
+    BridgeHudRevealInteract(player, value, id)
     local maxOffset = math.max(1, #(presentation.cards or {}) - BRIDGE_REVEAL_SURFACE_SLOTS + 1)
     local offset = tonumber(BridgeState.revealSurfaceOffset or 1) or 1
     if tostring(id or "") == "BridgeHudRevealPrev" then offset = offset - 1 else offset = offset + 1 end
@@ -11639,11 +11716,23 @@ function BridgeHudRevealClose(player, value, id)
     local key = BridgeState.activeRevealPresentationKey
     local presentation = key and BridgeState.revealedPresentationsByKey[key] or nil
     if presentation == nil then return end
-    if presentation.associatedDecisionId ~= nil then return end
-    BridgeState.dismissedRevealKeys[key] = true
-    BridgeState.revealedPresentationsByKey[key] = nil
-    BridgeState.activeRevealPresentationKey = nil
+    BridgeHudRevealInteract(player, value, id)
+    if BridgeRevealIsDecisionBound(presentation) then return end
+    BridgeRevealRetire(key, true)
     BridgeRevealUiDirty("reveal-dismissed")
+end
+
+-- Card buttons deliberately do not infer Scry/Surveil semantics. Future
+-- decision code may install BridgeRevealCardInteractionHandler and receive the
+-- exact Forge identity carried by this structured presentation.
+function BridgeHudRevealCard(player, value, id)
+    if not BridgeHudRevealInteract(player, value, id) then return end
+    local slot = tonumber(string.match(tostring(id or ""), "(%d+)$"))
+    local presentation = BridgeState.revealedPresentationsByKey[BridgeState.activeRevealPresentationKey]
+    local entry = slot and presentation and (presentation.cards or {})[(BridgeState.revealSurfaceOffset or 1) + slot - 1] or nil
+    if entry ~= nil and BridgeRevealCardInteractionHandler ~= nil then
+        BridgeRevealCardInteractionHandler(presentation, entry, player)
+    end
 end
 
 function BridgeRenderRevealSurface()
@@ -11669,12 +11758,13 @@ function BridgeRenderRevealSurface()
         BridgeUiSet("BridgeHudRevealFallback" .. tostring(slot), "active", entry ~= nil and image == nil and "true" or "false")
         BridgeUiSet("BridgeHudRevealFallback" .. tostring(slot), "text", entry and tostring(entry.cardName or "Revealed card") or "")
         BridgeUiSet("BridgeHudRevealCard" .. tostring(slot), "tooltip", entry and tostring(entry.cardName or "Revealed card") or "")
+        BridgeUiSet("BridgeHudRevealCardButton" .. tostring(slot), "active", entry ~= nil and "true" or "false")
     end
     BridgeUiSet("BridgeHudRevealPrev", "active", offset > 1 and "true" or "false")
     BridgeUiSet("BridgeHudRevealNext", "active", endIndex < #cards and "true" or "false")
     BridgeUiSet("BridgeHudRevealCount", "text", #cards > BRIDGE_REVEAL_SURFACE_SLOTS
         and (tostring(offset) .. "-" .. tostring(endIndex) .. " / " .. tostring(#cards)) or "")
-    BridgeUiSet("BridgeHudRevealClose", "active", presentation.associatedDecisionId == nil and "true" or "false")
+    BridgeUiSet("BridgeHudRevealClose", "active", not BridgeRevealIsDecisionBound(presentation) and "true" or "false")
     BridgeUiSet("BridgeHudRevealClose", "text", presentation.acknowledgmentRequired == true and "ACKNOWLEDGE" or "CLOSE")
 end
 -- END GENERATED SOURCE: 25-revealed-cards.lua
@@ -14666,6 +14756,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             BridgeState.presentationState = "DESYNCED"
             BridgeSetSchedulerOwner("NORMAL", "resync-failed")
             BridgeStopOnDesync("authoritative resync failed: " .. tostring(err))
+            BridgeState.hudResyncPending = false
             BridgeSetStatus("RESYNC AVAILABLE", "Automatic recovery failed; use RESYNC FORGE for one new attempt.")
             BridgeUiMarkDirty("resync-failed")
             BridgeLog("[Bridge] RESYNC_FAILED reason=" .. tostring(err))

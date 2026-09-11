@@ -32,6 +32,8 @@ public sealed class RevealPresentationContractTests
         Assert.Equal(1, Count(xml, "id=\"BridgeHudRevealSurface\""));
         Assert.Contains("HorizontalScrollView id=\"BridgeHudRevealScrollView\"", xml, StringComparison.Ordinal);
         Assert.Contains("BridgeHudRevealFallback1", xml, StringComparison.Ordinal);
+        Assert.Contains("BridgeHudRevealCardButton1", xml, StringComparison.Ordinal);
+        Assert.Contains("onClick=\"BridgeHudRevealCard\"", xml, StringComparison.Ordinal);
         Assert.Contains("BridgeHudRevealClose", xml, StringComparison.Ordinal);
     }
 

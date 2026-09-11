@@ -2985,6 +2985,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             BridgeState.presentationState = "DESYNCED"
             BridgeSetSchedulerOwner("NORMAL", "resync-failed")
             BridgeStopOnDesync("authoritative resync failed: " .. tostring(err))
+            BridgeState.hudResyncPending = false
             BridgeSetStatus("RESYNC AVAILABLE", "Automatic recovery failed; use RESYNC FORGE for one new attempt.")
             BridgeUiMarkDirty("resync-failed")
             BridgeLog("[Bridge] RESYNC_FAILED reason=" .. tostring(err))

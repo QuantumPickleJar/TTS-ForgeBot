@@ -98,26 +98,32 @@
           <VerticalLayout id="BridgeHudRevealCard1" active="false" minWidth="105" preferredWidth="105" flexibleWidth="0" spacing="2" childForceExpandWidth="true" childForceExpandHeight="false">
             <Image id="BridgeHudRevealImage1" active="false" image="" preserveAspect="true" minHeight="92" preferredHeight="92" flexibleHeight="0" />
             <Text id="BridgeHudRevealFallback1" active="false" text="" minHeight="92" preferredHeight="92" flexibleHeight="0" fontSize="10" color="#334155" alignment="MiddleCenter" />
+            <Button id="BridgeHudRevealCardButton1" active="false" onClick="BridgeHudRevealCard" text="VIEW" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
           </VerticalLayout>
           <VerticalLayout id="BridgeHudRevealCard2" active="false" minWidth="105" preferredWidth="105" flexibleWidth="0" spacing="2" childForceExpandWidth="true" childForceExpandHeight="false">
             <Image id="BridgeHudRevealImage2" active="false" image="" preserveAspect="true" minHeight="92" preferredHeight="92" flexibleHeight="0" />
             <Text id="BridgeHudRevealFallback2" active="false" text="" minHeight="92" preferredHeight="92" flexibleHeight="0" fontSize="10" color="#334155" alignment="MiddleCenter" />
+            <Button id="BridgeHudRevealCardButton2" active="false" onClick="BridgeHudRevealCard" text="VIEW" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
           </VerticalLayout>
           <VerticalLayout id="BridgeHudRevealCard3" active="false" minWidth="105" preferredWidth="105" flexibleWidth="0" spacing="2" childForceExpandWidth="true" childForceExpandHeight="false">
             <Image id="BridgeHudRevealImage3" active="false" image="" preserveAspect="true" minHeight="92" preferredHeight="92" flexibleHeight="0" />
             <Text id="BridgeHudRevealFallback3" active="false" text="" minHeight="92" preferredHeight="92" flexibleHeight="0" fontSize="10" color="#334155" alignment="MiddleCenter" />
+            <Button id="BridgeHudRevealCardButton3" active="false" onClick="BridgeHudRevealCard" text="VIEW" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
           </VerticalLayout>
           <VerticalLayout id="BridgeHudRevealCard4" active="false" minWidth="105" preferredWidth="105" flexibleWidth="0" spacing="2" childForceExpandWidth="true" childForceExpandHeight="false">
             <Image id="BridgeHudRevealImage4" active="false" image="" preserveAspect="true" minHeight="92" preferredHeight="92" flexibleHeight="0" />
             <Text id="BridgeHudRevealFallback4" active="false" text="" minHeight="92" preferredHeight="92" flexibleHeight="0" fontSize="10" color="#334155" alignment="MiddleCenter" />
+            <Button id="BridgeHudRevealCardButton4" active="false" onClick="BridgeHudRevealCard" text="VIEW" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
           </VerticalLayout>
           <VerticalLayout id="BridgeHudRevealCard5" active="false" minWidth="105" preferredWidth="105" flexibleWidth="0" spacing="2" childForceExpandWidth="true" childForceExpandHeight="false">
             <Image id="BridgeHudRevealImage5" active="false" image="" preserveAspect="true" minHeight="92" preferredHeight="92" flexibleHeight="0" />
             <Text id="BridgeHudRevealFallback5" active="false" text="" minHeight="92" preferredHeight="92" flexibleHeight="0" fontSize="10" color="#334155" alignment="MiddleCenter" />
+            <Button id="BridgeHudRevealCardButton5" active="false" onClick="BridgeHudRevealCard" text="VIEW" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
           </VerticalLayout>
           <VerticalLayout id="BridgeHudRevealCard6" active="false" minWidth="105" preferredWidth="105" flexibleWidth="0" spacing="2" childForceExpandWidth="true" childForceExpandHeight="false">
             <Image id="BridgeHudRevealImage6" active="false" image="" preserveAspect="true" minHeight="92" preferredHeight="92" flexibleHeight="0" />
             <Text id="BridgeHudRevealFallback6" active="false" text="" minHeight="92" preferredHeight="92" flexibleHeight="0" fontSize="10" color="#334155" alignment="MiddleCenter" />
+            <Button id="BridgeHudRevealCardButton6" active="false" onClick="BridgeHudRevealCard" text="VIEW" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="8" color="#334155CC" textColor="#CBD5E1" />
           </VerticalLayout>
         </HorizontalLayout>
       </HorizontalScrollView>

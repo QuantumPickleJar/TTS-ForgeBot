@@ -108,6 +108,119 @@ public sealed class TtsRevealPresentationLuaTests
         Assert.Equal(8, lua.Globals.Get("count").Number);
     }
 
+    [Fact]
+    public void InformationalRevealAutoDismissesOnlyAfterItsTenSecondDeadline()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            scheduled = {}
+            BridgeWaitTime = function(callback, delay) scheduled[#scheduled + 1] = callback; scheduledDelay = delay end
+            BridgeState.lastAppliedEventSequence = 1
+            BridgeApplyRevealPresentation({presentationId='a', originatingEventSequence=1, visibility='public', cards={{authoritativeObjectId='a-card', cardName='Island'}}, lifecycle='opened'}, 1)
+            visibleAtNinePointNine = BridgeState.activeRevealPresentationKey ~= nil
+            scheduled[1]()
+            dismissedAtTen = BridgeState.activeRevealPresentationKey == nil
+        ");
+
+        Assert.True(lua.Globals.Get("visibleAtNinePointNine").Boolean);
+        Assert.Equal(10, lua.Globals.Get("scheduledDelay").Number);
+        Assert.True(lua.Globals.Get("dismissedAtTen").Boolean);
+    }
+
+    [Fact]
+    public void RevealInteractionPinsAndMakesItsScheduledTimeoutInert()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            scheduled = {}
+            nextTimer = 0
+            BridgeWaitTime = function(callback, delay) nextTimer = nextTimer + 1; scheduled[nextTimer] = callback end
+            BridgeState.lastAppliedEventSequence = 2
+            BridgeApplyRevealPresentation({presentationId='a', originatingEventSequence=2, visibility='public', cards={{authoritativeObjectId='a-card', cardName='Island'}}, lifecycle='opened'}, 2)
+            BridgeHudRevealInteract(nil, nil, 'BridgeHudRevealCardButton1')
+            pinned = BridgeState.revealedPresentationsByKey['a@2'].pinnedByUser
+            scheduled[1]()
+            remainsVisible = BridgeState.activeRevealPresentationKey == 'a@2'
+        ");
+
+        Assert.True(lua.Globals.Get("pinned").Boolean);
+        Assert.True(lua.Globals.Get("remainsVisible").Boolean);
+    }
+
+    [Fact]
+    public void StaleRevealTimerCannotDismissTheReplacementPresentation()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            scheduled = {}
+            nextTimer = 0
+            BridgeWaitTime = function(callback, delay) nextTimer = nextTimer + 1; scheduled[nextTimer] = callback end
+            BridgeState.lastAppliedEventSequence = 4
+            firstApplied = BridgeApplyRevealPresentation({presentationId='a', originatingEventSequence=3, visibility='public', cards={{authoritativeObjectId='a-card', cardName='Island'}}, lifecycle='opened'}, 3)
+            secondApplied = BridgeApplyRevealPresentation({presentationId='b', originatingEventSequence=4, visibility='public', cards={{authoritativeObjectId='b-card', cardName='Mountain'}}, lifecycle='opened'}, 4)
+            scheduledCount = nextTimer
+        ");
+
+        Assert.True(lua.Globals.Get("firstApplied").Boolean);
+        Assert.True(lua.Globals.Get("secondApplied").Boolean);
+        Assert.Equal(2, lua.Globals.Get("scheduledCount").Number);
+        lua.DoString(@"
+            scheduled[1]()
+            bSurvivesA = BridgeState.activeRevealPresentationKey == 'b@4'
+            scheduled[2]()
+            bDismissesOnOwnTimer = BridgeState.activeRevealPresentationKey == nil
+        ");
+        Assert.True(lua.Globals.Get("bSurvivesA").Boolean);
+        Assert.True(lua.Globals.Get("bDismissesOnOwnTimer").Boolean);
+    }
+
+    [Fact]
+    public void DecisionBoundRevealNeverSchedulesAnInformationalTimeout()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            scheduled = {}
+            BridgeWaitTime = function(callback, delay) scheduled[#scheduled + 1] = callback end
+            BridgeState.lastAppliedEventSequence = 4
+            BridgeApplyRevealPresentation({presentationId='choice', originatingEventSequence=4, visibility='public', associatedDecisionId='decision-12', cards={{authoritativeObjectId='card', cardName='Island'}}, lifecycle='opened'}, 4)
+            noTimerWhileDecisionCurrent = #scheduled == 0 and BridgeState.activeRevealPresentationKey ~= nil
+            BridgeResolveRevealForDecision({decisionId='decision-13'})
+            closesWhenDecisionChanges = BridgeState.activeRevealPresentationKey == nil
+        ");
+
+        Assert.True(lua.Globals.Get("noTimerWhileDecisionCurrent").Boolean);
+        Assert.True(lua.Globals.Get("closesWhenDecisionChanges").Boolean);
+    }
+
+    [Fact]
+    public void RevealArtUsesCanonicalThenProducerUrlThenNameFallbackEvenInFastMode()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.lastAppliedEventSequence = 5
+            BridgeState.ui.fastPlaytest = true
+            BridgeResolveCanonicalCardArt = function(face, name) if face == 'canonical-face' then return 'canonical-art' end end
+            canonicalArt = BridgeRevealCardArt({cardFaceIdentity='canonical-face', cardName='Island', imageUrl='producer-one'})
+            producerArt = BridgeRevealCardArt({cardName='Mountain', imageUrl='producer-two'})
+            function BridgeUiSet(id, attribute, value)
+                if id == 'BridgeHudRevealImage1' and attribute == 'image' then imageOne = value end
+                if id == 'BridgeHudRevealImage2' and attribute == 'image' then imageTwo = value end
+                if id == 'BridgeHudRevealFallback3' and attribute == 'text' then fallbackThree = value end
+                if id == 'BridgeHudRevealSurface' and attribute == 'active' then surfaceActive = value end
+            end
+            BridgeApplyRevealPresentation({presentationId='art', originatingEventSequence=5, visibility='public', cards={
+                {authoritativeObjectId='one', cardName='Island', cardFaceIdentity='canonical-face', imageUrl='producer-one'},
+                {authoritativeObjectId='two', cardName='Mountain', imageUrl='producer-two'},
+                {authoritativeObjectId='three', cardName='Unknown'}
+            }, lifecycle='opened'}, 5)
+            BridgeRenderRevealSurface()
+        ");
+
+        Assert.Equal("true", lua.Globals.Get("surfaceActive").String);
+        Assert.Equal("canonical-art", lua.Globals.Get("canonicalArt").String);
+        Assert.Equal("producer-two", lua.Globals.Get("producerArt").String);
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script();
@@ -136,8 +249,10 @@ public sealed class TtsRevealPresentationLuaTests
             BridgeState.revealedPresentationsByKey = {}
             BridgeState.revealedPresentationOrder = {}
             BridgeState.dismissedRevealKeys = {}
+            BridgeState.dismissedRevealOrder = {}
             BridgeState.activeRevealPresentationKey = nil
             BridgeState.revealSurfaceOffset = 1
+            BridgeState.revealPresentationGeneration = 0
             function BridgeUiSet(id, attribute, value)
                 if id == 'BridgeHudRevealFallback1' and attribute == 'active' then fallbackActive = value == 'true' end
                 if id == 'BridgeHudRevealFallback1' and attribute == 'text' then fallbackText = value end
