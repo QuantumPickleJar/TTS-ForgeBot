@@ -1044,6 +1044,13 @@ function BridgeEventDrainQueueState()
         resyncInFlight = BridgeState.resyncInFlight == true,
         bootstrapping = BridgeState.bootstrapping == true,
         terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
+        hudResyncPending = BridgeState.hudResyncPending == true,
+        resyncButtonActive = BRIDGE_DEV_UI_ENABLED == true
+            and BridgeState.resyncInFlight ~= true
+            and BridgeState.hudResyncPending ~= true,
+        resyncButtonVisible = true,
+        resyncStatus = BridgeState.statusHeadline,
+        schedulerOwner = BridgeState.schedulerOwner,
         terminalRecovery = BridgeDiagnosticSnapshot(BridgeCurrentTerminalRecoveryError() or {}),
         retiredTerminalRecovery = BridgeDiagnosticSnapshot(BridgeState.terminalRecoveryErrorRetired or {}),
         eventSessionId = BridgeState.eventSessionId,

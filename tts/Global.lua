@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 2c6a98eb749bed607ad2a9d8f09a32f480639a2406c346e2dfe96f8ded244958
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "2c6a98eb749bed607ad2a9d8f09a32f480639a2406c346e2dfe96f8ded244958"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: ae1c79041c91ae6561e265af28d986ab7c4470ed43346c63fc2d417c7deccf77
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "ae1c79041c91ae6561e265af28d986ab7c4470ed43346c63fc2d417c7deccf77"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -1047,6 +1047,13 @@ function BridgeEventDrainQueueState()
         resyncInFlight = BridgeState.resyncInFlight == true,
         bootstrapping = BridgeState.bootstrapping == true,
         terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
+        hudResyncPending = BridgeState.hudResyncPending == true,
+        resyncButtonActive = BRIDGE_DEV_UI_ENABLED == true
+            and BridgeState.resyncInFlight ~= true
+            and BridgeState.hudResyncPending ~= true,
+        resyncButtonVisible = true,
+        resyncStatus = BridgeState.statusHeadline,
+        schedulerOwner = BridgeState.schedulerOwner,
         terminalRecovery = BridgeDiagnosticSnapshot(BridgeCurrentTerminalRecoveryError() or {}),
         retiredTerminalRecovery = BridgeDiagnosticSnapshot(BridgeState.terminalRecoveryErrorRetired or {}),
         eventSessionId = BridgeState.eventSessionId,
@@ -5288,10 +5295,15 @@ end
 -- duplicate whitelist and is invalid if the exact contained inverse changes.
 function BridgeDurableContainedAliasMatches(guid, deckGuid)
     local proof = (BridgeState.physicalDurableContainedAliasesByGuid or {})[tostring(guid)]
-    if proof == nil or tostring(proof.destinationDeck or "") ~= tostring(deckGuid or "") then return false end
-    return BridgeState.physicalContainedInstanceIdByGuid[guid] ~= nil
-        and BridgeState.physicalSeatByGuid[guid] == proof.seatId
-        and BridgeState.physicalZoneByGuid[guid] == proof.zoneName
+    if proof == nil or proof.finalized ~= true
+        or tostring(proof.destinationDeck or "") ~= tostring(deckGuid or "") then return false end
+    -- This proof deliberately survives session/generation retirement. The
+    -- native Deck GUID and exact contained GUID are the durable evidence; the
+    -- old CardInstance inverse is expected to be retired before NEW MATCH.
+    local deck = BridgeGetLiveObjectByGuid(deckGuid)
+    if not BridgeObjectIsUsable(deck) or BridgeSafeObjectTag(deck) ~= "Deck" then return false end
+    if not BridgeLibraryContainsGuid(deck, guid) then return false end
+    return proof.seatId ~= nil and proof.zoneName ~= nil
 end
 
 function BridgeAuditDuplicateLibraryGuids(ignoredGuids)
@@ -6228,7 +6240,9 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
                             durable[candidate.guid] = {
                                 destinationDeck = BridgeSafeObjectGuid(alreadyContained),
                                 seatId = candidate.seatId, zoneName = "library",
-                                observations = settleAttempt
+                                observations = settleAttempt,
+                                finalized = true,
+                                exactContainedGuid = candidate.guid
                             }
                             cleanupOwner.provenContainedGuids[candidate.guid] = true
                             BridgeRecordPhysicalMutationJournal({
@@ -14317,6 +14331,10 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeRecordResyncLifecycle("FAILED", BridgeState.resyncOrigin, token, nil, reason,
         nil, BridgeState.lastReceivedEventSequence, BridgeState.lastAppliedEventSequence)
     if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
+    -- Automatic recovery no longer owns the manual control. A stale pending
+    -- handshake otherwise leaves RESYNC AVAILABLE visible with an inactive
+    -- button whose callback is never delivered.
+    BridgeState.hudResyncPending = false
     if BridgeShowError ~= nil then
         BridgeShowError("authoritative recovery stalled: " .. tostring(reason or "watchdog"))
     end
@@ -14368,6 +14386,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             .. " kind=" .. tostring(terminalError.kind))
         BridgeSetStatus("SYNCHRONIZATION STOPPED", "Forge must publish a replacement decision before recovery can continue.")
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
+        BridgeState.hudResyncPending = false
         BridgeState.resyncInFlight = false
         BridgeState.resyncScheduled = false
         BridgeState.resyncDeferredRetryScheduled = false
@@ -17526,6 +17545,16 @@ function BridgePhysicalMutationOperationsIdle()
     return true
 end
 
+-- Only structured identity-bearing events own the committed physical-zone
+-- ledger. Semantic events can describe the same transition (for example
+-- spell_resolved for a spell still on the stack), but must not move the
+-- instance in the ledger before card_moved/draw commits the exact object.
+function BridgeEventOwnsCommittedZoneTransition(event)
+    if event == nil then return false end
+    local kind = tostring(event.kind or "")
+    return kind == "card_moved" or kind == "draw"
+end
+
 function BridgeApplyCommittedZoneLedger(events, eventCount)
     local count = tonumber(eventCount)
     if count == nil then count = # (events or {}) end
@@ -17533,7 +17562,8 @@ function BridgeApplyCommittedZoneLedger(events, eventCount)
         local event = events[index]
         if event == nil then break end
         local instanceId = event.cardInstanceId
-        if instanceId ~= nil and event.seatId ~= nil and event.sourceZone ~= event.destinationZone then
+        if BridgeEventOwnsCommittedZoneTransition(event)
+            and instanceId ~= nil and event.seatId ~= nil and event.sourceZone ~= event.destinationZone then
             if event.sourceZone ~= nil then
                 local source = BridgeZoneLedger(event.seatId, event.sourceZone)
                 for index = #source, 1, -1 do
@@ -17739,6 +17769,7 @@ function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
                     stagedSettledCount = 0,
                     deferredEvents = {},
                     deferredEventSequenceSet = {},
+                    hasDeferredGraveyardEvents = false,
                     deferredPendingCount = 0,
                     state = "PENDING_STAGE",
                     generation = tx.physicalTransactionGeneration,
@@ -17800,6 +17831,7 @@ function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
                 if batch.deferredEventSequenceSet[key] ~= true then
                     batch.deferredEventSequenceSet[key] = true
                     table.insert(batch.deferredEvents, event)
+                    batch.hasDeferredGraveyardEvents = true
                 end
                 local finalExpected = {}
                 for _, entry in ipairs(batch.baseExpectedInstances or {}) do
@@ -18651,7 +18683,7 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         batch.targetDeck = settledDeck
         batch.targetDeckGuid = BridgeSafeObjectGuid(settledDeck)
         local expectedInstances = batch.expectedInstances
-        if batch.finalExpectedInstances ~= nil and (tonumber(batch.deferredPendingCount or 0) or 0) > 0 then
+        if batch.hasDeferredGraveyardEvents == true and batch.deferredStarted ~= true then
             expectedInstances = batch.baseExpectedInstances or batch.expectedInstances
         end
         if not BridgeRecordGraveyardContainerEntries(batch.seatId, settledDeck, expectedInstances) then
@@ -18730,6 +18762,22 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             batch.seatId, "after-mutation-batch", batch.containmentOwner)
         if not shapeOk then
             BridgeAbortAtomicGraveyardMutation(tx, batch, "graveyard-shape:" .. tostring(shapeReason))
+            return
+        end
+        if batch.hasDeferredGraveyardEvents == true and batch.deferredStarted ~= true then
+            batch.state = "BASE_DESTINATION_VERIFIED"
+            batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+            batch.lastProgressStage = "BASE_DESTINATION_VERIFIED"
+            BridgeRecordPhysicalMutationProgress(tx, "BASE_DESTINATION_VERIFIED", "graveyard-base")
+            BridgeRecordPhysicalMutationJournal({
+                token = tx.token, forgeSequence = tx.forgeSequence,
+                stage = "BASE_DESTINATION_VERIFIED", seatId = batch.seatId,
+                targetDeckGuid = batch.targetDeckGuid,
+                expectedCount = BridgeTableSize(batch.baseExpectedInstances or {}),
+                actualCount = #(BridgeLibraryEntries(settledDeck) or {}),
+                deferredEventCount = BridgeTableSize(batch.deferredEvents or {})
+            })
+            BridgeStartDeferredGraveyardEvents(tx, batch)
             return
         end
         if (tonumber(batch.deferredPendingCount or 0) or 0) > 0 then

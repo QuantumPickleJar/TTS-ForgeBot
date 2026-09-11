@@ -796,10 +796,15 @@ end
 -- duplicate whitelist and is invalid if the exact contained inverse changes.
 function BridgeDurableContainedAliasMatches(guid, deckGuid)
     local proof = (BridgeState.physicalDurableContainedAliasesByGuid or {})[tostring(guid)]
-    if proof == nil or tostring(proof.destinationDeck or "") ~= tostring(deckGuid or "") then return false end
-    return BridgeState.physicalContainedInstanceIdByGuid[guid] ~= nil
-        and BridgeState.physicalSeatByGuid[guid] == proof.seatId
-        and BridgeState.physicalZoneByGuid[guid] == proof.zoneName
+    if proof == nil or proof.finalized ~= true
+        or tostring(proof.destinationDeck or "") ~= tostring(deckGuid or "") then return false end
+    -- This proof deliberately survives session/generation retirement. The
+    -- native Deck GUID and exact contained GUID are the durable evidence; the
+    -- old CardInstance inverse is expected to be retired before NEW MATCH.
+    local deck = BridgeGetLiveObjectByGuid(deckGuid)
+    if not BridgeObjectIsUsable(deck) or BridgeSafeObjectTag(deck) ~= "Deck" then return false end
+    if not BridgeLibraryContainsGuid(deck, guid) then return false end
+    return proof.seatId ~= nil and proof.zoneName ~= nil
 end
 
 function BridgeAuditDuplicateLibraryGuids(ignoredGuids)
@@ -1736,7 +1741,9 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
                             durable[candidate.guid] = {
                                 destinationDeck = BridgeSafeObjectGuid(alreadyContained),
                                 seatId = candidate.seatId, zoneName = "library",
-                                observations = settleAttempt
+                                observations = settleAttempt,
+                                finalized = true,
+                                exactContainedGuid = candidate.guid
                             }
                             cleanupOwner.provenContainedGuids[candidate.guid] = true
                             BridgeRecordPhysicalMutationJournal({

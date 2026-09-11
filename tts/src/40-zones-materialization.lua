@@ -2372,6 +2372,16 @@ function BridgePhysicalMutationOperationsIdle()
     return true
 end
 
+-- Only structured identity-bearing events own the committed physical-zone
+-- ledger. Semantic events can describe the same transition (for example
+-- spell_resolved for a spell still on the stack), but must not move the
+-- instance in the ledger before card_moved/draw commits the exact object.
+function BridgeEventOwnsCommittedZoneTransition(event)
+    if event == nil then return false end
+    local kind = tostring(event.kind or "")
+    return kind == "card_moved" or kind == "draw"
+end
+
 function BridgeApplyCommittedZoneLedger(events, eventCount)
     local count = tonumber(eventCount)
     if count == nil then count = # (events or {}) end
@@ -2379,7 +2389,8 @@ function BridgeApplyCommittedZoneLedger(events, eventCount)
         local event = events[index]
         if event == nil then break end
         local instanceId = event.cardInstanceId
-        if instanceId ~= nil and event.seatId ~= nil and event.sourceZone ~= event.destinationZone then
+        if BridgeEventOwnsCommittedZoneTransition(event)
+            and instanceId ~= nil and event.seatId ~= nil and event.sourceZone ~= event.destinationZone then
             if event.sourceZone ~= nil then
                 local source = BridgeZoneLedger(event.seatId, event.sourceZone)
                 for index = #source, 1, -1 do
@@ -2585,6 +2596,7 @@ function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
                     stagedSettledCount = 0,
                     deferredEvents = {},
                     deferredEventSequenceSet = {},
+                    hasDeferredGraveyardEvents = false,
                     deferredPendingCount = 0,
                     state = "PENDING_STAGE",
                     generation = tx.physicalTransactionGeneration,
@@ -2646,6 +2658,7 @@ function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
                 if batch.deferredEventSequenceSet[key] ~= true then
                     batch.deferredEventSequenceSet[key] = true
                     table.insert(batch.deferredEvents, event)
+                    batch.hasDeferredGraveyardEvents = true
                 end
                 local finalExpected = {}
                 for _, entry in ipairs(batch.baseExpectedInstances or {}) do
@@ -3497,7 +3510,7 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         batch.targetDeck = settledDeck
         batch.targetDeckGuid = BridgeSafeObjectGuid(settledDeck)
         local expectedInstances = batch.expectedInstances
-        if batch.finalExpectedInstances ~= nil and (tonumber(batch.deferredPendingCount or 0) or 0) > 0 then
+        if batch.hasDeferredGraveyardEvents == true and batch.deferredStarted ~= true then
             expectedInstances = batch.baseExpectedInstances or batch.expectedInstances
         end
         if not BridgeRecordGraveyardContainerEntries(batch.seatId, settledDeck, expectedInstances) then
@@ -3576,6 +3589,22 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             batch.seatId, "after-mutation-batch", batch.containmentOwner)
         if not shapeOk then
             BridgeAbortAtomicGraveyardMutation(tx, batch, "graveyard-shape:" .. tostring(shapeReason))
+            return
+        end
+        if batch.hasDeferredGraveyardEvents == true and batch.deferredStarted ~= true then
+            batch.state = "BASE_DESTINATION_VERIFIED"
+            batch.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+            batch.lastProgressStage = "BASE_DESTINATION_VERIFIED"
+            BridgeRecordPhysicalMutationProgress(tx, "BASE_DESTINATION_VERIFIED", "graveyard-base")
+            BridgeRecordPhysicalMutationJournal({
+                token = tx.token, forgeSequence = tx.forgeSequence,
+                stage = "BASE_DESTINATION_VERIFIED", seatId = batch.seatId,
+                targetDeckGuid = batch.targetDeckGuid,
+                expectedCount = BridgeTableSize(batch.baseExpectedInstances or {}),
+                actualCount = #(BridgeLibraryEntries(settledDeck) or {}),
+                deferredEventCount = BridgeTableSize(batch.deferredEvents or {})
+            })
+            BridgeStartDeferredGraveyardEvents(tx, batch)
             return
         end
         if (tonumber(batch.deferredPendingCount or 0) or 0) > 0 then

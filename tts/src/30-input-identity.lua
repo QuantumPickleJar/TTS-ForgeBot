@@ -2650,6 +2650,10 @@ function BridgeReleaseStalledResync(sessionId, token, reason)
     BridgeRecordResyncLifecycle("FAILED", BridgeState.resyncOrigin, token, nil, reason,
         nil, BridgeState.lastReceivedEventSequence, BridgeState.lastAppliedEventSequence)
     if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
+    -- Automatic recovery no longer owns the manual control. A stale pending
+    -- handshake otherwise leaves RESYNC AVAILABLE visible with an inactive
+    -- button whose callback is never delivered.
+    BridgeState.hudResyncPending = false
     if BridgeShowError ~= nil then
         BridgeShowError("authoritative recovery stalled: " .. tostring(reason or "watchdog"))
     end
@@ -2701,6 +2705,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             .. " kind=" .. tostring(terminalError.kind))
         BridgeSetStatus("SYNCHRONIZATION STOPPED", "Forge must publish a replacement decision before recovery can continue.")
         if BridgeState.ui ~= nil then BridgeState.ui.resyncInFlight = false end
+        BridgeState.hudResyncPending = false
         BridgeState.resyncInFlight = false
         BridgeState.resyncScheduled = false
         BridgeState.resyncDeferredRetryScheduled = false

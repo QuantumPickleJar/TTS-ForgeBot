@@ -8,6 +8,40 @@ public sealed class TtsEventQueueLivelockTests
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.lua"));
 
     [Fact]
+    public void SemanticSpellResolvedDoesNotMutateCommittedZoneLedger()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.zoneLedgerBySeatAndZone = {
+                ['forge-player-1'] = {stack = {}, graveyard = {}}
+            }
+            BridgeZoneLedger('forge-player-1', 'stack')[1] = ':35'
+            BridgeState.physicalByInstanceId[':35'] = 'stack-35'
+            BridgeState.physicalZoneByGuid['stack-35'] = 'stack'
+            ownsSemantic = BridgeEventOwnsCommittedZoneTransition({kind='spell_resolved'})
+            ownsStructured = BridgeEventOwnsCommittedZoneTransition({kind='card_moved'})
+            BridgeApplyCommittedZoneLedger({
+                {kind='spell_resolved', seatId='forge-player-1', cardInstanceId=':35', sourceZone='stack', destinationZone='graveyard'}
+            }, 1)
+            semanticStillStack = BridgeZoneLedger('forge-player-1', 'stack')[1]
+            semanticGraveyardCount = #(BridgeZoneLedger('forge-player-1', 'graveyard'))
+            BridgeApplyCommittedZoneLedger({
+                {kind='card_moved', seatId='forge-player-1', cardInstanceId=':35', sourceZone='stack', destinationZone='graveyard'}
+            }, 1)
+            structuredStackCount = #(BridgeZoneLedger('forge-player-1', 'stack'))
+            structuredGraveyard = BridgeZoneLedger('forge-player-1', 'graveyard')[1]
+        ");
+
+        Assert.False(lua.Globals.Get("ownsSemantic").Boolean);
+        Assert.True(lua.Globals.Get("ownsStructured").Boolean);
+        Assert.Equal(":35", lua.Globals.Get("semanticStillStack").String);
+        Assert.Equal(0, lua.Globals.Get("semanticGraveyardCount").Number);
+        Assert.Equal(0, lua.Globals.Get("structuredStackCount").Number);
+        Assert.Equal(":35", lua.Globals.Get("structuredGraveyard").String);
+    }
+
+    [Fact]
     public void TurnTransitionRetainsNewerPendingDecision()
     {
         var lua = NewQueueProbe();
