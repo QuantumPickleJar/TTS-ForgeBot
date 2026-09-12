@@ -1659,6 +1659,13 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     local checkpoint = BridgeState.resyncCheckpoint
     local preserveCheckpoint = checkpoint ~= nil and checkpoint.sessionId == sessionId and not replacingMatch
     local preservedLiveMappings = nil
+    -- Reveal projections and physical library-look sessions are session
+    -- owned. Retire them before the new session can observe or render any
+    -- surviving TTS objects. Preferences intentionally survive a match
+    -- replacement; hidden identities and staging state do not.
+    if (replacingMatch or forceReset) and BridgeResetRevealSessionState ~= nil then
+        BridgeResetRevealSessionState("event-session-prepare")
+    end
     if preserveLiveMappings == true and BridgeState.eventSessionId == sessionId
         and BridgeState.physicalOwnershipSessionId == sessionId then
         preservedLiveMappings = {}
@@ -1716,6 +1723,19 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.renderedDecisionPresentationKey = nil
     BridgeState.renderedDecisionPhysicalGeneration = nil
     BridgeState.eventSessionId = sessionId
+    -- Event cursors and Forge sequence numbers are separate ordering domains.
+    -- A replacement match starts a new Forge sequence space; a same-session
+    -- recovery retains its watermark so stale decisions remain fenced.
+    local forgeWatermarkOwner = BridgeState.lastAppliedForgeSequenceSessionId
+    if replacingMatch or replacingPhysicalOwnership
+        or (forgeWatermarkOwner ~= nil and tostring(forgeWatermarkOwner) ~= tostring(sessionId)) then
+        BridgeState.lastAppliedForgeSequence = 0
+        BridgeState.lastAppliedForgeSequenceSessionId = sessionId
+    elseif forgeWatermarkOwner == nil then
+        -- Establish ownership for legacy/in-memory state without changing its
+        -- numeric watermark. Replacement sessions take the branch above.
+        BridgeState.lastAppliedForgeSequenceSessionId = sessionId
+    end
     if BridgeRetireStaleTerminalRecoveryError ~= nil then
         BridgeRetireStaleTerminalRecoveryError("session-prepare")
     end
@@ -1747,6 +1767,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         BridgeState.staleDecisionRetryCount = 0
         BridgeState.staleDecisionRetryStartedAt = nil
         BridgeState.staleDecisionRetryDeadlineAt = nil
+        BridgeState.decisionAwaitingCausallyCurrent = false
+        BridgeState.lastDecisionPollOutcome = nil
+        BridgeState.decisionAuthoritativeWatermark = nil
     end
     BridgeState.schedulerOwner = "NORMAL"
     BridgeState.fastForwardSuspendedByResync = false
@@ -2270,9 +2293,7 @@ function BridgeProcessEventQueueLegacy()
     if event.forgeSequence ~= nil then
         local forgeSequence = tonumber(event.forgeSequence)
         if forgeSequence ~= nil then
-            BridgeState.lastAppliedForgeSequence = math.max(
-                tonumber(BridgeState.lastAppliedForgeSequence or 0) or 0,
-                forgeSequence)
+            BridgeAdvanceAppliedForgeSequence(processingSessionId, forgeSequence, "event-apply")
         end
     end
     if event.revealPresentation ~= nil and BridgeApplyRevealPresentation ~= nil then
@@ -3894,8 +3915,27 @@ function BridgeCommitEventMutationTransaction(tx)
     BridgeState.lastConsumedEventSequence = tx.lastEventSequence
     BridgeState.lastStateProjectedEventSequence = tx.lastEventSequence
     BridgeState.lastPhysicalPresentationEventSequence = tx.lastEventSequence
+    -- Reveal presentations are part of the same authoritative event batch.
+    -- Publish them only after the batch's cursor has been committed so the
+    -- presentation sequence passes the normal applied-event fence. This is
+    -- especially important for atomic multi-card mutations: the physical
+    -- ledger and the viewer projection must become visible as one commit.
+    for index = 1, tx.eventCount do
+        local committedEvent = tx.events[index]
+        if committedEvent ~= nil and committedEvent.revealPresentation ~= nil
+            and BridgeApplyRevealPresentation ~= nil then
+            local revealOk, revealError = pcall(
+                BridgeApplyRevealPresentation,
+                committedEvent.revealPresentation,
+                committedEvent.sequence)
+            if not revealOk then
+                BridgeLog("[Bridge] reveal presentation publication failed after event commit: "
+                    .. tostring(revealError))
+            end
+        end
+    end
     if tx.forgeSequence ~= nil then
-        BridgeState.lastAppliedForgeSequence = math.max(tonumber(BridgeState.lastAppliedForgeSequence or 0) or 0, tx.forgeSequence)
+        BridgeAdvanceAppliedForgeSequence(tx.sessionId, tx.forgeSequence, "event-transaction-commit")
     end
     tx.state = "COMMITTED"
     BridgeRecordPhysicalMutationProgress(tx, "EVENT_COMMIT", "event-transaction")
