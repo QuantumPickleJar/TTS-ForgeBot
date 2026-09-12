@@ -58,6 +58,16 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void PreparedSpellCommandEffect_IsVirtualAndNotARequiredPhysicalCard()
+    {
+        Assert.Contains("final boolean virtualCommandEffect = \"command\".equals(zone) && card.isImmutable();", Patch);
+        Assert.Contains("objectKind = virtualCommandEffect ? \"virtual-effect\"", Patch);
+        Assert.Contains("isVirtual", Patch);
+        Assert.Contains("materializationPolicy", Patch);
+        Assert.Contains("virtualCommandEffect ? \"virtual\"", Patch);
+    }
+
+    [Fact]
     public void TrackedBridgeStateFeed_ExportsLogicalStackEntriesApartFromPhysicalCards()
     {
         Assert.Contains("SpellAbilityStackInstance", Patch);

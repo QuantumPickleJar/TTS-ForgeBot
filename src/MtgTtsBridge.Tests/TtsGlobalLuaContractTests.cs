@@ -1665,7 +1665,7 @@ public sealed class TtsGlobalLuaContractTests
         var binding = Script[start..end];
 
         Assert.Contains("BridgeActionExactPhysicalInstanceId(action)", binding);
-        Assert.Contains("BridgeActionExpectedSourceZone(action)", binding);
+        Assert.Contains("BridgeActionExpectedPhysicalSourceZone(action)", binding);
         Assert.Contains("mappedPhysicalZone == actionSourceZone", binding);
         Assert.Contains("action.type == \"activate_ability\"", binding);
         Assert.Contains("mappedPhysicalZone == \"battlefield\"", binding);

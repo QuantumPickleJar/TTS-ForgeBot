@@ -55,6 +55,17 @@ public sealed class PrepareLuaContractTests
     }
 
     [Fact]
+    public void PreparedSpell_SeparatesLogicalAndPhysicalSourceProvenance()
+    {
+        Assert.Contains("function BridgeActionExpectedPhysicalSourceZone", Script);
+        Assert.Contains("preparedSourceCardInstanceId", Script);
+        Assert.Contains("descriptor.zone", Script);
+        Assert.Contains("logicalSourceZone", Script);
+        Assert.Contains("expectedPhysicalZone", Script);
+        Assert.Contains("prepared source no longer has prepared designation", Script);
+    }
+
+    [Fact]
     public void PreparedDesignation_RemainsSeparateFromKeywordState()
     {
         var designationStart = Script.IndexOf("function BridgeSetPreparedDesignationPresentation", StringComparison.Ordinal);
