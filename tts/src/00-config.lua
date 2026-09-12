@@ -96,6 +96,17 @@ end
 
 local BRIDGE_DECISION_LIFECYCLE_CAPACITY = 128
 
+function BridgeRecordInteractionProducer(source, decision, action)
+    if action == nil and decision == nil then return end
+    BridgeState.lastInteractionProducer = {
+        source = source,
+        decisionId = decision and decision.decisionId or nil,
+        actionId = action and action.actionId or nil,
+        actionType = action and (action.type or action.actionType or "unknown") or "unknown",
+        sessionId = BridgeState.eventSessionId
+    }
+end
+
 function BridgeRecordDecisionLifecycle(decision, origin, disposition, reason, actionId, actionType, automationPolicy, result)
     if decision == nil then return end
     local actionTypes = {}
@@ -2800,6 +2811,8 @@ function BridgePerformanceDiagnosticPayload()
             appliedCursor = BridgeState.lastAppliedEventSequence,
             status = BridgeState.statusText
         },
+        targetInteraction = BridgeTargetInteractionDiagnosticPayload ~= nil
+            and BridgeTargetInteractionDiagnosticPayload() or nil,
         resyncLifecycle = BridgeDiagnosticSnapshot(BridgeState.resyncLifecycle or {}),
         eventDrainDiagnostics = BridgeEventDrainQueueState(),
         startupPerf = BridgeDiagnosticSnapshot(BridgeState.startupPerf or {}),
@@ -3356,6 +3369,7 @@ BridgeState = {
     resyncLastStartedUpdateTick = nil,
     resyncBootstrapGeneration = 0,
     lastChoiceAttempt = nil,
+    lastInteractionProducer = nil,
     counterStateByInstanceId = {},
     keywordStateByInstanceId = {},
     cardDesignationsByInstanceId = {},
@@ -3478,7 +3492,7 @@ BridgeState = {
         fastForwardActiveSeatId = nil, fastForwardStops = {own_turn = {}, other_turn = {}},
         fastForwardStopScope = "own_turn", fastPlaytest = false, gameLogVisible = true,
         gameLog = {},
-        diagnosticsVisible = false, reportPanelVisible = false, reportCategoryIndex = 1,
+        diagnosticsVisible = false, devDrawer = "closed", reportPanelVisible = false, reportCategoryIndex = 1,
         creatureTypeDecisionId = nil, creatureTypeDraftActionId = nil, creatureTypeOptions = {},
         reportStatus = "", reportCaptureInFlight = false, reportCaptureToken = 0, resyncInFlight = false, hudResyncPending = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
         uiAttributeCache = {}, uiAttributeAttemptCount = 0, uiAttributeWriteCount = 0,
@@ -3653,6 +3667,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.retiredChoiceDecisionIds = {}
     BridgeState.retiredChoiceDecisionOrder = {}
     BridgeState.lastChoiceAttempt = nil
+    BridgeState.lastInteractionProducer = nil
     BridgeState.eventQueue = {}
     BridgeState.lastReceivedEventSequence = 0
     BridgeState.lastAppliedEventSequence = 0
