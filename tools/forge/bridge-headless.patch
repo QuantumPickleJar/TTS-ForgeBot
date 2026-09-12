@@ -954,7 +954,13 @@ index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710
 +        // permanent is the identity whose characteristics were copied.
 +        final Card copySource = card.getCopiedPermanent();
 +        final boolean copied = card.isCloned() || card.getCopiedPermanent() != null;
-+        final String objectKind = card.isRealToken() || card.isTokenCard()
++        // Prepare creates an immutable remembered-effect helper in Command.
++        // It is Forge rules state used to grant MayPlay, not a tabletop card.
++        // Keep it in the authoritative snapshot for provenance, but publish it
++        // as virtual so TTS does not demand a physical representation.
++        final boolean virtualCommandEffect = "command".equals(zone) && card.isImmutable();
++        final String objectKind = virtualCommandEffect ? "virtual-effect"
++                : card.isRealToken() || card.isTokenCard()
 +                ? "forge-token" : (copied ? ("stack".equals(zone) ? "copy-spell" : "copy-permanent") : "physical-original");
 +        json.append('{');
 +        property(json, "forgeCardId", card.getId()).append(',');
@@ -982,8 +988,9 @@ index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710
 +        property(json, "copySourceObjectId", copySource == null ? null : "forge-object:" + copySource.getId()).append(',');
 +        property(json, "objectKind", objectKind).append(',');
 +        property(json, "isCopy", copied).append(',');
-+        property(json, "isVirtual", "stack".equals(zone) && copied).append(',');
-+        property(json, "materializationPolicy", "stack".equals(zone) && copied ? "virtual-stack" : "physical").append(',');
++        property(json, "isVirtual", virtualCommandEffect || ("stack".equals(zone) && copied)).append(',');
++        property(json, "materializationPolicy", virtualCommandEffect ? "virtual"
++                : ("stack".equals(zone) && copied ? "virtual-stack" : "physical")).append(',');
 +        json.append("\"cardDesignations\":[");
 +        if (card.isPrepared()) string(json, "prepared");
 +        if (card.isPrototyped()) {
