@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 5325c15f0ae3e36f10e9a68dda8b003e2162c520953befaa09ca763a27825961
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "5325c15f0ae3e36f10e9a68dda8b003e2162c520953befaa09ca763a27825961"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 3c02a28fa79ef653ecee41d2c5e9515d69c01f973b6c094300a4703a52628dd5
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "3c02a28fa79ef653ecee41d2c5e9515d69c01f973b6c094300a4703a52628dd5"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -3495,7 +3495,7 @@ BridgeState = {
         fastForwardActiveSeatId = nil, fastForwardStops = {own_turn = {}, other_turn = {}},
         fastForwardStopScope = "own_turn", fastPlaytest = false, gameLogVisible = true,
         gameLog = {},
-        diagnosticsVisible = false, devDrawer = "closed", reportPanelVisible = false, reportCategoryIndex = 1,
+        diagnosticsVisible = false, devDrawer = "closed", reportPanelVisible = false, reportCategoryIndex = 1, reportSummaryDraft = "",
         creatureTypeDecisionId = nil, creatureTypeDraftActionId = nil, creatureTypeOptions = {},
         reportStatus = "", reportCaptureInFlight = false, reportCaptureToken = 0, resyncInFlight = false, hudResyncPending = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
         uiAttributeCache = {}, uiAttributeAttemptCount = 0, uiAttributeWriteCount = 0,
@@ -3792,6 +3792,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.attackOriginByGuid = {}
     BridgeState.pendingCastBySeatId = {}
     BridgeState.gameEnded = nil
+    if BridgeState.ui ~= nil then
+        BridgeState.ui.reportSummaryDraft = ""
+    end
     BridgeState.resultSourceEventId = nil
     BridgeState.resultEventCursor = nil
     BridgeState.resultSessionId = nil
@@ -7417,7 +7420,13 @@ function BridgeUiFlush()
     if castPreviewPending then
         prompt = "CAST PREVIEW — press CAST / CONFIRM or CANCEL / RETURN"
     end
-    if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew" then
+    if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "delve" then
+        local minimum = tonumber(decision.minSelections or 0) or 0
+        local maximum = tonumber(decision.maxSelections or minimum) or minimum
+        prompt = "DELVE - SELECT " .. tostring(minimum) .. "-" .. tostring(maximum)
+            .. " CARDS FROM YOUR GRAVEYARD TO EXILE, THEN CONFIRM."
+            .. " Each exiled card pays {1} of this spell's generic mana cost."
+    elseif decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew" then
         prompt = "CREW — SELECT CREATURES"
     end
     if decision ~= nil and BridgeIsDiscardChoice(decision) then
@@ -7484,7 +7493,10 @@ function BridgeUiFlush()
     local min = tonumber(decision and decision.minSelections or 0) or 0
     local max = tonumber(decision and decision.maxSelections or 0) or 0
     local selectionText = decision and ("Selected: " .. tostring(selected) .. " / " .. tostring(max) .. " (min " .. tostring(min) .. ")") or ""
-    if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew"
+    if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "delve" then
+        selectionText = "DELVE: " .. tostring(selected) .. " selected - need at least "
+            .. tostring(min) .. ", max " .. tostring(max)
+    elseif decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew"
         and decision.requiredTotalPower ~= nil then
         selectionText = "TOTAL POWER " .. tostring(decision.selectedTotalPower or 0)
             .. " / " .. tostring(decision.requiredTotalPower)
@@ -18622,6 +18634,7 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         end
         BridgeState.ui.reportCaptureInFlight = false
         BridgeState.ui.reportStatus = ""
+        BridgeState.ui.reportSummaryDraft = ""
         BridgeState.ui.devDrawer = "closed"
         BridgeState.ui.reportPanelVisible = false
         BridgeState.ui.uiAttributeCache = {}
@@ -25705,14 +25718,32 @@ function BridgeHudReportCancel(player, value, id)
     BridgeState.ui.reportPanelVisible = false
     BridgeState.ui.devDrawer = "closed"
     BridgeState.ui.reportStatus = ""
+    BridgeState.ui.reportSummaryDraft = ""
     if BridgeUiSet ~= nil then BridgeUiSet("BridgeHudReportPanel", "active", "false") end
     BridgeUiMarkDirty("report-cancel")
 end
 
+function BridgeHudReportSummaryChanged(player, value, id)
+    local ui = BridgeState.ui
+    if ui == nil or ui.reportCaptureInFlight then return end
+    ui.reportSummaryDraft = tostring(value or "")
+    BridgeUiMarkDirty("report-summary-changed")
+end
+
 function BridgeHudReportCategoryChanged(player, value, id)
     if BridgeState.ui == nil or BridgeState.ui.reportCaptureInFlight then return end
+    local count = #BRIDGE_REPORT_CATEGORIES
+    local selectedIndex = tonumber(value)
+    -- TTS supplies selectedIndex as a zero-based string when the Dropdown
+    -- callback is index-oriented. Some table versions instead pass the
+    -- selected Option text, so retain that compatible path as well.
+    if selectedIndex ~= nil and selectedIndex >= 0 and selectedIndex < count then
+        BridgeState.ui.reportCategoryIndex = selectedIndex + 1
+        BridgeUiMarkDirty("report-category-dropdown")
+        return
+    end
     for index, category in ipairs(BRIDGE_REPORT_CATEGORIES) do
-        if value == category then
+        if tostring(value or "") == category then
             BridgeState.ui.reportCategoryIndex = index
             BridgeUiMarkDirty("report-category-dropdown")
             return
@@ -25813,10 +25844,8 @@ function BridgeHudReportPhysicalMappings()
 end
 
 function BridgeHudReportSummaryText()
-    local ok, value = pcall(function() return UI.getAttribute("BridgeHudReportSummary", "text") end)
-    if not ok or value == nil then return nil end
-    value = tostring(value)
-    return value ~= "" and value or nil
+    local ui = BridgeState.ui or {}
+    return tostring(ui.reportSummaryDraft or "")
 end
 
 function BridgeDiagnosticCaptureGameplayFingerprint()
@@ -26027,7 +26056,7 @@ function BridgeHudSubmitReport(category, summary)
     end
     BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_SNAPSHOT_COPIED", captureToken, "immutable-payload-copied")
     local request = {
-        summary = summary or BridgeHudReportSummaryText(),
+        summary = summary ~= nil and tostring(summary) or BridgeHudReportSummaryText(),
         category = category or BRIDGE_REPORT_CATEGORIES[tonumber(ui.reportCategoryIndex or 1) or 1] or "Other",
         sessionId = BridgeState.eventSessionId,
         decisionId = BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
@@ -26382,8 +26411,8 @@ function BridgeUiFlush()
         and not BridgeState.resyncInFlight and not BridgeState.hudResyncPending and "true" or "false")
     BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
     BridgeUiSet("BridgeHudReportCategoryDropdown", "active", reportVisible and not ui.reportCaptureInFlight and "true" or "false")
-    BridgeUiSet("BridgeHudReportCategoryDropdown", "options", table.concat(BRIDGE_REPORT_CATEGORIES, "|"))
-    BridgeUiSet("BridgeHudReportCategoryDropdown", "value", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex] or "Other")
+    BridgeUiSet("BridgeHudReportSummary", "text", tostring(ui.reportSummaryDraft or ""))
+    BridgeUiSet("BridgeHudReportCategoryDropdown", "selectedIndex", tostring(math.max(0, reportCategoryIndex - 1)))
     BridgeUiSet("BridgeHudReportCapture", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportCancel", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportStatus", "text", ui.reportStatus or "")
