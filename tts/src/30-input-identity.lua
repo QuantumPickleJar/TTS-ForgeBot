@@ -188,6 +188,27 @@ function BridgeInstallTargetButton(object, targetSeatId)
     BridgeState.targetButtonIndexByGuid[object.getGUID()] = nextIndex
 end
 
+function BridgeInstallCardTargetButton(object)
+    if object == nil or object.tag ~= "Card" then return end
+    local nextIndex = 0
+    for _, button in ipairs(object.getButtons and object.getButtons() or {}) do
+        nextIndex = math.max(nextIndex, (button.index or -1) + 1)
+    end
+    object.createButton({
+        click_function = "BridgeSelectCardTarget",
+        function_owner = Global,
+        label = "TARGET",
+        position = {0, 0.35, 0},
+        width = 520,
+        height = 260,
+        font_size = 90,
+        color = {1.0, 0.55, 0.0, 0.35},
+        font_color = {0.1, 0.1, 0.1, 1.0},
+        tooltip = "Choose this exact Forge card target"
+    })
+    BridgeState.targetButtonIndexByGuid[object.getGUID()] = nextIndex
+end
+
 function BridgeSpawnPlayerTargetControl(targetObject, targetSeatId, decision, action)
     if targetObject == nil or decision == nil or action == nil then return end
     local targetPosition = targetObject.getPosition()
@@ -841,8 +862,12 @@ function BridgeResolveExactActionPhysical(decision, action)
     local observedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
     local observedSeat = guid and BridgeState.physicalSeatByGuid[guid] or nil
     local inverse = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+    local isCardTarget = action ~= nil
+        and action.type == "choose_target"
+        and tostring(action.targetKind or "") == "card"
     if object ~= nil and object.tag == "Card" and inverse == instanceId
-        and (decision == nil or decision.seatId == nil or observedSeat == decision.seatId)
+        and (isCardTarget
+            or decision == nil or decision.seatId == nil or observedSeat == decision.seatId)
         and (expectedZone == nil or observedZone == expectedZone) then
         BridgeRecordActionPhysicalResolution(decision, action, "exact-loose", nil, guid, nil, observedZone)
         return {kind = "exact-loose", object = object, guid = guid, zone = observedZone}, nil, instanceId
@@ -855,7 +880,8 @@ function BridgeResolveExactActionPhysical(decision, action)
     local container = BridgeState.physicalContainerByInstanceId
         and BridgeState.physicalContainerByInstanceId[instanceId] or nil
     if containedDeck ~= nil and containedEntry ~= nil and container ~= nil
-        and (decision == nil or decision.seatId == nil or container.seatId == decision.seatId)
+        and (isCardTarget
+            or decision == nil or decision.seatId == nil or container.seatId == decision.seatId)
         and (expectedZone == nil or container.zoneName == expectedZone) then
         local deckGuid = BridgeSafeObjectGuid(containedDeck)
         BridgeRecordActionPhysicalResolution(decision, action, "exact-contained", nil,
@@ -1222,7 +1248,9 @@ function BridgeRenderDecision(decision, force)
         local mappedGuid = presentationInstanceId and BridgeState.physicalByInstanceId[presentationInstanceId] or nil
         local mappedObject = BridgeGetLiveObjectByGuid(mappedGuid)
         local mappedSeatMatches = mappedObject ~= nil
-            and (decision.seatId == nil or BridgeState.physicalSeatByGuid[mappedGuid] == decision.seatId)
+            and (action.type == "choose_target" and tostring(action.targetKind or "") == "card"
+                or decision.seatId == nil
+                or BridgeState.physicalSeatByGuid[mappedGuid] == decision.seatId)
         -- Main-priority actions are not limited to cards in hand: activated
         -- abilities (including Crew) originate from a permanent in the
         -- battlefield, and alternate-cost abilities may originate in a
@@ -1306,7 +1334,11 @@ function BridgeRenderDecision(decision, force)
             end
         end
 
-        if #matches > 0 and (action.cardIdentity ~= nil or exactAction) then
+        local isCardTarget = action.type == "choose_target"
+            and tostring(action.targetKind or "") == "card"
+        local presentationAuthorized = BridgeActionPresentationAuthorized(action)
+        if #matches > 0 and (action.cardIdentity ~= nil or exactAction)
+            and (not isCardTarget or presentationAuthorized) then
             if mappedGuid == nil and #matches > 1 then
                 BridgeLog(string.format("[Bridge] duplicate card name '%s': highlighting all %d candidates", tostring(action.cardIdentity), #matches))
             end
@@ -1329,6 +1361,10 @@ function BridgeRenderDecision(decision, force)
                 BridgeState.actionByGuid[guid] = action
                 representedActionIds[action.actionId] = true
                 table.insert(BridgeState.highlightedGuids, guid)
+                if action.type == "choose_target" and tostring(action.targetKind or "") == "card"
+                    and BridgeActionPresentationAuthorized(action) then
+                    BridgeInstallCardTargetButton(object)
+                end
             end
         end
     end
@@ -1394,6 +1430,7 @@ function onObjectPickUp(playerColor, object)
         BridgeCaptureUnboundPickupIntent(object)
         return
     end
+    BridgeRecordInteractionProducer("physical_card_pickup", BridgeState.lastDecision, action)
 
     local decision = BridgeState.lastDecision
     if decision == nil then
@@ -2284,6 +2321,43 @@ function BridgeBootstrapSeats(snapshot, seatIndex, callback)
         end
         BridgeBootstrapSeats(snapshot, seatIndex + 1, callback)
     end, seatIndex == #seats)
+end
+
+function BridgeSelectCardTarget(object, playerColor, altClick)
+    if object == nil or object.tag ~= "Card" or BridgeState.submitting then return end
+    local objectGuid = BridgeSafeObjectGuid(object)
+    local action = objectGuid and BridgeState.actionByGuid[objectGuid] or nil
+    local decision = BridgeState.lastDecision
+    if action == nil or action.type ~= "choose_target" or tostring(action.targetKind or "") ~= "card"
+        or decision == nil then
+        BridgeShowError("card target control is stale")
+        return
+    end
+    BridgeRecordInteractionProducer("card_target_control", decision, action)
+    if not BridgeDecisionHasAction(decision, action.actionId)
+        or (action._bridgePresentationDecisionId ~= nil
+            and (action._bridgePresentationDecisionId ~= decision.decisionId
+                or action._bridgePresentationGeneration ~= BridgeState.decisionPresentationGeneration
+                or action._bridgePresentationSessionId ~= BridgeState.eventSessionId)) then
+        BridgeShowError("card target control belongs to a retired Forge decision")
+        return
+    end
+    local actorSeat = BRIDGE_SEATS[decision.seatId]
+    if actorSeat ~= nil and actorSeat.ttsColor ~= playerColor then
+        BridgeShowError("this target decision belongs to TTS color " .. tostring(actorSeat.ttsColor))
+        return
+    end
+    local resolved, resolveError = BridgeResolveExactActionPhysical(decision, action)
+    if resolved == nil or resolved.kind ~= "exact-loose" or resolved.guid ~= objectGuid then
+        BridgeShowError("exact card target is no longer physically ready; awaiting reconciliation")
+        BridgeLog("[Bridge] card target control suppressed instance="
+            .. tostring(BridgeActionExactPhysicalInstanceId(action))
+            .. " reason=" .. tostring(resolveError))
+        return
+    end
+    BridgeClaimHumanTtsColor(decision.seatId, playerColor)
+    BridgeClearHighlights()
+    BridgeSubmitChoice(decision.decisionId, action.actionId, "card_target_control")
 end
 
 -- A recovery is a controlled, Forge-authoritative rebuild of TTS embodiment.

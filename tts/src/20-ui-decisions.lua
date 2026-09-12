@@ -358,6 +358,7 @@ function BridgeHudAction(player, value, id)
         or decision.decisionId ~= BridgeState.lastDecision.decisionId
         or BridgeState.retiredChoiceDecisionIds[decision.decisionId] == true
         or not BridgeDecisionHasAction(decision, action.actionId) then return end
+    BridgeRecordInteractionProducer("hud_action", decision, action)
     BridgeClaimHumanTtsColor(decision.seatId, player)
     if BridgeDecisionNeedsConfirmation(decision) then
         -- A legacy discard menu may arrive as `card_selection`.  Discarding
@@ -1356,15 +1357,28 @@ end
 
 function BridgeHudYieldPhaseStop(player, value, id)
     local names = {
-        Upkeep = "upkeep", Draw = "draw", MainPre = "main_precombat",
+        Upkeep = "upkeep", Draw = "draw", Main1 = "main_precombat", MainPre = "main_precombat",
         BeginningCombat = "beginning_combat", Attackers = "declare_attackers",
         Blockers = "declare_blockers", Damage = "combat_damage",
-        EndCombat = "end_combat", MainPost = "main_postcombat", EndStep = "end_step"
+        EndCombat = "end_combat", Main2 = "main_postcombat", MainPost = "main_postcombat", EndStep = "end_step"
     }
-    local raw = string.match(tostring(id or ""), "BridgeHudStop[^_]*_(.+)$")
-    local scope = string.find(tostring(id or ""), "BridgeHudStopOwn_", 1, true) == 1 and "own_turn" or "other_turn"
+    local raw = string.match(tostring(id or ""), "BridgeHudPhase(.+)$")
+    local scope = BridgeState.ui and BridgeState.ui.fastForwardStopScope or "own_turn"
     local phaseKey = names[raw]
     if phaseKey ~= nil then BridgeToggleYieldPhaseStop(scope, phaseKey) end
+end
+
+function BridgeHudYieldStopScope(player, value, id)
+    local ui = BridgeState.ui
+    if ui == nil then return end
+    ui.fastForwardStopScope = ui.fastForwardStopScope == "other_turn" and "own_turn" or "other_turn"
+    BridgeUiMarkDirty("phase-stop-scope")
+end
+
+-- Untap is a live indicator only. Forge does not expose a priority stop here,
+-- so this control intentionally cannot change yield policy state.
+function BridgeHudPhaseUntap(player, value, id)
+    return false
 end
 
 function BridgeHudClearYieldStops(player, value, id)
@@ -1720,6 +1734,12 @@ function BridgeSubmitChoice(decisionId, actionId, source)
     if decisionId == nil or decisionId == "" then
         decisionId = BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil
     end
+    local observedDecision = BridgeState.lastDecision
+    local observedAction = nil
+    for _, candidate in ipairs(observedDecision and observedDecision.actions or {}) do
+        if candidate.actionId == actionId then observedAction = candidate; break end
+    end
+    BridgeRecordInteractionProducer(source, observedDecision, observedAction or {actionId = actionId})
     local transaction = decisionId and BridgeState.choiceTransactions[decisionId] or nil
     BridgeLogChoiceAttempt(source, decisionId, actionId, transaction and transaction.state or "none")
 

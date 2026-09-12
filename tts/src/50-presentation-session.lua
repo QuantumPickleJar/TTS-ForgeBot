@@ -2115,7 +2115,29 @@ BRIDGE_HUD_COLORS = {
 function BridgeHudToggleDev(player, value, id)
     if BRIDGE_DEV_UI_ENABLED ~= true or BridgeState.ui == nil then return end
     BridgeState.ui.diagnosticsVisible = not (BridgeState.ui.diagnosticsVisible == true)
+    if not BridgeState.ui.diagnosticsVisible then
+        BridgeState.ui.devDrawer = "closed"
+        BridgeState.ui.reportPanelVisible = false
+    end
     BridgeUiMarkDirty("dev-drawer-toggle")
+end
+
+function BridgeHudOptionsToggle(player, value, id)
+    if BRIDGE_DEV_UI_ENABLED ~= true or BridgeState.ui == nil then return end
+    local ui = BridgeState.ui
+    ui.diagnosticsVisible = true
+    if ui.devDrawer == "options" then
+        ui.devDrawer = "closed"
+    else
+        ui.devDrawer = "options"
+        ui.reportPanelVisible = false
+    end
+    if BridgeUiSet ~= nil then
+        BridgeUiSet("BridgeHudDevRoot", "active", "true")
+        BridgeUiSet("BridgeHudOptionsPanel", "active", ui.devDrawer == "options" and "true" or "false")
+        BridgeUiSet("BridgeHudReportPanel", "active", "false")
+    end
+    BridgeUiMarkDirty("options-drawer-toggle")
 end
 
 BRIDGE_REPORT_CATEGORIES = {
@@ -2125,15 +2147,25 @@ BRIDGE_REPORT_CATEGORIES = {
 
 function BridgeHudReportOpen(player, value, id)
     if BRIDGE_DEV_UI_ENABLED ~= true or BridgeState.ui == nil then return end
-    BridgeState.ui.reportPanelVisible = true
-    BridgeState.ui.reportStatus = "Ready to capture local diagnostic ZIP."
+    local ui = BridgeState.ui
+    ui.diagnosticsVisible = true
+    ui.devDrawer = "report"
+    ui.reportPanelVisible = true
+    ui.reportStatus = "Ready to capture local diagnostic ZIP."
+    if BridgeUiSet ~= nil then
+        BridgeUiSet("BridgeHudDevRoot", "active", "true")
+        BridgeUiSet("BridgeHudOptionsPanel", "active", "false")
+        BridgeUiSet("BridgeHudReportPanel", "active", "true")
+    end
     BridgeUiMarkDirty("report-open")
 end
 
 function BridgeHudReportCancel(player, value, id)
     if BridgeState.ui == nil or BridgeState.ui.reportCaptureInFlight then return end
     BridgeState.ui.reportPanelVisible = false
+    BridgeState.ui.devDrawer = "closed"
     BridgeState.ui.reportStatus = ""
+    if BridgeUiSet ~= nil then BridgeUiSet("BridgeHudReportPanel", "active", "false") end
     BridgeUiMarkDirty("report-cancel")
 end
 
@@ -2545,6 +2577,7 @@ function BridgeHudRollingCapture(player, value, id)
     -- Open the drawer after the one-click request so the result path/status is
     -- still visible to the host.
     ui.diagnosticsVisible = true
+    ui.devDrawer = "report"
     ui.reportPanelVisible = true
     BridgeHudSubmitReport("Performance / Freeze", "Rolling freeze capture")
 end
@@ -2667,52 +2700,74 @@ end
 
 function BridgeHudPhaseElementId(phase)
     local value = string.upper(tostring(phase or ""))
-    if string.find(value, "UNTAP", 1, true) then return "BridgePhaseUntap" end
-    if string.find(value, "UPKEEP", 1, true) then return "BridgePhaseUpkeep" end
-    if string.find(value, "DRAW", 1, true) then return "BridgePhaseDraw" end
+    if string.find(value, "UNTAP", 1, true) then return "BridgeHudPhaseUntap" end
+    if string.find(value, "UPKEEP", 1, true) then return "BridgeHudPhaseUpkeep" end
+    if string.find(value, "DRAW", 1, true) then return "BridgeHudPhaseDraw" end
     if string.find(value, "MAIN", 1, true) then
         if string.find(value, "POSTCOMBAT", 1, true)
             or string.find(value, "MAIN 2", 1, true)
             or string.find(value, "SECOND", 1, true) then
-            return "BridgePhaseMain2"
+            return "BridgeHudPhaseMain2"
         end
         if string.find(value, "PRECOMBAT", 1, true)
             or string.find(value, "MAIN 1", 1, true)
             or string.find(value, "FIRST", 1, true) then
-            return "BridgePhaseMain1"
+            return "BridgeHudPhaseMain1"
         end
-        return "BridgePhaseMain1"
+        return "BridgeHudPhaseMain1"
     end
-    if string.find(value, "COMBAT", 1, true)
-        or string.find(value, "ATTACK", 1, true)
-        or string.find(value, "BLOCK", 1, true)
-        or string.find(value, "DAMAGE", 1, true) then
-        return "BridgePhaseCombat"
-    end
-    if string.find(value, "END", 1, true) or string.find(value, "CLEANUP", 1, true) then
-        return "BridgePhaseEnd"
-    end
+    if string.find(value, "BEGINNING", 1, true) and string.find(value, "COMBAT", 1, true) then return "BridgeHudPhaseBeginningCombat" end
+    if string.find(value, "ATTACK", 1, true) then return "BridgeHudPhaseAttackers" end
+    if string.find(value, "BLOCK", 1, true) then return "BridgeHudPhaseBlockers" end
+    if string.find(value, "DAMAGE", 1, true) then return "BridgeHudPhaseDamage" end
+    if string.find(value, "END OF COMBAT", 1, true) then return "BridgeHudPhaseEndCombat" end
+    if string.find(value, "END", 1, true) or string.find(value, "CLEANUP", 1, true) then return "BridgeHudPhaseEndStep" end
     return nil
 end
 
 function BridgeHudRefreshPhaseRibbon()
-    local phaseIds = {
-        "BridgePhaseUntap",
-        "BridgePhaseUpkeep",
-        "BridgePhaseDraw",
-        "BridgePhaseMain1",
-        "BridgePhaseCombat",
-        "BridgePhaseMain2",
-        "BridgePhaseEnd"
+    local phaseButtons = {
+        {id = "BridgeHudPhaseUntap", label = "UNTAP", key = nil, canonical = "Untap"},
+        {id = "BridgeHudPhaseUpkeep", label = "UPK", key = "upkeep", canonical = "Upkeep"},
+        {id = "BridgeHudPhaseDraw", label = "DRAW", key = "draw", canonical = "Draw"},
+        {id = "BridgeHudPhaseMain1", label = "MAIN 1", key = "main_precombat", canonical = "Main phase, precombat"},
+        {id = "BridgeHudPhaseBeginningCombat", label = "BEGIN C", key = "beginning_combat", canonical = "Beginning of Combat"},
+        {id = "BridgeHudPhaseAttackers", label = "ATK", key = "declare_attackers", canonical = "Declare Attackers"},
+        {id = "BridgeHudPhaseBlockers", label = "BLK", key = "declare_blockers", canonical = "Declare Blockers"},
+        {id = "BridgeHudPhaseDamage", label = "DMG", key = "combat_damage", canonical = "Combat Damage"},
+        {id = "BridgeHudPhaseEndCombat", label = "END C", key = "end_combat", canonical = "End of Combat"},
+        {id = "BridgeHudPhaseMain2", label = "MAIN 2", key = "main_postcombat", canonical = "Main phase, postcombat"},
+        {id = "BridgeHudPhaseEndStep", label = "END", key = "end_step", canonical = "End Step"}
     }
+    local ui = BridgeState.ui or {}
+    local scope = ui.fastForwardStopScope == "other_turn" and "other_turn" or "own_turn"
+    local scopeLabel = scope == "own_turn" and "MINE" or "OTHERS"
+    local stops = ui.fastForwardStops or {own_turn = {}, other_turn = {}}
     local activeId = BridgeHudPhaseElementId(BridgeState.currentPhase)
-    for _, phaseId in ipairs(phaseIds) do
+    for _, phase in ipairs(phaseButtons) do
+        local stopEnabled = phase.key ~= nil and stops[scope] ~= nil and stops[scope][phase.key] == true
+        local current = phase.id == activeId
+        local text = stopEnabled and "[STOP] " .. phase.label or phase.label
+        local stopText = stopEnabled and "enabled" or "disabled"
+        local clickText = phase.key == nil and "Click has no effect during Untap." or "Click toggles this stop in the selected scope."
         BridgeUiSet(
-            phaseId,
+            phase.id,
+            "text",
+            text
+        )
+        BridgeUiSet(
+            phase.id,
             "color",
-            phaseId == activeId and BRIDGE_HUD_COLORS.active or BRIDGE_HUD_COLORS.inactive
+            current and BRIDGE_HUD_COLORS.active or stopEnabled and BRIDGE_HUD_COLORS.warning or BRIDGE_HUD_COLORS.inactive
+        )
+        BridgeUiSet(
+            phase.id,
+            "tooltip",
+            phase.canonical .. "\nEditing scope: " .. scopeLabel .. "\nStop: " .. stopText .. "\n" .. clickText
         )
     end
+    BridgeUiSet("BridgeHudPhaseStopScope", "text", "STOPS: " .. scopeLabel)
+    BridgeUiSet("BridgeHudPhaseStopScope", "tooltip", "Editing scope: " .. scopeLabel .. ". Click to switch between MINE and OTHERS. This does not change whose turn it is.")
 end
 
 -- Phase presentation is derived from the authoritative Forge phase field.
@@ -2760,31 +2815,23 @@ function BridgeUiFlush()
 
     local devEnabled = BRIDGE_DEV_UI_ENABLED == true
     local devExpanded = devEnabled and ui.diagnosticsVisible == true
+    local drawer = devExpanded and (ui.devDrawer or "closed") or "closed"
+    if drawer ~= "options" and drawer ~= "report" then drawer = "closed" end
+    local optionsVisible = drawer == "options"
+    local reportVisible = drawer == "report" and ui.reportPanelVisible == true
+    local devHeight = optionsVisible and 230 or reportVisible and 212 or 92
     BridgeUiSet("BridgeHudDevToggle", "active", devEnabled and "true" or "false")
     BridgeUiSet("BridgeHudDevRoot", "active", devExpanded and "true" or "false")
+    BridgeUiSet("BridgeHudDevRoot", "minHeight", tostring(devHeight))
+    BridgeUiSet("BridgeHudDevRoot", "preferredHeight", tostring(devHeight))
+    BridgeUiSet("BridgeHudOptions", "active", devEnabled and "true" or "false")
+    BridgeUiSet("BridgeHudOptions", "text", optionsVisible and "OPTIONS ^" or "OPTIONS")
     local yieldUi = ui.fastForwardActive and "FAST-FORWARD" or (ui.autoPassEmpty and "AUTO-PASS: ON" or "AUTO-PASS: OFF")
     BridgeUiSet("BridgeHudMode", "text", yieldUi)
     BridgeUiSet("BridgeHudFastForward", "text", ui.fastForwardActive and "CANCEL FAST-FORWARD" or "FAST-FORWARD")
-    local stops = ui.fastForwardStops or {own_turn = {}, other_turn = {}}
-    local stopButtons = {
-        BridgeHudStopOwn_Upkeep = {"own_turn", "upkeep"}, BridgeHudStopOwn_Draw = {"own_turn", "draw"},
-        BridgeHudStopOwn_MainPre = {"own_turn", "main_precombat"}, BridgeHudStopOwn_BeginningCombat = {"own_turn", "beginning_combat"},
-        BridgeHudStopOwn_Attackers = {"own_turn", "declare_attackers"}, BridgeHudStopOwn_Blockers = {"own_turn", "declare_blockers"},
-        BridgeHudStopOwn_Damage = {"own_turn", "combat_damage"}, BridgeHudStopOwn_EndCombat = {"own_turn", "end_combat"},
-        BridgeHudStopOwn_MainPost = {"own_turn", "main_postcombat"}, BridgeHudStopOwn_EndStep = {"own_turn", "end_step"},
-        BridgeHudStopOther_Upkeep = {"other_turn", "upkeep"}, BridgeHudStopOther_Draw = {"other_turn", "draw"},
-        BridgeHudStopOther_MainPre = {"other_turn", "main_precombat"}, BridgeHudStopOther_BeginningCombat = {"other_turn", "beginning_combat"},
-        BridgeHudStopOther_Attackers = {"other_turn", "declare_attackers"}, BridgeHudStopOther_Blockers = {"other_turn", "declare_blockers"},
-        BridgeHudStopOther_Damage = {"other_turn", "combat_damage"}, BridgeHudStopOther_EndCombat = {"other_turn", "end_combat"},
-        BridgeHudStopOther_MainPost = {"other_turn", "main_postcombat"}, BridgeHudStopOther_EndStep = {"other_turn", "end_step"}
-    }
-    for id, value in pairs(stopButtons) do
-        local active = stops[value[1]] and stops[value[1]][value[2]] == true
-        BridgeUiSet(id, "color", active and "#A16207EE" or "#334155CC")
-    end
     BridgeUiSet("BridgeHudDevToggle", "text", devExpanded and "DEV ▲" or "DEV ▼")
-    local reportVisible = devExpanded and ui.reportPanelVisible == true
     local reportCategoryIndex = tonumber(ui.reportCategoryIndex or 1) or 1
+    BridgeUiSet("BridgeHudOptionsPanel", "active", optionsVisible and "true" or "false")
     BridgeUiSet("BridgeHudReportPanel", "active", reportVisible and "true" or "false")
     BridgeUiSet("BridgeHudReportOpen", "active", devEnabled and "true" or "false")
     BridgeUiSet("BridgeHudRollingCapture", "active", devEnabled and (ui.reportCaptureInFlight and "false" or "true") or "false")
@@ -2794,16 +2841,9 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudResyncFromForge", "active", devEnabled
         and not BridgeState.resyncInFlight and not BridgeState.hudResyncPending and "true" or "false")
     BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
-    -- Some TTS clients render Dropdown as a non-interactive checkbox. The
-    -- adjacent previous/current buttons use ordinary Button callbacks and are
-    -- reliable in desktop and VR, so they are the supported category control.
-    BridgeUiSet("BridgeHudReportCategoryDropdown", "active", "false")
+    BridgeUiSet("BridgeHudReportCategoryDropdown", "active", reportVisible and not ui.reportCaptureInFlight and "true" or "false")
     BridgeUiSet("BridgeHudReportCategoryDropdown", "options", table.concat(BRIDGE_REPORT_CATEGORIES, "|"))
     BridgeUiSet("BridgeHudReportCategoryDropdown", "value", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex] or "Other")
-    local categoryControlsActive = reportVisible and not ui.reportCaptureInFlight
-    BridgeUiSet("BridgeHudReportCategoryPrevious", "active", categoryControlsActive and "true" or "false")
-    BridgeUiSet("BridgeHudReportCategory", "active", categoryControlsActive and "true" or "false")
-    BridgeUiSet("BridgeHudReportCategory", "text", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex] or "Other")
     BridgeUiSet("BridgeHudReportCapture", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportCancel", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportStatus", "text", ui.reportStatus or "")
@@ -3062,6 +3102,56 @@ function BridgeRenderDecision(decision, force)
     BridgePerformanceEnd(matchingToken, "action_matching_end", "actionMatching")
     BridgePerformanceEnd(candidateToken, "candidate_collection_end", "candidateCollection")
     BridgePerformanceEnd(token, "decision_render_end", "render")
+end
+
+function BridgeTargetInteractionDiagnosticPayload()
+    local decision = BridgeState.lastDecision
+    local ui = BridgeState.ui or {}
+    local associations = {}
+    local actionByGuidCount = 0
+    for guid, action in pairs(BridgeState.actionByGuid or {}) do
+        if action ~= nil then
+            actionByGuidCount = actionByGuidCount + 1
+            table.insert(associations, {
+                guid = guid,
+                actionId = action.actionId,
+                actionType = action.type or action.actionType or "unknown"
+            })
+        end
+    end
+    table.sort(associations, function(left, right)
+        return tostring(left.guid) < tostring(right.guid)
+    end)
+    local targetControlCount = 0
+    for _ in pairs(BridgeState.targetButtonIndexByGuid or {}) do
+        targetControlCount = targetControlCount + 1
+    end
+    local actionRows = ui.actionRows or {}
+    local lastProducer = BridgeState.lastInteractionProducer
+    local lastAttempt = BridgeState.lastChoiceAttempt
+    return {
+        decisionId = decision and decision.decisionId or nil,
+        decisionKind = decision and decision.kind or nil,
+        submitting = BridgeState.submitting == true,
+        pendingIntentType = BridgeState.pendingIntent and "physical-selection" or nil,
+        actionByGuidCount = actionByGuidCount,
+        actionByGuid = associations,
+        highlightedGuidCount = #(BridgeState.highlightedGuids or {}),
+        hudActionRowCount = #actionRows,
+        targetControlCount = targetControlCount,
+        lastInteractionProducer = lastProducer and {
+            source = lastProducer.source,
+            decisionId = lastProducer.decisionId,
+            actionId = lastProducer.actionId,
+            actionType = lastProducer.actionType,
+            sessionId = lastProducer.sessionId
+        } or nil,
+        lastChoiceProducer = lastAttempt and {
+            source = lastAttempt.source,
+            decisionId = lastAttempt.decisionId,
+            actionId = lastAttempt.actionId
+        } or nil
+    }
 end
 
 local BridgeClearHighlightsFlightRecorderBase = BridgeClearHighlights
