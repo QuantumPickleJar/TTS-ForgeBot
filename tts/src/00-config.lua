@@ -1503,6 +1503,7 @@ function BridgeRecordDecisionRejection(decision, origin, reason, expectedSession
         lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
         decisionForgeSequence = decision and decision.forgeSequence or nil,
         lastAppliedForgeSequence = BridgeState.lastAppliedForgeSequence,
+        lastAppliedForgeSequenceSessionId = BridgeState.lastAppliedForgeSequenceSessionId,
         expectedPresentationGeneration = presentationGeneration,
         currentPresentationGeneration = BridgeState.decisionPresentationGeneration,
         bootstrapping = BridgeState.bootstrapping == true,
@@ -1512,9 +1513,41 @@ function BridgeRecordDecisionRejection(decision, origin, reason, expectedSession
     }
     table.insert(BridgeState.decisionAcceptanceRejections, record)
     while #BridgeState.decisionAcceptanceRejections > 32 do table.remove(BridgeState.decisionAcceptanceRejections, 1) end
-    BridgeLog(string.format("[Bridge] DECISION_ACCEPT_REJECTED origin=%s reason=%s decision=%s cursor=%s applied=%s decisionForgeSequence=%s appliedForgeSequence=%s",
+    BridgeLog(string.format("[Bridge] DECISION_ACCEPT_REJECTED origin=%s reason=%s decision=%s cursor=%s applied=%s decisionForgeSequence=%s appliedForgeSequence=%s appliedForgeSession=%s",
         tostring(origin), tostring(record.reason), tostring(record.decisionId), tostring(record.eventCursor),
-        tostring(record.lastAppliedEventSequence), tostring(record.decisionForgeSequence), tostring(record.lastAppliedForgeSequence)))
+        tostring(record.lastAppliedEventSequence), tostring(record.decisionForgeSequence), tostring(record.lastAppliedForgeSequence),
+        tostring(record.lastAppliedForgeSequenceSessionId)))
+end
+
+-- Forge sequence numbers are ordered only inside one Forge session. Keep the
+-- owner beside the watermark and make every writer pass through this fence so
+-- a late callback from a retired session cannot either advance or establish
+-- the replacement session's ordering domain.
+function BridgeAdvanceAppliedForgeSequence(sessionId, forgeSequence, reason)
+    local normalizedSessionId = sessionId ~= nil and tostring(sessionId) or nil
+    local normalizedSequence = tonumber(forgeSequence)
+    if normalizedSessionId == nil or normalizedSessionId == "" or normalizedSequence == nil then
+        return false, "invalid Forge sequence watermark"
+    end
+    if BridgeState.eventSessionId == nil or tostring(BridgeState.eventSessionId) ~= normalizedSessionId then
+        BridgeLog(string.format(
+            "[Bridge] ignoring foreign Forge sequence watermark session=%s current=%s sequence=%s reason=%s",
+            normalizedSessionId, tostring(BridgeState.eventSessionId), tostring(normalizedSequence), tostring(reason)))
+        return false, "foreign Forge sequence session"
+    end
+
+    local owner = BridgeState.lastAppliedForgeSequenceSessionId
+    if owner == nil or tostring(owner) ~= normalizedSessionId then
+        BridgeState.lastAppliedForgeSequence = normalizedSequence
+        BridgeState.lastAppliedForgeSequenceSessionId = normalizedSessionId
+        return true, nil
+    end
+
+    local current = tonumber(BridgeState.lastAppliedForgeSequence or 0) or 0
+    if normalizedSequence > current then
+        BridgeState.lastAppliedForgeSequence = normalizedSequence
+    end
+    return true, nil
 end
 
 -- Keep cancellation observable without making report capture part of the
@@ -3079,6 +3112,7 @@ BridgeState = {
     lastStateProjectedEventSequence = 0,
     lastPhysicalPresentationEventSequence = 0,
     lastAppliedForgeSequence = 0,
+    lastAppliedForgeSequenceSessionId = nil,
     phaseSourceEventSequence = 0,
     turnSourceEventSequence = 0,
     activePlayerSourceEventSequence = 0,
@@ -3287,6 +3321,16 @@ BridgeState = {
     activeRevealPresentationKey = nil,
     revealSurfaceOffset = 1,
     revealPresentationGeneration = 0,
+    -- Reveal content is authoritative and shared, but its presentation is
+    -- projected independently for each configured TTS viewer. Preferences
+    -- are keyed by Forge seat rather than by the host/admin role.
+    revealViewerStateByColor = {},
+    revealPreferencesBySeatId = {},
+    revealCurrentViewerColor = "White",
+    revealMagnifierGeneration = 0,
+    libraryLookInteractionSession = nil,
+    libraryLookSessionGeneration = 0,
+    libraryLookLastFailure = nil,
     diagnosticCaptureFollowupToken = nil,
     diagnosticCaptureFollowupUntil = 0,
     resyncNoProgress = {
@@ -3616,6 +3660,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.lastStateProjectedEventSequence = 0
     BridgeState.lastPhysicalPresentationEventSequence = 0
     BridgeState.lastAppliedForgeSequence = 0
+    BridgeState.lastAppliedForgeSequenceSessionId = nil
     BridgeState.currentTurnSeatId = nil
     BridgeState.prioritySeatId = nil
     BridgeState.tableTurnCount = 0
@@ -3715,6 +3760,14 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.activeRevealPresentationKey = nil
     BridgeState.revealSurfaceOffset = 1
     BridgeState.revealPresentationGeneration = (BridgeState.revealPresentationGeneration or 0) + 1
+    if BridgeResetRevealSessionState ~= nil then
+        BridgeResetRevealSessionState("local-session-cleanup")
+    else
+        BridgeState.revealViewerStateByColor = {}
+        BridgeState.revealMagnifierGeneration = (BridgeState.revealMagnifierGeneration or 0) + 1
+        BridgeState.libraryLookInteractionSession = nil
+        BridgeState.libraryLookSessionGeneration = (BridgeState.libraryLookSessionGeneration or 0) + 1
+    end
     BridgeState.stackSummary = {}
     BridgeState.stackObjects = {}
     BridgeState.combatSelectedByGuid = {}

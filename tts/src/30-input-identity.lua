@@ -1551,6 +1551,13 @@ function onObjectPickUp(playerColor, object)
 end
 
 function onObjectDrop(playerColor, object)
+    -- Library-look sessions are an explicit, Forge-authorized physical
+    -- interaction. Consume their exact-card drops before the ordinary action
+    -- intent handler so an unrelated table placement cannot be interpreted as
+    -- a card action or a destination choice.
+    if BridgeLibraryLookHandleDrop ~= nil and BridgeLibraryLookHandleDrop(playerColor, object) then
+        return
+    end
     if object == nil or BridgeState.submitting then
         BridgeState.unboundPickupIntent = nil
         return
@@ -2563,8 +2570,17 @@ function BridgeCommitSnapshotCheckpoint(snapshot, reason)
     if snapshot == nil then return false, "snapshot is required for checkpoint commit" end
     local cursor = tonumber(snapshot.eventCursor)
     if cursor == nil or cursor < 0 then return false, "snapshot checkpoint has no valid cursor" end
+    if snapshot.sessionId ~= nil and (BridgeState.eventSessionId == nil
+        or tostring(snapshot.sessionId) ~= tostring(BridgeState.eventSessionId)) then
+        return false, "snapshot checkpoint session mismatch"
+    end
     BridgeSetResyncStage("CommittingCheckpoint", reason or "snapshot-reconciled", snapshot)
     BridgeState.snapshotForgeSequence = snapshot.forgeSequence or BridgeState.snapshotForgeSequence or 0
+    if snapshot.forgeSequence ~= nil then
+        local watermarkOk, watermarkError = BridgeAdvanceAppliedForgeSequence(
+            snapshot.sessionId or BridgeState.eventSessionId, snapshot.forgeSequence, "snapshot-checkpoint")
+        if not watermarkOk then return false, watermarkError end
+    end
     BridgeState.lastReceivedEventSequence = math.max(
         tonumber(BridgeState.lastReceivedEventSequence or 0) or 0, cursor)
     BridgeState.lastConsumedEventSequence = cursor

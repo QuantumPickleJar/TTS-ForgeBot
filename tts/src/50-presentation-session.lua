@@ -2465,6 +2465,8 @@ function BridgeHudSubmitReport(category, summary)
         expectedGeneratedGlobalLuaSha256 = BridgeState.runtimeCompatibility and BridgeState.runtimeCompatibility.expectedGeneratedGlobalLuaSha256 or nil,
         runtimeCompatibilityState = BridgeState.runtimeCompatibilityState,
         lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
+        lastAppliedForgeSequence = BridgeState.lastAppliedForgeSequence,
+        lastAppliedForgeSequenceSessionId = BridgeState.lastAppliedForgeSequenceSessionId,
         turn = BridgeState.tableTurnCount,
         phase = BridgeState.currentPhase,
         activePlayer = BridgeState.currentTurnSeatId,

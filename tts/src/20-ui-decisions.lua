@@ -201,6 +201,15 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudPrompt", "text", terminal and BridgeUiTerminalLabel(terminal)
         or (protocolStopped and "PROTOCOL RECOVERY ERROR" or prompt))
     BridgeUiSet("BridgeHudMana", "text", "MANA: " .. tostring(ui.manaMode or "AUTO"))
+    if BridgeRevealTimerLabel ~= nil and BridgeRevealPreferenceSeat ~= nil then
+        local revealSeatId = BridgeRevealPreferenceSeat(nil)
+        local revealPreferences = BridgeState.revealPreferencesBySeatId
+            and BridgeState.revealPreferencesBySeatId[revealSeatId] or nil
+        BridgeUiSet("BridgeHudRevealTimer", "text", "TIMER: "
+            .. BridgeRevealTimerLabel(revealPreferences and revealPreferences.timerMode or 10))
+        BridgeUiSet("BridgeHudRevealPhysicalGate", "text", "PHYSICAL-GATED: "
+            .. BridgeRevealPhysicalGateLabel(revealPreferences and revealPreferences.physicalGated == true))
+    end
     local yieldMode = BridgeYieldControllerMode ~= nil and BridgeYieldControllerMode() or "normal"
     BridgeUiSet("BridgeHudMode", "text", ui.autoPassEmpty and "AUTO-PASS: ON" or "AUTO-PASS: OFF")
     BridgeUiSet("BridgeHudFast", "text", ui.fastPlaytest and "FAST: ON" or "FAST: OFF")
@@ -1011,6 +1020,9 @@ function BridgeStopOnDecisionProvenanceLag(detail, fault)
         decisionId = fault and fault.decisionId or nil,
         eventCursor = fault and fault.eventCursor or nil,
         appliedEventCursor = fault and fault.appliedEventCursor or nil,
+        decisionForgeSequence = fault and fault.decisionForgeSequence or nil,
+        appliedForgeSequence = fault and fault.appliedForgeSequence or nil,
+        appliedForgeSequenceSessionId = fault and fault.appliedForgeSequenceSessionId or nil,
         payloadHash = fault and fault.payloadHash or nil,
         createdAt = os.clock(),
         createdAtUpdateTick = BridgeState.updateTick,
@@ -1120,6 +1132,9 @@ function BridgeRecordStaleDecisionConvergence(decision, eventCursor, applied)
             sessionId = decision and decision.sessionId or BridgeState.eventSessionId,
             eventCursor = eventCursor,
             appliedEventCursor = applied,
+            decisionForgeSequence = tonumber(decision and decision.forgeSequence or 0) or 0,
+            appliedForgeSequence = tonumber(BridgeState.lastAppliedForgeSequence or 0) or 0,
+            appliedForgeSequenceSessionId = BridgeState.lastAppliedForgeSequenceSessionId,
             payloadHash = payloadHash,
             retryCount = 0,
             startedAt = os.clock(),
@@ -1140,9 +1155,10 @@ function BridgeRecordStaleDecisionConvergence(decision, eventCursor, applied)
     if fault.retryCount > BRIDGE_STALE_DECISION_CONVERGENCE_ATTEMPTS
         or (fault.deadlineAt ~= nil and os.clock() > fault.deadlineAt) then
         local detail = string.format(
-            "STALE_DECISION_DID_NOT_CONVERGE classification=decision_provenance_lag decision=%s kind=%s cursor=%s applied=%s retries=%s payloadHash=%s",
+            "STALE_DECISION_DID_NOT_CONVERGE classification=decision_provenance_lag decision=%s kind=%s cursor=%s applied=%s decisionForgeSequence=%s appliedForgeSequence=%s appliedForgeSession=%s retries=%s payloadHash=%s",
             decisionId, tostring(decision and decision.kind or "(unknown)"), tostring(eventCursor), tostring(applied),
-            tostring(fault.retryCount), tostring(payloadHash))
+            tostring(fault.decisionForgeSequence), tostring(fault.appliedForgeSequence),
+            tostring(fault.appliedForgeSequenceSessionId), tostring(fault.retryCount), tostring(payloadHash))
         BridgeLog("[Bridge] " .. detail)
         BridgeStopOnDecisionProvenanceLag(detail, fault)
         return false
@@ -2175,7 +2191,14 @@ function BridgeShouldIgnoreStaleDecision(decision)
     local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
     local decisionForgeSequence = tonumber(decision and decision.forgeSequence or 0) or 0
     local appliedForgeSequence = tonumber(BridgeState.lastAppliedForgeSequence or 0) or 0
-    if decisionForgeSequence > 0 and appliedForgeSequence > 0
+    local decisionSessionId = decision and decision.sessionId or nil
+    local watermarkSessionId = BridgeState.lastAppliedForgeSequenceSessionId
+    local forgeSequenceComparable = decisionSessionId ~= nil
+        and BridgeState.eventSessionId ~= nil
+        and tostring(decisionSessionId) == tostring(BridgeState.eventSessionId)
+        and watermarkSessionId ~= nil
+        and tostring(watermarkSessionId) == tostring(BridgeState.eventSessionId)
+    if forgeSequenceComparable and decisionForgeSequence > 0 and appliedForgeSequence > 0
         and decisionForgeSequence < appliedForgeSequence then
         -- Forge publishes turn-zero Keep/Mulligan before the snapshot's later
         -- annotation sequence. Once that snapshot is fully committed, a
@@ -2190,8 +2213,9 @@ function BridgeShouldIgnoreStaleDecision(decision)
             return false, eventCursor, applied, "opening_mulligan_snapshot_annotation_lag"
         end
         BridgeLog(string.format(
-            "[Bridge] ignoring stale decision %s due to forgeSequence ordering decision=%s applied=%s",
-            tostring(decision and decision.decisionId), tostring(decisionForgeSequence), tostring(appliedForgeSequence)))
+            "[Bridge] ignoring stale decision %s due to forgeSequence ordering decision=%s applied=%s session=%s",
+            tostring(decision and decision.decisionId), tostring(decisionForgeSequence), tostring(appliedForgeSequence),
+            tostring(watermarkSessionId)))
         return true, eventCursor, applied, "forge_sequence_lag"
     end
     if eventCursor < 1 or eventCursor >= applied then
@@ -3373,6 +3397,7 @@ end
 
 function BridgeOnLoad()
     BridgePerformanceTrace("BridgeOnLoad_enter")
+    if BridgeRegisterRevealHotkey ~= nil then BridgeRegisterRevealHotkey() end
     BridgeUiMount()
     BridgeLog("[Bridge] ForgeBot integration loaded. revision=" .. tostring(BRIDGE_SCRIPT_REVISION)
         .. " runtimeId=" .. tostring(BRIDGE_CLIENT_RUNTIME_ID)
