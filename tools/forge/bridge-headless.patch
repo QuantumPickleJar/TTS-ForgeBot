@@ -505,6 +505,8 @@ index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710
 +import forge.game.Game;
 +import forge.game.GameEntity;
 +import forge.game.card.Card;
++import forge.game.card.CardView;
++import forge.game.card.CardCollectionView;
 +import forge.game.GameObject;
 +import forge.game.spellability.SpellAbility;
 +import forge.game.spellability.SpellAbilityStackInstance;
@@ -530,6 +532,7 @@ index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710
 +import forge.game.event.GameEventTurnBegan;
 +import forge.game.keyword.KeywordInterface;
 +import forge.game.player.Player;
++import forge.game.player.PlayerView;
 +import forge.game.zone.ZoneType;
 +import forge.util.ThreadUtil;
 +
@@ -575,6 +578,8 @@ index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710
 +    private final AtomicBoolean terminalSnapshotEmitted = new AtomicBoolean();
 +    private long sequence;
 +    private long decisionGeneration;
++    private long revealGeneration;
++    private String lastPublicRevealFingerprint;
 +
 +    BridgeStateFeed(final Game game) {
 +        this.game = game;
@@ -588,6 +593,108 @@ index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710
 +    static void emitDecisionReadyFromController() {
 +        final BridgeStateFeed feed = activeFeed.get();
 +        if (feed != null) feed.emitDecisionReady();
++    }
++
++    static void emitControllerReveal(final CardCollectionView cards, final ZoneType zone,
++            final Player viewer, final Player source, final String messagePrefix, final String interactionKind,
++            final boolean physicalInteractionSupported, final String[] allowedDestinations) {
++        final BridgeStateFeed feed = activeFeed.get();
++        if (feed != null) {
++            feed.emitReveal(cards, zone, viewer, source, messagePrefix, interactionKind,
++                    physicalInteractionSupported, allowedDestinations);
++        }
++    }
++
++    private synchronized void emitReveal(final Iterable<Card> cards, final ZoneType zone,
++            final Player viewer, final Player source, final String messagePrefix, final String interactionKind,
++            final boolean physicalInteractionSupported, final String[] allowedDestinations) {
++        final List<Card> resolved = new java.util.ArrayList<>();
++        for (Card card : cards) {
++            if (card != null) resolved.add(card);
++        }
++        if (resolved.isEmpty()) return;
++
++        final boolean publicReveal = zone == null || !zone.isHidden();
++        final StringBuilder fingerprint = new StringBuilder(publicReveal ? "public|" : "private|")
++                .append(zoneName(zone)).append('|').append(messagePrefix).append('|')
++                .append(interactionKind).append('|');
++        for (Card card : resolved) fingerprint.append(card.getId()).append(',');
++        if (publicReveal && fingerprint.toString().equals(lastPublicRevealFingerprint)) return;
++        if (publicReveal) lastPublicRevealFingerprint = fingerprint.toString();
++
++        final StringBuilder json = new StringBuilder(4096);
++        json.append('{');
++        property(json, "version", 1).append(',');
++        property(json, "type", "reveal").append(',');
++        property(json, "sequence", sequence).append(',');
++        property(json, "presentationId", "forge-reveal-"
++                + (BRIDGE_SESSION_ID == null ? "unknown" : BRIDGE_SESSION_ID)
++                + "-" + (++revealGeneration)).append(',');
++        property(json, "sourceObjectId", (String) null).append(',');
++        property(json, "sourceName", messagePrefix).append(',');
++        property(json, "revealingSeatId", seatOf(source == null ? viewer : source)).append(',');
++        json.append("\"entitledViewerSeatIds\":[");
++        boolean firstSeat = true;
++        if (publicReveal) {
++            for (Player player : game.getPlayers()) {
++                if (!firstSeat) json.append(',');
++                firstSeat = false;
++                string(json, seatOf(player));
++            }
++        } else if (seatOf(viewer) != null) {
++            string(json, seatOf(viewer));
++        }
++        json.append("],");
++        property(json, "visibility", publicReveal ? "public" : "private").append(',');
++        json.append("\"cards\":[");
++        boolean firstCard = true;
++        for (Card card : resolved) {
++            if (!firstCard) json.append(',');
++            firstCard = false;
++            json.append('{');
++            property(json, "forgeCardId", card.getId()).append(',');
++            property(json, "cardName", card.getName()).append(',');
++            property(json, "cardFaceIdentity", (String) null).append(',');
++            property(json, "imageUrl", (String) null).append(',');
++            property(json, "originatingZone", zoneName(zone));
++            json.append('}');
++        }
++        json.append("],");
++        property(json, "reason", messagePrefix).append(',');
++        property(json, "acknowledgmentRequired", false).append(',');
++        property(json, "associatedDecisionId", (String) null).append(',');
++        property(json, "lifecycle", "opened").append(',');
++        property(json, "interactionKind", interactionKind).append(',');
++        property(json, "physicalInteractionSupported", physicalInteractionSupported).append(',');
++        property(json, "sourceZone", zoneName(zone));
++        if (allowedDestinations != null) {
++            json.append(',').append("\"allowedPhysicalDestinations\":[");
++            for (int index = 0; index < allowedDestinations.length; index++) {
++                if (index > 0) json.append(',');
++                string(json, allowedDestinations[index]);
++            }
++            json.append(']');
++        }
++        json.append('}');
++        synchronized (System.out) {
++            System.out.println("@@FORGE_BRIDGE_REVEAL@@" + json);
++            System.out.flush();
++        }
++    }
++    static void emitControllerRevealViews(final List<CardView> cards, final ZoneType zone,
++            final Player viewer, final PlayerView source, final String messagePrefix, final String interactionKind,
++            final boolean physicalInteractionSupported, final String[] allowedDestinations) {
++        final BridgeStateFeed feed = activeFeed.get();
++        if (feed != null) {
++            final List<Card> resolved = new java.util.ArrayList<>();
++            for (CardView cardView : cards) {
++                final Card card = feed.game.findByView(cardView);
++                if (card != null) resolved.add(card);
++            }
++            feed.emitReveal(resolved, zone, viewer,
++                    source == null ? viewer : feed.game.getPlayer(source.getId()), messagePrefix, interactionKind,
++                    physicalInteractionSupported, allowedDestinations);
++        }
 +    }
 +
 +    @Subscribe
@@ -1092,7 +1199,7 @@ index 0000000000000000000000000000000000000000..22b57562caa31bf36f777bf40859d710
 +    }
 +
 +    private static String zoneName(final ZoneType zoneType) {
-+        return zoneType.name().toLowerCase(java.util.Locale.ROOT);
++        return zoneType == null ? null : zoneType.name().toLowerCase(java.util.Locale.ROOT);
 +    }
 +
 +    private static StringBuilder property(final StringBuilder json, final String name, final String value) {
@@ -1165,7 +1272,7 @@ diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.jav
 index 0d731bb..492e31d 100644
 --- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 +++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-@@ -3,17 +3,35 @@ package forge.headless;
+@@ -3,18 +3,39 @@ package forge.headless;
  import com.google.common.collect.Multimap;
  import forge.LobbyPlayer;
  import forge.ai.ComputerUtilMana;
@@ -1180,6 +1287,7 @@ index 0d731bb..492e31d 100644
  import forge.game.Game;
  import forge.game.card.Card;
 +import forge.card.CardStateName;
++import forge.game.card.CardView;
  import forge.game.card.CardCollection;
 +import forge.game.card.CardCollectionView;
 +import forge.game.card.CardLists;
@@ -1197,10 +1305,13 @@ index 0d731bb..492e31d 100644
  import forge.game.phase.PhaseHandler;
  import forge.game.player.Player;
 +import forge.game.player.PlayerActionConfirmMode;
++import forge.game.player.PlayerView;
 +import forge.game.spellability.AbilitySub;
  import forge.game.spellability.SpellAbility;
  import forge.game.zone.ZoneType;
  import forge.item.PaperCard;
++import org.apache.commons.lang3.tuple.ImmutablePair;
+ import forge.util.collect.FCollectionView;
 @@ -90,6 +107,190 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          return false; // We're a human player
      }
@@ -2664,6 +2775,32 @@ index 0d731bb..492e31d 100644
 +        System.out.println("  0. No");
 +        System.out.println("  1. Yes");
 +        return getIntInput(0, 1) == 1;
++    }
++
++    @Override
++    public void reveal(CardCollectionView cards, ZoneType zone, Player owner, String messagePrefix, boolean addSuffix) {
++        BridgeStateFeed.emitControllerReveal(cards, zone, player, owner, messagePrefix, null, false, null);
++        super.reveal(cards, zone, owner, messagePrefix, addSuffix);
++    }
++
++    @Override
++    public void reveal(List<CardView> cards, ZoneType zone, PlayerView owner, String messagePrefix, boolean addSuffix) {
++        BridgeStateFeed.emitControllerRevealViews(cards, zone, player, owner, messagePrefix, null, false, null);
++        super.reveal(cards, zone, owner, messagePrefix, addSuffix);
++    }
++
++    @Override
++    public ImmutablePair<CardCollection, CardCollection> arrangeForScry(CardCollection topN) {
++        BridgeStateFeed.emitControllerReveal(topN, ZoneType.Library, player, player, "Scry", "scry", true,
++                new String[] {"top", "bottom"});
++        return super.arrangeForScry(topN);
++    }
++
++    @Override
++    public ImmutablePair<CardCollection, CardCollection> arrangeForSurveil(CardCollection topN) {
++        BridgeStateFeed.emitControllerReveal(topN, ZoneType.Library, player, player, "Surveil", "surveil", true,
++                new String[] {"top", "graveyard"});
++        return super.arrangeForSurveil(topN);
 +    }
 +
  }

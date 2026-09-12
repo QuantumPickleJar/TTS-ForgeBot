@@ -32,6 +32,32 @@ public sealed class TtsRevealPresentationLuaTests
     }
 
     [Fact]
+    public void DuplicateRevealDeliveryPreservesViewerInteractionState()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.lastAppliedEventSequence = 12
+            reveal = {presentationId='repeat', originatingEventSequence=12, visibility='public',
+                cards={{authoritativeObjectId='card', cardName='Island'}}, lifecycle='opened'}
+            BridgeApplyRevealPresentation(reveal, 12)
+            BridgeHudRevealInteract({color='White'}, nil, 'BridgeHudRevealCardButton1')
+            BridgeHudRevealCardHoverEnter({color='White'}, nil, 'BridgeHudRevealCardButton1')
+            magnifyBeforeRepeat = BridgeRevealMagnifyPress({color='White'})
+            pinnedBeforeRepeat = BridgeState.revealViewerStateByColor.White.pinned
+            BridgeApplyRevealPresentation(reveal, 12)
+            pinnedAfterRepeat = BridgeState.revealViewerStateByColor.White.pinned
+            activeAfterRepeat = BridgeState.revealViewerStateByColor.White.activeKey
+            magnifyAfterRepeat = BridgeState.revealViewerStateByColor.White.magnifier.active
+        ");
+
+        Assert.True(lua.Globals.Get("pinnedBeforeRepeat").Boolean);
+        Assert.True(lua.Globals.Get("pinnedAfterRepeat").Boolean);
+        Assert.Equal("repeat@12", lua.Globals.Get("activeAfterRepeat").String);
+        Assert.True(lua.Globals.Get("magnifyBeforeRepeat").Boolean);
+        Assert.True(lua.Globals.Get("magnifyAfterRepeat").Boolean);
+    }
+
+    [Fact]
     public void PrivateRevealIsVisibleOnlyToEntitledHumanAndMissingArtUsesFallback()
     {
         var lua = NewProbe();
@@ -248,6 +274,317 @@ public sealed class TtsRevealPresentationLuaTests
         Assert.Contains("producer-url", diagnostic, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void PublicAndPrivateRevealsUseConfiguredViewerSeatProjections()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.lastAppliedEventSequence = 10
+            publicApplied = BridgeApplyRevealPresentation({
+                presentationId='public', originatingEventSequence=10, visibility='public',
+                cards={{authoritativeObjectId='public-card', cardName='Island'}}, lifecycle='opened'
+            }, 10)
+            publicWhite = BridgeState.revealViewerStateByColor.White.activeKey
+            publicBlue = BridgeState.revealViewerStateByColor.Blue.activeKey
+            BridgeResetRevealSessionState('test-private')
+            privateApplied = BridgeApplyRevealPresentation({
+                presentationId='private', originatingEventSequence=10, visibility='private',
+                entitledViewerSeatIds={'forge-player-2'},
+                cards={{authoritativeObjectId='private-card', cardName='Secret'}}, lifecycle='opened'
+            }, 10)
+            privateWhite = BridgeState.revealViewerStateByColor.White.activeKey
+            privateBlue = BridgeState.revealViewerStateByColor.Blue.activeKey
+            privateWhiteMaySee = BridgeRevealViewerMaySee({visibility='private', entitledViewerSeatIds={'forge-player-2'}}, 'White')
+            privateBlueMaySee = BridgeRevealViewerMaySee({visibility='private', entitledViewerSeatIds={'forge-player-2'}}, 'Blue')
+        ");
+
+        Assert.True(lua.Globals.Get("publicApplied").Boolean);
+        Assert.Equal("public@10", lua.Globals.Get("publicWhite").String);
+        Assert.Equal("public@10", lua.Globals.Get("publicBlue").String);
+        Assert.False(lua.Globals.Get("privateApplied").Boolean);
+        Assert.Equal(DataType.Nil, lua.Globals.Get("privateWhite").Type);
+        Assert.Equal("private@10", lua.Globals.Get("privateBlue").String);
+        Assert.False(lua.Globals.Get("privateWhiteMaySee").Boolean);
+        Assert.True(lua.Globals.Get("privateBlueMaySee").Boolean);
+    }
+
+    [Fact]
+    public void RevealTimerCyclesPerViewerAndDifferentViewersKeepIndependentSettings()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            timerDefault = BridgeRevealGetPreferences('forge-player-1').timerMode == 10
+            BridgeHudRevealTimerCycle(nil, nil, nil)
+            timerOffFirst = BridgeRevealGetPreferences('forge-player-1').timerMode
+            BridgeHudRevealTimerCycle(nil, nil, nil)
+            timerThree = BridgeRevealGetPreferences('forge-player-1').timerMode
+            BridgeHudRevealTimerCycle(nil, nil, nil)
+            timerFive = BridgeRevealGetPreferences('forge-player-1').timerMode
+            BridgeHudRevealTimerCycle(nil, nil, nil)
+            timerTen = BridgeRevealGetPreferences('forge-player-1').timerMode
+            BridgeHudRevealTimerCycle(nil, nil, nil)
+            timerOff = BridgeRevealGetPreferences('forge-player-1').timerMode
+            BridgeRevealSetTimerForViewer('forge-player-1', 0)
+            BridgeRevealSetTimerForViewer('forge-player-2', 3)
+            whiteTimer = BridgeState.revealPreferencesBySeatId['forge-player-1'].timerMode
+            blueTimer = BridgeState.revealPreferencesBySeatId['forge-player-2'].timerMode
+        ");
+
+        Assert.True(lua.Globals.Get("timerDefault").Boolean);
+        Assert.Equal(0, lua.Globals.Get("timerOffFirst").Number);
+        Assert.Equal(3, lua.Globals.Get("timerThree").Number);
+        Assert.Equal(5, lua.Globals.Get("timerFive").Number);
+        Assert.Equal(10, lua.Globals.Get("timerTen").Number);
+        Assert.Equal(0, lua.Globals.Get("timerOff").Number);
+        Assert.Equal(0, lua.Globals.Get("whiteTimer").Number);
+        Assert.Equal(3, lua.Globals.Get("blueTimer").Number);
+    }
+
+    [Fact]
+    public void HoverAndMagnifyUseExactEntryAndFenceStaleRelease()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.lastAppliedEventSequence = 2
+            BridgeApplyRevealPresentation({presentationId='magnify', originatingEventSequence=2, visibility='public', cards={
+                {authoritativeObjectId='card-one', cardName='Island', imageUrl='art-one'},
+                {authoritativeObjectId='card-two', cardName='Mountain', imageUrl='art-two'}
+            }, lifecycle='opened'}, 2)
+            revealCount = #BridgeState.revealedPresentationsByKey['magnify@2'].cards
+            BridgeHudRevealCardHoverEnter({color='White'}, nil, 'BridgeHudRevealCardButton2')
+            hoverState = BridgeState.revealViewerStateByColor.White
+            hoveredId = hoverState and hoverState.hovered and hoverState.hovered.instanceId
+            opened, token = BridgeRevealMagnifyPress({color='White'})
+            magnifiedId = hoverState and hoverState.magnifier and hoverState.magnifier.instanceId
+            staleRelease = BridgeRevealMagnifyRelease({color='White'}, token + 1)
+            remainsAfterStaleRelease = hoverState.magnifier.active
+            currentRelease = BridgeRevealMagnifyRelease({color='White'}, token)
+            hiddenAfterRelease = not hoverState.magnifier.active
+            BridgeHudRevealCardHoverExit({color='White'}, nil, 'BridgeHudRevealCardButton2')
+            noHover = BridgeRevealMagnifyPress({color='White'})
+        ");
+
+        Assert.Equal(2, lua.Globals.Get("revealCount").Number);
+        Assert.Equal("card-two", lua.Globals.Get("hoveredId").String);
+        Assert.True(lua.Globals.Get("opened").Boolean);
+        Assert.Equal("card-two", lua.Globals.Get("magnifiedId").String);
+        Assert.False(lua.Globals.Get("staleRelease").Boolean);
+        Assert.True(lua.Globals.Get("remainsAfterStaleRelease").Boolean);
+        Assert.True(lua.Globals.Get("currentRelease").Boolean);
+        Assert.True(lua.Globals.Get("hiddenAfterRelease").Boolean);
+        Assert.False(lua.Globals.Get("noHover").Boolean);
+    }
+
+    [Fact]
+    public void MagnifyHotkeyKeyUpCannotCloseAReplacementMagnifier()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.lastAppliedEventSequence = 1
+            BridgeApplyRevealPresentation({presentationId='old', originatingEventSequence=1, visibility='public', cards={
+                {authoritativeObjectId='old-card', cardName='Island', imageUrl='old-art'}
+            }, lifecycle='opened'}, 1)
+            BridgeHudRevealCardHoverEnter({color='White'}, nil, 'BridgeHudRevealCardButton1')
+            oldOpened, oldToken = BridgeRevealMagnifyHotkey('White', false)
+            BridgeState.lastAppliedEventSequence = 2
+            BridgeApplyRevealPresentation({presentationId='new', originatingEventSequence=2, visibility='public', cards={
+                {authoritativeObjectId='new-card', cardName='Mountain', imageUrl='new-art'}
+            }, lifecycle='opened'}, 2)
+            staleKeyUp = BridgeRevealMagnifyHotkey('White', true)
+            BridgeHudRevealCardHoverEnter({color='White'}, nil, 'BridgeHudRevealCardButton1')
+            newOpened, newToken = BridgeRevealMagnifyHotkey('White', false)
+            newerStillActive = BridgeState.revealViewerStateByColor.White.magnifier.active
+            currentKeyUp = BridgeRevealMagnifyHotkey('White', true)
+            hiddenAfterCurrentKeyUp = not BridgeState.revealViewerStateByColor.White.magnifier.active
+        ");
+
+        Assert.True(lua.Globals.Get("oldOpened").Boolean);
+        Assert.True(lua.Globals.Get("newOpened").Boolean);
+        Assert.True(lua.Globals.Get("oldToken").Number < lua.Globals.Get("newToken").Number);
+        Assert.False(lua.Globals.Get("staleKeyUp").Boolean);
+        Assert.True(lua.Globals.Get("newerStillActive").Boolean);
+        Assert.True(lua.Globals.Get("currentKeyUp").Boolean);
+        Assert.True(lua.Globals.Get("hiddenAfterCurrentKeyUp").Boolean);
+    }
+
+    [Fact]
+    public void PhysicalGatedLibraryLookOpensOnlyAfterExactDropInsideTightTarget()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.lastAppliedEventSequence = 7
+            BridgeRevealSetPhysicalGateForViewer('forge-player-1', true)
+            reveal = {
+                presentationId='scry-1', originatingEventSequence=7, visibility='private',
+                entitledViewerSeatIds={'forge-player-1'}, revealingSeatId='forge-player-1',
+                sourceZone='library', interactionKind='scry', physicalInteractionSupported=true,
+                allowedPhysicalDestinations={'top', 'bottom'},
+                cards={{authoritativeObjectId='expected-card', cardName='Island', imageUrl='art'}}, lifecycle='opened'
+            }
+            BridgeApplyRevealPresentation(reveal, 7)
+            session = BridgeState.libraryLookInteractionSession
+            gatedBeforeDrop = BridgeState.revealViewerStateByColor.White.gateState
+            BridgeState.physicalInstanceIdByGuid = {['exact-guid']='expected-card'}
+            object = {
+                getGUID=function() return 'exact-guid' end,
+                getPosition=function() return {x=100, y=2, z=100} end
+            }
+            ordinaryDrop = BridgeLibraryLookHandleDrop('White', object)
+            noDestination = session.stagedDestinationByInstanceId['expected-card'] == nil
+            target = session.stagingTargets.top
+            object.getPosition=function() return {x=target.x, y=target.y, z=target.z} end
+            topDrop = BridgeLibraryLookHandleDrop('White', object)
+            openedAfterDrop = BridgeState.revealViewerStateByColor.White.activeKey
+            intent, intentError = BridgeLibraryLookBuildIntent()
+            intentTop = intent and intent.destinations.top[1] or nil
+        ");
+
+        Assert.Equal("waiting-for-drop", lua.Globals.Get("gatedBeforeDrop").String);
+        Assert.True(lua.Globals.Get("ordinaryDrop").Boolean);
+        Assert.True(lua.Globals.Get("noDestination").Boolean);
+        Assert.True(lua.Globals.Get("topDrop").Boolean);
+        Assert.Equal("scry-1@7", lua.Globals.Get("openedAfterDrop").String);
+        Assert.Equal("expected-card", lua.Globals.Get("intentTop").String);
+        Assert.Equal(DataType.Nil, lua.Globals.Get("intentError").Type);
+    }
+
+    [Fact]
+    public void PublicLibraryLookOwnerDropUnlocksEachGatedPublicProjection()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.lastAppliedEventSequence = 7
+            BridgeRevealSetPhysicalGateForViewer('forge-player-2', true)
+            reveal = {presentationId='public-scry', originatingEventSequence=7, visibility='public',
+                entitledViewerSeatIds={'forge-player-1', 'forge-player-2'}, revealingSeatId='forge-player-1',
+                sourceZone='library', interactionKind='scry', physicalInteractionSupported=true,
+                allowedPhysicalDestinations={'top', 'bottom'},
+                cards={{authoritativeObjectId='public-card', cardName='Island'}}, lifecycle='opened'}
+            BridgeApplyRevealPresentation(reveal, 7)
+            gatedBeforeDrop = BridgeState.revealViewerStateByColor.Blue.gateState
+            BridgeState.physicalInstanceIdByGuid = {['public-guid']='public-card'}
+            object = {
+                getGUID=function() return 'public-guid' end,
+                getPosition=function() return {x=BridgeState.libraryLookInteractionSession.stagingTargets.top.x,
+                    y=2, z=BridgeState.libraryLookInteractionSession.stagingTargets.top.z} end
+            }
+            BridgeLibraryLookHandleDrop('White', object)
+            blueOpenedAfterOwnerDrop = BridgeState.revealViewerStateByColor.Blue.activeKey
+        ");
+
+        Assert.Equal("waiting-for-drop", lua.Globals.Get("gatedBeforeDrop").String);
+        Assert.Equal("public-scry@7", lua.Globals.Get("blueOpenedAfterOwnerDrop").String);
+    }
+
+    [Fact]
+    public void ScryAndSurveilUseOneSharedLibraryLookSessionWithDifferentPolicies()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            scry = {presentationId='scry', originatingEventSequence=1, revealingSeatId='forge-player-1',
+                sourceZone='library', interactionKind='scry', physicalInteractionSupported=true,
+                cards={{authoritativeObjectId='scry-card', cardName='Island'}}, lifecycle='opened'}
+            scrySession = BridgeBeginLibraryLookInteractionSession(scry, {decisionId='d1', seatId='forge-player-1'})
+            scryTop = type(scrySession) == 'table' and scrySession.allowedDestinations.top == true or false
+            scryBottom = type(scrySession) == 'table' and scrySession.allowedDestinations.bottom == true or false
+            oldGeneration = type(scrySession) == 'table' and scrySession.generation or -1
+            surveil = {presentationId='surveil', originatingEventSequence=2, revealingSeatId='forge-player-1',
+                sourceZone='library', interactionKind='surveil', physicalInteractionSupported=true,
+                cards={{authoritativeObjectId='surveil-card', cardName='Mountain'}}, lifecycle='opened'}
+            surveilSession = BridgeBeginLibraryLookInteractionSession(surveil, {decisionId='d2', seatId='forge-player-1'})
+            replaced = BridgeState.libraryLookInteractionSession == surveilSession
+            oldRetired = type(scrySession) == 'table' and scrySession.lifecycle == 'retired' or false
+            surveilTop = type(surveilSession) == 'table' and surveilSession.allowedDestinations.top == true or false
+            surveilGraveyard = type(surveilSession) == 'table' and surveilSession.allowedDestinations.graveyard == true or false
+            surveilBottom = type(surveilSession) == 'table' and surveilSession.allowedDestinations.bottom == true or false
+            BridgeResetRevealSessionState('new-match')
+            retiredOnReset = BridgeState.libraryLookInteractionSession == nil and type(surveilSession) == 'table' and surveilSession.lifecycle == 'retired'
+        ");
+
+        Assert.True(lua.Globals.Get("scryTop").Boolean);
+        Assert.True(lua.Globals.Get("scryBottom").Boolean);
+        Assert.True(lua.Globals.Get("replaced").Boolean);
+        Assert.True(lua.Globals.Get("oldRetired").Boolean);
+        Assert.True(lua.Globals.Get("surveilTop").Boolean);
+        Assert.True(lua.Globals.Get("surveilGraveyard").Boolean);
+        Assert.False(lua.Globals.Get("surveilBottom").Boolean);
+        Assert.True(lua.Globals.Get("retiredOnReset").Boolean);
+    }
+
+    [Fact]
+    public void LibraryLookDeckDropUsesExactContainedIdentityAndNativeOrder()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            reveal = {presentationId='deck-look', originatingEventSequence=1,
+                revealingSeatId='forge-player-1', sourceZone='library', interactionKind='scry',
+                physicalInteractionSupported=true, cards={
+                    {authoritativeObjectId='forge:session:one', cardName='Island'},
+                    {authoritativeObjectId='forge:session:two', cardName='Mountain'}
+                }, lifecycle='opened'}
+            session = BridgeBeginLibraryLookInteractionSession(reveal, nil)
+            BridgeState.physicalContainedInstanceIdByGuid = {
+                ['contained-one']='forge:session:one', ['contained-two']='forge:session:two'
+            }
+            deck = {
+                tag='Deck', getGUID=function() return 'staging-deck' end,
+                getPosition=function() return {x=session.stagingTargets.top.x, y=2, z=session.stagingTargets.top.z} end,
+                getObjects=function() return {
+                    {guid='contained-two', index=1, nickname='Mountain'},
+                    {guid='contained-one', index=2, nickname='Island'}
+                } end
+            }
+            handled = BridgeLibraryLookHandleDrop('White', deck)
+            intent, intentError = BridgeLibraryLookBuildIntent()
+            firstTop = intent and intent.destinations.top[1] or nil
+            secondTop = intent and intent.destinations.top[2] or nil
+        ");
+
+        Assert.True(lua.Globals.Get("handled").Boolean);
+        Assert.Equal(DataType.Nil, lua.Globals.Get("intentError").Type);
+        Assert.Equal("forge:session:two", lua.Globals.Get("firstTop").String);
+        Assert.Equal("forge:session:one", lua.Globals.Get("secondTop").String);
+    }
+
+    [Fact]
+    public void LibraryLookFinalizationReadsCurrentLooseCardGeometryAfterRearrangement()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            reveal = {presentationId='loose-look', originatingEventSequence=1,
+                revealingSeatId='forge-player-1', sourceZone='library', interactionKind='scry',
+                physicalInteractionSupported=true, cards={
+                    {authoritativeObjectId='forge:session:left', cardName='Island'},
+                    {authoritativeObjectId='forge:session:right', cardName='Mountain'}
+                }, lifecycle='opened'}
+            session = BridgeBeginLibraryLookInteractionSession(reveal, nil)
+            firstPosition = {x=session.stagingTargets.top.x - 0.4, y=2, z=session.stagingTargets.top.z}
+            secondPosition = {x=session.stagingTargets.top.x + 0.4, y=2, z=session.stagingTargets.top.z}
+            first = {getGUID=function() return 'loose-first' end, getPosition=function() return firstPosition end}
+            second = {getGUID=function() return 'loose-second' end, getPosition=function() return secondPosition end}
+            BridgeState.physicalInstanceIdByGuid = {
+                ['loose-first']='forge:session:left', ['loose-second']='forge:session:right'}
+            BridgeLibraryLookHandleDrop('White', first)
+            BridgeLibraryLookHandleDrop('White', second)
+            -- The player picks both cards up and swaps their final table order.
+            firstPosition.x = session.stagingTargets.top.x + 0.4
+            secondPosition.x = session.stagingTargets.top.x - 0.4
+            currentFirstX = first.getPosition().x
+            currentSecondX = second.getPosition().x
+            intent, intentError = BridgeLibraryLookBuildIntent()
+            firstTop = intent and intent.destinations.top[1] or nil
+            secondTop = intent and intent.destinations.top[2] or nil
+        ");
+
+        Assert.Equal(DataType.Nil, lua.Globals.Get("intentError").Type);
+        Assert.True(lua.Globals.Get("currentFirstX").Number > lua.Globals.Get("currentSecondX").Number);
+        Assert.Equal("forge:session:right", lua.Globals.Get("firstTop").String);
+        Assert.Equal("forge:session:left", lua.Globals.Get("secondTop").String);
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script();
@@ -264,6 +601,10 @@ public sealed class TtsRevealPresentationLuaTests
                 if id == 'BridgeHudRevealFallback1' and attribute == 'active' then fallbackActive = value == 'true' end
                 if id == 'BridgeHudRevealFallback1' and attribute == 'text' then fallbackText = value end
             end}
+            BRIDGE_SEATS = {
+                ['forge-player-1'] = {ttsColor='White', libraryAnchor={x=0, y=2, z=0}, tableSideZ=-1},
+                ['forge-player-2'] = {ttsColor='Blue', libraryAnchor={x=0, y=2, z=0}, tableSideZ=1}
+            }
             BridgeState = {}
         ");
         var revealSource = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,

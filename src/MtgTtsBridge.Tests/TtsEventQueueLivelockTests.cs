@@ -2579,6 +2579,121 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
+    public void ReplacementSessionScopesForgeWatermarkAndPresentsFirstMainPriorityDecision()
+    {
+        var lua = NewQueueProbe();
+        ExecuteProbe(lua, "ReplacementSessionScopesForgeWatermarkAndPresentsFirstMainPriorityDecision.probe.lua", @"
+            BridgeState.eventSessionId = 'old-session'
+            BridgeState.physicalOwnershipSessionId = 'old-session'
+            BridgeState.eventSessionGeneration = 8
+            BridgeState.lastAppliedEventSequence = 274
+            BridgeState.lastReceivedEventSequence = 274
+            BridgeState.lastAppliedForgeSequence = 56
+            BridgeState.lastAppliedForgeSequenceSessionId = 'old-session'
+            BridgeState.staleDecisionFault = {sessionId='old-session', decisionId='old-decision'}
+            BridgeState.staleDecisionFaultsByKey = {['old-key']={sessionId='old-session'}}
+            BridgeState.staleDecisionRetryKey = 'old-key'
+            BridgeState.staleDecisionRetryCount = 9
+            BridgeState.decisionAwaitingCausallyCurrent = true
+            BridgeState.terminalRecoveryError = nil
+            BridgePrepareEventSession('new-session', true, false)
+            inheritedDecisionAwaiting = BridgeState.decisionAwaitingCausallyCurrent
+            inheritedRetryCount = BridgeState.staleDecisionRetryCount
+
+            function BridgeSetStatus(headline, detail) end
+            function BridgeUiMarkDirty(reason) end
+            function BridgeStartupPerfEvent(kind, detail) end
+            function BridgeSetupStage(stage, detail) end
+            function BridgeRecordDecisionLifecycle(decision, origin, state, reason) end
+            function BridgeCheckProjectionCoherence(decision, source) end
+            function BridgeCheckOpeningHandReadiness(seatId) return true, 7, 7, nil end
+            function BridgeTurnLabel() return 'Turn 1' end
+            function BridgeRetireChoiceTransactionsForDecision(decisionId) end
+            function BridgeCreatureTypeClearDraft(reason) end
+            function BridgeGraveyardClear(reason) end
+            function BridgeDecisionHasUnauthorizedPresentationAction(decision) return false end
+            function BridgeShouldDeferDecision(decision) return false, BridgeState.lastAppliedEventSequence, BridgeState.lastAppliedEventSequence, nil end
+            function BridgeRenderDecision(decision, force) renderedDecision = decision.decisionId end
+            function BridgeDecisionPhysicalMappingsReady(decision) return true, nil end
+            function BridgeClearHighlights() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeResetSelectionState() end
+
+            local snapshot = {sessionId='new-session', eventCursor=54, forgeSequence=5, seats={}}
+            checkpointOk, checkpointError = BridgeCommitSnapshotCheckpoint(snapshot, 'replacement-bootstrap')
+            BridgeState.bootstrapping = false
+            BridgeState.embodimentTransaction = nil
+            local opening = {
+                decisionId='forge-tui-1', sessionId='new-session', kind='mulligan',
+                mulliganStage='keep_or_mulligan', seatId='forge-player-1', eventCursor=54,
+                forgeSequence=4, actions={{actionId='keep', type='keep_hand', isPresentationAuthorized=true}}
+            }
+            openingAccepted, openingReason = BridgeAcceptDecision(opening, 'replacement-bootstrap', 'new-session', BridgeState.decisionPresentationGeneration)
+            BridgeState.lastDecision = nil
+            BridgeState.lastReceivedEventSequence = 75
+            BridgeState.lastAppliedEventSequence = 75
+            for forgeSequence = 6, 9 do
+                BridgeAdvanceAppliedForgeSequence('new-session', forgeSequence, 'replacement-event')
+            end
+            local current = {
+                decisionId='forge-tui-2', sessionId='new-session', kind='main_priority',
+                mulliganStage=nil, seatId='forge-player-1', activeSeatId='forge-player-1', prioritySeatId='forge-player-1',
+                eventCursor=75, forgeSequence=9, turnNumber=1, phaseName='Main phase, precombat',
+                actions={{actionId='pass', type='pass_priority'}}
+            }
+            ignoreCurrent, currentCursor, currentApplied, currentReason = BridgeShouldIgnoreStaleDecision(current)
+            currentAccepted, currentReasonAccepted = BridgeAcceptDecision(current, 'decision-poll', 'new-session', BridgeState.decisionPresentationGeneration)
+
+            watermarkBeforeLateCallback = BridgeState.lastAppliedForgeSequence
+            lateCallbackAccepted, lateCallbackError = BridgeAdvanceAppliedForgeSequence('old-session', 57, 'late-old-transaction')
+            watermarkAfterLateCallback = BridgeState.lastAppliedForgeSequence
+            watermarkOwnerAfterLateCallback = BridgeState.lastAppliedForgeSequenceSessionId
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(lua.Globals.Get("checkpointOk").Boolean, lua.Globals.Get("checkpointError").ToPrintString());
+        Assert.False(lua.Globals.Get("inheritedDecisionAwaiting").Boolean);
+        Assert.Equal(0, lua.Globals.Get("inheritedRetryCount").Number);
+        Assert.True(lua.Globals.Get("openingAccepted").Boolean, lua.Globals.Get("openingReason").ToPrintString());
+        Assert.False(lua.Globals.Get("ignoreCurrent").Boolean,
+            $"reason={lua.Globals.Get("currentReason").ToPrintString()} applied={lua.Globals.Get("currentApplied").ToPrintString()}");
+        Assert.True(lua.Globals.Get("currentAccepted").Boolean, lua.Globals.Get("currentReasonAccepted").ToPrintString());
+        Assert.Equal("forge-tui-2", state.Get("lastDecision").Table.Get("decisionId").String);
+        Assert.True(lua.Globals.Get("currentReason").IsNil());
+        Assert.False(state.Get("decisionAwaitingCausallyCurrent").Boolean);
+        Assert.Equal(0, state.Get("staleDecisionRetryCount").Number);
+        Assert.True(state.Get("staleDecisionFault").IsNil());
+        Assert.Equal(75, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal(9, state.Get("lastAppliedForgeSequence").Number);
+        Assert.Equal("new-session", state.Get("lastAppliedForgeSequenceSessionId").String);
+        Assert.False(lua.Globals.Get("lateCallbackAccepted").Boolean);
+        Assert.Equal(lua.Globals.Get("watermarkBeforeLateCallback").Number,
+            lua.Globals.Get("watermarkAfterLateCallback").Number);
+        Assert.Equal("new-session", lua.Globals.Get("watermarkOwnerAfterLateCallback").String);
+        Assert.True(state.Get("terminalRecoveryError").IsNil());
+    }
+
+    [Fact]
+    public void SameSessionForgeWatermarkStillRejectsAnObsoleteDecision()
+    {
+        var lua = NewQueueProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'same-session'
+            BridgeState.lastAppliedForgeSequence = 56
+            BridgeState.lastAppliedForgeSequenceSessionId = 'same-session'
+            local stale = {
+                decisionId='same-session-old', sessionId='same-session', kind='main_priority',
+                eventCursor=40, forgeSequence=9, actions={}
+            }
+            ignored, ignoredCursor, ignoredApplied, ignoredReason = BridgeShouldIgnoreStaleDecision(stale)
+        ");
+
+        Assert.True(lua.Globals.Get("ignored").Boolean);
+        Assert.Equal("forge_sequence_lag", lua.Globals.Get("ignoredReason").String);
+        Assert.Equal(7, lua.Globals.Get("ignoredApplied").Number);
+    }
+
+    [Fact]
     public void DecisionRejectionDiagnosticsExposePredicate()
     {
         var lua = NewQueueProbe();
@@ -2605,6 +2720,7 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Equal("old", diagnostic.Get("decisionId").String);
         Assert.Equal(54, diagnostic.Get("eventCursor").Number);
         Assert.Equal(9, diagnostic.Get("lastAppliedForgeSequence").Number);
+        Assert.Equal("session", diagnostic.Get("lastAppliedForgeSequenceSessionId").String);
     }
 
     [Fact]
@@ -3598,6 +3714,7 @@ public sealed class TtsEventQueueLivelockTests
             BridgeState.eventSessionId = 'session'
             BridgeState.physicalOwnershipSessionId = 'session'
             BridgeState.eventSessionGeneration = 1
+            BridgeState.lastAppliedForgeSequenceSessionId = 'session'
             BridgeState.lastAppliedEventSequence = 7
             BridgeState.lastReceivedEventSequence = 9
             BridgeState.eventQueue = {}

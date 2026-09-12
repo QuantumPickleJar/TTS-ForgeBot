@@ -463,6 +463,21 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void TrackedBridgeStateFeed_UsesSemanticRevealAndLibraryLookHooks()
+    {
+        Assert.Contains("DelayedReveal", Patch);
+        Assert.Contains("public void reveal(CardCollectionView cards", Patch);
+        Assert.Contains("public void reveal(List<CardView> cards", Patch);
+        Assert.Contains("arrangeForScry(CardCollection topN)", Patch);
+        Assert.Contains("arrangeForSurveil(CardCollection topN)", Patch);
+        Assert.Contains("emitControllerReveal", Patch);
+        Assert.Contains("physicalInteractionSupported", Patch);
+        Assert.Contains("allowedPhysicalDestinations", Patch);
+        Assert.Contains("ZoneType.Library", Patch);
+        Assert.DoesNotContain("getOracleText().contains(\"reveal\")", Patch, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void PrototypeDesignationIsAuthoritativeAndSeparateFromKeywords()
     {
         Assert.Contains("isPrototyped()", Patch);

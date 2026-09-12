@@ -58,6 +58,32 @@ public sealed class RevealPresentationContractTests
         Assert.True(revealPanel > mainHudEnd, "BridgeHudRevealOverlay must be outside the main HUD Panel.");
     }
 
+    [Fact]
+    public void XmlDefinesFixedViewerProjectionMagnifierAndAccessibilityCallbacks()
+    {
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+
+        Assert.Equal(1, Count(xml, "id=\"BridgeHudRevealSurface\""));
+        Assert.Equal(1, Count(xml, "id=\"BridgeHudRevealSurfaceBlue\""));
+        Assert.Equal(1, Count(xml, "id=\"BridgeHudRevealMagnifierOverlay\""));
+        Assert.Equal(1, Count(xml, "id=\"BridgeHudRevealMagnifierOverlayBlue\""));
+        Assert.Contains("onMouseEnter=\"BridgeHudRevealCardHoverEnter\"", xml, StringComparison.Ordinal);
+        Assert.Contains("onMouseExit=\"BridgeHudRevealCardHoverExit\"", xml, StringComparison.Ordinal);
+        var lua = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.lua"));
+        Assert.Contains("ForgeBot: Magnify Revealed Card", lua, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void XmlExposesRevealPreferencesWithoutReplacingHostDiagnosticsRoot()
+    {
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+        Assert.Contains("id=\"BridgeHudDevRoot\"", xml, StringComparison.Ordinal);
+        Assert.Contains("id=\"BridgeHudRevealTimer\"", xml, StringComparison.Ordinal);
+        Assert.Contains("onClick=\"BridgeHudRevealTimerCycle\"", xml, StringComparison.Ordinal);
+        Assert.Contains("id=\"BridgeHudRevealPhysicalGate\"", xml, StringComparison.Ordinal);
+        Assert.Contains("onClick=\"BridgeHudRevealPhysicalGateCycle\"", xml, StringComparison.Ordinal);
+    }
+
     private static int Count(string value, string needle) =>
         value.Split(needle, StringSplitOptions.None).Length - 1;
 

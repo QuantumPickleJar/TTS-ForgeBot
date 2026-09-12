@@ -109,6 +109,39 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void StructuredRevealFramesPreservePublicPrivateEntitlementAndPhysicalPolicy()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var output = parser.Append(
+            ForgeStructuredOutputParser.RevealSentinel
+            + "{\"version\":1,\"type\":\"reveal\",\"sequence\":12,"
+            + "\"presentationId\":\"public-12\",\"sourceName\":\"combat\","
+            + "\"revealingSeatId\":\"forge-player-1\","
+            + "\"entitledViewerSeatIds\":[\"forge-player-1\",\"forge-player-2\"],"
+            + "\"visibility\":\"public\",\"cards\":[{\"forgeCardId\":7,\"cardName\":\"Island\",\"originatingZone\":\"battlefield\"}],"
+            + "\"reason\":\"combat reveal\",\"acknowledgmentRequired\":false,\"lifecycle\":\"opened\"}\n"
+            + ForgeStructuredOutputParser.RevealSentinel
+            + "{\"version\":1,\"type\":\"reveal\",\"sequence\":13,"
+            + "\"presentationId\":\"private-13\",\"sourceName\":\"look\","
+            + "\"revealingSeatId\":\"forge-player-1\","
+            + "\"entitledViewerSeatIds\":[\"forge-player-1\"],"
+            + "\"visibility\":\"private\",\"cards\":[{\"forgeCardId\":8,\"cardName\":\"Mountain\",\"originatingZone\":\"library\"}],"
+            + "\"reason\":\"library look\",\"acknowledgmentRequired\":false,\"lifecycle\":\"opened\","
+            + "\"interactionKind\":\"scry\",\"physicalInteractionSupported\":true,\"sourceZone\":\"library\","
+            + "\"allowedPhysicalDestinations\":[\"top\",\"bottom\"]}\n");
+
+        Assert.Equal("public-12", output.Reveals![0].PresentationId);
+        Assert.Equal("public", output.Reveals[0].Visibility);
+        Assert.Equal(["forge-player-1", "forge-player-2"], output.Reveals[0].EntitledViewerSeatIds);
+        Assert.Equal("private-13", output.Reveals[1].PresentationId);
+        Assert.Equal(["forge-player-1"], output.Reveals[1].EntitledViewerSeatIds);
+        Assert.True(output.Reveals[1].PhysicalInteractionSupported);
+        Assert.Equal("scry", output.Reveals[1].InteractionKind);
+        Assert.Equal(["top", "bottom"], output.Reveals[1].AllowedPhysicalDestinations);
+        Assert.DoesNotContain(ForgeStructuredOutputParser.RevealSentinel, output.TuiText);
+    }
+
+    [Fact]
     public void MalformedDecisionReadyFrame_FailsVisibly()
     {
         var parser = new ForgeStructuredOutputParser();
