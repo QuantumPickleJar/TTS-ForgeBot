@@ -9,6 +9,7 @@ public sealed class ForgeStructuredOutputParser
 {
     public const string Sentinel = "@@FORGE_BRIDGE_STATE@@";
     public const string DecisionReadySentinel = "@@FORGE_BRIDGE_DECISION_READY@@";
+    public const string RevealSentinel = "@@FORGE_BRIDGE_REVEAL@@";
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -32,6 +33,7 @@ public sealed class ForgeStructuredOutputParser
         var tui = new StringBuilder();
         var snapshots = new List<ForgeStructuredSnapshot>();
         var decisionReady = new List<ForgeDecisionReadyMarker>();
+        var reveals = new List<ForgeStructuredRevealPresentation>();
 
         while (true)
         {
@@ -51,6 +53,10 @@ public sealed class ForgeStructuredOutputParser
                 else if (string.Equals(_frameSentinel, DecisionReadySentinel, StringComparison.Ordinal))
                 {
                     decisionReady.Add(ParseDecisionReadyFrame(json));
+                }
+                else if (string.Equals(_frameSentinel, RevealSentinel, StringComparison.Ordinal))
+                {
+                    reveals.Add(ParseRevealFrame(json));
                 }
                 _frameSentinel = null;
                 continue;
@@ -94,28 +100,32 @@ public sealed class ForgeStructuredOutputParser
             }
         }
 
-        return new ForgeStructuredOutputResult(tui.ToString(), snapshots, decisionReady, _frameInProgress);
+        return new ForgeStructuredOutputResult(tui.ToString(), snapshots, decisionReady, _frameInProgress, reveals);
     }
 
     private static (int Index, string Sentinel) FindFirstSentinel(string text)
     {
         var stateIndex = text.IndexOf(Sentinel, StringComparison.Ordinal);
         var decisionIndex = text.IndexOf(DecisionReadySentinel, StringComparison.Ordinal);
-        if (stateIndex < 0 && decisionIndex < 0) return (-1, string.Empty);
-        if (stateIndex < 0) return (decisionIndex, DecisionReadySentinel);
-        if (decisionIndex < 0) return (stateIndex, Sentinel);
-        return stateIndex <= decisionIndex
-            ? (stateIndex, Sentinel)
-            : (decisionIndex, DecisionReadySentinel);
+        var revealIndex = text.IndexOf(RevealSentinel, StringComparison.Ordinal);
+        if (stateIndex < 0 && decisionIndex < 0 && revealIndex < 0) return (-1, string.Empty);
+        var candidates = new[]
+        {
+            (Index: stateIndex, Sentinel),
+            (Index: decisionIndex, Sentinel: DecisionReadySentinel),
+            (Index: revealIndex, Sentinel: RevealSentinel)
+        }.Where(item => item.Index >= 0).OrderBy(item => item.Index).First();
+        return candidates;
     }
 
     private static int LongestSentinelPrefixSuffix(string text)
     {
-        var maximum = Math.Min(text.Length, Math.Max(Sentinel.Length, DecisionReadySentinel.Length) - 1);
+        var maximum = Math.Min(text.Length, new[] { Sentinel.Length, DecisionReadySentinel.Length, RevealSentinel.Length }.Max() - 1);
         for (var length = maximum; length > 0; length--)
         {
             if (length < Sentinel.Length && text.EndsWith(Sentinel[..length], StringComparison.Ordinal)) return length;
             if (length < DecisionReadySentinel.Length && text.EndsWith(DecisionReadySentinel[..length], StringComparison.Ordinal)) return length;
+            if (length < RevealSentinel.Length && text.EndsWith(RevealSentinel[..length], StringComparison.Ordinal)) return length;
         }
         return 0;
     }
@@ -175,6 +185,33 @@ public sealed class ForgeStructuredOutputParser
         }
     }
 
+    private static ForgeStructuredRevealPresentation ParseRevealFrame(string json)
+    {
+        try
+        {
+            var reveal = JsonSerializer.Deserialize<ForgeStructuredRevealPresentation>(json, JsonOptions)
+                ?? throw new ForgeStructuredFrameException("Forge emitted an empty reveal frame.");
+            if (reveal.Version != 1 || !string.Equals(reveal.Type, "reveal", StringComparison.Ordinal))
+            {
+                throw new ForgeStructuredFrameException(
+                    $"Unsupported Forge reveal frame version/type: {reveal.Version}/{reveal.Type}.");
+            }
+            if (string.IsNullOrWhiteSpace(reveal.PresentationId) || reveal.Cards is null || reveal.Cards.Count == 0)
+            {
+                throw new ForgeStructuredFrameException("Forge reveal frame omitted presentationId or cards.");
+            }
+            return reveal;
+        }
+        catch (ForgeStructuredFrameException)
+        {
+            throw;
+        }
+        catch (JsonException ex)
+        {
+            throw new ForgeStructuredFrameException(BuildMalformedJsonMessage(ex), ex);
+        }
+    }
+
     private static string BuildMalformedJsonMessage(JsonException ex)
     {
         var metadata = new List<string>();
@@ -201,7 +238,8 @@ public sealed record ForgeStructuredOutputResult(
     string TuiText,
     IReadOnlyList<ForgeStructuredSnapshot> Snapshots,
     IReadOnlyList<ForgeDecisionReadyMarker>? DecisionReadyMarkers = null,
-    bool FrameInProgress = false);
+    bool FrameInProgress = false,
+    IReadOnlyList<ForgeStructuredRevealPresentation>? Reveals = null);
 
 public sealed record ForgeDecisionReadyMarker(
     string SessionId,
@@ -219,6 +257,33 @@ public sealed record ForgeDecisionReadyFrame(
     long? StructuredSnapshotSequence,
     long? MutationGeneration,
     long? DecisionGeneration);
+
+public sealed record ForgeStructuredRevealPresentation(
+    int Version,
+    string Type,
+    long Sequence,
+    string PresentationId,
+    string? SourceObjectId,
+    string? SourceName,
+    string? RevealingSeatId,
+    IReadOnlyList<string> EntitledViewerSeatIds,
+    string Visibility,
+    IReadOnlyList<ForgeStructuredRevealCard> Cards,
+    string? Reason,
+    bool AcknowledgmentRequired,
+    string? AssociatedDecisionId,
+    string Lifecycle = "opened",
+    string? InteractionKind = null,
+    bool PhysicalInteractionSupported = false,
+    string? SourceZone = null,
+    IReadOnlyList<string>? AllowedPhysicalDestinations = null);
+
+public sealed record ForgeStructuredRevealCard(
+    int ForgeCardId,
+    string CardName,
+    string? CardFaceIdentity = null,
+    string? ImageUrl = null,
+    string? OriginatingZone = null);
 
 public sealed record ForgeStructuredSnapshot(
     int Version,

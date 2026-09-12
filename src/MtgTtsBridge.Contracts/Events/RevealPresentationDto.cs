@@ -15,7 +15,14 @@ public sealed record RevealPresentationDto(
     string? Reason,
     bool AcknowledgmentRequired,
     string? AssociatedDecisionId,
-    string Lifecycle = "opened");
+    string Lifecycle = "opened",
+    // Structured producer semantics. These fields deliberately describe the
+    // rules operation; TTS must not infer a physical interaction from card
+    // names, source labels, or Oracle text.
+    string? InteractionKind = null,
+    bool PhysicalInteractionSupported = false,
+    string? SourceZone = null,
+    IReadOnlyList<string>? AllowedPhysicalDestinations = null);
 
 public sealed record RevealedCardDto(
     string AuthoritativeObjectId,

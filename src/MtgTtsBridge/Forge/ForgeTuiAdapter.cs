@@ -667,6 +667,57 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                             snapshot.Sequence,
                             snapshot.Reason);
                     }
+                    foreach (var reveal in output.Reveals ?? [])
+                    {
+                        static string? NormalizeRevealId(string sessionId, string? value)
+                        {
+                            if (string.IsNullOrWhiteSpace(value)) return null;
+                            if (value.StartsWith("forge:", StringComparison.Ordinal)) return value;
+                            var raw = value.StartsWith("forge-object:", StringComparison.Ordinal)
+                                ? value[13..] : value;
+                            return $"forge:{sessionId}:{raw}";
+                        }
+
+                        var visibility = string.IsNullOrWhiteSpace(reveal.Visibility) ? "public" : reveal.Visibility;
+                        var privateReveal = !string.Equals(visibility, "public", StringComparison.OrdinalIgnoreCase);
+                        var presentation = new MtgTtsBridge.Contracts.Events.RevealPresentationDto(
+                            reveal.PresentationId,
+                            reveal.Sequence,
+                            NormalizeRevealId(_sessionId, reveal.SourceObjectId),
+                            reveal.SourceName,
+                            reveal.RevealingSeatId,
+                            reveal.EntitledViewerSeatIds,
+                            visibility,
+                            reveal.Cards.Select(card => new MtgTtsBridge.Contracts.Events.RevealedCardDto(
+                                NormalizeRevealId(_sessionId, $"forge-object:{card.ForgeCardId}")!,
+                                card.CardName,
+                                card.CardFaceIdentity,
+                                card.ImageUrl,
+                                card.OriginatingZone)).ToArray(),
+                            reveal.Reason,
+                            reveal.AcknowledgmentRequired,
+                            reveal.AssociatedDecisionId,
+                            reveal.Lifecycle,
+                            reveal.InteractionKind,
+                            reveal.PhysicalInteractionSupported,
+                            reveal.SourceZone,
+                            reveal.AllowedPhysicalDestinations);
+                        EnqueueEvent(new ForgeTuiRawEvent(
+                            "reveal_presentation",
+                            reveal.RevealingSeatId,
+                            null,
+                            null,
+                            reveal.SourceZone,
+                            reveal.SourceZone,
+                            privateReveal ? "Forge issued a private reveal." : "Forge issued a public reveal.",
+                            ContainsHiddenIdentity: privateReveal,
+                            ForgeSequence: reveal.Sequence,
+                            RevealPresentation: presentation));
+                        _latestObservedForgeSequence = Math.Max(_latestObservedForgeSequence ?? 0, reveal.Sequence);
+                        _latestCommittedMutationCursor = _latestEventSequence;
+                        _latestCommittedMutationForgeSequence = Math.Max(_latestCommittedMutationForgeSequence ?? 0, reveal.Sequence);
+                        _latestDecisionEligibleCursor = _latestCommittedMutationCursor;
+                    }
                     foreach (var marker in output.DecisionReadyMarkers ?? [])
                     {
                         ApplyDecisionReadyMarker(marker);
