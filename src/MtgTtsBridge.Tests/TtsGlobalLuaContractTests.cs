@@ -1661,7 +1661,7 @@ public sealed class TtsGlobalLuaContractTests
     public void MainPriorityActions_BindExactActivatedAbilitySourceOutsideHand()
     {
         var start = Script.IndexOf("local presentationInstanceId = BridgeActionExactPhysicalInstanceId(action)", StringComparison.Ordinal);
-        var end = Script.IndexOf("if #matches > 0 and (action.cardIdentity ~= nil or exactAction) then", start, StringComparison.Ordinal);
+        var end = Script.IndexOf("if #matches > 0", start, StringComparison.Ordinal);
         var binding = Script[start..end];
 
         Assert.Contains("BridgeActionExactPhysicalInstanceId(action)", binding);
@@ -2614,11 +2614,16 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeHudReportCapture", xml);
         Assert.Contains("BridgeHudReportCancel", xml);
         Assert.Contains("BridgeHudReportCategoryDropdown", xml);
-        Assert.Contains("id=\"BridgeHudDevRoot\" active=\"false\" visibility=\"Host|Admin\" minHeight=\"255\" preferredHeight=\"255\"", xml);
-        Assert.Contains("text=\"YOUR TURN\"", xml);
-        Assert.Contains("text=\"OTHER TURNS\"", xml);
-        Assert.DoesNotContain("BridgeHudYieldStopScope", xml);
-        Assert.Contains("id=\"BridgeHudReportCategoryDropdown\" options=\"Gameplay sync|Combat|Card movement|Presentation/UI|Decision/prompt|Mana/payment|Performance / Freeze|Crash/error|Other\"", xml);
+        Assert.Contains("id=\"BridgeHudDevRoot\" active=\"false\" visibility=\"Host|Admin\" minHeight=\"92\" preferredHeight=\"92\"", xml);
+        Assert.Contains("id=\"BridgeHudOptions\"", xml);
+        Assert.Contains("id=\"BridgeHudOptionsPanel\" active=\"false\"", xml);
+        Assert.Contains("id=\"BridgeHudPhaseStopScope\"", xml);
+        Assert.DoesNotContain("BridgeHudStopOwn_", xml);
+        Assert.DoesNotContain("BridgeHudStopOther_", xml);
+        Assert.DoesNotContain("id=\"BridgeHudReportCategoryDropdown\" options=", xml);
+        foreach (var category in new[] { "Gameplay sync", "Combat", "Card movement", "Presentation/UI", "Decision/prompt", "Mana/payment", "Performance / Freeze", "Crash/error", "Other" })
+            Assert.Contains($"<Option{(category == "Gameplay sync" ? " selected=\"true\"" : string.Empty)}>{category}</Option>", xml);
+        Assert.Contains("onValueChanged=\"BridgeHudReportSummaryChanged\"", xml);
         Assert.Contains("minWidth=\"650\" preferredWidth=\"650\"", xml);
         Assert.Contains("BridgeHudRollingCapture", xml);
         Assert.Contains("BridgeHudRecoverPumps", xml);
@@ -2627,8 +2632,12 @@ public sealed class TtsGlobalLuaContractTests
         var choiceTrayStart = xml.IndexOf("id=\"BridgeHudChoiceTray\"", StringComparison.Ordinal);
         Assert.True(gamePanelStart >= 0 && choiceTrayStart > gamePanelStart);
         var gamePanel = xml[gamePanelStart..choiceTrayStart];
-        Assert.Contains("id=\"BridgeHudRollingCapture\"", gamePanel);
-        Assert.Contains("visibility=\"Host|Admin\"", gamePanel);
+        var devPanelStart = xml.IndexOf("id=\"BridgeHudDevRoot\"", StringComparison.Ordinal);
+        var devPanelEnd = xml.IndexOf("id=\"BridgeHudStackSurface\"", devPanelStart, StringComparison.Ordinal);
+        Assert.True(devPanelStart >= 0 && devPanelEnd > devPanelStart);
+        var devPanel = xml[devPanelStart..devPanelEnd];
+        Assert.Contains("id=\"BridgeHudRollingCapture\"", devPanel);
+        Assert.Contains("visibility=\"Host|Admin\"", devPanel);
         Assert.Contains("function BridgeHudReportCategoryChanged", Script);
         Assert.Contains("function BridgeHudRollingCapture", Script);
         var rollingStart = Script.IndexOf("function BridgeHudRollingCapture", StringComparison.Ordinal);
@@ -2645,15 +2654,48 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void ReportCategory_UsesReliableButtonCallbacksInsteadOfTheTtsDropdown()
+    public void ReportCategory_UsesTheStructuredTtsDropdown()
     {
-        Assert.Contains("function BridgeHudReportCategoryPrevious", Script);
-        Assert.Contains("function BridgeHudReportCategory(player, value, id)", Script);
-        Assert.Contains("BridgeUiMarkDirty(\"report-category-previous\")", Script);
-        Assert.Contains("BridgeUiMarkDirty(\"report-category-next\")", Script);
-        Assert.Contains("BridgeUiSet(\"BridgeHudReportCategoryDropdown\", \"active\", \"false\")", Script);
-        Assert.Contains("BridgeUiSet(\"BridgeHudReportCategoryPrevious\", \"active\", categoryControlsActive", Script);
-        Assert.Contains("BridgeUiSet(\"BridgeHudReportCategory\", \"text\", BRIDGE_REPORT_CATEGORIES[reportCategoryIndex]", Script);
+        Assert.Contains("function BridgeHudReportCategoryChanged", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudReportCategoryDropdown\", \"active\", reportVisible", Script);
+        Assert.Contains("selectedIndex", Script);
+        Assert.DoesNotContain("BridgeUiSet(\"BridgeHudReportCategoryDropdown\", \"options\"", Script);
+        Assert.DoesNotContain("BridgeHudReportCategoryPrevious", File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml")));
+        Assert.DoesNotContain("BridgeHudReportCategory\"", File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml")));
+    }
+
+    [Fact]
+    public void UnifiedPhaseRibbonKeepsEveryControlAtAccessibleTenPointText()
+    {
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+        foreach (var id in new[] { "BridgeHudPhaseUntap", "BridgeHudPhaseUpkeep", "BridgeHudPhaseDraw", "BridgeHudPhaseMain1", "BridgeHudPhaseBeginningCombat", "BridgeHudPhaseAttackers", "BridgeHudPhaseBlockers", "BridgeHudPhaseDamage", "BridgeHudPhaseEndCombat", "BridgeHudPhaseMain2", "BridgeHudPhaseEndStep", "BridgeHudPhaseStopScope" })
+        {
+            var start = xml.IndexOf($"id=\"{id}\"", StringComparison.Ordinal);
+            var end = xml.IndexOf(" />", start, StringComparison.Ordinal);
+            Assert.True(start >= 0 && end > start, $"missing phase control {id}");
+            Assert.Contains("fontSize=\"10\"", xml[start..end]);
+        }
+        Assert.Contains("id=\"BridgeHudPhases\" minHeight=\"27\" preferredHeight=\"27\"", xml);
+    }
+
+    [Fact]
+    public void DevHud_DrawersHaveACompactDefaultAndBoundedCompleteForms()
+    {
+        var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
+        var devStart = xml.IndexOf("id=\"BridgeHudDevRoot\"", StringComparison.Ordinal);
+        var devEnd = xml.IndexOf("id=\"BridgeHudStackSurface\"", devStart, StringComparison.Ordinal);
+        Assert.True(devStart >= 0 && devEnd > devStart);
+        var dev = xml[devStart..devEnd];
+
+        Assert.Contains("minHeight=\"92\" preferredHeight=\"92\"", dev);
+        Assert.Contains("id=\"BridgeHudOptionsPanel\" active=\"false\"", dev);
+        Assert.Contains("id=\"BridgeHudReportPanel\" active=\"false\"", dev);
+        foreach (var id in new[] { "BridgeHudReportSummary", "BridgeHudReportCategoryDropdown", "BridgeHudReportCapture", "BridgeHudReportCancel", "BridgeHudReportStatus" })
+            Assert.Contains("id=\"" + id + "\"", dev);
+        Assert.Single(Regex.Matches(xml, "id=\"BridgeHudPhases\""));
+        Assert.Single(Regex.Matches(xml, "id=\"BridgeHudPhaseMain1\""));
+        Assert.DoesNotContain("YOUR TURN", dev);
+        Assert.DoesNotContain("OTHER TURNS", dev);
     }
 
     [Fact]
@@ -2937,10 +2979,13 @@ public sealed class TtsGlobalLuaContractTests
         var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
         Assert.Contains("id=\"BridgeHudMode\"", xml);
         Assert.Contains("id=\"BridgeHudFastForward\"", xml);
-        Assert.Contains("id=\"BridgeHudStopOwn_MainPre\"", xml);
-        Assert.Contains("id=\"BridgeHudStopOther_MainPre\"", xml);
+        Assert.Contains("id=\"BridgeHudPhaseMain1\"", xml);
+        Assert.Contains("onClick=\"BridgeHudYieldStopScope\"", xml);
+        Assert.DoesNotContain("id=\"BridgeHudStopOwn_MainPre\"", xml);
+        Assert.DoesNotContain("id=\"BridgeHudStopOther_MainPre\"", xml);
         Assert.Contains("onClick=\"BridgeHudClearYieldStops\"", xml);
         Assert.Contains("function BridgeHudYieldPhaseStop", Script);
+        Assert.Contains("function BridgeHudYieldStopScope", Script);
         Assert.Contains("function BridgeClearYieldPhaseStops", Script);
     }
 

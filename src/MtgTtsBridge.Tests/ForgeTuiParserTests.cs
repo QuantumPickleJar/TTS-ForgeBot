@@ -923,6 +923,74 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void ProductionDelveMetadata_WithAdditiveMinDelve_RemainsStructuredAndReusesCollectionIdentity()
+    {
+        var parser = new ForgeTuiParser();
+
+        static string Menu(int selected, string selectedMarker) =>
+            "=== FORGE CHOICE ===\n" +
+            "DELVE - Choose cards from your graveyard to exile. Each card pays {1} of this spell's generic mana cost.\n" +
+            $"[kind=cost_selection costKind=delve sourceZone=graveyard minDelve=3 min=3 max=5 selected={selected} ordered=false]\n" +
+            "  0. Done\n" +
+            $"  1. Harmonized Trio [id=31] [bridge entityKind=card cardInstanceId=31 sourceZone=graveyard]{(selectedMarker == "31" ? " [SELECTED]" : "")}\n" +
+            $"  2. Ashiok, Nightmare Weaver [id=25] [bridge entityKind=card cardInstanceId=25 sourceZone=graveyard]{(selectedMarker == "25" ? " [SELECTED]" : "")}\n" +
+            $"  3. Treasure Cruise [id=2] [bridge entityKind=card cardInstanceId=2 sourceZone=graveyard]{(selectedMarker == "2" ? " [SELECTED]" : "")}\n" +
+            $"  4. Island [id=10] [bridge entityKind=card cardInstanceId=10 sourceZone=graveyard]{(selectedMarker == "10" ? " [SELECTED]" : "")}\n" +
+            $"  5. Stitcher's Supplier [id=9] [bridge entityKind=card cardInstanceId=9 sourceZone=graveyard]{(selectedMarker == "9" ? " [SELECTED]" : "")}\n" +
+            "Enter choice (0-5): ";
+
+        var first = Assert.IsType<ForgeTuiDecision>(parser.Append(Menu(1, "2")).ParsedDecision).Decision;
+        var second = Assert.IsType<ForgeTuiDecision>(parser.Append(Menu(2, "10")).ParsedDecision).Decision;
+        var third = Assert.IsType<ForgeTuiDecision>(parser.Append(Menu(3, "9")).ParsedDecision).Decision;
+
+        foreach (var decision in new[] { first, second, third })
+        {
+            Assert.Equal("cost_selection", decision.Kind);
+            Assert.Equal("delve", decision.CostKind);
+            Assert.Equal("graveyard", decision.CandidateSourceZone);
+            Assert.Equal(3, decision.MinSelections);
+            Assert.Equal(5, decision.MaxSelections);
+            Assert.True(decision.ConfirmRequired);
+            Assert.Equal("choose_none", decision.Actions[0].Type);
+            Assert.All(decision.Actions.Skip(1), action =>
+            {
+                Assert.StartsWith("forge-object:", action.CardInstanceId);
+                Assert.Equal("graveyard", action.SourceZone);
+            });
+        }
+
+        Assert.Equal(1, first.SelectedCount);
+        Assert.Equal(2, second.SelectedCount);
+        Assert.Equal(3, third.SelectedCount);
+        Assert.Equal("forge-object:2", first.Actions[3].CardInstanceId);
+        Assert.True(first.Actions[3].IsSelected);
+        Assert.Equal("forge-object:10", second.Actions[4].CardInstanceId);
+        Assert.True(second.Actions[4].IsSelected);
+        Assert.Equal("forge-object:9", third.Actions[5].CardInstanceId);
+        Assert.True(third.Actions[5].IsSelected);
+        Assert.Equal(first.DecisionId, second.DecisionId);
+        Assert.Equal(second.DecisionId, third.DecisionId);
+    }
+
+    [Fact]
+    public void UnknownAdditiveSelectionMetadata_DoesNotEraseCoreStructuredShape()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "[kind=cost_selection costKind=delve sourceZone=graveyard futureProducerHint=cards minDelve=3 min=3 max=5 selected=1 ordered=false]\n" +
+            "  0. Done\n  1. Island [id=10] [SELECTED]\n" +
+            "Enter choice (0-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("cost_selection", decision.Kind);
+        Assert.Equal("delve", decision.CostKind);
+        Assert.Equal(3, decision.MinSelections);
+        Assert.Equal(5, decision.MaxSelections);
+        Assert.True(decision.ConfirmRequired);
+    }
+
+    [Fact]
     public void CrewDecision_UsesTypedCostMetadataAndExactBattlefieldCandidates()
     {
         var parser = new ForgeTuiParser();

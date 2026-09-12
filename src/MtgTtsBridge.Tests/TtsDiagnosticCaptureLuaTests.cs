@@ -8,6 +8,95 @@ public sealed class TtsDiagnosticCaptureLuaTests
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.lua"));
 
     [Fact]
+    public void ReportOpenExpandsTheDevRootAndActivatesTheCompleteReportForm()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BRIDGE_DEV_UI_ENABLED = true
+            BridgeState.ui.mounted = true
+            BridgeState.ui.reportCaptureInFlight = false
+            BridgeState.ui.devDrawer = 'options'
+            uiAttributes = {}
+            UI = {setAttribute = function(id, attribute, value)
+                uiAttributes[id .. ':' .. attribute] = value
+            end}
+            BridgeHudReportOpen()
+        ");
+
+        var ui = lua.Globals.Get("BridgeState").Table.Get("ui").Table;
+        Assert.True(ui.Get("diagnosticsVisible").Boolean);
+        Assert.Equal("report", ui.Get("devDrawer").String);
+        Assert.True(ui.Get("reportPanelVisible").Boolean);
+        Assert.Equal("true", lua.Globals.Get("uiAttributes").Table.Get("BridgeHudDevRoot:active").String);
+        Assert.Equal("false", lua.Globals.Get("uiAttributes").Table.Get("BridgeHudOptionsPanel:active").String);
+        Assert.Equal("true", lua.Globals.Get("uiAttributes").Table.Get("BridgeHudReportPanel:active").String);
+        Assert.Contains("Ready to capture", ui.Get("reportStatus").String);
+    }
+
+    [Fact]
+    public void ReportSummaryInputCallbackFeedsTheCapturePayloadAndPreservesEmptyOptionalText()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'summary-session'
+            BridgeState.ui = {reportCaptureInFlight = false, reportCaptureToken = 0,
+                reportCategoryIndex = 1, reportSummaryDraft = ''}
+            function BridgeWaitTime(callback, delay) end
+            function BridgePerformanceDiagnosticPayload()
+                return {performanceSummary = {}, recentTtsTrace = {}, diagnosticCaptureLifecycle = {}, eventDrainDiagnostics = {}}
+            end
+            function BridgeHudReportMappedCardInstanceIds() return {} end
+            function BridgeHudReportPhysicalMappings() return {} end
+            function BridgeUiMarkDirty(reason) end
+            capturedPayload = nil
+            BridgeHttp.requestJson = function(method, path, payload, callback)
+                capturedPayload = payload
+                callback(true, {success = true, reportId = 'summary-report'}, nil)
+            end
+            BridgeHudReportSummaryChanged(nil, 'Murderous Cut target softlock', 'BridgeHudReportSummary')
+            BridgeHudReportCategoryChanged(nil, '2', 'BridgeHudReportCategoryDropdown')
+            selectedCategoryIndex = BridgeState.ui.reportCategoryIndex
+            BridgeHudSubmitReport('Card movement', nil)
+            typedSummary = capturedPayload.summary
+            typedCategory = capturedPayload.category
+            BridgeHudReportSummaryChanged(nil, '', 'BridgeHudReportSummary')
+            BridgeHudSubmitReport('Combat', nil)
+            emptySummary = capturedPayload.summary
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table.Get("ui").Table;
+        Assert.Equal("Murderous Cut target softlock", lua.Globals.Get("typedSummary").String);
+        Assert.Equal(3, lua.Globals.Get("selectedCategoryIndex").Number);
+        Assert.Equal("Card movement", lua.Globals.Get("typedCategory").String);
+        Assert.Equal(string.Empty, lua.Globals.Get("emptySummary").String);
+        Assert.Equal(string.Empty, state.Get("reportSummaryDraft").String);
+    }
+
+    [Fact]
+    public void OptionsAndReportDrawersAreMutuallyExclusiveAndIdempotent()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BRIDGE_DEV_UI_ENABLED = true
+            BridgeState.ui.mounted = false
+            BridgeState.ui.reportCaptureInFlight = false
+            BridgeHudOptionsToggle()
+            firstOptions = BridgeState.ui.devDrawer
+            BridgeHudReportOpen()
+            reportAfterOptions = BridgeState.ui.devDrawer
+            BridgeHudOptionsToggle()
+            optionsAfterReport = BridgeState.ui.devDrawer
+            BridgeHudOptionsToggle()
+            closedAfterToggle = BridgeState.ui.devDrawer
+        ");
+
+        Assert.Equal("options", lua.Globals.Get("firstOptions").String);
+        Assert.Equal("report", lua.Globals.Get("reportAfterOptions").String);
+        Assert.Equal("options", lua.Globals.Get("optionsAfterReport").String);
+        Assert.Equal("closed", lua.Globals.Get("closedAfterToggle").String);
+    }
+
+    [Fact]
     public void Recovery_WithCurrentDecision_ReobservesAndRendersWithoutSubmitting()
     {
         var lua = NewProbe();
