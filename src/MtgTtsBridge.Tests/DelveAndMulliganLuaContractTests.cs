@@ -1,3 +1,5 @@
+using MoonSharp.Interpreter;
+
 namespace MtgTtsBridge.Tests;
 
 public sealed class DelveAndMulliganLuaContractTests
@@ -15,11 +17,123 @@ public sealed class DelveAndMulliganLuaContractTests
     }
 
     [Fact]
+    public void DelveDecision_UsesForgeRedrawSelectionAndBlocksPrematureDone()
+    {
+        var lua = new Script(CoreModules.Preset_Complete);
+        lua.DoString(@"
+            local rawTableConcat = table.concat
+            table.concat = function(values, separator)
+                local normalized = {}
+                local maximum = 0
+                for index, _ in pairs(values or {}) do
+                    if type(index) == 'number' and index > maximum then maximum = index end
+                end
+                for index = 1, maximum do normalized[index] = tostring(values[index] or '') end
+                return rawTableConcat(normalized, separator or '')
+            end
+            function log() end
+            function broadcastToAll() end
+            function printToAll() end
+            function getObjectFromGUID() return nil end
+            function getAllObjects() return {} end
+            function Wait() end
+            Time = { waitForSeconds = function(_, callback) if callback then callback() end end }
+            JSON = { encode = function() return '{}' end, decode = function() return {} end }
+        ");
+        lua.DoString(Script);
+        lua.DoString(@"
+            BridgeState.ui = { mounted = true, dirty = true, autoPassEmpty = false,
+                fastPlaytest = false, gameLogVisible = false, manaMode = 'AUTO',
+                actionRows = {}, contextInstanceId = nil, selectedActionIds = {},
+                gameLog = {}, graveyardActionRows = {}, graveyardFolderDecisionId = nil,
+                candidatePanelRenderCount = 0, actionPanelRenderCount = 0 }
+            BridgeState.lastDecision = nil
+            BridgeState.retiredChoiceDecisionIds = {}
+            BridgeState.choiceTransactions = {}
+            BridgeState.selectedActionIds = {}
+            BridgeState.choiceAttemptSequence = 0
+            BridgeState.lastChoiceAttempt = nil
+            BridgeState.playerStateBySeatId = { ['forge-player-1'] = {}, ['forge-player-2'] = {} }
+            BridgeState.highlightedGuids = {}
+            BridgeState.pendingIntent = nil
+            BridgeState.gameEnded = nil
+            BridgeState.desyncLatched = false
+            BridgeState.resyncInFlight = false
+            BridgeState.resyncScheduled = false
+            BridgeState.currentTurnSeatId = 'forge-player-1'
+            BridgeState.prioritySeatId = 'forge-player-1'
+            BridgeState.currentPhase = 'Main phase, precombat'
+            BridgeState.currentAuthoritativeResult = nil
+            BridgeState.terminalRecoveryError = nil
+            local attributes = {}
+            local submissions = {}
+            local errors = {}
+            BridgeUiSet = function(id, attribute, value) attributes[id .. '.' .. attribute] = tostring(value) end
+            BridgeUiMarkDirty = function() end
+            BridgeSetStatus = function() end
+            BridgeRenderDecision = function() end
+            BridgeRenderRevealSurface = function() end
+            BridgeClaimHumanTtsColor = function() end
+            BridgeRecordInteractionProducer = function() end
+            BridgeShowError = function(message) table.insert(errors, tostring(message)) end
+            BridgeSubmitChoice = function(decisionId, actionId, source)
+                table.insert(submissions, { decisionId = decisionId, actionId = actionId, source = source })
+            end
+            BridgeCurrentAuthoritativeResult = function() return nil end
+            BridgeCurrentTerminalRecoveryError = function() return nil end
+            BridgeYieldControllerMode = function() return 'normal' end
+            BridgeTurnLabel = function() return 'TURN 1' end
+            BridgeHudPhaseColor = function() return '#ffffff' end
+            BridgeActionPresentationAuthorized = function() return true end
+            BridgeCreatureTypePrepare = function() end
+            BridgeGraveyardPrepareDecision = function(_, actions) return actions end
+            BridgeState._attributes = attributes
+            BridgeState._submissions = submissions
+            BridgeState._errors = errors
+
+            function MakeDelve(selected, selectedId)
+                return {
+                    decisionId = 'forge-tui-delve', kind = 'cost_selection', costKind = 'delve',
+                    candidateSourceZone = 'graveyard', minSelections = 3, maxSelections = 5,
+                    selectedCount = selected, confirmRequired = true, requiresConfirmation = true,
+                    allowsCancel = true, seatId = 'forge-player-1',
+                    actions = {
+                        { actionId = 'done', type = 'choose_none', displayName = 'Done' },
+                        { actionId = 'card-31', type = 'choose_option', displayName = 'Harmonized Trio', cardInstanceId = 'forge-object:31', sourceZone = 'graveyard', isSelected = selectedId == '31' },
+                        { actionId = 'card-25', type = 'choose_option', displayName = 'Ashiok', cardInstanceId = 'forge-object:25', sourceZone = 'graveyard', isSelected = selectedId == '25' },
+                        { actionId = 'card-2', type = 'choose_option', displayName = 'Treasure Cruise', cardInstanceId = 'forge-object:2', sourceZone = 'graveyard', isSelected = selectedId == '2' },
+                        { actionId = 'card-10', type = 'choose_option', displayName = 'Island', cardInstanceId = 'forge-object:10', sourceZone = 'graveyard', isSelected = selectedId == '10' },
+                        { actionId = 'card-9', type = 'choose_option', displayName = ""Stitcher's Supplier"", cardInstanceId = 'forge-object:9', sourceZone = 'graveyard', isSelected = selectedId == '9' }
+                    }
+                }
+            end
+
+            local decision = MakeDelve(1, '2')
+            assert(BridgeIsStructuredForgeToggleChoice(decision), 'delve was not structured')
+            assert(decision.candidateSourceZone == 'graveyard', 'wrong delve source zone')
+            assert(decision.minSelections == 3 and decision.maxSelections == 5, 'wrong delve limits')
+            assert(BridgeCanSubmitStructuredDone(decision, 'test') == false, 'premature Done was accepted')
+            decision = MakeDelve(3, '9')
+            assert(BridgeCanSubmitStructuredDone(decision, 'test') == true, 'valid Done was blocked')
+        ");
+    }
+
+    [Fact]
     public void StructuredDone_RemainsForgeValidatedForOptionalAndRequiredSelections()
     {
         Assert.Contains("BridgeCanSubmitStructuredDone", Script);
         Assert.Contains("selected < minimum or selected > maximum", Script);
         Assert.Contains("hud_collection_done", Script);
+    }
+
+    [Fact]
+    public void DelveHudExplainsAuthoritativeGraveyardExileAndDynamicLimits()
+    {
+        Assert.Contains("DELVE - SELECT ", Script);
+        Assert.Contains("CARDS FROM YOUR GRAVEYARD TO EXILE, THEN CONFIRM", Script);
+        Assert.Contains("Each exiled card pays {1} of this spell's generic mana cost.", Script);
+        Assert.Contains("DELVE: ", Script);
+        Assert.Contains("need at least ", Script);
     }
 
     [Fact]

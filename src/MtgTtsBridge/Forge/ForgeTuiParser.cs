@@ -701,7 +701,7 @@ public sealed partial class ForgeTuiParser
     [GeneratedRegex(@"\s+\[id=(?<id>\d+)\]", RegexOptions.CultureInvariant)]
     private static partial Regex ForgeCardIdRegex();
 
-    [GeneratedRegex(@"\[kind=(?<kind>[a-z_]+)(?:\s+selectionKind=(?<selectionKind>[a-z_]+))?(?:\s+costKind=(?<costKind>[a-z_]+))?(?:\s+mulliganStage=(?<mulliganStage>[a-z_]+))?(?:\s+sourceZone=(?<sourceZone>[a-z_]+))?(?:\s+requiredTotalPower=(?<requiredTotalPower>\d+))?(?:\s+selectedTotalPower=(?<selectedTotalPower>\d+))?\s+min=(?<min>\d+)\s+max=(?<max>\d+)\s+selected=(?<selected>\d+)\s+ordered=(?<ordered>true|false)\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\[kind=(?<kind>[a-z_]+)(?:\s+selectionKind=(?<selectionKind>[a-z_]+))?(?:\s+costKind=(?<costKind>[a-z_]+))?(?:\s+mulliganStage=(?<mulliganStage>[a-z_]+))?(?:\s+sourceZone=(?<sourceZone>[a-z_]+))?(?:\s+requiredTotalPower=(?<requiredTotalPower>\d+))?(?:\s+selectedTotalPower=(?<selectedTotalPower>\d+))?(?:\s+[a-z_][a-z0-9_]*=[a-z0-9_-]+)*\s+min=(?<min>\d+)\s+max=(?<max>\d+)\s+selected=(?<selected>\d+)\s+ordered=(?<ordered>true|false)\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SelectionMetadataRegex();
 
     // This compact record is emitted by the controlled Forge producer, not
