@@ -827,12 +827,58 @@ function BridgeActionExpectedSourceZone(action)
     return string.lower(tostring(zone))
 end
 
+-- A prepared spell is a Forge-owned virtual copy.  Its sourceZone describes
+-- that virtual copy (normally exile); the physical object used to present the
+-- action is the exact permanent named by preparedSourceCardInstanceId.  Keep
+-- those domains separate so a prepared action never asks TTS to pretend that
+-- the source permanent lives in the virtual spell's zone.
+function BridgeActionExpectedPhysicalSourceZone(action)
+    if action == nil then return nil end
+    local preparedSource = action.preparedSourceCardInstanceId
+    if tostring(action.castMode or "") == "prepare" and preparedSource ~= nil then
+        local descriptor = BridgeState.authoritativeObjectByInstanceId
+            and BridgeState.authoritativeObjectByInstanceId[preparedSource] or nil
+        local descriptorZone = descriptor and descriptor.zone or nil
+        if descriptorZone ~= nil and tostring(descriptorZone) ~= "" then
+            return string.lower(tostring(descriptorZone))
+        end
+        -- Keep a missing authoritative descriptor fail-closed in the resolver;
+        -- this fallback only makes diagnostics identify the observed physical
+        -- zone while reconciliation is still catching up.
+        local guid = BridgeState.physicalByInstanceId
+            and BridgeState.physicalByInstanceId[preparedSource] or nil
+        return guid and BridgeState.physicalZoneByGuid[guid] or nil
+    end
+    return BridgeActionExpectedSourceZone(action)
+end
+
+function BridgePreparedSourceIsAuthoritativelyPrepared(action)
+    if action == nil or tostring(action.castMode or "") ~= "prepare"
+        or action.preparedSourceCardInstanceId == nil then return true end
+    local descriptor = BridgeState.authoritativeObjectByInstanceId
+        and BridgeState.authoritativeObjectByInstanceId[action.preparedSourceCardInstanceId] or nil
+    if descriptor == nil then return false end
+    local designations = descriptor.cardDesignations or descriptor.designations or {}
+    if designations.prepared == true then return true end
+    for _, designation in ipairs(designations) do
+        if string.lower(tostring(designation)) == "prepared" then return true end
+    end
+    return false
+end
+
 function BridgeRecordActionPhysicalResolution(decision, action, kind, reason, guid, containerGuid, observedZone)
     BridgeState.lastActionPhysicalResolution = {
         decisionId = decision and decision.decisionId or nil,
         actionId = action and action.actionId or nil,
         cardInstanceId = BridgeActionExactPhysicalInstanceId(action),
+        logicalCardInstanceId = action and (action.cardInstanceId or action.entityCardInstanceId) or nil,
+        logicalSourceCardInstanceId = action and (action.sourceCardInstanceId
+            or action.cardInstanceId or action.entityCardInstanceId) or nil,
         sourceZone = BridgeActionExpectedSourceZone(action),
+        logicalSourceZone = BridgeActionExpectedSourceZone(action),
+        preparedSourceCardInstanceId = action and action.preparedSourceCardInstanceId or nil,
+        physicalInstanceId = BridgeActionExactPhysicalInstanceId(action),
+        expectedPhysicalZone = BridgeActionExpectedPhysicalSourceZone(action),
         resolutionKind = kind,
         reason = reason,
         physicalGuid = guid,
@@ -856,7 +902,22 @@ end
 function BridgeResolveExactActionPhysical(decision, action)
     local instanceId = BridgeActionExactPhysicalInstanceId(action)
     if instanceId == nil then return nil, "legacy action has no exact instance", nil end
-    local expectedZone = BridgeActionExpectedSourceZone(action)
+    local expectedZone = BridgeActionExpectedPhysicalSourceZone(action)
+    local preparedSource = tostring(action.castMode or "") == "prepare"
+        and action.preparedSourceCardInstanceId ~= nil
+    local preparedDescriptor = preparedSource and BridgeState.authoritativeObjectByInstanceId
+        and BridgeState.authoritativeObjectByInstanceId[action.preparedSourceCardInstanceId] or nil
+    if preparedSource and (preparedDescriptor == nil
+        or preparedDescriptor.zone == nil or tostring(preparedDescriptor.zone) == "") then
+        BridgeRecordActionPhysicalResolution(decision, action, "unresolved",
+            "prepared physical source descriptor is unavailable", nil, nil, nil)
+        return nil, "prepared physical source descriptor is unavailable", instanceId
+    end
+    if preparedSource and not BridgePreparedSourceIsAuthoritativelyPrepared(action) then
+        BridgeRecordActionPhysicalResolution(decision, action, "unresolved",
+            "prepared source no longer has prepared designation", nil, nil, nil)
+        return nil, "prepared source no longer has prepared designation", instanceId
+    end
     local guid = BridgeState.physicalByInstanceId and BridgeState.physicalByInstanceId[instanceId] or nil
     local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
     local observedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
@@ -1262,7 +1323,7 @@ function BridgeRenderDecision(decision, force)
         local mappedPhysicalZone = mappedGuid and BridgeState.physicalZoneByGuid[mappedGuid] or nil
         local combatActionKind = action.type or action.actionKind
         local combatSelection = combatActionKind == "choose_attacker" or combatActionKind == "choose_blocker"
-        local actionSourceZone = BridgeActionExpectedSourceZone(action) or ""
+        local actionSourceZone = BridgeActionExpectedPhysicalSourceZone(action) or ""
         local mappedSourceZoneMatches = actionSourceZone ~= ""
             and mappedPhysicalZone == actionSourceZone
         if not mappedSourceZoneMatches and actionSourceZone == ""

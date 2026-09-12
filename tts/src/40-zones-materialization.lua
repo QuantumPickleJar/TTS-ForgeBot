@@ -887,7 +887,10 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
             objectKind = card.objectKind,
             isCopy = card.isCopy == true,
             isVirtual = true,
-            materializationPolicy = card.materializationPolicy
+            materializationPolicy = card.materializationPolicy,
+            zone = zone.name,
+            seatId = seatSnapshot.seatId,
+            cardDesignations = card.cardDesignations
         }
         BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex + 1, callback)
         return
@@ -1114,7 +1117,10 @@ function BridgeApplySeatSnapshotVisualState(seatSnapshot)
                 objectKind = card.objectKind,
                 isCopy = card.isCopy == true,
                 isVirtual = card.isVirtual == true,
-                materializationPolicy = card.materializationPolicy
+                materializationPolicy = card.materializationPolicy,
+                zone = zone.name,
+                seatId = seatSnapshot.seatId,
+                cardDesignations = card.cardDesignations
             }
         end
         if zone.name == "battlefield" then
@@ -5162,6 +5168,11 @@ function BridgeCastPreparedSpellTile(object, playerColor, altClick)
         BridgeShowError("prepared spell action is no longer offered by Forge")
         return
     end
+    if BridgePreparedSourceIsAuthoritativelyPrepared ~= nil
+        and not BridgePreparedSourceIsAuthoritativelyPrepared(action) then
+        BridgeShowError("prepared spell source is no longer prepared")
+        return
+    end
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
     if BridgeIsStructuredForgeToggleChoice(decision) then
         BridgeSubmitChoice(decisionId, actionId, "physical_player_structured_toggle")
@@ -5339,6 +5350,9 @@ local function BridgeApplyStructuredCardMoveCore(event)
         isToken = event.isToken == true,
         isVirtual = event.isVirtual == true,
         materializationPolicy = event.materializationPolicy,
+        zone = event.destinationZone,
+        seatId = event.seatId,
+        cardDesignations = event.cardDesignations,
         ownerSeatId = event.ownerSeatId,
         controllerSeatId = event.controllerSeatId,
         battlefieldKind = event.battlefieldKind,
