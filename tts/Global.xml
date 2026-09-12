@@ -189,6 +189,11 @@
           <Text id="BridgeHudReportStatus" text="" minWidth="350" preferredWidth="350" flexibleWidth="0" fontSize="10" color="#AAB7C6" alignment="MiddleLeft" />
         </HorizontalLayout>
       </VerticalLayout>
+      <HorizontalLayout id="BridgeHudRevealPreferences" minHeight="28" preferredHeight="28" flexibleHeight="0" spacing="5" childForceExpandWidth="false" childForceExpandHeight="true">
+        <Text text="REVEAL" minWidth="55" preferredWidth="55" flexibleWidth="0" fontSize="10" color="#FBBF24" alignment="MiddleLeft" />
+        <Button id="BridgeHudRevealTimer" onClick="BridgeHudRevealTimerCycle" text="TIMER: 10 SEC" tooltip="Per-viewer reveal timer: OFF → 3 → 5 → 10 → OFF." minWidth="125" preferredWidth="125" flexibleWidth="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
+        <Button id="BridgeHudRevealPhysicalGate" onClick="BridgeHudRevealPhysicalGateCycle" text="PHYSICAL-GATED: OFF" tooltip="Per-viewer setting. Only structured library-look reveals marked as physically interactive can wait for an exact card drop." minWidth="190" preferredWidth="190" flexibleWidth="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
+      </HorizontalLayout>
       <Text id="BridgeHudDevDiagnostic" text="" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="10" color="#8291A4" alignment="MiddleLeft" />
     </VerticalLayout>
 
@@ -210,11 +215,55 @@
   </VerticalLayout>
 </Panel>
 
+<!-- Second fixed projection for the configured Blue seat. Lua updates these
+     IDs in place; no client installs a separate script and no dynamic panels
+     are created for individual reveals. -->
+<Panel id="BridgeHudRevealOverlayBlue" active="true" visibility="Blue"
+       rectAlignment="UpperLeft" offsetXY="20 -370" width="900" height="280" color="#00000000">
+  <VerticalLayout id="BridgeHudRevealSurfaceBlue" active="false" minHeight="270" preferredHeight="270" flexibleHeight="0" spacing="6" padding="10 10 10 10" childForceExpandHeight="false" childForceExpandWidth="true" color="#111827F2">
+    <HorizontalLayout minHeight="24" preferredHeight="24" flexibleHeight="0" spacing="6" childForceExpandWidth="false" childForceExpandHeight="true">
+      <Text id="BridgeHudRevealHeadingBlue" text="REVEALED CARDS" minWidth="300" preferredWidth="300" flexibleWidth="0" fontSize="13" color="#F8FAFC" alignment="MiddleLeft" />
+      <Text id="BridgeHudRevealReasonBlue" text="" minWidth="280" preferredWidth="280" flexibleWidth="1" fontSize="11" color="#CBD5E1" alignment="MiddleLeft" />
+      <Button id="BridgeHudRevealPrevBlue" active="false" onClick="BridgeHudRevealScroll" text="&lt;" minWidth="36" preferredWidth="36" flexibleWidth="0" fontSize="18" color="#334155EE" textColor="#FFFFFF" />
+      <Button id="BridgeHudRevealNextBlue" active="false" onClick="BridgeHudRevealScroll" text="&gt;" minWidth="36" preferredWidth="36" flexibleWidth="0" fontSize="18" color="#334155EE" textColor="#FFFFFF" />
+      <Button id="BridgeHudRevealCloseBlue" active="false" onClick="BridgeHudRevealClose" text="CLOSE" minWidth="75" preferredWidth="75" flexibleWidth="0" fontSize="11" color="#334155EE" textColor="#FFFFFF" />
+    </HorizontalLayout>
+    <HorizontalScrollView id="BridgeHudRevealScrollViewBlue" minHeight="210" preferredHeight="210" flexibleHeight="0" horizontalScrollbarVisibility="AutoHideAndExpandViewport">
+      <HorizontalLayout id="BridgeHudRevealCardsBlue" spacing="8" childForceExpandWidth="false" childForceExpandHeight="true">
+        <VerticalLayout id="BridgeHudRevealCardBlue1" active="false" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false"><Image id="BridgeHudRevealImageBlue1" active="false" image="" preserveAspect="true" minHeight="170" preferredHeight="170" flexibleHeight="0" /><Text id="BridgeHudRevealFallbackBlue1" active="false" text="" minHeight="170" preferredHeight="170" flexibleHeight="0" fontSize="11" color="#334155" alignment="MiddleCenter" /><Button id="BridgeHudRevealCardButtonBlue1" active="false" onClick="BridgeHudRevealCard" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" /></VerticalLayout>
+        <VerticalLayout id="BridgeHudRevealCardBlue2" active="false" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false"><Image id="BridgeHudRevealImageBlue2" active="false" image="" preserveAspect="true" minHeight="170" preferredHeight="170" flexibleHeight="0" /><Text id="BridgeHudRevealFallbackBlue2" active="false" text="" minHeight="170" preferredHeight="170" flexibleHeight="0" fontSize="11" color="#334155" alignment="MiddleCenter" /><Button id="BridgeHudRevealCardButtonBlue2" active="false" onClick="BridgeHudRevealCard" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" /></VerticalLayout>
+        <VerticalLayout id="BridgeHudRevealCardBlue3" active="false" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false"><Image id="BridgeHudRevealImageBlue3" active="false" image="" preserveAspect="true" minHeight="170" preferredHeight="170" flexibleHeight="0" /><Text id="BridgeHudRevealFallbackBlue3" active="false" text="" minHeight="170" preferredHeight="170" flexibleHeight="0" fontSize="11" color="#334155" alignment="MiddleCenter" /><Button id="BridgeHudRevealCardButtonBlue3" active="false" onClick="BridgeHudRevealCard" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" /></VerticalLayout>
+        <VerticalLayout id="BridgeHudRevealCardBlue4" active="false" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false"><Image id="BridgeHudRevealImageBlue4" active="false" image="" preserveAspect="true" minHeight="170" preferredHeight="170" flexibleHeight="0" /><Text id="BridgeHudRevealFallbackBlue4" active="false" text="" minHeight="170" preferredHeight="170" flexibleHeight="0" fontSize="11" color="#334155" alignment="MiddleCenter" /><Button id="BridgeHudRevealCardButtonBlue4" active="false" onClick="BridgeHudRevealCard" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" /></VerticalLayout>
+        <VerticalLayout id="BridgeHudRevealCardBlue5" active="false" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false"><Image id="BridgeHudRevealImageBlue5" active="false" image="" preserveAspect="true" minHeight="170" preferredHeight="170" flexibleHeight="0" /><Text id="BridgeHudRevealFallbackBlue5" active="false" text="" minHeight="170" preferredHeight="170" flexibleHeight="0" fontSize="11" color="#334155" alignment="MiddleCenter" /><Button id="BridgeHudRevealCardButtonBlue5" active="false" onClick="BridgeHudRevealCard" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" /></VerticalLayout>
+        <VerticalLayout id="BridgeHudRevealCardBlue6" active="false" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false"><Image id="BridgeHudRevealImageBlue6" active="false" image="" preserveAspect="true" minHeight="170" preferredHeight="170" flexibleHeight="0" /><Text id="BridgeHudRevealFallbackBlue6" active="false" text="" minHeight="170" preferredHeight="170" flexibleHeight="0" fontSize="11" color="#334155" alignment="MiddleCenter" /><Button id="BridgeHudRevealCardButtonBlue6" active="false" onClick="BridgeHudRevealCard" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" /></VerticalLayout>
+      </HorizontalLayout>
+    </HorizontalScrollView>
+    <HorizontalLayout minHeight="18" preferredHeight="18" flexibleHeight="0" spacing="6" childForceExpandWidth="false" childForceExpandHeight="true"><Text id="BridgeHudRevealCountBlue" text="" minWidth="150" preferredWidth="150" flexibleWidth="0" fontSize="10" color="#94A3B8" alignment="MiddleLeft" /><Text id="BridgeHudRevealArtSourceBlue" text="" minWidth="300" preferredWidth="300" flexibleWidth="1" fontSize="9" color="#5A6B7D" alignment="MiddleLeft" /></HorizontalLayout>
+  </VerticalLayout>
+</Panel>
+
+<!-- Fixed accessibility magnifiers; native TTS ALT Zoom remains untouched. -->
+<Panel id="BridgeHudRevealMagnifierOverlay" active="false" visibility="White" rectAlignment="MiddleCenter" width="560" height="680" color="#050A12F5">
+  <VerticalLayout id="BridgeHudRevealMagnifier" minWidth="540" minHeight="660" preferredHeight="660" spacing="8" padding="12 12 12 12" childForceExpandWidth="true" childForceExpandHeight="false">
+    <Text id="BridgeHudRevealMagnifierHeading" text="MAGNIFIED REVEAL" minHeight="28" preferredHeight="28" flexibleHeight="0" fontSize="16" color="#F8FAFC" alignment="MiddleCenter" />
+    <Image id="BridgeHudRevealMagnifierImage" active="false" image="" preserveAspect="true" minHeight="570" preferredHeight="570" flexibleHeight="0" />
+    <Text id="BridgeHudRevealMagnifierFallback" active="false" text="" minHeight="570" preferredHeight="570" flexibleHeight="0" fontSize="18" color="#F8FAFC" alignment="MiddleCenter" />
+  </VerticalLayout>
+</Panel>
+<Panel id="BridgeHudRevealMagnifierOverlayBlue" active="false" visibility="Blue" rectAlignment="MiddleCenter" width="560" height="680" color="#050A12F5">
+  <VerticalLayout id="BridgeHudRevealMagnifierBlue" minWidth="540" minHeight="660" preferredHeight="660" spacing="8" padding="12 12 12 12" childForceExpandWidth="true" childForceExpandHeight="false">
+    <Text id="BridgeHudRevealMagnifierHeadingBlue" text="MAGNIFIED REVEAL" minHeight="28" preferredHeight="28" flexibleHeight="0" fontSize="16" color="#F8FAFC" alignment="MiddleCenter" />
+    <Image id="BridgeHudRevealMagnifierImageBlue" active="false" image="" preserveAspect="true" minHeight="570" preferredHeight="570" flexibleHeight="0" />
+    <Text id="BridgeHudRevealMagnifierFallbackBlue" active="false" text="" minHeight="570" preferredHeight="570" flexibleHeight="0" fontSize="18" color="#F8FAFC" alignment="MiddleCenter" />
+  </VerticalLayout>
+</Panel>
+
 <!-- Arena-style revealed-card overlay. Independent panel positioned in upper-left corner.
      Populated by Lua with structured Forge reveal payloads. Not nested in main HUD.
      Prefers actual card artwork, with textual fallback when unavailable. -->
 <Panel id="BridgeHudRevealOverlay"
        active="true"
+       visibility="White"
        rectAlignment="UpperLeft"
        offsetXY="20 -70"
        width="900"
@@ -230,35 +279,35 @@
     </HorizontalLayout>
     <HorizontalScrollView id="BridgeHudRevealScrollView" minHeight="210" preferredHeight="210" flexibleHeight="0" horizontalScrollbarVisibility="AutoHideAndExpandViewport">
       <HorizontalLayout id="BridgeHudRevealCards" spacing="8" childForceExpandWidth="false" childForceExpandHeight="true">
-        <VerticalLayout id="BridgeHudRevealCard1" active="false" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false">
+        <VerticalLayout id="BridgeHudRevealCard1" active="false" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false">
           <Image id="BridgeHudRevealImage1" active="false" image="" preserveAspect="true" minHeight="170" preferredHeight="170" flexibleHeight="0" />
           <Text id="BridgeHudRevealFallback1" active="false" text="" minHeight="170" preferredHeight="170" flexibleHeight="0" fontSize="11" color="#334155" alignment="MiddleCenter" />
-          <Button id="BridgeHudRevealCardButton1" active="false" onClick="BridgeHudRevealCard" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
+          <Button id="BridgeHudRevealCardButton1" active="false" onClick="BridgeHudRevealCard" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
         </VerticalLayout>
-        <VerticalLayout id="BridgeHudRevealCard2" active="false" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false">
+        <VerticalLayout id="BridgeHudRevealCard2" active="false" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false">
           <Image id="BridgeHudRevealImage2" active="false" image="" preserveAspect="true" minHeight="170" preferredHeight="170" flexibleHeight="0" />
           <Text id="BridgeHudRevealFallback2" active="false" text="" minHeight="170" preferredHeight="170" flexibleHeight="0" fontSize="11" color="#334155" alignment="MiddleCenter" />
-          <Button id="BridgeHudRevealCardButton2" active="false" onClick="BridgeHudRevealCard" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
+          <Button id="BridgeHudRevealCardButton2" active="false" onClick="BridgeHudRevealCard" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
         </VerticalLayout>
-        <VerticalLayout id="BridgeHudRevealCard3" active="false" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false">
+        <VerticalLayout id="BridgeHudRevealCard3" active="false" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false">
           <Image id="BridgeHudRevealImage3" active="false" image="" preserveAspect="true" minHeight="170" preferredHeight="170" flexibleHeight="0" />
           <Text id="BridgeHudRevealFallback3" active="false" text="" minHeight="170" preferredHeight="170" flexibleHeight="0" fontSize="11" color="#334155" alignment="MiddleCenter" />
-          <Button id="BridgeHudRevealCardButton3" active="false" onClick="BridgeHudRevealCard" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
+          <Button id="BridgeHudRevealCardButton3" active="false" onClick="BridgeHudRevealCard" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
         </VerticalLayout>
-        <VerticalLayout id="BridgeHudRevealCard4" active="false" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false">
+        <VerticalLayout id="BridgeHudRevealCard4" active="false" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false">
           <Image id="BridgeHudRevealImage4" active="false" image="" preserveAspect="true" minHeight="170" preferredHeight="170" flexibleHeight="0" />
           <Text id="BridgeHudRevealFallback4" active="false" text="" minHeight="170" preferredHeight="170" flexibleHeight="0" fontSize="11" color="#334155" alignment="MiddleCenter" />
-          <Button id="BridgeHudRevealCardButton4" active="false" onClick="BridgeHudRevealCard" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
+          <Button id="BridgeHudRevealCardButton4" active="false" onClick="BridgeHudRevealCard" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
         </VerticalLayout>
-        <VerticalLayout id="BridgeHudRevealCard5" active="false" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false">
+        <VerticalLayout id="BridgeHudRevealCard5" active="false" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false">
           <Image id="BridgeHudRevealImage5" active="false" image="" preserveAspect="true" minHeight="170" preferredHeight="170" flexibleHeight="0" />
           <Text id="BridgeHudRevealFallback5" active="false" text="" minHeight="170" preferredHeight="170" flexibleHeight="0" fontSize="11" color="#334155" alignment="MiddleCenter" />
-          <Button id="BridgeHudRevealCardButton5" active="false" onClick="BridgeHudRevealCard" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
+          <Button id="BridgeHudRevealCardButton5" active="false" onClick="BridgeHudRevealCard" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
         </VerticalLayout>
-        <VerticalLayout id="BridgeHudRevealCard6" active="false" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false">
+        <VerticalLayout id="BridgeHudRevealCard6" active="false" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" minWidth="140" preferredWidth="140" flexibleWidth="0" spacing="3" childForceExpandWidth="true" childForceExpandHeight="false">
           <Image id="BridgeHudRevealImage6" active="false" image="" preserveAspect="true" minHeight="170" preferredHeight="170" flexibleHeight="0" />
           <Text id="BridgeHudRevealFallback6" active="false" text="" minHeight="170" preferredHeight="170" flexibleHeight="0" fontSize="11" color="#334155" alignment="MiddleCenter" />
-          <Button id="BridgeHudRevealCardButton6" active="false" onClick="BridgeHudRevealCard" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
+          <Button id="BridgeHudRevealCardButton6" active="false" onClick="BridgeHudRevealCard" onMouseEnter="BridgeHudRevealCardHoverEnter" onMouseExit="BridgeHudRevealCardHoverExit" text="INTERACT" minHeight="22" preferredHeight="22" flexibleHeight="0" fontSize="10" color="#334155CC" textColor="#CBD5E1" />
         </VerticalLayout>
       </HorizontalLayout>
     </HorizontalScrollView>
