@@ -3492,7 +3492,7 @@ BridgeState = {
         fastForwardActiveSeatId = nil, fastForwardStops = {own_turn = {}, other_turn = {}},
         fastForwardStopScope = "own_turn", fastPlaytest = false, gameLogVisible = true,
         gameLog = {},
-        diagnosticsVisible = false, devDrawer = "closed", reportPanelVisible = false, reportCategoryIndex = 1,
+        diagnosticsVisible = false, devDrawer = "closed", reportPanelVisible = false, reportCategoryIndex = 1, reportSummaryDraft = "",
         creatureTypeDecisionId = nil, creatureTypeDraftActionId = nil, creatureTypeOptions = {},
         reportStatus = "", reportCaptureInFlight = false, reportCaptureToken = 0, resyncInFlight = false, hudResyncPending = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
         uiAttributeCache = {}, uiAttributeAttemptCount = 0, uiAttributeWriteCount = 0,
@@ -3789,6 +3789,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.attackOriginByGuid = {}
     BridgeState.pendingCastBySeatId = {}
     BridgeState.gameEnded = nil
+    if BridgeState.ui ~= nil then
+        BridgeState.ui.reportSummaryDraft = ""
+    end
     BridgeState.resultSourceEventId = nil
     BridgeState.resultEventCursor = nil
     BridgeState.resultSessionId = nil

@@ -1959,6 +1959,7 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
         end
         BridgeState.ui.reportCaptureInFlight = false
         BridgeState.ui.reportStatus = ""
+        BridgeState.ui.reportSummaryDraft = ""
         BridgeState.ui.devDrawer = "closed"
         BridgeState.ui.reportPanelVisible = false
         BridgeState.ui.uiAttributeCache = {}

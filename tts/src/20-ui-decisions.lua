@@ -187,7 +187,13 @@ function BridgeUiFlush()
     if castPreviewPending then
         prompt = "CAST PREVIEW — press CAST / CONFIRM or CANCEL / RETURN"
     end
-    if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew" then
+    if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "delve" then
+        local minimum = tonumber(decision.minSelections or 0) or 0
+        local maximum = tonumber(decision.maxSelections or minimum) or minimum
+        prompt = "DELVE - SELECT " .. tostring(minimum) .. "-" .. tostring(maximum)
+            .. " CARDS FROM YOUR GRAVEYARD TO EXILE, THEN CONFIRM."
+            .. " Each exiled card pays {1} of this spell's generic mana cost."
+    elseif decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew" then
         prompt = "CREW — SELECT CREATURES"
     end
     if decision ~= nil and BridgeIsDiscardChoice(decision) then
@@ -254,7 +260,10 @@ function BridgeUiFlush()
     local min = tonumber(decision and decision.minSelections or 0) or 0
     local max = tonumber(decision and decision.maxSelections or 0) or 0
     local selectionText = decision and ("Selected: " .. tostring(selected) .. " / " .. tostring(max) .. " (min " .. tostring(min) .. ")") or ""
-    if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew"
+    if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "delve" then
+        selectionText = "DELVE: " .. tostring(selected) .. " selected - need at least "
+            .. tostring(min) .. ", max " .. tostring(max)
+    elseif decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew"
         and decision.requiredTotalPower ~= nil then
         selectionText = "TOTAL POWER " .. tostring(decision.selectedTotalPower or 0)
             .. " / " .. tostring(decision.requiredTotalPower)
