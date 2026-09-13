@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 5ce04ec9901a188970e41f027028bf63998f5d590d226ec27fe2984b3acaf400
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "5ce04ec9901a188970e41f027028bf63998f5d590d226ec27fe2984b3acaf400"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 7b2cc85d4ad06435b49ec57025ac3c45a303e075f96d14434dea0a18f99bdd77
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "7b2cc85d4ad06435b49ec57025ac3c45a303e075f96d14434dea0a18f99bdd77"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -17,14 +17,44 @@ BRIDGE_RESOURCE_ORDER = {"W", "U", "B", "R", "G", "C", "energy", "experience", "
 BRIDGE_RESOURCE_ROW_SPACING = 1.05
 -- Presentation-only random-result settings. The hold is intentionally one
 -- seam so Options can expose it later without changing the roll lifecycle.
+BRIDGE_PRESENTATION_HOLD_VALUES = {1, 2, 2.5, 3, 5}
+-- `nil` is the explicit DEFAULT/INHERIT value for a feature override.  Zero
+-- remains available as a meaningful future OFF value and is never treated as
+-- inheritance by the resolver.
+BRIDGE_PRESENTATION_TIMING = {
+    defaultReadableHoldSeconds = 2.5,
+    overrides = {opponent_spell = nil, random_result = nil}
+}
 BRIDGE_RANDOM_RESULT_PRESENTATION_SETTINGS = {
-    readableHoldSeconds = 1.5,
+    readableHoldSeconds = nil,
     settleSeconds = 0.25,
     settleTimeoutSeconds = 4.0,
     maxAuthoritativeFaceAttempts = 80,
     extraReturnDelayFrames = 2,
     dieBagGuids = {},
 }
+
+function BridgePresentationHoldSeconds(kind)
+    local timing = BridgeState ~= nil and BridgeState.presentationTiming or BRIDGE_PRESENTATION_TIMING
+    local override = timing ~= nil and timing.overrides ~= nil and timing.overrides[kind] or nil
+    if override ~= nil then return tonumber(override) or 0 end
+    return tonumber(timing ~= nil and timing.defaultReadableHoldSeconds or nil) or 2.5
+end
+
+function BridgePresentationTimingDiagnostics()
+    local timing = BridgeState ~= nil and BridgeState.presentationTiming or BRIDGE_PRESENTATION_TIMING
+    local override = timing ~= nil and timing.overrides ~= nil and timing.overrides.opponent_spell or nil
+    local randomOverride = timing ~= nil and timing.overrides ~= nil and timing.overrides.random_result or nil
+    return {
+        globalReadableHoldSeconds = tonumber(timing and timing.defaultReadableHoldSeconds or nil) or 2.5,
+        opponentSpellOverrideSeconds = override,
+        opponentSpellOverride = override == nil and "DEFAULT" or override,
+        effectiveOpponentSpellHoldSeconds = BridgePresentationHoldSeconds("opponent_spell"),
+        randomResultOverrideSeconds = randomOverride,
+        randomResultOverride = randomOverride == nil and "DEFAULT" or randomOverride,
+        effectiveRandomResultHoldSeconds = BridgePresentationHoldSeconds("random_result")
+    }
+end
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 -- Slightly slower active polling reduces frequent full decision/highlight churn
 -- in TTS without materially affecting interactive responsiveness.
@@ -1080,6 +1110,11 @@ function BridgeEventDrainQueueState()
         physicalMutationProgress = BridgeDiagnosticSnapshot(BridgeState.eventDrainPhysicalProgress or {}),
         physicalMutationJournal = BridgeDiagnosticSnapshot(BridgeState.physicalMutationJournal or {}),
         lastTtsRuntimeError = BridgeDiagnosticSnapshot(BridgeState.lastTtsRuntimeError or {}),
+        presentationTiming = BridgePresentationTimingDiagnostics(),
+        opponentSpellPresentation = BridgeOpponentSpellPresentationDiagnostics ~= nil
+            and BridgeOpponentSpellPresentationDiagnostics() or {
+                activeCount = 0, records = {}
+            },
         ownedMutation = BridgeDiagnosticSnapshot(mutationProgress or {}),
         snapshotReconcilePending = BridgeState.snapshotReconcilePending == true,
         snapshotReconcileInFlight = BridgeState.snapshotReconcileInFlight == true,
@@ -3269,6 +3304,22 @@ BridgeState = {
     randomResultPresentationGeneration = 0,
     activeRandomResultPresentation = nil,
     randomResultPresentationDiagnostics = {},
+    -- Presentation timing is local UI configuration, not Forge state.  Keep
+    -- it outside session cleanup so Options changes retain inheritance across
+    -- a New Match while every visual presentation is still disposable.
+    presentationTiming = {
+        defaultReadableHoldSeconds = BRIDGE_PRESENTATION_TIMING.defaultReadableHoldSeconds,
+        overrides = {
+            opponent_spell = BRIDGE_PRESENTATION_TIMING.overrides.opponent_spell,
+            random_result = BRIDGE_PRESENTATION_TIMING.overrides.random_result
+        }
+    },
+    opponentSpellPresentationGeneration = 0,
+    opponentSpellPresentationsById = {},
+    opponentSpellPresentationOrder = {},
+    opponentSpellPresentationDiagnostics = {},
+    opponentSpellCastHintsBySeatId = {},
+    presentationProxyGuids = {},
     renderedDecisionPresentationKey = nil,
     renderedDecisionPhysicalGeneration = nil,
     physicalByInstanceId = {},
@@ -3738,6 +3789,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     if BridgeRetireRandomResultPresentations ~= nil then
         BridgeRetireRandomResultPresentations("session-boundary:" .. tostring(reason))
     end
+    if BridgeRetireOpponentSpellPresentations ~= nil then
+        BridgeRetireOpponentSpellPresentations("session-boundary:" .. tostring(reason))
+    end
     BridgeState.eventSessionGeneration = (BridgeState.eventSessionGeneration or 0) + 1
     BridgeState.decisionPresentationGeneration = (BridgeState.decisionPresentationGeneration or 0) + 1
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
@@ -3971,6 +4025,45 @@ function BridgeRegisterPresentationObject(objectOrGuid, kind)
     return true
 end
 
+function BridgeRegisterPresentationProxy(objectOrGuid, kind)
+    local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
+    if guid == nil then return false end
+    BridgeState.presentationProxyGuids = BridgeState.presentationProxyGuids or {}
+    BridgeState.presentationProxyGuids[guid] = {
+        kind = kind or "opponent-spell",
+        sessionId = BridgeState.eventSessionId
+    }
+    if type(objectOrGuid) ~= "string" then
+        pcall(function() objectOrGuid.setVar("bridgePresentationProxy", kind or "opponent-spell") end)
+    end
+    BridgeRegisterPresentationObject(guid, "presentation-proxy:" .. tostring(kind or "opponent-spell"))
+    return true
+end
+
+function BridgeUnregisterPresentationProxy(objectOrGuid)
+    local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
+    if guid == nil then return false end
+    BridgeState.presentationProxyGuids = BridgeState.presentationProxyGuids or {}
+    BridgeState.presentationProxyGuids[guid] = nil
+    if type(objectOrGuid) ~= "string" then
+        pcall(function() objectOrGuid.setVar("bridgePresentationProxy", nil) end)
+    end
+    BridgeUnregisterPresentationObject(guid)
+    return true
+end
+
+function BridgeIsPresentationProxyObject(objectOrGuid)
+    local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
+    if guid ~= nil and BridgeState.presentationProxyGuids ~= nil
+        and BridgeState.presentationProxyGuids[guid] ~= nil then return true end
+    if type(objectOrGuid) ~= "string" and objectOrGuid ~= nil then
+        local marker = nil
+        pcall(function() marker = objectOrGuid.getVar("bridgePresentationProxy") end)
+        return marker ~= nil and tostring(marker) ~= ""
+    end
+    return false
+end
+
 function BridgeUnregisterPresentationObject(objectOrGuid)
     local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
     if guid == nil then return false end
@@ -3980,7 +4073,34 @@ end
 
 function BridgeIsPresentationOnlyObject(objectOrGuid)
     local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
-    return guid ~= nil and BridgeState.presentationOnlyGuids[guid] ~= nil
+    if guid ~= nil and BridgeState.presentationOnlyGuids[guid] ~= nil then return true end
+    if type(objectOrGuid) == "string" and BridgeGetLiveObjectByGuid ~= nil then
+        local live = BridgeGetLiveObjectByGuid(objectOrGuid)
+        if live ~= nil and type(live) ~= "string" and live ~= objectOrGuid then
+            return BridgeIsPresentationOnlyObject(live)
+        end
+    end
+    return BridgeIsPresentationProxyObject ~= nil and BridgeIsPresentationProxyObject(objectOrGuid)
+end
+
+function BridgeRetireOrphanedPresentationProxies(reason)
+    if type(getAllObjects) ~= "function" then return 0 end
+    local retired = 0
+    for _, object in ipairs(getAllObjects() or {}) do
+        if BridgeIsPresentationProxyObject(object) then
+            local guid = BridgeSafeObjectGuid(object)
+            BridgeUnregisterPresentationProxy(object)
+            pcall(function()
+                if type(object.destruct) == "function" then object.destruct() end
+            end)
+            retired = retired + 1
+            if BridgeLog ~= nil then
+                BridgeLog("[Bridge] retired orphaned presentation proxy guid=" .. tostring(guid)
+                    .. " reason=" .. tostring(reason or "runtime-reload"))
+            end
+        end
+    end
+    return retired
 end
 
 function BridgeSafeObjectName(object)
@@ -5244,8 +5364,8 @@ function BridgeFindSingleCardLibraryCandidateForSeat(seatId, objectSnapshot)
     local nearestDistance = nil
     local radius = (seat.libraryAssetRadius or 4) + 0.75
     for _, object in ipairs(objectSnapshot or _all()) do
-        if BridgeObjectIsUsable(object) and BridgeSafeObjectTag(object) == "Card"
-            and not BridgeIsPresentationOnlyObject(object) then
+        if BridgeObjectIsUsable(object) and not BridgeIsPresentationOnlyObject(object)
+            and BridgeSafeObjectTag(object) == "Card" then
             local guid = BridgeSafeObjectGuid(object)
             local mappedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
             if guid ~= nil and (mappedZone == nil or mappedZone == "library") then
@@ -5842,7 +5962,8 @@ end
 function BridgeAuditDuplicateLibraryGuids(ignoredGuids)
     local looseByGuid = {}
     for _, object in ipairs(getAllObjects()) do
-        if BridgeObjectIsUsable(object) and object.tag == "Card" then
+        if BridgeObjectIsUsable(object) and not BridgeIsPresentationOnlyObject(object)
+            and object.tag == "Card" then
             local guid = BridgeSafeObjectGuid(object)
             -- During a Deck.putObject/takeObject transaction TTS can retain
             -- the exact moved Card in its old loose/source view while also
@@ -6117,7 +6238,8 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
     callback = callback or function() end
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then callback(false, "unknown seat"); return end
-    if not BridgeObjectIsUsable(object) or object.tag ~= "Card" then
+    if not BridgeObjectIsUsable(object) or BridgeIsPresentationOnlyObject(object)
+        or object.tag ~= "Card" then
         callback(false, "library insertion requires a live Card object")
         return
     end
@@ -7075,6 +7197,9 @@ function onLoad()
     -- TTS file read and Lua compilation happen before this function executes;
     -- this first marker deliberately measures only observable runtime startup.
     local startupToken = BridgeStartupStageBegin("onLoad_enter")
+    if BridgeRetireOrphanedPresentationProxies ~= nil then
+        BridgeRetireOrphanedPresentationProxies("runtime-reload")
+    end
     BridgeLog("[Bridge] TTS_RUNTIME_PROVENANCE revision=" .. tostring(BRIDGE_SCRIPT_REVISION)
         .. " generatedGlobalLuaSha256=" .. tostring(BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 or "unavailable"))
     BridgeOnLoad()
@@ -8088,6 +8213,45 @@ function BridgeConsiderYieldAutomaticAction(decision, action, policy)
         or "yield_policy_auto_pass"
     BridgeSubmitChoice(decision.decisionId, action.actionId, submitSource)
     return true
+end
+
+function BridgePresentationSecondsLabel(value)
+    local numeric = tonumber(value)
+    if numeric == nil then return "DEFAULT" end
+    return tostring(numeric) .. " SEC"
+end
+
+local function BridgePresentationNextValue(current)
+    local values = BRIDGE_PRESENTATION_HOLD_VALUES or {1, 2, 2.5, 3, 5}
+    for index, value in ipairs(values) do
+        if current ~= nil and math.abs((tonumber(current) or 0) - value) < 0.001 then
+            return values[index % #values + 1]
+        end
+    end
+    return values[1]
+end
+
+function BridgeHudPresentationHoldCycle(player, value, id)
+    local timing = BridgeState.presentationTiming
+    timing.defaultReadableHoldSeconds = BridgePresentationNextValue(timing.defaultReadableHoldSeconds)
+    BridgeUiMarkDirty("presentation-global-hold")
+end
+
+function BridgeHudOpponentSpellHoldCycle(player, value, id)
+    local timing = BridgeState.presentationTiming
+    timing.overrides = timing.overrides or {}
+    local current = timing.overrides.opponent_spell
+    if current == nil then
+        timing.overrides.opponent_spell = (BRIDGE_PRESENTATION_HOLD_VALUES or {1})[1]
+    else
+        local nextValue = BridgePresentationNextValue(current)
+        if nextValue == (BRIDGE_PRESENTATION_HOLD_VALUES or {})[1] then
+            timing.overrides.opponent_spell = nil
+        else
+            timing.overrides.opponent_spell = nextValue
+        end
+    end
+    BridgeUiMarkDirty("presentation-opponent-spell-hold")
 end
 
 function BridgeHudMode(player, value, id)
@@ -11883,6 +12047,9 @@ function BridgeResetSession()
     if BridgeRetireRandomResultPresentations ~= nil then
         BridgeRetireRandomResultPresentations("new-match")
     end
+    if BridgeRetireOpponentSpellPresentations ~= nil then
+        BridgeRetireOpponentSpellPresentations("new-match")
+    end
     -- NEW MATCH preserves the physical cards but abandons every old event
     -- mutation owner. Fence queued/native callbacks before cleanup observes
     -- the table; late callbacks can then contribute only physical evidence
@@ -14505,7 +14672,8 @@ function BridgeResolveExactActionPhysical(decision, action)
     local isCardTarget = action ~= nil
         and action.type == "choose_target"
         and tostring(action.targetKind or "") == "card"
-    if object ~= nil and object.tag == "Card" and inverse == instanceId
+    if object ~= nil and object.tag == "Card" and not BridgeIsPresentationOnlyObject(object)
+        and inverse == instanceId
         and (isCardTarget
             or decision == nil or decision.seatId == nil or observedSeat == decision.seatId)
         and (expectedZone == nil or observedZone == expectedZone) then
@@ -16432,6 +16600,9 @@ end
 
 function BridgeResyncFromAuthoritativeSnapshot(origin)
     local explicit = BridgeIsExplicitResyncOrigin(origin)
+    if explicit and BridgeRetireOpponentSpellPresentations ~= nil then
+        BridgeRetireOpponentSpellPresentations("resync:" .. tostring(origin))
+    end
     local terminalError = BridgeCurrentTerminalRecoveryError()
     if terminalError ~= nil then
         BridgeLog("[Bridge] RESYNC_BLOCKED reason=terminal-recovery-error origin=" .. tostring(origin)
@@ -17142,10 +17313,12 @@ function BridgeSnapshotDuplicateAliasesAreRepairableGraveyardState(snapshot)
     local looseByGuid = {}
     local deckEntriesByGuid = {}
     for _, object in ipairs(getAllObjects() or {}) do
-        if BridgeObjectIsUsable(object) and object.tag == "Card" then
+        if BridgeObjectIsUsable(object) and not BridgeIsPresentationOnlyObject(object)
+            and object.tag == "Card" then
             local guid = BridgeSafeObjectGuid(object)
             if guid ~= nil then looseByGuid[tostring(guid)] = object end
-        elseif BridgeObjectIsUsable(object) and object.tag == "Deck" then
+        elseif BridgeObjectIsUsable(object) and not BridgeIsPresentationOnlyObject(object)
+            and object.tag == "Deck" then
             local deckGuid = BridgeSafeObjectGuid(object)
             for _, entry in ipairs(BridgeLibraryEntries(object) or {}) do
                 local guid = entry and (entry.guid or entry.GUID) or nil
@@ -18895,6 +19068,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     -- owned. Retire them before the new session can observe or render any
     -- surviving TTS objects. Preferences intentionally survive a match
     -- replacement; hidden identities and staging state do not.
+    if (replacingMatch or forceReset) and BridgeRetireOpponentSpellPresentations ~= nil then
+        BridgeRetireOpponentSpellPresentations("event-session-prepare")
+    end
     if (replacingMatch or forceReset) and BridgeResetRevealSessionState ~= nil then
         BridgeResetRevealSessionState("event-session-prepare")
     end
@@ -20195,7 +20371,6 @@ function BridgeMutationPhysicalBatchesReady(tx)
     end
     return true, nil
 end
-
 -- A failed destination formation can leave TTS exposing the just-inserted
 -- Card userdata for a short time even though the native Deck already owns
 -- that exact GUID.  Rollback must canonicalize that observation before
@@ -21586,6 +21761,14 @@ function BridgeApplyAuthoritativeEvent(event)
             tostring(event.sourceZone),
             tostring(event.destinationZone),
             tostring(event.cardName)))
+    end
+
+    if event.kind == "spell_cast" then
+        -- This is only a presentation hint.  Exact identity is established
+        -- by the structured hand->stack transition below when the transport
+        -- does not include it on the semantic event.
+        if BridgeOpponentSpellObserveCast ~= nil then BridgeOpponentSpellObserveCast(event) end
+        return true, 0
     end
 
     if event.kind == "spell_resolved" then
@@ -23278,6 +23461,15 @@ local function BridgeApplyStructuredCardMoveCore(event)
         )
     end
 
+    -- Opponent spell readability owns only a disposable visual continuation.
+    -- Prepare it before a stack Card is handed to a destination container, but
+    -- never turn this into an event-drain or Forge-state delay.
+    local opponentSpellDeparture = nil
+    if BridgeOpponentSpellPrepareDeparture ~= nil
+        and event.sourceZone == "stack" and event.destinationZone ~= "stack" then
+        opponentSpellDeparture = BridgeOpponentSpellPrepareDeparture(event, object)
+    end
+
     if event.destinationZone ~= "battlefield" then
         local prepared, prepareError = BridgePreparePhysicalCardForPublicZoneMove(object, event.destinationZone)
         if not prepared then return false, prepareError end
@@ -23306,9 +23498,15 @@ local function BridgeApplyStructuredCardMoveCore(event)
         object.use_hands = false
         BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
         object.setPosition(BRIDGE_STACK_POSITION)
+        if BridgeOpponentSpellObserveStackEntry ~= nil then
+            BridgeOpponentSpellObserveStackEntry(event, object)
+        end
     elseif event.destinationZone == "graveyard" then
         local moved, moveError = BridgeMoveToGraveyard(event, object, event._bridgePhysicalCompletion)
         if not moved then return false, moveError end
+        if BridgeOpponentSpellCommitDeparture ~= nil then
+            BridgeOpponentSpellCommitDeparture(opponentSpellDeparture, event, true)
+        end
     elseif event.destinationZone == "exile" then
         object.use_hands = false
         BridgeSetPhysicalTapped(object, false)
@@ -23317,6 +23515,9 @@ local function BridgeApplyStructuredCardMoveCore(event)
             return false, "no exile anchor configured for seat " .. tostring(event.seatId)
         end
         object.setPositionSmooth(exilePosition, false, true)
+        if BridgeOpponentSpellCommitDeparture ~= nil then
+            BridgeOpponentSpellCommitDeparture(opponentSpellDeparture, event, true)
+        end
     elseif event.destinationZone == "command" then
         object.use_hands = false
         local commandPosition = BridgeResolveSeatZoneAnchor(event.seatId, "command")
@@ -23324,6 +23525,9 @@ local function BridgeApplyStructuredCardMoveCore(event)
             return false, "no command anchor configured for seat " .. tostring(event.seatId)
         end
         object.setPositionSmooth(commandPosition, false, true)
+        if BridgeOpponentSpellCommitDeparture ~= nil then
+            BridgeOpponentSpellCommitDeparture(opponentSpellDeparture, event, true)
+        end
     elseif event.destinationZone == "library" then
         local libraryZone = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
         if libraryZone == nil then
@@ -24149,7 +24353,6 @@ function BridgeMoveToGraveyard(event, object, completion)
     end
     return true, nil
 end
-
 -- Recovery-only exact repair for a physical Card which the authoritative
 -- snapshot says belongs in graveyard but which was left loose by an aborted
 -- mutation.  The planner supplies the exact CardInstanceId; this path never
@@ -24420,13 +24623,6 @@ function BridgeVerifyFinalPhysicalRepresentation(instanceId, seatId, zoneName)
     return true, nil
 end
 
-function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
-    local seatId = BridgeSeatIdForSeatConfig(seat)
-    local preferred = seatId and BridgeFindLibraryDeckForSeat(seatId) or nil
-    if preferred ~= nil and ((preferred.tag == "Card" and BridgeCardNameMatches(BridgePhysicalCanonicalCardName(preferred), expectedName))
-        or BridgeDeckContainsCardName(preferred, expectedName)) then
-        return preferred
-    end
 -- END GENERATED SOURCE: 40-zones-materialization.lua
 -- BEGIN GENERATED SOURCE: 45-random-result-presentation.lua
 -- Forge-authoritative random-result presentation.  This is deliberately
@@ -24434,10 +24630,16 @@ function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
 
 local function BridgeRandomSettings()
     return BRIDGE_RANDOM_RESULT_PRESENTATION_SETTINGS or {
-        readableHoldSeconds = 1.5, settleSeconds = 0.25,
+        readableHoldSeconds = nil, settleSeconds = 0.25,
         settleTimeoutSeconds = 4.0, maxAuthoritativeFaceAttempts = 80,
         extraReturnDelayFrames = 2, dieBagGuids = {}
     }
+end
+
+local function BridgeRandomReadableHoldSeconds()
+    local configured = BridgeRandomSettings().readableHoldSeconds
+    if configured ~= nil then return tonumber(configured) or 0 end
+    return BridgePresentationHoldSeconds("random_result")
 end
 
 local function BridgeRandomNow()
@@ -24544,7 +24746,7 @@ local function BridgeRandomFinish(presentation)
     if presentation.finished then return end
     presentation.finished = true
     presentation.completed = true
-    presentation.holdDuration = BridgeRandomSettings().readableHoldSeconds
+    presentation.holdDuration = BridgeRandomReadableHoldSeconds()
     BridgeRandomRecord(presentation, "COMPLETED", "readable hold expired")
     BridgeState.activeRandomResultPresentation = nil
     local values = {}
@@ -24585,7 +24787,7 @@ local function BridgeRandomHold(presentation)
             or BridgeState.activeRandomResultPresentation ~= presentation then return end
         BridgeRandomReturnExtras(presentation)
         BridgeRandomFinish(presentation)
-    end, BridgeRandomSettings().readableHoldSeconds)
+    end, BridgeRandomReadableHoldSeconds())
 end
 
 local function BridgeRandomEstablishFaces(presentation, index, attempts)
@@ -24800,9 +25002,313 @@ function BridgeStartRandomResultPresentation(event)
     BridgeRandomAllocate(presentation, 1)
     return true, 0
 end
+
+-- Opponent spell readability shares this file's random-result presentation
+-- boundary, but it deliberately has no event-drain barrier.  Forge events,
+-- mappings, and decisions continue while a disposable visual proxy lingers.
+local BRIDGE_OPPONENT_SPELL_PRESENTATION_CAPACITY = 6
+
+local function BridgeOpponentSpellNow()
+    return BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
+end
+
+local function BridgeOpponentSpellSeatUsesPresentation(seatId)
+    local seat = BRIDGE_SEATS ~= nil and BRIDGE_SEATS[seatId] or nil
+    return seat ~= nil and seat.animateAuthoritativeEvents == true
+end
+
+local function BridgeOpponentSpellDiagnostic(presentation, stage, reason)
+    presentation.stage = stage
+    presentation.lastUpdatedAt = BridgeOpponentSpellNow()
+    presentation.retirementReason = reason
+    local diagnostics = BridgeState.opponentSpellPresentationDiagnostics
+        or {}
+    BridgeState.opponentSpellPresentationDiagnostics = diagnostics
+    local record = {
+        presentationId = presentation.presentationId,
+        sessionId = presentation.sessionId,
+        sourceEventSequence = presentation.sourceEventSequence,
+        castEventSequence = presentation.castEventSequence,
+        cardInstanceId = presentation.cardInstanceId,
+        seatId = presentation.seatId,
+        startedAt = presentation.startedAt,
+        realObjectDepartureAt = presentation.realObjectDepartureAt,
+        expiresAt = presentation.expiresAt,
+        proxyGuid = presentation.proxyGuid,
+        stage = stage,
+        retirementReason = reason,
+        active = presentation.finished ~= true,
+        completed = presentation.completed == true,
+        failed = presentation.failed == true
+    }
+    table.insert(diagnostics, record)
+    while #diagnostics > 32 do table.remove(diagnostics, 1) end
+    if BridgeLog ~= nil then
+        BridgeLog(string.format(
+            "[Bridge] OPPONENT_SPELL_PRESENTATION stage=%s id=%s event=%s cast=%s seat=%s instance=%s proxy=%s expires=%s reason=%s",
+            tostring(stage), tostring(presentation.presentationId),
+            tostring(presentation.sourceEventSequence), tostring(presentation.castEventSequence),
+            tostring(presentation.seatId), tostring(presentation.cardInstanceId),
+            tostring(presentation.proxyGuid), tostring(presentation.expiresAt), tostring(reason)))
+    end
+end
+
+local function BridgeOpponentSpellDestroyProxy(presentation)
+    local proxy = presentation.proxyObject
+    if proxy ~= nil then
+        BridgeUnregisterPresentationProxy(proxy)
+        pcall(function()
+            if type(proxy.destruct) == "function" then proxy.destruct() end
+        end)
+    elseif presentation.proxyGuid ~= nil then
+        BridgeUnregisterPresentationProxy(presentation.proxyGuid)
+    end
+    presentation.proxyObject = nil
+end
+
+local function BridgeOpponentSpellRemoveActive(presentation)
+    BridgeState.opponentSpellPresentationsById[presentation.presentationId] = nil
+    for index, candidate in ipairs(BridgeState.opponentSpellPresentationOrder or {}) do
+        if candidate == presentation then
+            table.remove(BridgeState.opponentSpellPresentationOrder, index)
+            break
+        end
+    end
+end
+
+local function BridgeOpponentSpellRetire(presentation, reason)
+    if presentation == nil or presentation.finished == true then return end
+    presentation.finished = true
+    presentation.completed = reason == "hold-expired" or reason == "real-permanent-visible"
+    if reason == "hold-expired" then
+        BridgeOpponentSpellDiagnostic(presentation, "COMPLETED", reason)
+    else
+        BridgeOpponentSpellDiagnostic(presentation, "RETIRED", reason)
+    end
+    BridgeOpponentSpellDestroyProxy(presentation)
+    BridgeOpponentSpellRemoveActive(presentation)
+end
+
+function BridgeRetireOpponentSpellPresentations(reason)
+    BridgeState.opponentSpellPresentationOrder = BridgeState.opponentSpellPresentationOrder or {}
+    BridgeState.opponentSpellPresentationsById = BridgeState.opponentSpellPresentationsById or {}
+    BridgeState.opponentSpellCastHintsBySeatId = BridgeState.opponentSpellCastHintsBySeatId or {}
+    BridgeState.opponentSpellPresentationGeneration =
+        (BridgeState.opponentSpellPresentationGeneration or 0) + 1
+    local active = {}
+    for _, presentation in ipairs(BridgeState.opponentSpellPresentationOrder or {}) do
+        table.insert(active, presentation)
+    end
+    for _, presentation in ipairs(active) do
+        BridgeOpponentSpellRetire(presentation, "session-boundary:" .. tostring(reason or "cleanup"))
+    end
+    BridgeState.opponentSpellPresentationsById = {}
+    BridgeState.opponentSpellPresentationOrder = {}
+    BridgeState.opponentSpellCastHintsBySeatId = {}
+end
+
+local function BridgeOpponentSpellActiveCount()
+    BridgeState.opponentSpellPresentationOrder = BridgeState.opponentSpellPresentationOrder or {}
+    local count = 0
+    for _, presentation in ipairs(BridgeState.opponentSpellPresentationOrder or {}) do
+        if presentation.finished ~= true then count = count + 1 end
+    end
+    return count
+end
+
+local function BridgeOpponentSpellEnforceBound()
+    while BridgeOpponentSpellActiveCount() > BRIDGE_OPPONENT_SPELL_PRESENTATION_CAPACITY do
+        local oldest = BridgeState.opponentSpellPresentationOrder[1]
+        if oldest == nil then break end
+        BridgeOpponentSpellRetire(oldest, "capacity")
+    end
+end
+
+local function BridgeOpponentSpellFind(cardInstanceId)
+    for _, presentation in pairs(BridgeState.opponentSpellPresentationsById or {}) do
+        if presentation.cardInstanceId == cardInstanceId and presentation.finished ~= true then
+            return presentation
+        end
+    end
+    return nil
+end
+
+local function BridgeOpponentSpellStart(event, startedAt, castEventSequence)
+    if event == nil or event.cardInstanceId == nil
+        or not BridgeOpponentSpellSeatUsesPresentation(event.seatId) then return nil end
+    if event.isVirtual == true or event.materializationPolicy == "virtual"
+        or event.objectKind == "virtual" then return nil end
+    BridgeState.opponentSpellPresentationsById = BridgeState.opponentSpellPresentationsById or {}
+    BridgeState.opponentSpellPresentationOrder = BridgeState.opponentSpellPresentationOrder or {}
+    BridgeState.opponentSpellCastHintsBySeatId = BridgeState.opponentSpellCastHintsBySeatId or {}
+    local existing = BridgeOpponentSpellFind(event.cardInstanceId)
+    if existing ~= nil then return existing end
+    local generation = BridgeState.opponentSpellPresentationGeneration or 0
+    local presentation = {
+        presentationId = tostring(BridgeState.eventSessionId) .. ":"
+            .. tostring(event.cardInstanceId) .. ":" .. tostring(castEventSequence or event.sequence or generation),
+        sessionId = BridgeState.eventSessionId,
+        runtimeEpoch = BRIDGE_RUNTIME_EPOCH_LOCAL,
+        generation = generation,
+        sourceEventSequence = event.sequence,
+        castEventSequence = castEventSequence,
+        cardInstanceId = event.cardInstanceId,
+        seatId = event.seatId,
+        startedAt = startedAt or BridgeOpponentSpellNow(),
+        finished = false,
+        proxyObject = nil,
+        proxyGuid = nil
+    }
+    BridgeState.opponentSpellPresentationsById[presentation.presentationId] = presentation
+    table.insert(BridgeState.opponentSpellPresentationOrder, presentation)
+    BridgeOpponentSpellDiagnostic(presentation, "CAST_OBSERVED", "authoritative spell cast")
+    BridgeOpponentSpellEnforceBound()
+    return presentation
+end
+
+function BridgeOpponentSpellObserveCast(event)
+    if event == nil or not BridgeOpponentSpellSeatUsesPresentation(event.seatId) then return true end
+    if event.cardInstanceId ~= nil then
+        BridgeOpponentSpellStart(event, BridgeOpponentSpellNow(), event.sequence)
+        return true
+    end
+    local hints = BridgeState.opponentSpellCastHintsBySeatId[event.seatId] or {}
+    BridgeState.opponentSpellCastHintsBySeatId[event.seatId] = hints
+    table.insert(hints, {startedAt = BridgeOpponentSpellNow(), castEventSequence = event.sequence})
+    while #hints > 8 do table.remove(hints, 1) end
+    return true
+end
+
+local function BridgeOpponentSpellConsumeHint(seatId)
+    local hints = BridgeState.opponentSpellCastHintsBySeatId[seatId] or {}
+    if #hints == 0 then return nil end
+    local hint = table.remove(hints, 1)
+    BridgeState.opponentSpellCastHintsBySeatId[seatId] = hints
+    return hint
+end
+
+function BridgeOpponentSpellObserveStackEntry(event, object)
+    if event == nil or object == nil or not BridgeOpponentSpellSeatUsesPresentation(event.seatId) then return end
+    if event.isVirtual == true or event.materializationPolicy == "virtual"
+        or event.objectKind == "virtual" then return end
+    local hint = BridgeOpponentSpellConsumeHint(event.seatId)
+    local presentation = BridgeOpponentSpellStart(event,
+        hint and hint.startedAt or BridgeOpponentSpellNow(),
+        hint and hint.castEventSequence or event.sequence)
+    if presentation == nil then return end
+    presentation.realObjectGuid = BridgeSafeObjectGuid(object)
+    presentation.sourceEventSequence = event.sequence or presentation.sourceEventSequence
+    BridgeOpponentSpellDiagnostic(presentation, "STACK_VISIBLE", "exact physical stack object established")
+end
+
+local function BridgeOpponentSpellProxyPosition(presentation)
+    local base = BRIDGE_STACK_POSITION or {x = 0, y = 1.6, z = 0}
+    local slot = 0
+    for index, candidate in ipairs(BridgeState.opponentSpellPresentationOrder or {}) do
+        if candidate == presentation then slot = index - 1 break end
+    end
+    return {
+        x = (base.x or 0) + (slot % 3) * 0.65,
+        y = (base.y or 1.6) + 0.35,
+        z = (base.z or 0) + math.floor(slot / 3) * 0.65
+    }
+end
+
+local function BridgeOpponentSpellCreateProxy(presentation, object)
+    if presentation.proxyObject ~= nil then return true end
+    local clone = nil
+    local hidden = {x = (BRIDGE_STACK_POSITION and BRIDGE_STACK_POSITION.x or 0), y = -4, z = (BRIDGE_STACK_POSITION and BRIDGE_STACK_POSITION.z or 0)}
+    local ok, cloneError = pcall(function() clone = object.clone({position = hidden, smooth = false}) end)
+    if not ok or clone == nil then
+        BridgeOpponentSpellDiagnostic(presentation, "PROXY_FAILED", tostring(cloneError or "clone returned no object"))
+        return false
+    end
+    BridgeRegisterPresentationProxy(clone, "opponent-spell")
+    pcall(function() clone.setVar("bridgeCardInstanceId", nil) end)
+    pcall(function() clone.setVar("bridgeSessionId", nil) end)
+    pcall(function() clone.clearButtons() end)
+    pcall(function() clone.setLock(true) end)
+    pcall(function() clone.use_hands = false end)
+    pcall(function() clone.interactable = false end)
+    pcall(function() clone.setPosition(hidden) end)
+    local seat = BRIDGE_SEATS[presentation.seatId]
+    pcall(function() clone.setRotation(seat and seat.faceUpRotation or {x = 0, y = 180, z = 0}) end)
+    presentation.proxyObject = clone
+    presentation.proxyGuid = BridgeSafeObjectGuid(clone)
+    return true
+end
+
+function BridgeOpponentSpellPrepareDeparture(event, object)
+    if event == nil or object == nil or event.sourceZone ~= "stack"
+        or not BridgeOpponentSpellSeatUsesPresentation(event.seatId) then return nil end
+    local presentation = BridgeOpponentSpellFind(event.cardInstanceId)
+    if presentation == nil then presentation = BridgeOpponentSpellStart(event) end
+    if presentation == nil then return nil end
+    presentation.destinationZone = event.destinationZone
+    presentation.realObjectDepartureAt = BridgeOpponentSpellNow()
+    local destination = tostring(event.destinationZone or "")
+    if destination == "battlefield" then
+        BridgeOpponentSpellRetire(presentation, "real-permanent-visible")
+        return presentation
+    end
+    local hold = BridgePresentationHoldSeconds("opponent_spell")
+    local remaining = hold - (presentation.realObjectDepartureAt - presentation.startedAt)
+    if remaining <= 0 then
+        BridgeOpponentSpellRetire(presentation, "hold-already-expired")
+        return presentation
+    end
+    if not BridgeOpponentSpellCreateProxy(presentation, object) then
+        presentation.failed = true
+        return presentation
+    end
+    presentation.expiresAt = presentation.realObjectDepartureAt + remaining
+    BridgeOpponentSpellDiagnostic(presentation, "PROXY_PENDING", "authoritative object departing")
+    return presentation
+end
+
+function BridgeOpponentSpellCommitDeparture(presentation, event, moved)
+    if presentation == nil or presentation.finished == true then return end
+    if moved ~= true then
+        BridgeOpponentSpellRetire(presentation, "authoritative departure failed")
+        return
+    end
+    if presentation.proxyObject == nil then return end
+    pcall(function() presentation.proxyObject.setPosition(BridgeOpponentSpellProxyPosition(presentation)) end)
+    BridgeOpponentSpellDiagnostic(presentation, "PROXY_VISIBLE", "readable presentation proxy shown")
+    local epoch = presentation.runtimeEpoch
+    local sessionId = presentation.sessionId
+    local generation = presentation.generation
+    local remaining = math.max(0, (presentation.expiresAt or BridgeOpponentSpellNow()) - BridgeOpponentSpellNow())
+    if BridgeWaitTime == nil then return end
+    BridgeWaitTime(function()
+        if not BridgeRuntimeIsCurrent(epoch)
+            or sessionId ~= BridgeState.eventSessionId
+            or BridgeState.opponentSpellPresentationGeneration < generation
+            or BridgeState.opponentSpellPresentationsById[presentation.presentationId] ~= presentation then return end
+        BridgeOpponentSpellRetire(presentation, "hold-expired")
+    end, remaining)
+end
+
+function BridgeOpponentSpellPresentationDiagnostics()
+    local records = {}
+    for _, record in ipairs(BridgeState.opponentSpellPresentationDiagnostics or {}) do
+        table.insert(records, record)
+    end
+    return {
+        timing = BridgePresentationTimingDiagnostics(),
+        activeCount = BridgeOpponentSpellActiveCount(),
+        records = records
+    }
+end
 -- END GENERATED SOURCE: 45-random-result-presentation.lua
 -- BEGIN GENERATED SOURCE: 50-presentation-session.lua
-
+function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
+    local seatId = BridgeSeatIdForSeatConfig(seat)
+    local preferred = seatId and BridgeFindLibraryDeckForSeat(seatId) or nil
+    if preferred ~= nil and ((preferred.tag == "Card" and BridgeCardNameMatches(BridgePhysicalCanonicalCardName(preferred), expectedName))
+        or BridgeDeckContainsCardName(preferred, expectedName)) then
+        return preferred
+    end
     local candidates = seatId and BridgeFindLibraryDeckCandidatesForSeat(seatId) or {}
     local matches = {}
     for _, deck in ipairs(candidates) do
@@ -26460,7 +26966,8 @@ end
 
 function BridgeBattlefieldPositionOccupied(candidate)
     for _, object in ipairs(getAllObjects()) do
-        if object.tag == "Card" or object.tag == "Deck" then
+        if not BridgeIsPresentationOnlyObject(object)
+            and (object.tag == "Card" or object.tag == "Deck") then
             local position = object.getPosition()
             local dx = position.x - candidate.x
             local dz = position.z - candidate.z
@@ -26494,7 +27001,7 @@ end
 
 function BridgeCombatLaneXAvailable(laneZ, candidateX, ignoredGuid)
     for _, other in ipairs(getAllObjects()) do
-        if other.tag == "Card" then
+        if not BridgeIsPresentationOnlyObject(other) and other.tag == "Card" then
             local guid = BridgeSafeObjectGuid(other)
             if guid ~= nil and guid ~= ignoredGuid then
                 local position = other.getPosition()
@@ -27747,6 +28254,10 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudReportStatus", "raycastTarget", "false")
     BridgeUiSet("BridgeHudReportStatus", "text", ui.reportStatus or "")
     BridgeUiSet("BridgeHudReportStatus", "color", string.find(string.upper(tostring(ui.reportStatus or "")), "ERROR", 1, true) and BRIDGE_HUD_COLORS.danger or BRIDGE_HUD_COLORS.success)
+    local timing = BridgeState.presentationTiming or BRIDGE_PRESENTATION_TIMING
+    local opponentOverride = timing.overrides and timing.overrides.opponent_spell or nil
+    BridgeUiSet("BridgeHudPresentationHold", "text", "PRESENTATION: " .. BridgePresentationSecondsLabel(timing.defaultReadableHoldSeconds))
+    BridgeUiSet("BridgeHudOpponentSpellHold", "text", "OPP SPELL: " .. BridgePresentationSecondsLabel(opponentOverride))
     if ui.reportCaptureResultPending and reportCaptureReady then
         ui.reportCaptureResultPending = false
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_UI_RESTORED", ui.reportCaptureToken, "capture-button-active-interactable-raycastable")

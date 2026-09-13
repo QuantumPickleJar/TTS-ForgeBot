@@ -14,14 +14,44 @@ BRIDGE_RESOURCE_ORDER = {"W", "U", "B", "R", "G", "C", "energy", "experience", "
 BRIDGE_RESOURCE_ROW_SPACING = 1.05
 -- Presentation-only random-result settings. The hold is intentionally one
 -- seam so Options can expose it later without changing the roll lifecycle.
+BRIDGE_PRESENTATION_HOLD_VALUES = {1, 2, 2.5, 3, 5}
+-- `nil` is the explicit DEFAULT/INHERIT value for a feature override.  Zero
+-- remains available as a meaningful future OFF value and is never treated as
+-- inheritance by the resolver.
+BRIDGE_PRESENTATION_TIMING = {
+    defaultReadableHoldSeconds = 2.5,
+    overrides = {opponent_spell = nil, random_result = nil}
+}
 BRIDGE_RANDOM_RESULT_PRESENTATION_SETTINGS = {
-    readableHoldSeconds = 1.5,
+    readableHoldSeconds = nil,
     settleSeconds = 0.25,
     settleTimeoutSeconds = 4.0,
     maxAuthoritativeFaceAttempts = 80,
     extraReturnDelayFrames = 2,
     dieBagGuids = {},
 }
+
+function BridgePresentationHoldSeconds(kind)
+    local timing = BridgeState ~= nil and BridgeState.presentationTiming or BRIDGE_PRESENTATION_TIMING
+    local override = timing ~= nil and timing.overrides ~= nil and timing.overrides[kind] or nil
+    if override ~= nil then return tonumber(override) or 0 end
+    return tonumber(timing ~= nil and timing.defaultReadableHoldSeconds or nil) or 2.5
+end
+
+function BridgePresentationTimingDiagnostics()
+    local timing = BridgeState ~= nil and BridgeState.presentationTiming or BRIDGE_PRESENTATION_TIMING
+    local override = timing ~= nil and timing.overrides ~= nil and timing.overrides.opponent_spell or nil
+    local randomOverride = timing ~= nil and timing.overrides ~= nil and timing.overrides.random_result or nil
+    return {
+        globalReadableHoldSeconds = tonumber(timing and timing.defaultReadableHoldSeconds or nil) or 2.5,
+        opponentSpellOverrideSeconds = override,
+        opponentSpellOverride = override == nil and "DEFAULT" or override,
+        effectiveOpponentSpellHoldSeconds = BridgePresentationHoldSeconds("opponent_spell"),
+        randomResultOverrideSeconds = randomOverride,
+        randomResultOverride = randomOverride == nil and "DEFAULT" or randomOverride,
+        effectiveRandomResultHoldSeconds = BridgePresentationHoldSeconds("random_result")
+    }
+end
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 -- Slightly slower active polling reduces frequent full decision/highlight churn
 -- in TTS without materially affecting interactive responsiveness.
@@ -1077,6 +1107,11 @@ function BridgeEventDrainQueueState()
         physicalMutationProgress = BridgeDiagnosticSnapshot(BridgeState.eventDrainPhysicalProgress or {}),
         physicalMutationJournal = BridgeDiagnosticSnapshot(BridgeState.physicalMutationJournal or {}),
         lastTtsRuntimeError = BridgeDiagnosticSnapshot(BridgeState.lastTtsRuntimeError or {}),
+        presentationTiming = BridgePresentationTimingDiagnostics(),
+        opponentSpellPresentation = BridgeOpponentSpellPresentationDiagnostics ~= nil
+            and BridgeOpponentSpellPresentationDiagnostics() or {
+                activeCount = 0, records = {}
+            },
         ownedMutation = BridgeDiagnosticSnapshot(mutationProgress or {}),
         snapshotReconcilePending = BridgeState.snapshotReconcilePending == true,
         snapshotReconcileInFlight = BridgeState.snapshotReconcileInFlight == true,
@@ -3266,6 +3301,22 @@ BridgeState = {
     randomResultPresentationGeneration = 0,
     activeRandomResultPresentation = nil,
     randomResultPresentationDiagnostics = {},
+    -- Presentation timing is local UI configuration, not Forge state.  Keep
+    -- it outside session cleanup so Options changes retain inheritance across
+    -- a New Match while every visual presentation is still disposable.
+    presentationTiming = {
+        defaultReadableHoldSeconds = BRIDGE_PRESENTATION_TIMING.defaultReadableHoldSeconds,
+        overrides = {
+            opponent_spell = BRIDGE_PRESENTATION_TIMING.overrides.opponent_spell,
+            random_result = BRIDGE_PRESENTATION_TIMING.overrides.random_result
+        }
+    },
+    opponentSpellPresentationGeneration = 0,
+    opponentSpellPresentationsById = {},
+    opponentSpellPresentationOrder = {},
+    opponentSpellPresentationDiagnostics = {},
+    opponentSpellCastHintsBySeatId = {},
+    presentationProxyGuids = {},
     renderedDecisionPresentationKey = nil,
     renderedDecisionPhysicalGeneration = nil,
     physicalByInstanceId = {},
@@ -3735,6 +3786,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     if BridgeRetireRandomResultPresentations ~= nil then
         BridgeRetireRandomResultPresentations("session-boundary:" .. tostring(reason))
     end
+    if BridgeRetireOpponentSpellPresentations ~= nil then
+        BridgeRetireOpponentSpellPresentations("session-boundary:" .. tostring(reason))
+    end
     BridgeState.eventSessionGeneration = (BridgeState.eventSessionGeneration or 0) + 1
     BridgeState.decisionPresentationGeneration = (BridgeState.decisionPresentationGeneration or 0) + 1
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
@@ -3968,6 +4022,45 @@ function BridgeRegisterPresentationObject(objectOrGuid, kind)
     return true
 end
 
+function BridgeRegisterPresentationProxy(objectOrGuid, kind)
+    local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
+    if guid == nil then return false end
+    BridgeState.presentationProxyGuids = BridgeState.presentationProxyGuids or {}
+    BridgeState.presentationProxyGuids[guid] = {
+        kind = kind or "opponent-spell",
+        sessionId = BridgeState.eventSessionId
+    }
+    if type(objectOrGuid) ~= "string" then
+        pcall(function() objectOrGuid.setVar("bridgePresentationProxy", kind or "opponent-spell") end)
+    end
+    BridgeRegisterPresentationObject(guid, "presentation-proxy:" .. tostring(kind or "opponent-spell"))
+    return true
+end
+
+function BridgeUnregisterPresentationProxy(objectOrGuid)
+    local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
+    if guid == nil then return false end
+    BridgeState.presentationProxyGuids = BridgeState.presentationProxyGuids or {}
+    BridgeState.presentationProxyGuids[guid] = nil
+    if type(objectOrGuid) ~= "string" then
+        pcall(function() objectOrGuid.setVar("bridgePresentationProxy", nil) end)
+    end
+    BridgeUnregisterPresentationObject(guid)
+    return true
+end
+
+function BridgeIsPresentationProxyObject(objectOrGuid)
+    local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
+    if guid ~= nil and BridgeState.presentationProxyGuids ~= nil
+        and BridgeState.presentationProxyGuids[guid] ~= nil then return true end
+    if type(objectOrGuid) ~= "string" and objectOrGuid ~= nil then
+        local marker = nil
+        pcall(function() marker = objectOrGuid.getVar("bridgePresentationProxy") end)
+        return marker ~= nil and tostring(marker) ~= ""
+    end
+    return false
+end
+
 function BridgeUnregisterPresentationObject(objectOrGuid)
     local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
     if guid == nil then return false end
@@ -3977,7 +4070,34 @@ end
 
 function BridgeIsPresentationOnlyObject(objectOrGuid)
     local guid = type(objectOrGuid) == "string" and objectOrGuid or BridgeSafeObjectGuid(objectOrGuid)
-    return guid ~= nil and BridgeState.presentationOnlyGuids[guid] ~= nil
+    if guid ~= nil and BridgeState.presentationOnlyGuids[guid] ~= nil then return true end
+    if type(objectOrGuid) == "string" and BridgeGetLiveObjectByGuid ~= nil then
+        local live = BridgeGetLiveObjectByGuid(objectOrGuid)
+        if live ~= nil and type(live) ~= "string" and live ~= objectOrGuid then
+            return BridgeIsPresentationOnlyObject(live)
+        end
+    end
+    return BridgeIsPresentationProxyObject ~= nil and BridgeIsPresentationProxyObject(objectOrGuid)
+end
+
+function BridgeRetireOrphanedPresentationProxies(reason)
+    if type(getAllObjects) ~= "function" then return 0 end
+    local retired = 0
+    for _, object in ipairs(getAllObjects() or {}) do
+        if BridgeIsPresentationProxyObject(object) then
+            local guid = BridgeSafeObjectGuid(object)
+            BridgeUnregisterPresentationProxy(object)
+            pcall(function()
+                if type(object.destruct) == "function" then object.destruct() end
+            end)
+            retired = retired + 1
+            if BridgeLog ~= nil then
+                BridgeLog("[Bridge] retired orphaned presentation proxy guid=" .. tostring(guid)
+                    .. " reason=" .. tostring(reason or "runtime-reload"))
+            end
+        end
+    end
+    return retired
 end
 
 function BridgeSafeObjectName(object)
