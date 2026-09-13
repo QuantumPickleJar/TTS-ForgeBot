@@ -1053,7 +1053,8 @@ function BridgeResolveExactActionPhysical(decision, action)
     local isCardTarget = action ~= nil
         and action.type == "choose_target"
         and tostring(action.targetKind or "") == "card"
-    if object ~= nil and object.tag == "Card" and inverse == instanceId
+    if object ~= nil and object.tag == "Card" and not BridgeIsPresentationOnlyObject(object)
+        and inverse == instanceId
         and (isCardTarget
             or decision == nil or decision.seatId == nil or observedSeat == decision.seatId)
         and (expectedZone == nil or observedZone == expectedZone) then
@@ -2980,6 +2981,9 @@ end
 
 function BridgeResyncFromAuthoritativeSnapshot(origin)
     local explicit = BridgeIsExplicitResyncOrigin(origin)
+    if explicit and BridgeRetireOpponentSpellPresentations ~= nil then
+        BridgeRetireOpponentSpellPresentations("resync:" .. tostring(origin))
+    end
     local terminalError = BridgeCurrentTerminalRecoveryError()
     if terminalError ~= nil then
         BridgeLog("[Bridge] RESYNC_BLOCKED reason=terminal-recovery-error origin=" .. tostring(origin)
@@ -3690,10 +3694,12 @@ function BridgeSnapshotDuplicateAliasesAreRepairableGraveyardState(snapshot)
     local looseByGuid = {}
     local deckEntriesByGuid = {}
     for _, object in ipairs(getAllObjects() or {}) do
-        if BridgeObjectIsUsable(object) and object.tag == "Card" then
+        if BridgeObjectIsUsable(object) and not BridgeIsPresentationOnlyObject(object)
+            and object.tag == "Card" then
             local guid = BridgeSafeObjectGuid(object)
             if guid ~= nil then looseByGuid[tostring(guid)] = object end
-        elseif BridgeObjectIsUsable(object) and object.tag == "Deck" then
+        elseif BridgeObjectIsUsable(object) and not BridgeIsPresentationOnlyObject(object)
+            and object.tag == "Deck" then
             local deckGuid = BridgeSafeObjectGuid(object)
             for _, entry in ipairs(BridgeLibraryEntries(object) or {}) do
                 local guid = entry and (entry.guid or entry.GUID) or nil

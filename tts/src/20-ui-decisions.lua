@@ -575,6 +575,45 @@ function BridgeConsiderYieldAutomaticAction(decision, action, policy)
     return true
 end
 
+function BridgePresentationSecondsLabel(value)
+    local numeric = tonumber(value)
+    if numeric == nil then return "DEFAULT" end
+    return tostring(numeric) .. " SEC"
+end
+
+local function BridgePresentationNextValue(current)
+    local values = BRIDGE_PRESENTATION_HOLD_VALUES or {1, 2, 2.5, 3, 5}
+    for index, value in ipairs(values) do
+        if current ~= nil and math.abs((tonumber(current) or 0) - value) < 0.001 then
+            return values[index % #values + 1]
+        end
+    end
+    return values[1]
+end
+
+function BridgeHudPresentationHoldCycle(player, value, id)
+    local timing = BridgeState.presentationTiming
+    timing.defaultReadableHoldSeconds = BridgePresentationNextValue(timing.defaultReadableHoldSeconds)
+    BridgeUiMarkDirty("presentation-global-hold")
+end
+
+function BridgeHudOpponentSpellHoldCycle(player, value, id)
+    local timing = BridgeState.presentationTiming
+    timing.overrides = timing.overrides or {}
+    local current = timing.overrides.opponent_spell
+    if current == nil then
+        timing.overrides.opponent_spell = (BRIDGE_PRESENTATION_HOLD_VALUES or {1})[1]
+    else
+        local nextValue = BridgePresentationNextValue(current)
+        if nextValue == (BRIDGE_PRESENTATION_HOLD_VALUES or {})[1] then
+            timing.overrides.opponent_spell = nil
+        else
+            timing.overrides.opponent_spell = nextValue
+        end
+    end
+    BridgeUiMarkDirty("presentation-opponent-spell-hold")
+end
+
 function BridgeHudMode(player, value, id)
     BridgeSetAutoPassEmpty(not (BridgeState.ui and BridgeState.ui.autoPassEmpty == true), "hud")
 end
@@ -4367,6 +4406,9 @@ function BridgeResetSession()
     BridgeStopEventPolling("session-reset")
     if BridgeRetireRandomResultPresentations ~= nil then
         BridgeRetireRandomResultPresentations("new-match")
+    end
+    if BridgeRetireOpponentSpellPresentations ~= nil then
+        BridgeRetireOpponentSpellPresentations("new-match")
     end
     -- NEW MATCH preserves the physical cards but abandons every old event
     -- mutation owner. Fence queued/native callbacks before cleanup observes

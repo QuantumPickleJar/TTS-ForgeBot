@@ -1,4 +1,10 @@
-
+function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
+    local seatId = BridgeSeatIdForSeatConfig(seat)
+    local preferred = seatId and BridgeFindLibraryDeckForSeat(seatId) or nil
+    if preferred ~= nil and ((preferred.tag == "Card" and BridgeCardNameMatches(BridgePhysicalCanonicalCardName(preferred), expectedName))
+        or BridgeDeckContainsCardName(preferred, expectedName)) then
+        return preferred
+    end
     local candidates = seatId and BridgeFindLibraryDeckCandidatesForSeat(seatId) or {}
     local matches = {}
     for _, deck in ipairs(candidates) do
@@ -1656,7 +1662,8 @@ end
 
 function BridgeBattlefieldPositionOccupied(candidate)
     for _, object in ipairs(getAllObjects()) do
-        if object.tag == "Card" or object.tag == "Deck" then
+        if not BridgeIsPresentationOnlyObject(object)
+            and (object.tag == "Card" or object.tag == "Deck") then
             local position = object.getPosition()
             local dx = position.x - candidate.x
             local dz = position.z - candidate.z
@@ -1690,7 +1697,7 @@ end
 
 function BridgeCombatLaneXAvailable(laneZ, candidateX, ignoredGuid)
     for _, other in ipairs(getAllObjects()) do
-        if other.tag == "Card" then
+        if not BridgeIsPresentationOnlyObject(other) and other.tag == "Card" then
             local guid = BridgeSafeObjectGuid(other)
             if guid ~= nil and guid ~= ignoredGuid then
                 local position = other.getPosition()
@@ -2943,6 +2950,10 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudReportStatus", "raycastTarget", "false")
     BridgeUiSet("BridgeHudReportStatus", "text", ui.reportStatus or "")
     BridgeUiSet("BridgeHudReportStatus", "color", string.find(string.upper(tostring(ui.reportStatus or "")), "ERROR", 1, true) and BRIDGE_HUD_COLORS.danger or BRIDGE_HUD_COLORS.success)
+    local timing = BridgeState.presentationTiming or BRIDGE_PRESENTATION_TIMING
+    local opponentOverride = timing.overrides and timing.overrides.opponent_spell or nil
+    BridgeUiSet("BridgeHudPresentationHold", "text", "PRESENTATION: " .. BridgePresentationSecondsLabel(timing.defaultReadableHoldSeconds))
+    BridgeUiSet("BridgeHudOpponentSpellHold", "text", "OPP SPELL: " .. BridgePresentationSecondsLabel(opponentOverride))
     if ui.reportCaptureResultPending and reportCaptureReady then
         ui.reportCaptureResultPending = false
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_UI_RESTORED", ui.reportCaptureToken, "capture-button-active-interactable-raycastable")

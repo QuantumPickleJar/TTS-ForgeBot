@@ -1669,6 +1669,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     -- owned. Retire them before the new session can observe or render any
     -- surviving TTS objects. Preferences intentionally survive a match
     -- replacement; hidden identities and staging state do not.
+    if (replacingMatch or forceReset) and BridgeRetireOpponentSpellPresentations ~= nil then
+        BridgeRetireOpponentSpellPresentations("event-session-prepare")
+    end
     if (replacingMatch or forceReset) and BridgeResetRevealSessionState ~= nil then
         BridgeResetRevealSessionState("event-session-prepare")
     end
@@ -2969,7 +2972,6 @@ function BridgeMutationPhysicalBatchesReady(tx)
     end
     return true, nil
 end
-
 -- A failed destination formation can leave TTS exposing the just-inserted
 -- Card userdata for a short time even though the native Deck already owns
 -- that exact GUID.  Rollback must canonicalize that observation before
@@ -4360,6 +4362,14 @@ function BridgeApplyAuthoritativeEvent(event)
             tostring(event.sourceZone),
             tostring(event.destinationZone),
             tostring(event.cardName)))
+    end
+
+    if event.kind == "spell_cast" then
+        -- This is only a presentation hint.  Exact identity is established
+        -- by the structured hand->stack transition below when the transport
+        -- does not include it on the semantic event.
+        if BridgeOpponentSpellObserveCast ~= nil then BridgeOpponentSpellObserveCast(event) end
+        return true, 0
     end
 
     if event.kind == "spell_resolved" then
@@ -6052,6 +6062,15 @@ local function BridgeApplyStructuredCardMoveCore(event)
         )
     end
 
+    -- Opponent spell readability owns only a disposable visual continuation.
+    -- Prepare it before a stack Card is handed to a destination container, but
+    -- never turn this into an event-drain or Forge-state delay.
+    local opponentSpellDeparture = nil
+    if BridgeOpponentSpellPrepareDeparture ~= nil
+        and event.sourceZone == "stack" and event.destinationZone ~= "stack" then
+        opponentSpellDeparture = BridgeOpponentSpellPrepareDeparture(event, object)
+    end
+
     if event.destinationZone ~= "battlefield" then
         local prepared, prepareError = BridgePreparePhysicalCardForPublicZoneMove(object, event.destinationZone)
         if not prepared then return false, prepareError end
@@ -6080,9 +6099,15 @@ local function BridgeApplyStructuredCardMoveCore(event)
         object.use_hands = false
         BridgeSetPhysicalFaceDown(object, seat, event.faceDown == true)
         object.setPosition(BRIDGE_STACK_POSITION)
+        if BridgeOpponentSpellObserveStackEntry ~= nil then
+            BridgeOpponentSpellObserveStackEntry(event, object)
+        end
     elseif event.destinationZone == "graveyard" then
         local moved, moveError = BridgeMoveToGraveyard(event, object, event._bridgePhysicalCompletion)
         if not moved then return false, moveError end
+        if BridgeOpponentSpellCommitDeparture ~= nil then
+            BridgeOpponentSpellCommitDeparture(opponentSpellDeparture, event, true)
+        end
     elseif event.destinationZone == "exile" then
         object.use_hands = false
         BridgeSetPhysicalTapped(object, false)
@@ -6091,6 +6116,9 @@ local function BridgeApplyStructuredCardMoveCore(event)
             return false, "no exile anchor configured for seat " .. tostring(event.seatId)
         end
         object.setPositionSmooth(exilePosition, false, true)
+        if BridgeOpponentSpellCommitDeparture ~= nil then
+            BridgeOpponentSpellCommitDeparture(opponentSpellDeparture, event, true)
+        end
     elseif event.destinationZone == "command" then
         object.use_hands = false
         local commandPosition = BridgeResolveSeatZoneAnchor(event.seatId, "command")
@@ -6098,6 +6126,9 @@ local function BridgeApplyStructuredCardMoveCore(event)
             return false, "no command anchor configured for seat " .. tostring(event.seatId)
         end
         object.setPositionSmooth(commandPosition, false, true)
+        if BridgeOpponentSpellCommitDeparture ~= nil then
+            BridgeOpponentSpellCommitDeparture(opponentSpellDeparture, event, true)
+        end
     elseif event.destinationZone == "library" then
         local libraryZone = BridgeGetLiveObjectByGuid(seat.libraryZoneGuid)
         if libraryZone == nil then
@@ -6923,7 +6954,6 @@ function BridgeMoveToGraveyard(event, object, completion)
     end
     return true, nil
 end
-
 -- Recovery-only exact repair for a physical Card which the authoritative
 -- snapshot says belongs in graveyard but which was left loose by an aborted
 -- mutation.  The planner supplies the exact CardInstanceId; this path never
@@ -7194,10 +7224,3 @@ function BridgeVerifyFinalPhysicalRepresentation(instanceId, seatId, zoneName)
     return true, nil
 end
 
-function BridgeFindSeatLibraryDeckWithCard(seat, expectedName)
-    local seatId = BridgeSeatIdForSeatConfig(seat)
-    local preferred = seatId and BridgeFindLibraryDeckForSeat(seatId) or nil
-    if preferred ~= nil and ((preferred.tag == "Card" and BridgeCardNameMatches(BridgePhysicalCanonicalCardName(preferred), expectedName))
-        or BridgeDeckContainsCardName(preferred, expectedName)) then
-        return preferred
-    end

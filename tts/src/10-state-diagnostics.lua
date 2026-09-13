@@ -232,8 +232,8 @@ function BridgeFindSingleCardLibraryCandidateForSeat(seatId, objectSnapshot)
     local nearestDistance = nil
     local radius = (seat.libraryAssetRadius or 4) + 0.75
     for _, object in ipairs(objectSnapshot or _all()) do
-        if BridgeObjectIsUsable(object) and BridgeSafeObjectTag(object) == "Card"
-            and not BridgeIsPresentationOnlyObject(object) then
+        if BridgeObjectIsUsable(object) and not BridgeIsPresentationOnlyObject(object)
+            and BridgeSafeObjectTag(object) == "Card" then
             local guid = BridgeSafeObjectGuid(object)
             local mappedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
             if guid ~= nil and (mappedZone == nil or mappedZone == "library") then
@@ -830,7 +830,8 @@ end
 function BridgeAuditDuplicateLibraryGuids(ignoredGuids)
     local looseByGuid = {}
     for _, object in ipairs(getAllObjects()) do
-        if BridgeObjectIsUsable(object) and object.tag == "Card" then
+        if BridgeObjectIsUsable(object) and not BridgeIsPresentationOnlyObject(object)
+            and object.tag == "Card" then
             local guid = BridgeSafeObjectGuid(object)
             -- During a Deck.putObject/takeObject transaction TTS can retain
             -- the exact moved Card in its old loose/source view while also
@@ -1105,7 +1106,8 @@ function BridgeInsertPhysicalCardIntoLibrary(seatId, object, placementMode, call
     callback = callback or function() end
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then callback(false, "unknown seat"); return end
-    if not BridgeObjectIsUsable(object) or object.tag ~= "Card" then
+    if not BridgeObjectIsUsable(object) or BridgeIsPresentationOnlyObject(object)
+        or object.tag ~= "Card" then
         callback(false, "library insertion requires a live Card object")
         return
     end
@@ -2063,6 +2065,9 @@ function onLoad()
     -- TTS file read and Lua compilation happen before this function executes;
     -- this first marker deliberately measures only observable runtime startup.
     local startupToken = BridgeStartupStageBegin("onLoad_enter")
+    if BridgeRetireOrphanedPresentationProxies ~= nil then
+        BridgeRetireOrphanedPresentationProxies("runtime-reload")
+    end
     BridgeLog("[Bridge] TTS_RUNTIME_PROVENANCE revision=" .. tostring(BRIDGE_SCRIPT_REVISION)
         .. " generatedGlobalLuaSha256=" .. tostring(BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 or "unavailable"))
     BridgeOnLoad()
