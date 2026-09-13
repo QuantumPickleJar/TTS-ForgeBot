@@ -2372,6 +2372,17 @@ function BridgeShouldDeferDecision(decision)
     local applied = math.max(
         tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
         tonumber(BridgeState.lastStateProjectedEventSequence or 0) or 0)
+    local randomPresentation = BridgeState.activeRandomResultPresentation
+    if randomPresentation ~= nil and randomPresentation.finished ~= true
+        and randomPresentation.sessionId == BridgeState.eventSessionId then
+        local presentationEvent = tonumber(randomPresentation.eventSequence or 0) or 0
+        if eventCursor <= 0 or presentationEvent <= 0 or eventCursor >= presentationEvent then
+            BridgeRegisterPhysicalReadinessDependency(decision, "random_result_presentation_pending",
+                "event=" .. tostring(presentationEvent), decision and decision.seatId or nil)
+            return true, eventCursor, applied, "random_result_presentation_pending",
+                "event=" .. tostring(presentationEvent)
+        end
+    end
     local function globalPhysicalQueueBusy()
         for seatId, _ in pairs(BRIDGE_SEATS or {}) do
             if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
@@ -4354,6 +4365,9 @@ function BridgeResetSession()
             and BridgeRuntimeIsCurrent(BRIDGE_RUNTIME_EPOCH_LOCAL)
     end
     BridgeStopEventPolling("session-reset")
+    if BridgeRetireRandomResultPresentations ~= nil then
+        BridgeRetireRandomResultPresentations("new-match")
+    end
     -- NEW MATCH preserves the physical cards but abandons every old event
     -- mutation owner. Fence queued/native callbacks before cleanup observes
     -- the table; late callbacks can then contribute only physical evidence

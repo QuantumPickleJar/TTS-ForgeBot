@@ -142,6 +142,28 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void RandomResultFramePreservesForgeNaturalAndFinalValuesAsOneGroup()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var output = parser.Append(
+            ForgeStructuredOutputParser.RandomResultSentinel
+            + "{\"version\":1,\"type\":\"random_result\",\"sequence\":21,\"forgeSequence\":34,"
+            + "\"rollGroupId\":\"forge-roll-7\",\"seatId\":\"forge-player-1\",\"sides\":6,"
+            + "\"naturalResults\":[2,5],\"finalResults\":[2,6],\"isReroll\":false,"
+            + "\"purpose\":\"rules/gameplay\",\"sourceObjectId\":\"forge-object:44\"}\n");
+
+        var result = Assert.Single(output.RandomResults!);
+        Assert.Equal("forge-roll-7", result.RollGroupId);
+        Assert.Equal(34, result.ForgeSequence);
+        Assert.Equal("forge-player-1", result.SeatId);
+        Assert.Equal(6, result.Sides);
+        Assert.Equal([2, 5], result.NaturalResults);
+        Assert.Equal([2, 6], result.FinalResults);
+        Assert.Equal("forge-object:44", result.SourceObjectId);
+        Assert.Empty(output.TuiText);
+    }
+
+    [Fact]
     public void MalformedDecisionReadyFrame_FailsVisibly()
     {
         var parser = new ForgeStructuredOutputParser();

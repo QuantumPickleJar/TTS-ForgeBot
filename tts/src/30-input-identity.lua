@@ -812,16 +812,69 @@ end
 -- Display names are never a recovery key for it: another printing with the
 -- same name can be in a different authoritative zone (notably Delve's native
 -- graveyard Deck beside a battlefield permanent).
+local function BridgeActionAuthoritativeDescriptor(instanceId)
+    if instanceId == nil or BridgeState == nil
+        or BridgeState.authoritativeObjectByInstanceId == nil then
+        return nil
+    end
+    return BridgeState.authoritativeObjectByInstanceId[instanceId]
+end
+
+local function BridgeAuthoritativeDescriptorIsVirtual(descriptor)
+    if descriptor == nil then return false end
+    local policy = string.lower(tostring(descriptor.materializationPolicy or ""))
+    return descriptor.isVirtual == true or policy == "virtual" or policy == "virtual-stack"
+end
+
+-- An action may describe two different things: a logical stack/ability object
+-- and the physical permanent which supplied that ability.  Keep the fields
+-- exact, but choose the physical presentation identity from Forge's explicit
+-- descriptor metadata when both are present.  An unknown candidate is kept
+-- ahead of a later known candidate so incomplete authoritative state still
+-- fails closed instead of silently presenting the wrong exact object.
 function BridgeActionExactPhysicalInstanceId(action)
     if action == nil then return nil end
-    local exact = action.preparedSourceCardInstanceId or action.sourceCardInstanceId
-    if exact ~= nil then return exact end
+    local candidates = {}
+    local seen = {}
+    local function add(value)
+        if value ~= nil and tostring(value) ~= "" and not seen[value] then
+            seen[value] = true
+            table.insert(candidates, value)
+        end
+    end
+
+    add(action.preparedSourceCardInstanceId)
+    local actionType = tostring(action.type or action.actionKind or "")
+    local targetIsPhysicalEntity = actionType == "choose_target"
+        and tostring(action.targetKind or "") == "card"
+    local entityIsPhysicalChoice = actionType == "choose_entity"
+        and action.entityCardInstanceId ~= nil
+    if targetIsPhysicalEntity or entityIsPhysicalChoice then
+        add(action.cardInstanceId)
+        add(action.entityCardInstanceId)
+    end
+    add(action.sourceCardInstanceId)
     -- Older/alternate bridge payloads may carry the exact source only in
     -- structured provenance. This is still an exact identity path; it is not
     -- a name fallback. The Forge adapter is responsible for session-scoping
     -- forge-object:* before this reaches the TTS boundary.
-    local provenanceSource = action.provenance and action.provenance.sourceCardInstanceId or nil
-    return provenanceSource or action.cardInstanceId or action.entityCardInstanceId
+    add(action.provenance and action.provenance.sourceCardInstanceId or nil)
+    add(action.cardInstanceId)
+    add(action.entityCardInstanceId)
+
+    local unknownCandidate = nil
+    local virtualCandidate = nil
+    for _, candidate in ipairs(candidates) do
+        local descriptor = BridgeActionAuthoritativeDescriptor(candidate)
+        if descriptor == nil then
+            if unknownCandidate == nil then unknownCandidate = candidate end
+        elseif not BridgeAuthoritativeDescriptorIsVirtual(descriptor) then
+            return candidate
+        elseif virtualCandidate == nil then
+            virtualCandidate = candidate
+        end
+    end
+    return unknownCandidate or virtualCandidate
 end
 
 function BridgeActionExpectedSourceZone(action)
@@ -841,11 +894,27 @@ end
 -- the source permanent lives in the virtual spell's zone.
 function BridgeActionExpectedPhysicalSourceZone(action)
     if action == nil then return nil end
+    local exact = BridgeActionExactPhysicalInstanceId(action)
+    local descriptor = BridgeActionAuthoritativeDescriptor(exact)
+    local logicalInstanceId = action.cardInstanceId or action.entityCardInstanceId
+    local declaredSourceInstanceId = action.sourceCardInstanceId
+        or (action.provenance and action.provenance.sourceCardInstanceId or nil)
+    local exactIsPhysicalProvenance = (logicalInstanceId ~= nil
+            and tostring(logicalInstanceId) ~= tostring(exact))
+        or (declaredSourceInstanceId ~= nil
+            and tostring(declaredSourceInstanceId) ~= tostring(exact))
+    if descriptor ~= nil and not BridgeAuthoritativeDescriptorIsVirtual(descriptor)
+        and exactIsPhysicalProvenance
+        and descriptor.zone ~= nil and tostring(descriptor.zone) ~= "" then
+        -- The logical action source can be a virtual stack object.  The
+        -- physical resolver must validate the selected exact embodiment
+        -- against its authoritative zone instead.
+        return string.lower(tostring(descriptor.zone))
+    end
     local preparedSource = action.preparedSourceCardInstanceId
     if tostring(action.castMode or "") == "prepare" and preparedSource ~= nil then
-        local descriptor = BridgeState.authoritativeObjectByInstanceId
-            and BridgeState.authoritativeObjectByInstanceId[preparedSource] or nil
-        local descriptorZone = descriptor and descriptor.zone or nil
+        local preparedDescriptor = BridgeActionAuthoritativeDescriptor(preparedSource)
+        local descriptorZone = preparedDescriptor and preparedDescriptor.zone or nil
         if descriptorZone ~= nil and tostring(descriptorZone) ~= "" then
             return string.lower(tostring(descriptorZone))
         end
