@@ -311,6 +311,9 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncWatchdogToken = BridgeState.resyncWatchdogToken,
         resyncLifecycle = BridgeState.resyncLifecycle or {},
         resyncActionJournal = BridgeState.resyncActionJournal or {},
+        resyncClickIngressCount = BridgeState.resyncClickIngressCount or 0,
+        resyncClickIngress = BridgeDiagnosticSnapshot(BridgeState.resyncClickIngress or {}),
+        resyncClickIngressJournal = BridgeDiagnosticSnapshot(BridgeState.resyncClickIngressJournal or {}),
         resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration,
         resyncReconcileStarted = BridgeState.resyncReconcileStarted == true,
         reportCaptureInFlight = ui.reportCaptureInFlight == true
@@ -1056,6 +1059,9 @@ function BridgeEventDrainQueueState()
         bootstrapping = BridgeState.bootstrapping == true,
         terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
         hudResyncPending = BridgeState.hudResyncPending == true,
+        resyncClickIngressCount = BridgeState.resyncClickIngressCount or 0,
+        resyncClickIngress = BridgeDiagnosticSnapshot(BridgeState.resyncClickIngress or {}),
+        resyncClickIngressJournal = BridgeDiagnosticSnapshot(BridgeState.resyncClickIngressJournal or {}),
         resyncButtonActive = BRIDGE_DEV_UI_ENABLED == true
             and BridgeState.resyncInFlight ~= true
             and BridgeState.hudResyncPending ~= true,
@@ -3356,6 +3362,9 @@ BridgeState = {
     resyncLifecycle = {},
     resyncActionJournal = {},
     resyncActionJournalCount = 0,
+    resyncClickIngressJournal = {},
+    resyncClickIngressCount = 0,
+    resyncClickIngress = nil,
     resyncCheckpoint = nil,
     resyncScheduled = false,
     resyncDeferredRetryScheduled = false,

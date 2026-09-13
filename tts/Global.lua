@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: c6c38ff709db9ef268722d963df6ee728687a91ec564580e31a30fe2a579e9d6
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "c6c38ff709db9ef268722d963df6ee728687a91ec564580e31a30fe2a579e9d6"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 39084450273c0a5f05be65678f25c31df43278f2afb9ffddd311f0ce2912c980
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "39084450273c0a5f05be65678f25c31df43278f2afb9ffddd311f0ce2912c980"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -314,6 +314,9 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncWatchdogToken = BridgeState.resyncWatchdogToken,
         resyncLifecycle = BridgeState.resyncLifecycle or {},
         resyncActionJournal = BridgeState.resyncActionJournal or {},
+        resyncClickIngressCount = BridgeState.resyncClickIngressCount or 0,
+        resyncClickIngress = BridgeDiagnosticSnapshot(BridgeState.resyncClickIngress or {}),
+        resyncClickIngressJournal = BridgeDiagnosticSnapshot(BridgeState.resyncClickIngressJournal or {}),
         resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration,
         resyncReconcileStarted = BridgeState.resyncReconcileStarted == true,
         reportCaptureInFlight = ui.reportCaptureInFlight == true
@@ -1059,6 +1062,9 @@ function BridgeEventDrainQueueState()
         bootstrapping = BridgeState.bootstrapping == true,
         terminalRecoveryError = BridgeCurrentTerminalRecoveryError() ~= nil,
         hudResyncPending = BridgeState.hudResyncPending == true,
+        resyncClickIngressCount = BridgeState.resyncClickIngressCount or 0,
+        resyncClickIngress = BridgeDiagnosticSnapshot(BridgeState.resyncClickIngress or {}),
+        resyncClickIngressJournal = BridgeDiagnosticSnapshot(BridgeState.resyncClickIngressJournal or {}),
         resyncButtonActive = BRIDGE_DEV_UI_ENABLED == true
             and BridgeState.resyncInFlight ~= true
             and BridgeState.hudResyncPending ~= true,
@@ -3359,6 +3365,9 @@ BridgeState = {
     resyncLifecycle = {},
     resyncActionJournal = {},
     resyncActionJournalCount = 0,
+    resyncClickIngressJournal = {},
+    resyncClickIngressCount = 0,
+    resyncClickIngress = nil,
     resyncCheckpoint = nil,
     resyncScheduled = false,
     resyncDeferredRetryScheduled = false,
@@ -10138,6 +10147,62 @@ function BridgeApplyCombatSnapshot(combat)
     end
 end
 
+-- Rebuild the authoritative object registry from the complete snapshot before
+-- any decision is rendered.  The registry is rules-state, not an inference
+-- from TTS objects: a physical mapping proves embodiment, while this table
+-- proves the Forge object's zone, controller/owner, virtuality, and
+-- designations.  Replacing it as one detached table also retires descriptors
+-- for objects which disappeared or changed zones/designations.
+function BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(snapshot)
+    local rebuilt = {}
+    local function copyDesignations(values)
+        if values == nil then return nil end
+        local copy = {}
+        local index = 1
+        while values[index] ~= nil do
+            copy[index] = values[index]
+            index = index + 1
+        end
+        for key, value in pairs(values) do
+            if type(key) ~= "number" then copy[key] = value end
+        end
+        return copy
+    end
+    local function record(card, zoneName, fallbackSeatId)
+        if card == nil or card.cardInstanceId == nil then return end
+        local resolvedZone = zoneName or card.zone
+        local seatId = card.controllerSeatId or card.ownerSeatId or fallbackSeatId
+        rebuilt[card.cardInstanceId] = {
+            cardInstanceId = card.cardInstanceId,
+            authoritativeObjectId = card.authoritativeObjectId or card.cardInstanceId,
+            objectId = card.authoritativeObjectId or card.cardInstanceId,
+            originObjectId = card.originObjectId,
+            copySourceObjectId = card.copySourceObjectId,
+            objectKind = card.objectKind,
+            isCopy = card.isCopy == true,
+            isVirtual = card.isVirtual == true,
+            materializationPolicy = card.materializationPolicy,
+            zone = resolvedZone ~= nil and string.lower(tostring(resolvedZone)) or nil,
+            seatId = seatId,
+            cardDesignations = copyDesignations(card.cardDesignations)
+        }
+    end
+
+    for _, seatSnapshot in ipairs((snapshot and snapshot.seats) or {}) do
+        for _, zone in ipairs(seatSnapshot.zones or {}) do
+            local zoneName = zone.name or zone.zone
+            for _, card in ipairs(zone.cards or {}) do
+                record(card, zoneName, seatSnapshot.seatId)
+            end
+        end
+    end
+    for _, card in ipairs((snapshot and snapshot.stack) or {}) do
+        record(card, "stack", card.controllerSeatId or card.ownerSeatId)
+    end
+    BridgeState.authoritativeObjectByInstanceId = rebuilt
+    return rebuilt
+end
+
 function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     local movedCount = 0
     local queueBefore = #(BridgeState.eventQueue or {})
@@ -10147,6 +10212,9 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     BridgePerformanceTrace("snapshot_reconcile.queue_lag_before", nil,
         math.max(0, receivedBefore - appliedBefore), queueBefore)
     BridgePresentationMetric("fullSnapshotReconcileCount")
+    local descriptorToken = BridgePerformanceBegin("snapshot_reconcile.authoritative_objects")
+    BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(snapshot)
+    BridgePerformanceEnd(descriptorToken, "snapshot_reconcile.authoritative_objects.end", "snapshotReconcileAuthoritativeObjects")
     local pending = BridgeState.pendingDecision
     local requiredSeatId = pending ~= nil and pending.kind == "mulligan"
         and tostring(pending.mulliganStage or "") == "keep_or_mulligan"
@@ -10170,15 +10238,6 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
         if #(snapshot and snapshot.stackObjects or {}) == 0 then
             table.insert(BridgeState.stackSummary, tostring(card.currentCardName or card.cardName or "Forge stack object"))
         end
-        BridgeState.authoritativeObjectByInstanceId[card.cardInstanceId] = {
-            objectId = card.authoritativeObjectId or card.cardInstanceId,
-            originObjectId = card.originObjectId,
-            copySourceObjectId = card.copySourceObjectId,
-            objectKind = card.objectKind,
-            isCopy = card.isCopy == true,
-            isVirtual = card.isVirtual == true,
-            materializationPolicy = card.materializationPolicy
-        }
     end
     BridgeUiMarkDirty("stack")
     BridgePerformanceEnd(stackToken, "snapshot_reconcile.stack.end", "snapshotReconcileStack")
@@ -13952,8 +14011,11 @@ function BridgePreparedSourceIsAuthoritativelyPrepared(action)
     if descriptor == nil then return false end
     local designations = descriptor.cardDesignations or descriptor.designations or {}
     if designations.prepared == true then return true end
-    for _, designation in ipairs(designations) do
+    local index = 1
+    while designations[index] ~= nil do
+        local designation = designations[index]
         if string.lower(tostring(designation)) == "prepared" then return true end
+        index = index + 1
     end
     return false
 end
@@ -14009,6 +14071,13 @@ function BridgeResolveExactActionPhysical(decision, action)
         BridgeRecordActionPhysicalResolution(decision, action, "unresolved",
             "prepared source no longer has prepared designation", nil, nil, nil)
         return nil, "prepared source no longer has prepared designation", instanceId
+    end
+    if preparedSource and preparedDescriptor ~= nil and preparedDescriptor.seatId ~= nil
+        and decision ~= nil and decision.seatId ~= nil
+        and tostring(preparedDescriptor.seatId) ~= tostring(decision.seatId) then
+        BridgeRecordActionPhysicalResolution(decision, action, "unresolved",
+            "prepared physical source belongs to a different seat", nil, nil, nil)
+        return nil, "prepared physical source belongs to a different seat", instanceId
     end
     local guid = BridgeState.physicalByInstanceId and BridgeState.physicalByInstanceId[instanceId] or nil
     local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
@@ -26259,7 +26328,47 @@ function BridgeRecordResyncAction(stage, reason, statusBeforeClick)
     return record
 end
 
+-- This is intentionally separate from the recovery journal.  It is the
+-- earliest Lua boundary for the XML callback, so a capture can distinguish a
+-- click that never entered Lua from a click rejected by recovery policy.
+function BridgeRecordResyncClickIngress(player, value, id)
+    local ui = BridgeState.ui
+    local playerColor = nil
+    if type(player) == "table" then
+        playerColor = player.color
+    elseif type(player) == "string" then
+        playerColor = player
+    elseif player ~= nil then
+        pcall(function() playerColor = player.color end)
+    end
+    local record = {
+        timestamp = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock(),
+        updateTick = tonumber(BridgeState.updateTick or 0) or 0,
+        callbackPlayerColor = playerColor,
+        value = value ~= nil and tostring(value) or nil,
+        id = id ~= nil and tostring(id) or nil,
+        uiMounted = ui ~= nil and ui.mounted == true,
+        diagnosticsVisible = ui ~= nil and ui.diagnosticsVisible == true,
+        devDrawer = ui ~= nil and ui.devDrawer or nil,
+        reportPanelVisible = ui ~= nil and ui.reportPanelVisible == true,
+        optionsPanelVisible = ui ~= nil and ui.devDrawer == "options",
+        effectiveParentExpectedActive = BRIDGE_DEV_UI_ENABLED == true
+            and ui ~= nil and ui.diagnosticsVisible == true,
+        cachedResyncInFlight = BridgeState.resyncInFlight == true,
+        cachedHudResyncPending = BridgeState.hudResyncPending == true
+    }
+    local journal = BridgeState.resyncClickIngressJournal or {}
+    BridgeState.resyncClickIngressJournal = journal
+    local count = (tonumber(BridgeState.resyncClickIngressCount or 0) or 0) + 1
+    table.insert(journal, record)
+    BridgeState.resyncClickIngressCount = count
+    while #journal > 16 do table.remove(journal, 1) end
+    BridgeState.resyncClickIngress = record
+    return record
+end
+
 function BridgeHudResyncFromForge(player, value, id)
+    BridgeRecordResyncClickIngress(player, value, id)
     local ui = BridgeState.ui
     local statusBeforeClick = BridgeState.statusHeadline or BridgeState.statusText
     if ui == nil then

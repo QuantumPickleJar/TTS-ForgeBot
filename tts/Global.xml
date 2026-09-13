@@ -48,6 +48,7 @@
 
       <HorizontalLayout minHeight="34" preferredHeight="34" flexibleHeight="0" spacing="10" childAlignment="MiddleCenter" childForceExpandWidth="false" childForceExpandHeight="true">
         <Button id="BridgeHudNewMatch" active="false" onClick="BridgeHudNewMatch" text="NEW MATCH" tooltip="Replace the completed Forge match. A second click confirms the destructive reset." minWidth="190" preferredWidth="190" flexibleWidth="0" fontSize="13" color="#7F1D1DEE" textColor="#FFFFFF" />
+        <Button id="BridgeHudResyncFromForge" visibility="Host|Admin" active="true" onClick="BridgeHudResyncFromForge" text="RESYNC FORGE" tooltip="Rebuild physical cards from Forge's authoritative snapshot, then resume after its event cursor. Forge rules state is never changed." minWidth="112" preferredWidth="112" flexibleWidth="0" fontSize="10" color="#854D0EDD" textColor="#FFFFFF" />
       </HorizontalLayout>
 
       <Text id="BridgeHudSelection" text="" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="12" color="#AAB7C6" alignment="MiddleCenter" />
@@ -147,7 +148,6 @@
         <Button id="BridgeHudFastForward" onClick="BridgeHudFastForward" text="FAST-FORWARD" tooltip="Temporarily pass explicit Forge priority actions until a stop gate or required choice." minWidth="115" preferredWidth="115" flexibleWidth="0" fontSize="11" color="#7C3AEDCC" textColor="#FFFFFF" />
         <Button id="BridgeHudReportOpen" onClick="BridgeHudReportOpen" text="REPORT BUG" tooltip="Open the diagnostic report form without changing the Forge match." minWidth="112" preferredWidth="112" flexibleWidth="0" fontSize="10" color="#7F1D1DCC" textColor="#FFFFFF" />
         <Button id="BridgeHudRollingCapture" visibility="Host|Admin" active="true" onClick="BridgeHudRollingCapture" text="CAPTURE FREEZE" tooltip="Capture the bounded recent performance history after a freeze. Nothing is written during normal play." minWidth="126" preferredWidth="126" flexibleWidth="0" fontSize="10" color="#166534DD" textColor="#FFFFFF" />
-        <Button id="BridgeHudResyncFromForge" visibility="Host|Admin" active="true" onClick="BridgeHudResyncFromForge" text="RESYNC FORGE" tooltip="Rebuild physical cards from Forge's authoritative snapshot, then resume after its event cursor. Forge rules state is never changed." minWidth="112" preferredWidth="112" flexibleWidth="0" fontSize="10" color="#854D0EDD" textColor="#FFFFFF" />
       </HorizontalLayout>
       <Text id="BridgeHudHelp" text="NORMAL: every human Forge decision requires input." minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="11" color="#AAB7C6" alignment="MiddleLeft" />
       <VerticalLayout id="BridgeHudOptionsPanel" active="false" minHeight="132" preferredHeight="132" flexibleHeight="0" spacing="4" padding="5 5 5 5" childForceExpandHeight="false" childForceExpandWidth="true" color="#0D1825EE">

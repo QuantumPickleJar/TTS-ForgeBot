@@ -2905,6 +2905,62 @@ function BridgeApplyCombatSnapshot(combat)
     end
 end
 
+-- Rebuild the authoritative object registry from the complete snapshot before
+-- any decision is rendered.  The registry is rules-state, not an inference
+-- from TTS objects: a physical mapping proves embodiment, while this table
+-- proves the Forge object's zone, controller/owner, virtuality, and
+-- designations.  Replacing it as one detached table also retires descriptors
+-- for objects which disappeared or changed zones/designations.
+function BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(snapshot)
+    local rebuilt = {}
+    local function copyDesignations(values)
+        if values == nil then return nil end
+        local copy = {}
+        local index = 1
+        while values[index] ~= nil do
+            copy[index] = values[index]
+            index = index + 1
+        end
+        for key, value in pairs(values) do
+            if type(key) ~= "number" then copy[key] = value end
+        end
+        return copy
+    end
+    local function record(card, zoneName, fallbackSeatId)
+        if card == nil or card.cardInstanceId == nil then return end
+        local resolvedZone = zoneName or card.zone
+        local seatId = card.controllerSeatId or card.ownerSeatId or fallbackSeatId
+        rebuilt[card.cardInstanceId] = {
+            cardInstanceId = card.cardInstanceId,
+            authoritativeObjectId = card.authoritativeObjectId or card.cardInstanceId,
+            objectId = card.authoritativeObjectId or card.cardInstanceId,
+            originObjectId = card.originObjectId,
+            copySourceObjectId = card.copySourceObjectId,
+            objectKind = card.objectKind,
+            isCopy = card.isCopy == true,
+            isVirtual = card.isVirtual == true,
+            materializationPolicy = card.materializationPolicy,
+            zone = resolvedZone ~= nil and string.lower(tostring(resolvedZone)) or nil,
+            seatId = seatId,
+            cardDesignations = copyDesignations(card.cardDesignations)
+        }
+    end
+
+    for _, seatSnapshot in ipairs((snapshot and snapshot.seats) or {}) do
+        for _, zone in ipairs(seatSnapshot.zones or {}) do
+            local zoneName = zone.name or zone.zone
+            for _, card in ipairs(zone.cards or {}) do
+                record(card, zoneName, seatSnapshot.seatId)
+            end
+        end
+    end
+    for _, card in ipairs((snapshot and snapshot.stack) or {}) do
+        record(card, "stack", card.controllerSeatId or card.ownerSeatId)
+    end
+    BridgeState.authoritativeObjectByInstanceId = rebuilt
+    return rebuilt
+end
+
 function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     local movedCount = 0
     local queueBefore = #(BridgeState.eventQueue or {})
@@ -2914,6 +2970,9 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     BridgePerformanceTrace("snapshot_reconcile.queue_lag_before", nil,
         math.max(0, receivedBefore - appliedBefore), queueBefore)
     BridgePresentationMetric("fullSnapshotReconcileCount")
+    local descriptorToken = BridgePerformanceBegin("snapshot_reconcile.authoritative_objects")
+    BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(snapshot)
+    BridgePerformanceEnd(descriptorToken, "snapshot_reconcile.authoritative_objects.end", "snapshotReconcileAuthoritativeObjects")
     local pending = BridgeState.pendingDecision
     local requiredSeatId = pending ~= nil and pending.kind == "mulligan"
         and tostring(pending.mulliganStage or "") == "keep_or_mulligan"
@@ -2937,15 +2996,6 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
         if #(snapshot and snapshot.stackObjects or {}) == 0 then
             table.insert(BridgeState.stackSummary, tostring(card.currentCardName or card.cardName or "Forge stack object"))
         end
-        BridgeState.authoritativeObjectByInstanceId[card.cardInstanceId] = {
-            objectId = card.authoritativeObjectId or card.cardInstanceId,
-            originObjectId = card.originObjectId,
-            copySourceObjectId = card.copySourceObjectId,
-            objectKind = card.objectKind,
-            isCopy = card.isCopy == true,
-            isVirtual = card.isVirtual == true,
-            materializationPolicy = card.materializationPolicy
-        }
     end
     BridgeUiMarkDirty("stack")
     BridgePerformanceEnd(stackToken, "snapshot_reconcile.stack.end", "snapshotReconcileStack")
