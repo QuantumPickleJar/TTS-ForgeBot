@@ -2631,7 +2631,47 @@ function BridgeRecordResyncAction(stage, reason, statusBeforeClick)
     return record
 end
 
+-- This is intentionally separate from the recovery journal.  It is the
+-- earliest Lua boundary for the XML callback, so a capture can distinguish a
+-- click that never entered Lua from a click rejected by recovery policy.
+function BridgeRecordResyncClickIngress(player, value, id)
+    local ui = BridgeState.ui
+    local playerColor = nil
+    if type(player) == "table" then
+        playerColor = player.color
+    elseif type(player) == "string" then
+        playerColor = player
+    elseif player ~= nil then
+        pcall(function() playerColor = player.color end)
+    end
+    local record = {
+        timestamp = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock(),
+        updateTick = tonumber(BridgeState.updateTick or 0) or 0,
+        callbackPlayerColor = playerColor,
+        value = value ~= nil and tostring(value) or nil,
+        id = id ~= nil and tostring(id) or nil,
+        uiMounted = ui ~= nil and ui.mounted == true,
+        diagnosticsVisible = ui ~= nil and ui.diagnosticsVisible == true,
+        devDrawer = ui ~= nil and ui.devDrawer or nil,
+        reportPanelVisible = ui ~= nil and ui.reportPanelVisible == true,
+        optionsPanelVisible = ui ~= nil and ui.devDrawer == "options",
+        effectiveParentExpectedActive = BRIDGE_DEV_UI_ENABLED == true
+            and ui ~= nil and ui.diagnosticsVisible == true,
+        cachedResyncInFlight = BridgeState.resyncInFlight == true,
+        cachedHudResyncPending = BridgeState.hudResyncPending == true
+    }
+    local journal = BridgeState.resyncClickIngressJournal or {}
+    BridgeState.resyncClickIngressJournal = journal
+    local count = (tonumber(BridgeState.resyncClickIngressCount or 0) or 0) + 1
+    table.insert(journal, record)
+    BridgeState.resyncClickIngressCount = count
+    while #journal > 16 do table.remove(journal, 1) end
+    BridgeState.resyncClickIngress = record
+    return record
+end
+
 function BridgeHudResyncFromForge(player, value, id)
+    BridgeRecordResyncClickIngress(player, value, id)
     local ui = BridgeState.ui
     local statusBeforeClick = BridgeState.statusHeadline or BridgeState.statusText
     if ui == nil then

@@ -860,8 +860,11 @@ function BridgePreparedSourceIsAuthoritativelyPrepared(action)
     if descriptor == nil then return false end
     local designations = descriptor.cardDesignations or descriptor.designations or {}
     if designations.prepared == true then return true end
-    for _, designation in ipairs(designations) do
+    local index = 1
+    while designations[index] ~= nil do
+        local designation = designations[index]
         if string.lower(tostring(designation)) == "prepared" then return true end
+        index = index + 1
     end
     return false
 end
@@ -917,6 +920,13 @@ function BridgeResolveExactActionPhysical(decision, action)
         BridgeRecordActionPhysicalResolution(decision, action, "unresolved",
             "prepared source no longer has prepared designation", nil, nil, nil)
         return nil, "prepared source no longer has prepared designation", instanceId
+    end
+    if preparedSource and preparedDescriptor ~= nil and preparedDescriptor.seatId ~= nil
+        and decision ~= nil and decision.seatId ~= nil
+        and tostring(preparedDescriptor.seatId) ~= tostring(decision.seatId) then
+        BridgeRecordActionPhysicalResolution(decision, action, "unresolved",
+            "prepared physical source belongs to a different seat", nil, nil, nil)
+        return nil, "prepared physical source belongs to a different seat", instanceId
     end
     local guid = BridgeState.physicalByInstanceId and BridgeState.physicalByInstanceId[instanceId] or nil
     local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
