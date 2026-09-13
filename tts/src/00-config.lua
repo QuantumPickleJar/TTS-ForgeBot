@@ -1933,7 +1933,7 @@ function BridgeObservePhysicalState(desired)
 end
 
 function BridgePlanEmbodimentReconciliation(desired, observed)
-    local plan = {operations = {}, affectedZones = {}, missing = {}, misplaced = {}, ambiguous = {}, unsettledZones = {}, exactMoves = {}}
+    local plan = {operations = {}, affectedZones = {}, missing = {}, misplaced = {}, ambiguous = {}, unsettledZones = {}, exactMoves = {}, exactGraveyardMoves = {}}
     if desired == nil then
         table.insert(plan.operations, {type = "FETCH_AND_RECONCILE_SNAPSHOT",
             precondition = "one current embodiment owner",
@@ -1975,6 +1975,13 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
                     cardName = card.cardName
                 })
             end
+            if tostring(card.zone) == "graveyard" and tostring(physical.tag or "") == "Card" then
+                table.insert(plan.exactGraveyardMoves, {
+                    cardInstanceId = instanceId, seatId = card.seatId,
+                    sourceZone = physical.zone, destinationZone = "graveyard",
+                    cardName = card.cardName
+                })
+            end
         end
     end
     if #plan.ambiguous > 0 then
@@ -1997,6 +2004,10 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
             return tostring(left.seatId) .. ":" .. tostring(left.cardInstanceId)
                 < tostring(right.seatId) .. ":" .. tostring(right.cardInstanceId)
         end)
+        table.sort(plan.exactGraveyardMoves, function(left, right)
+            return tostring(left.seatId) .. ":" .. tostring(left.cardInstanceId)
+                < tostring(right.seatId) .. ":" .. tostring(right.cardInstanceId)
+        end)
         for _, move in ipairs(plan.exactMoves) do
             local exactOperation = {
                 type = "MOVE_EXACT_LIBRARY_TO_HAND",
@@ -2010,6 +2021,17 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
             -- the live pump cannot spend a replan on a non-mutating bind.
             table.insert(plan.operations, exactOperation)
         end
+        for _, move in ipairs(plan.exactGraveyardMoves) do
+            table.insert(plan.operations, {
+                type = "MOVE_EXACT_CARD_TO_GRAVEYARD",
+                scope = "SEAT_GRAVEYARD", seatId = move.seatId, zone = "graveyard",
+                cardInstanceId = move.cardInstanceId, cardName = move.cardName,
+                sourceZone = move.sourceZone, destinationZone = move.destinationZone,
+                precondition = "exact mapped Forge instance is physically loose outside this seat graveyard Deck",
+                nativeAction = "BridgeRecoverExactCardToGraveyard",
+                postcondition = "exact Forge instance is contained in the selected seat graveyard Deck"
+            })
+        end
         for _, localZone in ipairs(localZones) do
             table.insert(plan.operations, {
                 type = localZone.zone == "library" and "REOBSERVE_SEAT_LIBRARY" or "REOBSERVE_SEAT_HAND",
@@ -2019,7 +2041,7 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
                 nativeAction = localZone.zone == "library" and "BridgeBindLibraryMappingsForSnapshot" or "BridgeObserveSeatHand",
                 postcondition = "selected seat zone exact state verified"})
         end
-        if #localZones == 0 then
+        if #localZones == 0 and #plan.exactGraveyardMoves == 0 then
             table.insert(plan.operations, {type = "RECONCILE_SNAPSHOT_ZONES", scope = "GLOBAL_SNAPSHOT",
                 precondition = "unambiguous desired and observed exact identities",
                 nativeAction = "BridgeLegacyBootstrapCurrentSnapshot",
@@ -2586,7 +2608,27 @@ function BridgePumpEmbodimentTransaction()
             BridgeEmbodimentJournal(tx, "APPLY", tx.currentOperation.type,
                 "operationToken=" .. tostring(tx.currentOperation.token) .. " attempt=" .. tostring(attempt))
             local operation = tx.currentOperation
-            if operation.scope == "SEAT_LIBRARY" then
+            if operation.scope == "SEAT_GRAVEYARD" and operation.type == "MOVE_EXACT_CARD_TO_GRAVEYARD" then
+                local operationToken = operation.token
+                BridgeRecoverExactCardToGraveyard(operation.seatId, operation.cardInstanceId,
+                    operation.sourceZone, operation.cardName, function(moved, moveError)
+                    if not BridgeEmbodimentTransactionIsCurrent(tx)
+                        or tx.currentOperation ~= operation
+                        or tx.currentOperation.token ~= operationToken then return end
+                    if not moved then
+                        BridgeEmbodimentRecordActualFailure(tx, moveError or "exact graveyard recovery failed")
+                        BridgeEmbodimentOperationCallback(tx, attempt,
+                            BridgeMakeEmbodimentResult("FAILED", tx.snapshot, moveError, nil))
+                        return
+                    end
+                    tx.operationStarted = false
+                    tx.lastProgressUpdateTick = tonumber(BridgeState.updateTick or 0) or 0
+                    BridgeEmbodimentJournal(tx, "OBSERVE", "SEAT_GRAVEYARD_EXACT_MOVE_COMPLETED",
+                        "cardInstanceId=" .. tostring(operation.cardInstanceId))
+                    tx.phase = "OBSERVE"
+                end)
+                return
+            elseif operation.scope == "SEAT_LIBRARY" then
                 local seatSnapshot = nil
                 for _, candidateSeat in ipairs(tx.snapshot and tx.snapshot.seats or {}) do
                     if tostring(candidateSeat.seatId) == tostring(operation.seatId) then seatSnapshot = candidateSeat; break end

@@ -1641,6 +1641,185 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void ThoughtScourWithExistingSixCardGraveyardReacquiresCurrentDeckForDeferredSpell()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.lastAppliedEventSequence = 219
+            BridgeState.eventSessionId = 'thought-scour-session'
+            BridgeTestSeedExistingDeck(
+                {instanceId=':g1', cardName='Island'}, {instanceId=':g2', cardName='Swamp'},
+                {instanceId=':g3', cardName='Mental Note'}, {instanceId=':g4', cardName='Treasure Cruise'},
+                {instanceId=':g5', cardName='Ashiok'}, {instanceId=':g6', cardName='Harmonized Trio'})
+            -- The seeded native Deck is an already committed graveyard. Keep
+            -- the logical ledger in the same state so the real atomic batch
+            -- computes 6 + 2 before dispatching the deferred spell.
+            -- MoonSharp's vararg bridge fixture intentionally exercises the
+            -- same one-based/native inventory shape as TTS.  Populate the
+            -- committed ledger explicitly so the pre-existing six-card pile
+            -- cannot be shortened by iterator/vararg adaptation.
+            local committedGraveyard = BridgeZoneLedger('forge-player-1', 'graveyard')
+            committedGraveyard[1] = ':g1'
+            committedGraveyard[2] = ':g2'
+            committedGraveyard[3] = ':g3'
+            committedGraveyard[4] = ':g4'
+            committedGraveyard[5] = ':g5'
+            committedGraveyard[6] = nil
+            table.insert(committedGraveyard, ':g6')
+            if bridgeTest.graveyardDeck.entries[6] == nil then
+                local containedGuid = bridgeTest.nextContainedGuid(':g6')
+                bridgeTest.graveyardDeck.entries[6] = {
+                    instanceId=':g6', name='Harmonized Trio', guid=containedGuid}
+                BridgeRecordContainedCardIdentity(':g6', bridgeTest.graveyardDeck.getGUID(),
+                    containedGuid, 'forge-player-1', 'graveyard', 'Harmonized Trio')
+            end
+            local millA = BridgeTestCreateCard(':32', 'Harmonized Trio', 'loose-32')
+            local drawA = BridgeTestCreateCard(':18', 'Swamp', 'loose-18')
+            local drawB = BridgeTestCreateCard(':5', 'Murderous Cut', 'loose-5')
+            local millB = BridgeTestCreateCard(':17', 'Island', 'loose-17')
+            local spell = BridgeTestCreateCard(':34', 'Thought Scour', 'spell-34')
+            spell._inLibrary = false
+            spell._inHand = false
+            spell._inDeck = false
+            spell._lastPosition = {x=4, y=2, z=0}
+            BridgeState.cardNameByInstanceId[':32'] = 'Harmonized Trio'
+            BridgeState.cardNameByInstanceId[':18'] = 'Swamp'
+            BridgeState.cardNameByInstanceId[':5'] = 'Murderous Cut'
+            BridgeState.cardNameByInstanceId[':17'] = 'Island'
+            BridgeState.cardNameByInstanceId[':34'] = 'Thought Scour'
+            BridgeRecordLooseCardIdentity(':34', 'spell-34', 'forge-player-1', 'stack')
+            BridgeTestQueueExtractionCards({millA, drawA, drawB, millB})
+            BridgeTestSetEventQueue(
+                {sequence=220, kind='draw', seatId='forge-player-1', sourceZone='library', destinationZone='hand', cardInstanceId=':18', cardName='Swamp', forgeSequence=46},
+                {sequence=221, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':32', cardName='Harmonized Trio', forgeSequence=46},
+                {sequence=222, kind='draw', seatId='forge-player-1', sourceZone='library', destinationZone='hand', cardInstanceId=':5', cardName='Murderous Cut', forgeSequence=46},
+                {sequence=223, kind='card_moved', seatId='forge-player-1', sourceZone='library', destinationZone='graveyard', cardInstanceId=':17', cardName='Island', forgeSequence=46},
+                {sequence=224, kind='card_moved', seatId='forge-player-1', sourceZone='stack', destinationZone='graveyard', cardInstanceId=':34', cardName='Thought Scour', forgeSequence=46}
+            )
+            -- Model TTS replacing the native Deck/GUID as the base merge
+            -- settles.  The deferred event must discover this same object
+            -- through the current seat-local topology, not the old handle.
+            local rawStartDeferred = BridgeStartDeferredGraveyardEvents
+            local rawGetLive = BridgeGetLiveObjectByGuid
+            BridgeStartDeferredGraveyardEvents = function(tx, batch)
+                bridgeTest.graveyardDeck.getGUID = function() return 'grave-deck-replaced' end
+                BridgeGetLiveObjectByGuid = function(guid)
+                    if guid == 'grave-deck-replaced' then return bridgeTest.graveyardDeck end
+                    return rawGetLive(guid)
+                end
+                return rawStartDeferred(tx, batch)
+            end
+            local rawCommitAtomic = BridgeCommitAtomicGraveyardMutation
+            BridgeCommitAtomicGraveyardMutation = function(tx, batch)
+                observedBaseCount = BridgeTableSize(batch and batch.baseExpectedInstances or {})
+                observedStagedLedgerCount = BridgeTestArrayLength(batch and batch.stagedGraveyardLedger or {})
+                return rawCommitAtomic(tx, batch)
+            end
+            BridgeProcessEventQueue()
+            local ledger = BridgeZoneLedger('forge-player-1', 'graveyard') or {}
+            finalApplied = BridgeState.lastAppliedEventSequence
+            graveyardCount = BridgeTestArrayLength(ledger)
+            nativeCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries or {})
+            spellCount = BridgeTestGraveyardInstanceCount(':34')
+            millACount = BridgeTestGraveyardInstanceCount(':32')
+            millBCount = BridgeTestGraveyardInstanceCount(':17')
+            deckCount = BridgeTestArrayLength((BridgeFindGraveyardContainer('forge-player-1') or {}).entries or {})
+            spellDeckGuid = BridgeState.physicalContainerByInstanceId[':34']
+                and BridgeState.physicalContainerByInstanceId[':34'].deckGuid or nil
+            mutationCommitCount = BridgeTestCountLogToken('MUTATION_COMMIT')
+            mutationAbortCount = BridgeTestCountLogToken('MUTATION_ABORT')
+            baseVerifiedCount = 0
+            deferredDispatchCount = 0
+            deferredSettledCount = 0
+            for _, record in pairs(BridgeState.physicalMutationJournal or {}) do
+                if record.stage == 'BASE_DESTINATION_VERIFIED' then baseVerifiedCount = baseVerifiedCount + 1 end
+                if record.stage == 'DEFERRED_GRAVEYARD_DISPATCH' then deferredDispatchCount = deferredDispatchCount + 1 end
+                if record.stage == 'DEFERRED_GRAVEYARD_SETTLED' then deferredSettledCount = deferredSettledCount + 1 end
+            end
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.True(lua.Globals.Get("finalApplied").Number == 224,
+            $"final={lua.Globals.Get("finalApplied").ToPrintString()} stagedLedger={lua.Globals.Get("observedStagedLedgerCount").ToPrintString()} baseExpected={lua.Globals.Get("observedBaseCount").ToPrintString()} graveyard={lua.Globals.Get("graveyardCount").ToPrintString()} native={lua.Globals.Get("nativeCount").ToPrintString()} spell={lua.Globals.Get("spellCount").ToPrintString()} base={lua.Globals.Get("baseVerifiedCount").ToPrintString()} dispatch={lua.Globals.Get("deferredDispatchCount").ToPrintString()} settled={lua.Globals.Get("deferredSettledCount").ToPrintString()} commits={lua.Globals.Get("mutationCommitCount").ToPrintString()} aborts={lua.Globals.Get("mutationAbortCount").ToPrintString()} desync={lua.Globals.Get("desyncState").ToPrintString()} logs={CapturedLogsTail(lua)}");
+        Assert.Equal(8, lua.Globals.Get("observedBaseCount").Number);
+        Assert.Equal(8, lua.Globals.Get("observedStagedLedgerCount").Number);
+        Assert.Equal(9, lua.Globals.Get("graveyardCount").Number);
+        Assert.True(lua.Globals.Get("nativeCount").Number == 9,
+            $"final={lua.Globals.Get("finalApplied").ToPrintString()} graveyard={lua.Globals.Get("graveyardCount").ToPrintString()} native={lua.Globals.Get("nativeCount").ToPrintString()} recovery={lua.Globals.Get("recoveryOk").ToPrintString()} error={lua.Globals.Get("recoveryError").ToPrintString()} logs={CapturedLogsTail(lua)}");
+        Assert.Equal(9, lua.Globals.Get("deckCount").Number);
+        Assert.Equal("grave-deck-replaced", lua.Globals.Get("spellDeckGuid").String);
+        Assert.Equal(1, lua.Globals.Get("spellCount").Number);
+        Assert.Equal(1, lua.Globals.Get("millACount").Number);
+        Assert.Equal(1, lua.Globals.Get("millBCount").Number);
+        Assert.True(lua.Globals.Get("baseVerifiedCount").Number == 1,
+            $"base={lua.Globals.Get("baseVerifiedCount").ToPrintString()} dispatch={lua.Globals.Get("deferredDispatchCount").ToPrintString()} settled={lua.Globals.Get("deferredSettledCount").ToPrintString()} logs={CapturedLogsTail(lua)}");
+        Assert.Equal(1, lua.Globals.Get("deferredDispatchCount").Number);
+        Assert.Equal(1, lua.Globals.Get("deferredSettledCount").Number);
+        Assert.Equal(1, lua.Globals.Get("mutationCommitCount").Number);
+        Assert.Equal(0, lua.Globals.Get("mutationAbortCount").Number);
+        Assert.Equal("nil", lua.Globals.Get("desyncState").String);
+    }
+
+    [Fact]
+    public void PartialGraveyardRecoveryMovesOnlyTheExactLooseAuthoritativeCardIntoExistingDeck()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'recovery-session'
+            BridgeState.eventSessionGeneration = 1
+            BridgeState.physicalTransactionGeneration = 1
+            BridgeTestSeedExistingDeck(
+                {instanceId=':g1', cardName='Island'}, {instanceId=':g2', cardName='Swamp'},
+                {instanceId=':g3', cardName='Mental Note'}, {instanceId=':g4', cardName='Treasure Cruise'},
+                {instanceId=':g5', cardName='Ashiok'}, {instanceId=':g6', cardName='Harmonized Trio'},
+                {instanceId=':32', cardName='Harmonized Trio'}, {instanceId=':17', cardName='Island'})
+            local committedGraveyard = BridgeZoneLedger('forge-player-1', 'graveyard')
+            committedGraveyard[1] = ':g1'
+            committedGraveyard[2] = ':g2'
+            committedGraveyard[3] = ':g3'
+            committedGraveyard[4] = ':g4'
+            committedGraveyard[5] = ':g5'
+            committedGraveyard[6] = ':g6'
+            committedGraveyard[7] = ':32'
+            committedGraveyard[8] = nil
+            table.insert(committedGraveyard, ':17')
+            if bridgeTest.graveyardDeck.entries[8] == nil then
+                local containedGuid = bridgeTest.nextContainedGuid(':17')
+                bridgeTest.graveyardDeck.entries[8] = {
+                    instanceId=':17', name='Island', guid=containedGuid}
+                BridgeRecordContainedCardIdentity(':17', bridgeTest.graveyardDeck.getGUID(),
+                    containedGuid, 'forge-player-1', 'graveyard', 'Island')
+            end
+            beforeCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries)
+            local spell = BridgeTestCreateCard(':34', 'Thought Scour', 'loose-34')
+            spell._inLibrary = false
+            spell._inHand = false
+            spell._lastPosition = {x=5, y=2, z=0}
+            BridgeState.cardNameByInstanceId[':34'] = 'Thought Scour'
+            BridgeRecordLooseCardIdentity(':34', 'loose-34', 'forge-player-1', 'stack')
+            BridgeRecoverExactCardToGraveyard('forge-player-1', ':34', 'stack', 'Thought Scour',
+                function(ok, reason) recoveryOk = ok; recoveryError = reason end)
+            finalCount = BridgeTestGraveyardInstanceCount(':34')
+            nativeCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries)
+            exactMapping = BridgeState.physicalContainerByInstanceId[':34']
+            looseMapping = BridgeState.physicalByInstanceId[':34']
+            noSourceOk = nil
+            BridgeRecoverExactCardToGraveyard('forge-player-1', ':missing', 'stack', 'Unknown',
+                function(ok) noSourceOk = ok end)
+        ");
+
+        Assert.True(lua.Globals.Get("recoveryOk").Boolean, lua.Globals.Get("recoveryError").ToPrintString());
+        Assert.Equal(1, lua.Globals.Get("finalCount").Number);
+        Assert.True(lua.Globals.Get("nativeCount").Number == 9,
+            $"before={lua.Globals.Get("beforeCount").ToPrintString()} native={lua.Globals.Get("nativeCount").ToPrintString()} final={lua.Globals.Get("finalCount").ToPrintString()} recovery={lua.Globals.Get("recoveryOk").ToPrintString()} error={lua.Globals.Get("recoveryError").ToPrintString()} mapping={lua.Globals.Get("exactMapping").ToPrintString()} loose={lua.Globals.Get("looseMapping").ToPrintString()} logs={CapturedLogsTail(lua)}");
+        Assert.True(lua.Globals.Get("exactMapping").IsNotNil());
+        Assert.True(lua.Globals.Get("looseMapping").IsNil());
+        Assert.False(lua.Globals.Get("noSourceOk").Boolean);
+    }
+
+    [Fact]
     public void CompoundMutationNativeSettlementExceptionAbortsOwnedTransactionWithoutOrphaningAnimation()
     {
         var lua = NewProbe();

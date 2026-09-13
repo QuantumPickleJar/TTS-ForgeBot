@@ -2387,6 +2387,38 @@ function BridgeZoneLedger(seatId, zoneName)
     return ledger
 end
 
+-- A snapshot checkpoint is a complete authoritative zone boundary. Rebuild
+-- the event-side zone ledger from it so a recovery that repaired a partial
+-- physical mutation also becomes the correct starting point for the next
+-- atomic batch. Virtual/helper objects are deliberately excluded, matching
+-- BridgeBuildDesiredPhysicalState's materialization contract.
+function BridgeApplyCommittedSnapshotZoneLedger(snapshot)
+    if type(snapshot) ~= "table" then return false end
+    local nextLedger = {}
+    for _, seatSnapshot in ipairs(snapshot.seats or {}) do
+        local seatId = seatSnapshot and seatSnapshot.seatId or nil
+        if seatId ~= nil then
+            nextLedger[seatId] = {}
+            for _, zone in ipairs(seatSnapshot.zones or {}) do
+                local zoneName = string.lower(tostring(zone and zone.name or ""))
+                if zoneName ~= "" then
+                    nextLedger[seatId][zoneName] = {}
+                    for _, card in ipairs(zone.cards or {}) do
+                        local instanceId = card and card.cardInstanceId or nil
+                        if instanceId ~= nil and card.isVirtual ~= true
+                            and tostring(card.materializationPolicy or "") ~= "virtual"
+                            and tostring(card.materializationPolicy or "") ~= "virtual-stack" then
+                            table.insert(nextLedger[seatId][zoneName], instanceId)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    BridgeState.zoneLedgerBySeatAndZone = nextLedger
+    return true
+end
+
 -- A library batch may remain logically open until the grouped event queue is
 -- retired. That bookkeeping must not block the transaction that retires the
 -- queue: only outstanding physical workers are a readiness fence here.
@@ -2667,6 +2699,9 @@ function BridgeBuildAtomicLibraryToGraveyardBatches(tx)
             local preMutation = BridgeLogAtomicGraveyardTopology(seatId, batch, "before-mutation")
             batch.preMutationContainedGuidSet = BridgeAtomicGraveyardGuidSet(
                 preMutation and preMutation.graveyardEntries or {})
+            batch.preMutationDeckGuid = preMutation and preMutation.graveyardContainers
+                and preMutation.graveyardContainers[1]
+                and preMutation.graveyardContainers[1].guid or nil
             tx.graveyardMutationBatchesBySeatId[seatId] = batch
         end
     end
@@ -3002,13 +3037,12 @@ function BridgeFinalizeDeferredGraveyardBatch(tx, batch)
         return
     end
     local finalExpectedInstances = batch.finalExpectedInstances or batch.expectedInstances or nil
-    if batch.targetDeckGuid ~= nil then
-        local finalDeck = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(batch.targetDeckGuid) or nil
-        if BridgeSafeObjectTag(finalDeck) == "Deck" then
-            batch.targetDeck = finalDeck
-        end
+    local settledDeck = BridgeResolveCurrentNativeGraveyardDeck(
+        batch.seatId, batch.targetDeckGuid)
+    if BridgeSafeObjectTag(settledDeck) == "Deck" then
+        batch.targetDeck = settledDeck
+        batch.targetDeckGuid = BridgeSafeObjectGuid(settledDeck)
     end
-    local settledDeck = batch.targetDeck or BridgeFindGraveyardContainer(batch.seatId)
     if BridgeSafeObjectTag(settledDeck) ~= "Deck" then
         return
     end
@@ -3117,13 +3151,23 @@ function BridgeStartDeferredGraveyardEvents(tx, batch)
         end
         event._bridgePhysicalCompletion = completeDeferred
         event._bridgeDeferredGraveyardDispatch = true
+        -- The base mill commit may have replaced the native Deck (and TTS can
+        -- briefly expose the retired Card userdata as a proxy).  Deferred
+        -- arrivals must resolve the current native pile at dispatch time;
+        -- retain the verified base GUID only as a diagnostic/fallback hint.
+        event._bridgeDeferredGraveyardRequiresDeck = true
+        event._bridgeDeferredGraveyardPreferredDeckGuid = batch.targetDeckGuid
         event._bridgeContainmentOwner = batch.containmentOwner
         BridgeRecordPhysicalMutationJournal({
             token = tx.token, forgeSequence = tx.forgeSequence,
             stage = "DEFERRED_GRAVEYARD_DISPATCH", eventSequence = event.sequence,
             cardInstanceId = event.cardInstanceId, pendingCount = batch.deferredPendingCount,
             sessionId = tx.sessionId, sessionGeneration = tx.eventSessionGeneration,
-            physicalGeneration = tx.physicalTransactionGeneration
+            physicalGeneration = tx.physicalTransactionGeneration,
+            baseDeckGuid = batch.targetDeckGuid,
+            currentDeckGuid = BridgeResolveCurrentNativeGraveyardDeck ~= nil
+                and BridgeSafeObjectGuid(BridgeResolveCurrentNativeGraveyardDeck(
+                    batch.seatId, batch.targetDeckGuid)) or nil
         })
         local ok, applied, errorMessage = pcall(BridgeApplyStructuredCardMove, event)
         if not ok or applied ~= true then
@@ -3474,15 +3518,11 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         if not BridgeEventMutationIsCurrent(tx) then return end
         if batch.state == "FAILED" or batch.state == "VERIFIED" then return end
 
-        local resolved = nil
-        if BridgeSafeObjectTag(target) == "Deck" then
-            resolved = target
-        else
-            local discovered = BridgeFindGraveyardContainer(batch.seatId)
-            if BridgeSafeObjectTag(discovered) == "Deck" then
-                resolved = discovered
-            end
-        end
+        -- Always prefer the seat-local native Deck that exists now. The
+        -- object returned by group()/putObject() can be retired when TTS
+        -- replaces the pile during containment settlement.
+        local resolved = BridgeResolveCurrentNativeGraveyardDeck(
+            batch.seatId, BridgeSafeObjectGuid(target))
         if BridgeSafeObjectTag(resolved) == "Deck" then
             local graveyardAnchor = BridgeGraveyardPosition(batch.seatId)
             if graveyardAnchor == nil then
@@ -3528,11 +3568,8 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
         -- `resolved` was observed before the asynchronous settlement frames.
         -- Re-resolve by the stable native Deck GUID (or the seat's current
         -- graveyard container) before dereferencing it again.
-        local settledDeck = batch.targetDeckGuid and BridgeGetLiveObjectByGuid(batch.targetDeckGuid) or nil
-        if BridgeSafeObjectTag(settledDeck) ~= "Deck" then
-            local discovered = BridgeFindGraveyardContainer(batch.seatId)
-            if BridgeSafeObjectTag(discovered) == "Deck" then settledDeck = discovered end
-        end
+        local settledDeck = BridgeResolveCurrentNativeGraveyardDeck(
+            batch.seatId, batch.targetDeckGuid)
         if BridgeSafeObjectTag(settledDeck) ~= "Deck" then
             BridgeAbortAtomicGraveyardMutation(tx, batch,
                 "graveyard-settlement target Deck was replaced before reconciliation")
@@ -3690,6 +3727,8 @@ function BridgeCommitAtomicGraveyardMutation(tx, batch)
             "[Bridge] MUTATION_DESTINATION_SETTLEMENT_SAMPLE token=%s forgeSequence=%s seat=%s sample=%s inventoryCount=%s generation=%s",
             tostring(tx.token), tostring(tx.forgeSequence), tostring(batch.seatId),
             tostring(sampleCount), tostring(#(inventory or {})), tostring(tx.physicalTransactionGeneration)))
+            end, function()
+                return BridgeResolveCurrentNativeGraveyardDeck(batch.seatId, batch.targetDeckGuid)
             end)
             return
         end
@@ -6047,7 +6086,7 @@ function BridgeApplyStructuredCardMove(event)
     return ok, err
 end
 
-function BridgeFindGraveyardContainer(seatId, excludeGuid, allowMappedOffAnchorFallback)
+function BridgeFindGraveyardContainer(seatId, excludeGuid, allowMappedOffAnchorFallback, requireNativeDeck)
     local seat = BRIDGE_SEATS[seatId]
     if seat == nil then return nil end
     local anchor = BridgeResolveSeatZoneAnchor(seatId, "graveyard")
@@ -6066,10 +6105,12 @@ function BridgeFindGraveyardContainer(seatId, excludeGuid, allowMappedOffAnchorF
             and tostring(guid) ~= tostring(libraryGuid) then
             local candidate = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
             if BridgeObjectIsUsable(candidate) and candidate.tag == "Card" then
-                if anchor == nil or BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
+                if requireNativeDeck ~= true
+                    and (anchor == nil or BridgeObjectNearSeatZone(candidate, seatId, "graveyard")) then
                     return candidate
                 end
-                if allowMappedOffAnchorFallback == true or BridgeState.resyncInFlight == true then
+                if requireNativeDeck ~= true
+                    and (allowMappedOffAnchorFallback == true or BridgeState.resyncInFlight == true) then
                     fallback = candidate
                 end
             end
@@ -6086,7 +6127,7 @@ function BridgeFindGraveyardContainer(seatId, excludeGuid, allowMappedOffAnchorF
                         or (anchor ~= nil and BridgeObjectNearSeatZone(candidate, seatId, "graveyard")) then
                         return candidate
                     end
-                elseif candidate.tag == "Card"
+                elseif requireNativeDeck ~= true and candidate.tag == "Card"
                     and BridgeState.physicalSeatByGuid[guid] == seatId
                     and BridgeState.physicalZoneByGuid[guid] == "graveyard" then
                     if anchor == nil or BridgeObjectNearSeatZone(candidate, seatId, "graveyard") then
@@ -6100,6 +6141,20 @@ function BridgeFindGraveyardContainer(seatId, excludeGuid, allowMappedOffAnchorF
         end
     end
     return fallback
+end
+
+-- Resolve the native graveyard pile after a topology-changing operation.  A
+-- verified Deck GUID from an earlier frame is useful as a fallback, but the
+-- first lookup deliberately excludes Card-shaped transitional aliases and
+-- re-discovers the seat-local Deck that TTS currently owns.
+function BridgeResolveCurrentNativeGraveyardDeck(seatId, preferredDeckGuid)
+    local current = BridgeFindGraveyardContainer(seatId, nil, true, true)
+    if BridgeSafeObjectTag(current) == "Deck" then return current end
+    if preferredDeckGuid ~= nil then
+        local preferred = BridgeGetLiveObjectByGuid(preferredDeckGuid)
+        if BridgeSafeObjectTag(preferred) == "Deck" then return preferred end
+    end
+    return nil
 end
 
 -- Diagnostic utility: Count entries in a Lua table
@@ -6326,7 +6381,7 @@ end
 -- TTS Card→Deck merges assign new contained GUIDs asynchronously; we must not
 -- attempt reconciliation until the inventory is provably stable.
 -- Returns: (stable, stableError) where stable is bool.
-function BridgeVerifyGraveyardDeckSettlement(deck, maxRetries, callback, sampleObserver)
+function BridgeVerifyGraveyardDeckSettlement(deck, maxRetries, callback, sampleObserver, reacquireDeck)
     -- This operation is asynchronous.  A scheduled frame does not suspend
     -- Lua, so never return the result of checkStable() to the caller.
     local finished = false
@@ -6358,8 +6413,20 @@ function BridgeVerifyGraveyardDeckSettlement(deck, maxRetries, callback, sampleO
         local ok, callbackError = xpcall(function()
             if finished then return end
             local observedDeck = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(stableDeckGuid) or nil
+            if BridgeSafeObjectTag(observedDeck) ~= "Deck" and reacquireDeck ~= nil then
+                local replacement = reacquireDeck()
+                if BridgeSafeObjectTag(replacement) == "Deck" then
+                    observedDeck = replacement
+                    stableDeckGuid = BridgeSafeObjectGuid(replacement)
+                end
+            end
             if BridgeSafeObjectTag(observedDeck) ~= "Deck" then
-                finish(false, "target Deck became unavailable during settlement")
+                if retryCount < maxRetries then
+                    retryCount = retryCount + 1
+                    BridgeWaitFrames(checkStable, 1)
+                else
+                    finish(false, "target Deck became unavailable during settlement")
+                end
                 return
             end
             retryCount = retryCount + 1
@@ -6629,7 +6696,29 @@ function BridgeMoveToGraveyard(event, object, completion)
     -- settlement are asynchronous; the transaction-owned physical completion
     -- callback is the only proof that this exact stack departure succeeded.
     BridgeClearCardDesignationPresentation(event.cardInstanceId, object)
-    local existing = BridgeFindGraveyardContainer(event.seatId, guid)
+    local existing = nil
+    if event._bridgeDeferredGraveyardRequiresDeck == true then
+        existing = BridgeResolveCurrentNativeGraveyardDeck(
+            event.seatId, event._bridgeDeferredGraveyardPreferredDeckGuid)
+        BridgeRecordPhysicalMutationJournal({
+            operation = "GraveyardMerge", stage = "DEFERRED_CURRENT_DECK_REACQUIRED",
+            cardInstanceId = event.cardInstanceId, sourceZone = event.sourceZone,
+            destinationZone = event.destinationZone,
+            baseDeckGuid = event._bridgeDeferredGraveyardPreferredDeckGuid,
+            currentDeckGuid = BridgeSafeObjectGuid(existing),
+            currentDeckTag = BridgeSafeObjectTag(existing),
+            currentContainedCount = existing and #(BridgeLibraryEntries(existing) or {}) or 0,
+            expectedCountBeforeInsertion = existing and #(BridgeLibraryEntries(existing) or {}) or 0,
+            physicalGuid = guid,
+            deferredPhysicalGuid = guid,
+            branch = existing and "existing-deck-insertion" or "no-destination-found"
+        })
+        if existing == nil then
+            return false, "deferred graveyard insertion found no current native Deck after base commit"
+        end
+    else
+        existing = BridgeFindGraveyardContainer(event.seatId, guid)
+    end
     if existing == nil then
         BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "graveyard")
         -- P2: Assert object-shape contract for single loose card
@@ -6671,16 +6760,36 @@ function BridgeMoveToGraveyard(event, object, completion)
     if not ok then return false, "could not add card to native graveyard container: " .. tostring(result) end
     if BridgeSafeObjectTag(result) == "Deck" then target = result end
     if BridgeSafeObjectTag(target) ~= "Deck" then
-        target = BridgeFindGraveyardContainer(event.seatId)
+        target = event._bridgeDeferredGraveyardRequiresDeck == true
+            and BridgeResolveCurrentNativeGraveyardDeck(
+                event.seatId, event._bridgeDeferredGraveyardPreferredDeckGuid)
+            or BridgeFindGraveyardContainer(event.seatId)
     end
     if BridgeSafeObjectTag(target) ~= "Deck" then
-        return false, "TTS did not produce a native graveyard Deck for two cards"
+        local failure = event._bridgeDeferredGraveyardRequiresDeck == true
+            and "deferred graveyard insertion did not retain a native Deck after putObject"
+            or "TTS did not produce a native graveyard Deck while merging graveyard Cards"
+        BridgeRecordPhysicalMutationJournal({
+            operation = "GraveyardMerge", stage = "DEFERRED_CURRENT_DECK_FAILED",
+            cardInstanceId = event.cardInstanceId, sourceZone = event.sourceZone,
+            destinationZone = event.destinationZone, baseDeckGuid = event._bridgeDeferredGraveyardPreferredDeckGuid,
+            currentDeckGuid = BridgeSafeObjectGuid(target), currentDeckTag = BridgeSafeObjectTag(target),
+            currentContainedCount = target and #(BridgeLibraryEntries(target) or {}) or 0,
+            physicalGuid = guid,
+            deferredPhysicalGuid = guid,
+            expectedCountBeforeInsertion = #expectedInstances,
+            branch = event._bridgeDeferredGraveyardRequiresDeck == true
+                and "existing-deck-insertion" or "no-destination-found",
+            putObjectDispatched = true, failureReason = failure
+        })
+        return false, failure
     end
 
     local merge = {
         seatId = event.seatId,
         target = target,
         targetDeckGuid = BridgeSafeObjectGuid(target),
+        baseDeckGuid = event._bridgeDeferredGraveyardPreferredDeckGuid,
         expectedInstances = expectedInstances,
         eventSequence = event.sequence,
         cardInstanceId = event.cardInstanceId,
@@ -6696,6 +6805,86 @@ function BridgeMoveToGraveyard(event, object, completion)
         BridgeCompletePendingGraveyardMerge(merge, completion)
     end
     return true, nil
+end
+
+-- Recovery-only exact repair for a physical Card which the authoritative
+-- snapshot says belongs in graveyard but which was left loose by an aborted
+-- mutation.  The planner supplies the exact CardInstanceId; this path never
+-- searches by name and never treats a Deck entry as a loose source.
+function BridgeRecoverExactCardToGraveyard(seatId, cardInstanceId, sourceZone, expectedName, callback)
+    local finished = false
+    local function finish(ok, reason)
+        if finished then return end
+        finished = true
+        if callback ~= nil then callback(ok, reason) end
+    end
+    local guid = BridgeState.physicalByInstanceId[cardInstanceId]
+    local object = guid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
+    local inverse = guid ~= nil and BridgeState.physicalInstanceIdByGuid[guid] or nil
+    if not BridgeCardInstanceBelongsToSession(cardInstanceId, BridgeState.eventSessionId) then
+        finish(false, "exact physical source belongs to a retired Forge session")
+        return
+    end
+    if object == nil or BridgeSafeObjectTag(object) ~= "Card" then
+        BridgeRecordPhysicalMutationJournal({
+            operation = "EMBODIMENT_GRAVEYARD_REPAIR", stage = "EXACT_SOURCE_MISSING",
+            cardInstanceId = cardInstanceId, sourceZone = sourceZone,
+            physicalGuid = guid, physicalTag = BridgeSafeObjectTag(object),
+            failureReason = "exact loose physical Card is unavailable"
+        })
+        finish(false, "exact physical source Card is unavailable for graveyard repair")
+        return
+    end
+    if inverse ~= nil and inverse ~= cardInstanceId then
+        finish(false, "exact physical source GUID belongs to another Forge instance")
+        return
+    end
+    if sourceZone ~= nil
+        and (BridgeState.physicalSeatByGuid[guid] ~= seatId
+            or BridgeState.physicalZoneByGuid[guid] ~= sourceZone) then
+        finish(false, "exact physical source is not in the expected seat/source zone")
+        return
+    end
+    local currentDeck = BridgeResolveCurrentNativeGraveyardDeck(seatId)
+    BridgeRecordPhysicalMutationJournal({
+        operation = "EMBODIMENT_GRAVEYARD_REPAIR", stage = "EXACT_SOURCE_RESOLVED",
+        cardInstanceId = cardInstanceId, sourceZone = sourceZone,
+        destinationZone = "graveyard", physicalGuid = guid,
+        currentDeckGuid = BridgeSafeObjectGuid(currentDeck),
+        currentDeckTag = BridgeSafeObjectTag(currentDeck),
+        currentContainedCount = currentDeck and #(BridgeLibraryEntries(currentDeck) or {}) or 0,
+        branch = currentDeck and "existing-deck-insertion" or "no-destination-found"
+    })
+    local event = {
+        kind = "card_moved", seatId = seatId, sourceZone = sourceZone,
+        destinationZone = "graveyard", cardInstanceId = cardInstanceId,
+        cardName = expectedName or BridgeState.cardNameByInstanceId[cardInstanceId],
+        _bridgeRecoveryGraveyardRepair = true,
+        _bridgeDeferredGraveyardRequiresDeck = true,
+        _bridgeDeferredGraveyardPreferredDeckGuid = BridgeSafeObjectGuid(currentDeck)
+    }
+    local moved, moveError = BridgeMoveToGraveyard(event, object, function(ok, reason)
+        if not ok then
+            finish(false, reason or "exact graveyard repair did not settle")
+            return
+        end
+        local represented, representationError = BridgeVerifyFinalPhysicalRepresentation(
+            cardInstanceId, seatId, "graveyard")
+        BridgeRecordPhysicalMutationJournal({
+            operation = "EMBODIMENT_GRAVEYARD_REPAIR", stage = "FINAL_VERIFY",
+            cardInstanceId = cardInstanceId, physicalGuid = guid,
+            currentDeckGuid = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+                and BridgeState.physicalContainerByInstanceId[cardInstanceId].deckGuid or nil,
+            finalContainedGuid = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+                and BridgeState.physicalContainerByInstanceId[cardInstanceId].cardGuid or nil,
+            finalGraveyardCount = (BridgeResolveCurrentNativeGraveyardDeck(seatId) ~= nil)
+                and #(BridgeLibraryEntries(BridgeResolveCurrentNativeGraveyardDeck(seatId)) or {}) or 0,
+            containmentCallbackFired = true, valid = represented == true,
+            failureReason = represented and nil or representationError
+        })
+        finish(represented, representationError)
+    end)
+    if not moved then finish(false, moveError or "exact graveyard repair dispatch failed") end
 end
 
 -- Complete a deferred graveyard merge after verifying the Deck's contained GUID settlement.
@@ -6719,11 +6908,8 @@ function BridgeCompletePendingGraveyardMerge(merge, callback)
         return
     end
     local function resolveTargetDeck()
-        local target = merge.targetDeckGuid and BridgeGetLiveObjectByGuid(merge.targetDeckGuid) or nil
-        if BridgeSafeObjectTag(target) ~= "Deck" then
-            local discovered = BridgeFindGraveyardContainer(merge.seatId)
-            if BridgeSafeObjectTag(discovered) == "Deck" then target = discovered end
-        end
+        local target = BridgeResolveCurrentNativeGraveyardDeck(
+            merge.seatId, merge.targetDeckGuid)
         if BridgeSafeObjectTag(target) ~= "Deck" then return nil end
         merge.target = target
         merge.targetDeckGuid = BridgeSafeObjectGuid(target)
@@ -6737,7 +6923,7 @@ function BridgeCompletePendingGraveyardMerge(merge, callback)
     -- Verify the Deck has settled its contained GUID inventory
     BridgeTtsExecutionBreadcrumb("GRAVEYARD_SETTLEMENT_VERIFY_ENTER", "graveyard_materialization", nil,
         "merge:event" .. tostring(merge.eventSequence))
-    BridgeVerifyGraveyardDeckSettlement(target, 5, function(settled, settleError)
+            BridgeVerifyGraveyardDeckSettlement(target, 5, function(settled, settleError)
         local callbackOk, callbackError = xpcall(function()
         BridgeTtsExecutionBreadcrumb("GRAVEYARD_SETTLEMENT_VERIFY_RETURNED", "graveyard_materialization", nil,
             "merge:event" .. tostring(merge.eventSequence))
@@ -6768,6 +6954,14 @@ function BridgeCompletePendingGraveyardMerge(merge, callback)
             finish(false, reason)
             return
         end
+        BridgeRecordPhysicalMutationJournal({
+            operation = "GraveyardMerge", stage = "DEFERRED_CURRENT_DECK_SETTLED",
+            cardInstanceId = merge.cardInstanceId, baseDeckGuid = merge.baseDeckGuid,
+            currentDeckGuid = merge.targetDeckGuid, currentDeckTag = BridgeSafeObjectTag(settledTarget),
+            currentContainedCount = #(BridgeLibraryEntries(settledTarget) or {}),
+            expectedCount = BridgeTableSize(merge.expectedInstances or {}),
+            containmentCallbackFired = true, branch = "existing-deck-insertion"
+        })
         if merge.containmentTransition ~= nil then
             merge.containmentTransition.cardInstanceId = merge.cardInstanceId
             BridgeMarkPhysicalContainmentProven(merge.containmentTransition,
@@ -6823,6 +7017,8 @@ function BridgeCompletePendingGraveyardMerge(merge, callback)
             BridgeStopOnDesync(reason)
             finish(false, reason)
         end
+    end, nil, function()
+        return BridgeResolveCurrentNativeGraveyardDeck(merge.seatId, merge.targetDeckGuid)
     end)
 end
 

@@ -2726,6 +2726,9 @@ function BridgeCommitSnapshotCheckpoint(snapshot, reason)
             snapshot.sessionId or BridgeState.eventSessionId, snapshot.forgeSequence, "snapshot-checkpoint")
         if not watermarkOk then return false, watermarkError end
     end
+    if BridgeApplyCommittedSnapshotZoneLedger ~= nil then
+        BridgeApplyCommittedSnapshotZoneLedger(snapshot)
+    end
     BridgeState.lastReceivedEventSequence = math.max(
         tonumber(BridgeState.lastReceivedEventSequence or 0) or 0, cursor)
     BridgeState.lastConsumedEventSequence = cursor

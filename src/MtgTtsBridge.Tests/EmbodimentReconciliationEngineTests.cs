@@ -244,6 +244,65 @@ public sealed class EmbodimentReconciliationEngineTests
     }
 
     [Fact]
+    public void RecoveryPlansExactLooseCardIntoExistingGraveyardDeck()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            desired = {cardsByInstanceId={
+                ['forge:thought-scour']={cardInstanceId='forge:thought-scour',
+                    cardName='Thought Scour', seatId='forge-player-1', zone='graveyard'}
+            }}
+            observed = {byInstanceId={['forge:thought-scour']={guid='thought-scour-guid',
+                tag='Card', instanceId='forge:thought-scour', seatId='forge-player-1', zone='stack'}},
+                duplicateInstanceIds={}, unsettledContainedEntries={}}
+            plan = BridgePlanEmbodimentReconciliation(desired, observed)
+            repairType = nil
+            repairInstance = nil
+            repairScope = nil
+            for _, operation in ipairs(plan.operations) do
+                if operation.type == 'MOVE_EXACT_CARD_TO_GRAVEYARD' then
+                    repairType = operation.type
+                    repairInstance = operation.cardInstanceId
+                    repairScope = operation.scope
+                end
+            end
+            repairCount = #(plan.exactGraveyardMoves or {})
+        ");
+
+        Assert.Equal("MOVE_EXACT_CARD_TO_GRAVEYARD", lua.Globals.Get("repairType").String);
+        Assert.Equal("forge:thought-scour", lua.Globals.Get("repairInstance").String);
+        Assert.Equal("SEAT_GRAVEYARD", lua.Globals.Get("repairScope").String);
+        Assert.Equal(1, lua.Globals.Get("repairCount").Number);
+    }
+
+    [Fact]
+    public void SnapshotCheckpointRebuildsGraveyardLedgerAfterPartialRecovery()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.zoneLedgerBySeatAndZone = {['forge-player-1']={graveyard={'old-card'}}}
+            local graveyardCards = {
+                {cardInstanceId='g9'}, {cardInstanceId='g1'}, {cardInstanceId='g2'},
+                {cardInstanceId='g3'}, {cardInstanceId='g4'}, {cardInstanceId='g5'},
+                {cardInstanceId='g6'}, {cardInstanceId='g7'}, {cardInstanceId='g8'},
+                {cardInstanceId='virtual-helper', isVirtual=true,
+                    materializationPolicy='virtual'}
+            }
+            BridgeApplyCommittedSnapshotZoneLedger({sessionId='recovery-session', eventCursor=224,
+                seats={{seatId='forge-player-1', zones={{name='graveyard', cards=graveyardCards}}}}})
+            ledger = BridgeState.zoneLedgerBySeatAndZone['forge-player-1'].graveyard
+            ledgerCount = #ledger
+            ledgerContainsRecovered = false
+            for _, instanceId in pairs(ledger) do
+                if instanceId == 'g9' then ledgerContainsRecovered = true end
+            end
+        ");
+
+        Assert.Equal(9, lua.Globals.Get("ledgerCount").Number);
+        Assert.True(lua.Globals.Get("ledgerContainsRecovered").Boolean);
+    }
+
+    [Fact]
     public void LibraryUnsettledStateUsesSeatLibraryReplanNotWholeSnapshot()
     {
         var lua = NewProbe();
