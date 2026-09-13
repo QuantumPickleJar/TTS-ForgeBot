@@ -63,6 +63,7 @@ public sealed class DelveAndMulliganLuaContractTests
             BridgeState.currentTurnSeatId = 'forge-player-1'
             BridgeState.prioritySeatId = 'forge-player-1'
             BridgeState.currentPhase = 'Main phase, precombat'
+            BridgeState.stackSummary = {}
             BridgeState.currentAuthoritativeResult = nil
             BridgeState.terminalRecoveryError = nil
             local attributes = {}
@@ -129,11 +130,100 @@ public sealed class DelveAndMulliganLuaContractTests
     [Fact]
     public void DelveHudExplainsAuthoritativeGraveyardExileAndDynamicLimits()
     {
-        Assert.Contains("DELVE - SELECT ", Script);
-        Assert.Contains("CARDS FROM YOUR GRAVEYARD TO EXILE, THEN CONFIRM", Script);
+        Assert.Contains("DELVE — ", Script);
+        Assert.Contains("SELECT EXACTLY ", Script);
+        Assert.Contains("SELECT BETWEEN ", Script);
+        Assert.Contains("SELECT UP TO ", Script);
+        Assert.Contains("FROM YOUR GRAVEYARD TO EXILE, THEN CONFIRM", Script);
         Assert.Contains("Each exiled card pays {1} of this spell's generic mana cost.", Script);
         Assert.Contains("DELVE: ", Script);
-        Assert.Contains("need at least ", Script);
+        Assert.DoesNotContain("need at least ", Script);
+    }
+
+    [Fact]
+    public void DelveHudUsesExactRangeAndOptionalWordingAtRuntime()
+    {
+        var lua = new Script(CoreModules.Preset_Complete);
+        lua.DoString(@"
+            local rawTableConcat = table.concat
+            table.concat = function(values, separator)
+                local normalized = {}
+                local maximum = 0
+                for index, _ in pairs(values or {}) do
+                    if type(index) == 'number' and index > maximum then maximum = index end
+                end
+                for index = 1, maximum do normalized[index] = tostring(values[index] or '') end
+                return rawTableConcat(normalized, separator or '')
+            end
+            function log() end
+            function broadcastToAll() end
+            function printToAll() end
+            function getObjectFromGUID() return nil end
+            function getAllObjects() return {} end
+            function Wait() end
+            Time = { waitForSeconds = function(_, callback) if callback then callback() end end }
+            JSON = { encode = function() return '{}' end, decode = function() return {} end }
+        ");
+        lua.DoString(Script);
+        lua.DoString(@"
+            BridgeState.ui = { mounted = true, dirty = true, autoPassEmpty = false,
+                fastPlaytest = false, gameLogVisible = false, manaMode = 'AUTO',
+                actionRows = {}, contextInstanceId = nil, selectedActionIds = {},
+                gameLog = {}, graveyardActionRows = {}, graveyardFolderDecisionId = nil,
+                candidatePanelRenderCount = 0, actionPanelRenderCount = 0 }
+            BridgeState.playerStateBySeatId = { ['forge-player-1'] = {}, ['forge-player-2'] = {} }
+            BridgeState.highlightedGuids = {}
+            BridgeState.pendingIntent = nil
+            BridgeState.gameEnded = nil
+            BridgeState.desyncLatched = false
+            BridgeState.resyncInFlight = false
+            BridgeState.currentTurnSeatId = 'forge-player-1'
+            BridgeState.prioritySeatId = 'forge-player-1'
+            BridgeState.currentPhase = 'Main phase, precombat'
+            BridgeState.stackSummary = {}
+            BridgeState.currentAuthoritativeResult = nil
+            BridgeState.terminalRecoveryError = nil
+            local attributes = {}
+            BridgeUiSet = function(id, attribute, value) attributes[id .. '.' .. attribute] = tostring(value) end
+            BridgeUiMarkDirty = function() end
+            BridgeSetStatus = function() end
+            BridgeRenderDecision = function() end
+            BridgeRenderRevealSurface = function() end
+            BridgeClaimHumanTtsColor = function() end
+            BridgeRecordInteractionProducer = function() end
+            BridgeCurrentAuthoritativeResult = function() return nil end
+            BridgeCurrentTerminalRecoveryError = function() return nil end
+            BridgeYieldControllerMode = function() return 'normal' end
+            BridgeTurnLabel = function() return 'TURN 1' end
+            BridgeHudPhaseColor = function() return '#ffffff' end
+            BridgeActionPresentationAuthorized = function() return true end
+            BridgeCreatureTypePrepare = function() end
+            BridgeGraveyardPrepareDecision = function(_, actions) return actions end
+            BridgeState._attributes = attributes
+
+            local function show(minimum, maximum, selected)
+                BridgeState.lastDecision = {
+                    kind = 'cost_selection', costKind = 'delve', seatId = 'forge-player-1',
+                    minSelections = minimum, maxSelections = maximum, selectedCount = selected,
+                    actions = {}
+                }
+                BridgeState.ui.dirty = true
+                BridgeUiFlush()
+                return attributes['BridgeHudPrompt.text'], attributes['BridgeHudSelection.text']
+            end
+            exactPrompt, exactProgress = show(4, 4, 2)
+            rangePrompt, rangeProgress = show(2, 5, 2)
+            optionalPrompt, optionalProgress = show(0, 5, 0)
+        ");
+
+        Assert.Contains("SELECT EXACTLY 4 CARDS", lua.Globals.Get("exactPrompt").String);
+        Assert.DoesNotContain("4-4", lua.Globals.Get("exactPrompt").String);
+        Assert.Contains("2 selected — 4 required", lua.Globals.Get("exactProgress").String);
+        Assert.DoesNotContain("need at least", lua.Globals.Get("exactProgress").String);
+        Assert.Contains("SELECT BETWEEN 2 AND 5 CARDS", lua.Globals.Get("rangePrompt").String);
+        Assert.Contains("2 selected — 2 to 5 required", lua.Globals.Get("rangeProgress").String);
+        Assert.Contains("SELECT UP TO 5 CARDS", lua.Globals.Get("optionalPrompt").String);
+        Assert.Contains("0 selected — up to 5", lua.Globals.Get("optionalProgress").String);
     }
 
     [Fact]

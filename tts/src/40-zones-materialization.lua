@@ -6823,6 +6823,13 @@ function BridgeCollectGraveyardExpectedInstances(seatId, container, incomingInst
 end
 
 function BridgeMoveToGraveyard(event, object, completion)
+    -- Non-animated event paths historically called this helper without
+    -- passing the transaction callback explicitly. Recover that callback
+    -- from the event so every authoritative Card -> Deck transition still
+    -- inherits the same asynchronous completion fence.
+    if completion == nil and event ~= nil and event._bridgePhysicalCompletion ~= nil then
+        completion = event._bridgePhysicalCompletion
+    end
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then return false, "graveyard move has no configured seat" end
     local graveyardPosition = BridgeGraveyardPosition(event.seatId)
@@ -6906,6 +6913,12 @@ function BridgeMoveToGraveyard(event, object, completion)
     BridgeTtsExecutionBreadcrumb("GRAVEYARD_PUT_OBJECT_RETURNED", "graveyard_materialization", event,
         "event:" .. tostring(event.sequence))
     if not ok then return false, "could not add card to native graveyard container: " .. tostring(result) end
+    BridgeRecordPhysicalMutationJournal({
+        operation = "GraveyardMerge", stage = "PHYSICAL_DISPATCHED",
+        cardInstanceId = event.cardInstanceId, eventSequence = event.sequence,
+        baseDeckGuid = BridgeSafeObjectGuid(existing), currentDeckGuid = BridgeSafeObjectGuid(target),
+        physicalGuid = guid, branch = "existing-deck-insertion"
+    })
     if BridgeSafeObjectTag(result) == "Deck" then target = result end
     if BridgeSafeObjectTag(target) ~= "Deck" then
         target = event._bridgeDeferredGraveyardRequiresDeck == true
@@ -6950,6 +6963,10 @@ function BridgeMoveToGraveyard(event, object, completion)
     -- settlement is verified. The context belongs to this callback chain,
     -- never to one global pending slot.
     if completion ~= nil then
+        -- The native putObject above is only a dispatch. Keep the owning event
+        -- transaction pending until Deck settlement, exact contained rebinding,
+        -- and final representation verification call completion.
+        event._bridgePhysicalCompletionPending = true
         BridgeCompletePendingGraveyardMerge(merge, completion)
     end
     return true, nil

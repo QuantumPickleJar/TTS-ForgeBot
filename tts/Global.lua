@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 7b2cc85d4ad06435b49ec57025ac3c45a303e075f96d14434dea0a18f99bdd77
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "7b2cc85d4ad06435b49ec57025ac3c45a303e075f96d14434dea0a18f99bdd77"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 2c4ea18fce59de8eb79f8396cdb9e375032423b44fca2720960d9e5cf4b40202
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "2c4ea18fce59de8eb79f8396cdb9e375032423b44fca2720960d9e5cf4b40202"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -7830,8 +7830,16 @@ function BridgeUiFlush()
     if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "delve" then
         local minimum = tonumber(decision.minSelections or 0) or 0
         local maximum = tonumber(decision.maxSelections or minimum) or minimum
-        prompt = "DELVE - SELECT " .. tostring(minimum) .. "-" .. tostring(maximum)
-            .. " CARDS FROM YOUR GRAVEYARD TO EXILE, THEN CONFIRM."
+        local limitText = nil
+        if minimum == maximum then
+            limitText = "SELECT EXACTLY " .. tostring(maximum) .. " CARDS"
+        elseif minimum == 0 then
+            limitText = "SELECT UP TO " .. tostring(maximum) .. " CARDS"
+        else
+            limitText = "SELECT BETWEEN " .. tostring(minimum) .. " AND " .. tostring(maximum) .. " CARDS"
+        end
+        prompt = "DELVE — " .. limitText
+            .. " FROM YOUR GRAVEYARD TO EXILE, THEN CONFIRM."
             .. " Each exiled card pays {1} of this spell's generic mana cost."
     elseif decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew" then
         prompt = "CREW — SELECT CREATURES"
@@ -7901,8 +7909,14 @@ function BridgeUiFlush()
     local max = tonumber(decision and decision.maxSelections or 0) or 0
     local selectionText = decision and ("Selected: " .. tostring(selected) .. " / " .. tostring(max) .. " (min " .. tostring(min) .. ")") or ""
     if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "delve" then
-        selectionText = "DELVE: " .. tostring(selected) .. " selected - need at least "
-            .. tostring(min) .. ", max " .. tostring(max)
+        if min == max then
+            selectionText = "DELVE: " .. tostring(selected) .. " selected — " .. tostring(max) .. " required"
+        elseif min == 0 then
+            selectionText = "DELVE: " .. tostring(selected) .. " selected — up to " .. tostring(max)
+        else
+            selectionText = "DELVE: " .. tostring(selected) .. " selected — " .. tostring(min)
+                .. " to " .. tostring(max) .. " required"
+        end
     elseif decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew"
         and decision.requiredTotalPower ~= nil then
         selectionText = "TOTAL POWER " .. tostring(decision.selectedTotalPower or 0)
@@ -24222,6 +24236,13 @@ function BridgeCollectGraveyardExpectedInstances(seatId, container, incomingInst
 end
 
 function BridgeMoveToGraveyard(event, object, completion)
+    -- Non-animated event paths historically called this helper without
+    -- passing the transaction callback explicitly. Recover that callback
+    -- from the event so every authoritative Card -> Deck transition still
+    -- inherits the same asynchronous completion fence.
+    if completion == nil and event ~= nil and event._bridgePhysicalCompletion ~= nil then
+        completion = event._bridgePhysicalCompletion
+    end
     local seat = BRIDGE_SEATS[event.seatId]
     if seat == nil then return false, "graveyard move has no configured seat" end
     local graveyardPosition = BridgeGraveyardPosition(event.seatId)
@@ -24305,6 +24326,12 @@ function BridgeMoveToGraveyard(event, object, completion)
     BridgeTtsExecutionBreadcrumb("GRAVEYARD_PUT_OBJECT_RETURNED", "graveyard_materialization", event,
         "event:" .. tostring(event.sequence))
     if not ok then return false, "could not add card to native graveyard container: " .. tostring(result) end
+    BridgeRecordPhysicalMutationJournal({
+        operation = "GraveyardMerge", stage = "PHYSICAL_DISPATCHED",
+        cardInstanceId = event.cardInstanceId, eventSequence = event.sequence,
+        baseDeckGuid = BridgeSafeObjectGuid(existing), currentDeckGuid = BridgeSafeObjectGuid(target),
+        physicalGuid = guid, branch = "existing-deck-insertion"
+    })
     if BridgeSafeObjectTag(result) == "Deck" then target = result end
     if BridgeSafeObjectTag(target) ~= "Deck" then
         target = event._bridgeDeferredGraveyardRequiresDeck == true
@@ -24349,6 +24376,10 @@ function BridgeMoveToGraveyard(event, object, completion)
     -- settlement is verified. The context belongs to this callback chain,
     -- never to one global pending slot.
     if completion ~= nil then
+        -- The native putObject above is only a dispatch. Keep the owning event
+        -- transaction pending until Deck settlement, exact contained rebinding,
+        -- and final representation verification call completion.
+        event._bridgePhysicalCompletionPending = true
         BridgeCompletePendingGraveyardMerge(merge, completion)
     end
     return true, nil

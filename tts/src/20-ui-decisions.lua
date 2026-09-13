@@ -190,8 +190,16 @@ function BridgeUiFlush()
     if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "delve" then
         local minimum = tonumber(decision.minSelections or 0) or 0
         local maximum = tonumber(decision.maxSelections or minimum) or minimum
-        prompt = "DELVE - SELECT " .. tostring(minimum) .. "-" .. tostring(maximum)
-            .. " CARDS FROM YOUR GRAVEYARD TO EXILE, THEN CONFIRM."
+        local limitText = nil
+        if minimum == maximum then
+            limitText = "SELECT EXACTLY " .. tostring(maximum) .. " CARDS"
+        elseif minimum == 0 then
+            limitText = "SELECT UP TO " .. tostring(maximum) .. " CARDS"
+        else
+            limitText = "SELECT BETWEEN " .. tostring(minimum) .. " AND " .. tostring(maximum) .. " CARDS"
+        end
+        prompt = "DELVE — " .. limitText
+            .. " FROM YOUR GRAVEYARD TO EXILE, THEN CONFIRM."
             .. " Each exiled card pays {1} of this spell's generic mana cost."
     elseif decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew" then
         prompt = "CREW — SELECT CREATURES"
@@ -261,8 +269,14 @@ function BridgeUiFlush()
     local max = tonumber(decision and decision.maxSelections or 0) or 0
     local selectionText = decision and ("Selected: " .. tostring(selected) .. " / " .. tostring(max) .. " (min " .. tostring(min) .. ")") or ""
     if decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "delve" then
-        selectionText = "DELVE: " .. tostring(selected) .. " selected - need at least "
-            .. tostring(min) .. ", max " .. tostring(max)
+        if min == max then
+            selectionText = "DELVE: " .. tostring(selected) .. " selected — " .. tostring(max) .. " required"
+        elseif min == 0 then
+            selectionText = "DELVE: " .. tostring(selected) .. " selected — up to " .. tostring(max)
+        else
+            selectionText = "DELVE: " .. tostring(selected) .. " selected — " .. tostring(min)
+                .. " to " .. tostring(max) .. " required"
+        end
     elseif decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew"
         and decision.requiredTotalPower ~= nil then
         selectionText = "TOTAL POWER " .. tostring(decision.selectedTotalPower or 0)
