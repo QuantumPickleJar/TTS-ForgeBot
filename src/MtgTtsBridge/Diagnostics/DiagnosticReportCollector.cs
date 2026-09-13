@@ -89,6 +89,8 @@ public sealed class DiagnosticReportCollector
     {
         var capturedAt = DateTimeOffset.UtcNow;
         var reportId = $"{capturedAt:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}"[..20];
+        _logger.LogInformation("DIAG_CAPTURE_COLLECTOR_BEGIN reportId={ReportId} clientRuntimeId={ClientRuntimeId} sessionId={SessionId} category={Category}",
+            reportId, request.ClientRuntimeId, request.SessionId, request.Category);
         AdapterStateDto? state = null;
         EventBatchDto? events = null;
         GameSnapshotDto? snapshot = null;

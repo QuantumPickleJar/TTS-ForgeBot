@@ -308,7 +308,7 @@ app.MapGet("/api/v1/decision", async (IForgeAdapter adapter, DiagnosticTelemetry
 	return Results.Ok(state.CurrentDecision);
 });
 
-app.MapPost("/api/v1/diagnostics/report", async (HttpRequest httpRequest, DiagnosticReportCollector collector, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
+app.MapPost("/api/v1/diagnostics/report", async (HttpRequest httpRequest, DiagnosticReportCollector collector, DiagnosticTelemetryBuffer telemetry, ILogger<Program> logger, CancellationToken cancellationToken) =>
 {
 	DiagnosticReportRequestDto request;
 	try
@@ -333,13 +333,17 @@ app.MapPost("/api/v1/diagnostics/report", async (HttpRequest httpRequest, Diagno
 			null));
 	}
 
+	logger.LogInformation("DIAG_CAPTURE_HTTP_INGRESS path=/api/v1/diagnostics/report clientRuntimeId={ClientRuntimeId} sessionId={SessionId} category={Category}",
+		request.ClientRuntimeId, request.SessionId, request.Category);
 	telemetry.RecordProtocol("tts_to_bridge", "/api/v1/diagnostics/report", sessionId: request.SessionId, decisionId: request.DecisionId, clientRuntimeId: request.ClientRuntimeId, clientRevision: request.ClientRevision, payload: request);
 	var result = await collector.CaptureAsync(request, cancellationToken);
 	if (!result.Success)
 	{
+		logger.LogWarning("DIAG_CAPTURE_HTTP_FAILED reportId={ReportId} message={Message}", result.ReportId, result.Message);
 		telemetry.RecordProtocol("bridge_to_tts", "/api/v1/diagnostics/report", 500, request.SessionId, request.DecisionId, clientRuntimeId: request.ClientRuntimeId, clientRevision: request.ClientRevision, payload: result.Message);
 		return Results.Json(new DiagnosticReportFailureDto("diagnostic_capture_failed", result.Message, result.ReportId), statusCode: StatusCodes.Status500InternalServerError);
 	}
+	logger.LogInformation("DIAG_CAPTURE_HTTP_COMPLETED reportId={ReportId} reportPath={ReportPath}", result.ReportId, result.ReportPath);
 	telemetry.RecordProtocol("bridge_to_tts", "/api/v1/diagnostics/report", 200, request.SessionId, request.DecisionId, clientRuntimeId: request.ClientRuntimeId, clientRevision: request.ClientRevision, payload: new { result.ReportId, result.ReportPath });
 	return Results.Ok(new DiagnosticReportResponseDto(true, result.ReportId, result.ReportPath!, result.Message));
 });

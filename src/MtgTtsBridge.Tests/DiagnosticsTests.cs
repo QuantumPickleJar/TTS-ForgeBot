@@ -634,6 +634,34 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public async Task DiagnosticEndpoint_AllowsSequentialIdenticalRequestsFromOneRuntime()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+        var request = new DiagnosticReportRequestDto(
+            Summary: "same runtime retry",
+            Category: "Gameplay sync",
+            SessionId: "same-session",
+            ClientRuntimeId: "same-tts-runtime",
+            ClientRevision: "same-revision");
+
+        var firstResponse = await client.PostAsJsonAsync("/api/v1/diagnostics/report", request);
+        var first = await firstResponse.Content.ReadFromJsonAsync<DiagnosticReportResponseDto>();
+        var secondResponse = await client.PostAsJsonAsync("/api/v1/diagnostics/report", request);
+        var second = await secondResponse.Content.ReadFromJsonAsync<DiagnosticReportResponseDto>();
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.True(first!.Success);
+        Assert.True(second!.Success);
+        Assert.NotEqual(first.ReportId, second.ReportId);
+        Assert.True(File.Exists(first.ReportPath));
+        Assert.True(File.Exists(second.ReportPath));
+    }
+
+    [Fact]
     public async Task EmergencyCaptureEndpoint_CreatesZipWithoutTtsPayload()
     {
         using var factory = new TestWebApplicationFactory();
