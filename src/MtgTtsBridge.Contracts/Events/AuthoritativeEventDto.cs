@@ -54,7 +54,8 @@ public sealed record AuthoritativeEventDto(
     // producer truth and permits TTS to select its token materializer without
     // inferring from a display name or an unmapped battlefield object.
     bool IsToken = false,
-    RevealPresentationDto? RevealPresentation = null)
+    RevealPresentationDto? RevealPresentation = null,
+    RandomResultPresentationDto? RandomResultPresentation = null)
 {
     /// <summary>
     /// Complete current characteristics change when present. Provides structured

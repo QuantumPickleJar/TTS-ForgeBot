@@ -10,6 +10,7 @@ namespace MtgTtsBridge.TtsEditor;
 
 public sealed class TtsExternalEditorService : IHostedService, ITtsExternalEditorService, IDisposable
 {
+    private const int LoggedPayloadPrefixBytes = 96;
     private readonly ILogger<TtsExternalEditorService> _logger;
     private readonly TtsExternalEditorOptions _options;
     private readonly TtsExternalEditorCallbackTracker _tracker = new();
@@ -289,40 +290,113 @@ public sealed class TtsExternalEditorService : IHostedService, ITtsExternalEdito
             await using var stream = client.GetStream();
             using var bufferStream = new MemoryStream();
             var buffer = new byte[64 * 1024];
+            var remoteEndpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
+            var maxPayloadBytes = Math.Max(1, _options.MaxCallbackPayloadBytes);
 
             while (true)
             {
                 int read;
+                using var readTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                readTimeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.CallbackReadTimeoutSeconds)));
                 try
                 {
-                    read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                    read = await stream.ReadAsync(buffer, readTimeoutCts.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     return;
                 }
+                catch (OperationCanceledException) when (readTimeoutCts.IsCancellationRequested)
+                {
+                    LogRejectedClient(remoteEndpoint, bufferStream, "idle_timeout");
+                    return;
+                }
                 catch (Exception exception)
                 {
-                    _logger.LogWarning(exception, "TTS external-editor callback read failed.");
+                    _logger.LogWarning(exception, "TTS external-editor callback read failed remote={RemoteEndpoint}.", remoteEndpoint);
                     return;
                 }
 
                 if (read == 0) break;
+                var wasEmpty = bufferStream.Length == 0;
                 bufferStream.Write(buffer, 0, read);
+                if (bufferStream.Length > maxPayloadBytes)
+                {
+                    LogRejectedClient(remoteEndpoint, bufferStream, "payload_too_large");
+                    return;
+                }
+
+                if (wasEmpty)
+                {
+                    var firstChunk = buffer[..read];
+                    var firstClassification = ClassifyPayload(firstChunk);
+                    if (firstClassification is not null)
+                    {
+                        LogRejectedHttpClient(remoteEndpoint, bufferStream.Length, firstChunk, firstClassification);
+                        return;
+                    }
+                }
             }
 
             if (bufferStream.Length == 0) return;
 
+            var payload = bufferStream.ToArray();
+            var classification = ClassifyPayload(payload);
+            if (classification is not null)
+            {
+                LogRejectedHttpClient(remoteEndpoint, payload.Length, payload, classification);
+                return;
+            }
+
             try
             {
-                using var document = JsonDocument.Parse(bufferStream.ToArray());
+                using var document = JsonDocument.Parse(payload);
                 _tracker.TryProcessIncomingMessage(document.RootElement, _logger);
             }
             catch (JsonException exception)
             {
-                _logger.LogWarning(exception, "Ignoring malformed JSON callback from TTS external-editor.");
+                _logger.LogWarning(
+                    exception,
+                    "Ignoring malformed JSON callback from TTS external-editor remote={RemoteEndpoint} bytes={Bytes} prefix={Prefix}.",
+                    remoteEndpoint, payload.Length, SafePayloadPrefix(payload));
             }
         }
+    }
+
+    private void LogRejectedClient(string remoteEndpoint, MemoryStream payload, string classification) =>
+        _logger.LogWarning(
+            "Rejected TTS external-editor client remote={RemoteEndpoint} classification={Classification} bytes={Bytes} prefix={Prefix}.",
+            remoteEndpoint, classification, payload.Length, SafePayloadPrefix(payload.ToArray()));
+
+    private void LogRejectedHttpClient(string remoteEndpoint, long bytes, byte[] payload, string classification) =>
+        _logger.LogWarning(
+            "Rejected HTTP-looking client on TTS external-editor callback port remote={RemoteEndpoint} classification={Classification} bytes={Bytes} prefix={Prefix}.",
+            remoteEndpoint, classification, bytes, SafePayloadPrefix(payload));
+
+    private static string? ClassifyPayload(byte[] payload)
+    {
+        var prefix = Encoding.ASCII.GetString(payload, 0, Math.Min(payload.Length, LoggedPayloadPrefixBytes));
+        var firstLine = prefix.Split(['\r', '\n'], 2)[0].TrimStart();
+        if (firstLine.StartsWith("GET ", StringComparison.OrdinalIgnoreCase)) return "http_get";
+        if (firstLine.StartsWith("POST ", StringComparison.OrdinalIgnoreCase)) return "http_post";
+        if (firstLine.StartsWith("HEAD ", StringComparison.OrdinalIgnoreCase)) return "http_head";
+        if (firstLine.StartsWith("OPTIONS ", StringComparison.OrdinalIgnoreCase)) return "http_options";
+        if (firstLine.StartsWith("HTTP/", StringComparison.OrdinalIgnoreCase)) return "http_response";
+        return null;
+    }
+
+    private static string SafePayloadPrefix(byte[] payload)
+    {
+        var length = Math.Min(payload.Length, LoggedPayloadPrefixBytes);
+        var builder = new StringBuilder(length);
+        foreach (var character in Encoding.UTF8.GetString(payload, 0, length))
+        {
+            if (character is '\r') builder.Append("\\r");
+            else if (character is '\n') builder.Append("\\n");
+            else if (char.IsControl(character)) builder.Append($"\\x{(int)character:X2}");
+            else builder.Append(character);
+        }
+        return builder.ToString();
     }
 
     private async Task<TtsExternalEditorGlobalScriptState> EnsureCurrentGlobalStateAsync(CancellationToken cancellationToken)

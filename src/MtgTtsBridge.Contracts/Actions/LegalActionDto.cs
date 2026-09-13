@@ -34,7 +34,11 @@ public sealed record LegalActionDto(
     // Entity-selection provenance. Cards use CardInstanceId; players use
     // EntitySeatId. These fields never replace ActionId as legal identity.
     string? EntityKind = null,
-    string? EntitySeatId = null)
+    string? EntitySeatId = null,
+    // Some Forge controller paths expose the selected entity separately from
+    // the display/source fields. Keep it exact and session-scoped at the
+    // adapter boundary just like the other CardInstanceId fields.
+    string? EntityCardInstanceId = null)
 {
     /// <summary>
     /// Whether Forge explicitly authorized revealing this action's card identity
