@@ -2899,7 +2899,10 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
     BridgeUiSet("BridgeHudReportCategoryDropdown", "active", reportVisible and not ui.reportCaptureInFlight and "true" or "false")
     BridgeUiSet("BridgeHudReportSummary", "text", tostring(ui.reportSummaryDraft or ""))
-    BridgeUiSet("BridgeHudReportCategoryDropdown", "selectedIndex", tostring(math.max(0, reportCategoryIndex - 1)))
+    -- TTS Dropdown uses the zero-based item index through its `value`
+    -- attribute.  Keep this selection synchronized without rebuilding the
+    -- stable Option children on every flush.
+    BridgeUiSet("BridgeHudReportCategoryDropdown", "value", tostring(math.max(0, reportCategoryIndex - 1)))
     BridgeUiSet("BridgeHudReportCapture", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportCancel", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportStatus", "text", ui.reportStatus or "")

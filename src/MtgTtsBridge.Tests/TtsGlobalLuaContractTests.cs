@@ -2622,9 +2622,14 @@ public sealed class TtsGlobalLuaContractTests
         Assert.DoesNotContain("BridgeHudStopOwn_", xml);
         Assert.DoesNotContain("BridgeHudStopOther_", xml);
         Assert.DoesNotContain("id=\"BridgeHudReportCategoryDropdown\" options=", xml);
+        Assert.Contains("id=\"BridgeHudReportCategoryDropdown\" value=\"0\" onValueChanged=\"BridgeHudReportCategoryChanged(selectedIndex)\"", xml);
+        Assert.Contains("itemTextColor=\"#F8FAFC\"", xml);
+        Assert.Contains("dropdownBackgroundColor=\"#0B1220\"", xml);
         foreach (var category in new[] { "Gameplay sync", "Combat", "Card movement", "Presentation/UI", "Decision/prompt", "Mana/payment", "Performance / Freeze", "Crash/error", "Other" })
             Assert.Contains($"<Option{(category == "Gameplay sync" ? " selected=\"true\"" : string.Empty)}>{category}</Option>", xml);
         Assert.Contains("onValueChanged=\"BridgeHudReportSummaryChanged\"", xml);
+        Assert.Contains("onEndEdit=\"BridgeHudReportSummaryChanged\"", xml);
+        Assert.Contains("colors=\"#172235|#20304A|#20304A|#0B1220\"", xml);
         Assert.Contains("minWidth=\"650\" preferredWidth=\"650\"", xml);
         Assert.Contains("BridgeHudRollingCapture", xml);
         Assert.Contains("BridgeHudRecoverPumps", xml);
@@ -2662,6 +2667,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("function BridgeHudReportCategoryChanged", Script);
         Assert.Contains("BridgeUiSet(\"BridgeHudReportCategoryDropdown\", \"active\", reportVisible", Script);
         Assert.Contains("selectedIndex", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudReportCategoryDropdown\", \"value\",", Script);
+        Assert.DoesNotContain("BridgeUiSet(\"BridgeHudReportCategoryDropdown\", \"selectedIndex\"", Script);
         Assert.DoesNotContain("BridgeUiSet(\"BridgeHudReportCategoryDropdown\", \"options\"", Script);
         Assert.DoesNotContain("BridgeHudReportCategoryPrevious", File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml")));
         Assert.DoesNotContain("BridgeHudReportCategory\"", File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml")));

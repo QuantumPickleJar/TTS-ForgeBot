@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 44e5be771cc37325f82cf815b6a71c0298ed93c9fd285c8a004295829862cf77
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "44e5be771cc37325f82cf815b6a71c0298ed93c9fd285c8a004295829862cf77"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: e4be7ee8361a920cfea1b33a12f5ec266309a52acc4aabeabf89303877036e6b
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "e4be7ee8361a920cfea1b33a12f5ec266309a52acc4aabeabf89303877036e6b"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -26837,7 +26837,10 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudResyncFromForge", "text", ui.resyncInFlight and "RESYNCING..." or "RESYNC FORGE")
     BridgeUiSet("BridgeHudReportCategoryDropdown", "active", reportVisible and not ui.reportCaptureInFlight and "true" or "false")
     BridgeUiSet("BridgeHudReportSummary", "text", tostring(ui.reportSummaryDraft or ""))
-    BridgeUiSet("BridgeHudReportCategoryDropdown", "selectedIndex", tostring(math.max(0, reportCategoryIndex - 1)))
+    -- TTS Dropdown uses the zero-based item index through its `value`
+    -- attribute.  Keep this selection synchronized without rebuilding the
+    -- stable Option children on every flush.
+    BridgeUiSet("BridgeHudReportCategoryDropdown", "value", tostring(math.max(0, reportCategoryIndex - 1)))
     BridgeUiSet("BridgeHudReportCapture", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportCancel", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
     BridgeUiSet("BridgeHudReportStatus", "text", ui.reportStatus or "")

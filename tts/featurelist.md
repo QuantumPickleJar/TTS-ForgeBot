@@ -130,31 +130,12 @@ NOT FIXED
 Bug: mana counters do not update properly using spells like Dark or Cabal Ritual
 AWAITING CONFIRMATION
 
-Bug: mulliganing causes a desync followed by errors on each card  move (the cards still  move and the hand EVENTUALLY cycles)
-SEEMINGLY FIXED
 
-Bug: highlights fail to appear on a mulliganed hand
-IMPLEMENTED — structured Forge collections, including mulligan bottom selection, use blue legal-choice highlights; NEEDS LIVE CONFIRMATION
 
 Critical: reporting a bug or capturing a freeze softlocks the process from progressing (suspected to be on a per-match basis) 
-RESURFACED - NOT FIXED
-
-Bug: hands are not properly cleaned up when destructively requesting to start a new match
-FIXED
-
-CRITICAL BUG: 
-Card importer is broken with the current UI.  
-Workaround: clearing the Global.xml restores card importer functionality
-NOT FIXED
-
-Bug: 
-opening the card importer breaks the custom UI such that it takes up the entire screen
-WAS FIXED - HAS RESURFACED
+SPOTTY - not consistently fixed yet
 
 CRITCAL: Effects from Young Pyromancer fail to trigger.
-
-Bug: YIELD TURN is missing during Blue's turn (should advance until human intervention required OR turn change)
-FIXED
 
 bug: sacrifice cards say "sacrifice CARDNAME" instead of the actual card's name
 NOT FIXED
@@ -163,6 +144,7 @@ Bug: Sacrificing a tapped permanent does not untap it before transporting to its
 NOT FIXED
 
 Bug: Artifact Creatures get listed as legal options twice, once as an artifact cast and once as a creature cast choice
+FIXED?
 
 ==========================
 Live smoke matrix:
