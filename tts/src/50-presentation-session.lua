@@ -2427,7 +2427,15 @@ end
 
 function BridgeHudSubmitReport(category, summary)
     local ui = BridgeState.ui
-    if ui == nil or ui.reportCaptureInFlight then return end
+    if ui == nil then
+        BridgeLog("[Bridge] DIAG_CAPTURE_REJECTED reason=ui-unavailable")
+        return
+    end
+    if ui.reportCaptureInFlight then
+        BridgeRecordDiagnosticCaptureLifecycle(
+            "DIAG_CAPTURE_INGRESS_REJECTED", ui.reportCaptureToken, "capture-already-in-flight")
+        return
+    end
     local requestUi = ui
     local requestEpoch = BRIDGE_RUNTIME_EPOCH_LOCAL
     local requestSession = BridgeState.eventSessionId
@@ -2435,16 +2443,20 @@ function BridgeHudSubmitReport(category, summary)
     local captureToken = requestUi.reportCaptureToken
     local completed = false
 
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_TOKEN_ALLOCATED", captureToken, "new-capture-token")
     BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_REQUESTED", captureToken, "user-request")
-    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_BEGIN", captureToken, "capture-start")
     local capturePurityBefore = BridgeDiagnosticCaptureGameplayFingerprint()
 
     ui.reportCaptureInFlight = true
     ui.reportStatus = "Capturing..."
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_BEGIN", captureToken, "capture-start")
     BridgeUiMarkDirty("report-capture-start")
 
     local function finish(ok, body, err, recoveryReason, lifecycleStage)
         if completed then return end
+        BridgeRecordDiagnosticCaptureLifecycle(
+            "DIAG_CAPTURE_FINISH_ENTER", captureToken,
+            "ok=" .. tostring(ok == true) .. " error=" .. tostring(err or "none"))
         if lifecycleStage == "DIAG_CAPTURE_CALLBACK" then
             BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_HTTP_CALLBACK", captureToken, "http-callback")
         end
@@ -2469,6 +2481,8 @@ function BridgeHudSubmitReport(category, summary)
         -- or another REPORT BUG ingress. The token fence above still makes
         -- callbacks from an older capture inert.
         requestUi.reportPanelVisible = true
+        requestUi.reportCaptureResultPending = true
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_IDLE", captureToken, "capture-state-released")
         if ok and body ~= nil and body.success == true then
             local reportId = tostring(body.reportId or "unknown")
             local reportPath = tostring(body.reportPath or "BugReports")
@@ -2498,8 +2512,10 @@ function BridgeHudSubmitReport(category, summary)
         end
     end, BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS)
 
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_PAYLOAD_BEGIN", captureToken, "payload-construction")
     local performanceOk, performance = pcall(BridgePerformanceDiagnosticPayload)
     if not performanceOk or performance == nil then
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_PAYLOAD_FAILED", captureToken, tostring(performance))
         finish(false, nil, "diagnostic payload failed: " .. tostring(performance), "payload-failure")
         return
     end
@@ -2562,10 +2578,12 @@ function BridgeHudSubmitReport(category, summary)
         encodedOk = pcall(function() JSON.encode(sanitizedRequest) end)
     end
     if not encodedOk then
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_PAYLOAD_FAILED", captureToken, "minimal-payload-not-encodable")
         finish(false, nil, "diagnostic request failed: minimal core payload is not JSON encodable", "serialization-error", "DIAG_CAPTURE_SERIALIZATION_FAILED")
         return
     end
     request = sanitizedRequest
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_PAYLOAD_READY", captureToken, "payload-constructed")
     -- Purity belongs to the synchronous payload collection owned by this
     -- capture. Once the request is handed off, normal event/resync callbacks
     -- are allowed to advance the match while ZIP creation runs asynchronously;
@@ -2574,6 +2592,7 @@ function BridgeHudSubmitReport(category, summary)
     BridgeCheckDiagnosticCapturePurity(capturePurityBefore, captureToken, "payload-copy")
     local requestOk, requestError = pcall(function()
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_HANDED_OFF", captureToken, "bridge-request")
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_HTTP_HANDOFF", captureToken, "POST /api/v1/diagnostics/report")
         BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
             finish(ok, body, err, "callback", "DIAG_CAPTURE_CALLBACK")
         end)
@@ -2584,6 +2603,14 @@ function BridgeHudSubmitReport(category, summary)
 end
 
 function BridgeHudReportCapture(player, value, id)
+    local ui = BridgeState.ui
+    local token = ui ~= nil and ui.reportCaptureToken or nil
+    if ui ~= nil then
+        ui.reportCaptureIngressCount = (tonumber(ui.reportCaptureIngressCount or 0) or 0) + 1
+    end
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_XML_CALLBACK_INGRESS", token, "BridgeHudReportCapture onClick")
+    BridgeLog(string.format("[Bridge] DIAG_CAPTURE_BUTTON_INGRESS count=%s token=%s inFlight=%s",
+        tostring(ui ~= nil and ui.reportCaptureIngressCount or 0), tostring(token), tostring(ui ~= nil and ui.reportCaptureInFlight == true)))
     BridgeHudSubmitReport(nil, nil)
 end
 
@@ -2905,10 +2932,21 @@ function BridgeUiFlush()
     -- attribute.  Keep this selection synchronized without rebuilding the
     -- stable Option children on every flush.
     BridgeUiSet("BridgeHudReportCategoryDropdown", "value", tostring(math.max(0, reportCategoryIndex - 1)))
-    BridgeUiSet("BridgeHudReportCapture", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
+    local reportCaptureReady = reportVisible and not ui.reportCaptureInFlight
+    BridgeUiSet("BridgeHudReportCapture", "active", reportCaptureReady and "true" or "false")
+    BridgeUiSet("BridgeHudReportCapture", "interactable", reportCaptureReady and "true" or "false")
+    BridgeUiSet("BridgeHudReportCapture", "raycastTarget", reportCaptureReady and "true" or "false")
     BridgeUiSet("BridgeHudReportCancel", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
+    -- The result/path text can become long after a successful capture. Keep
+    -- that display-only surface non-blocking even if a table client does not
+    -- retain the XML Text default when the UI is hot-reloaded.
+    BridgeUiSet("BridgeHudReportStatus", "raycastTarget", "false")
     BridgeUiSet("BridgeHudReportStatus", "text", ui.reportStatus or "")
     BridgeUiSet("BridgeHudReportStatus", "color", string.find(string.upper(tostring(ui.reportStatus or "")), "ERROR", 1, true) and BRIDGE_HUD_COLORS.danger or BRIDGE_HUD_COLORS.success)
+    if ui.reportCaptureResultPending and reportCaptureReady then
+        ui.reportCaptureResultPending = false
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_UI_RESTORED", ui.reportCaptureToken, "capture-button-active-interactable-raycastable")
+    end
 
     local decision = BridgeState.lastDecision
     local terminal = BridgeCurrentAuthoritativeResult ~= nil and BridgeCurrentAuthoritativeResult() or nil

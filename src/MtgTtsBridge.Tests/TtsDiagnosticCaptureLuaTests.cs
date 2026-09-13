@@ -310,7 +310,8 @@ public sealed class TtsDiagnosticCaptureLuaTests
                 end
             end
 
-            BridgeHudSubmitReport('Gameplay sync', 'first')
+            -- Invoke the same three-argument callback shape that TTS XML uses.
+            BridgeHudReportCapture(nil, nil, 'BridgeHudReportCapture')
             token1 = BridgeState.ui.reportCaptureToken
             callback1(true, {success = true, reportId = 'report-1'}, nil)
             idleAfterFirst = BridgeState.ui.reportCaptureInFlight == false
@@ -318,7 +319,7 @@ public sealed class TtsDiagnosticCaptureLuaTests
             statusAfterFirst = BridgeState.ui.reportStatus
 
             BridgeHudReportOpen()
-            BridgeHudSubmitReport('Card movement', 'second')
+            BridgeHudReportCapture(nil, nil, 'BridgeHudReportCapture')
             token2 = BridgeState.ui.reportCaptureToken
             inFlightDuringSecond = BridgeState.ui.reportCaptureInFlight == true
             statusBeforeStaleCallback = BridgeState.ui.reportStatus
@@ -330,6 +331,15 @@ public sealed class TtsDiagnosticCaptureLuaTests
             idleAfterSecond = BridgeState.ui.reportCaptureInFlight == false
             panelAfterSecond = BridgeState.ui.reportPanelVisible == true
             statusAfterSecond = BridgeState.ui.reportStatus
+            ingressAfterSecond = BridgeState.ui.reportCaptureIngressCount
+            ingressLifecycleCount = 0
+            handoffLifecycleCount = 0
+            callbackLifecycleCount = 0
+            for _, record in ipairs(BridgeState.diagnosticCaptureLifecycle or {}) do
+                if record.stage == 'DIAG_CAPTURE_XML_CALLBACK_INGRESS' then ingressLifecycleCount = ingressLifecycleCount + 1 end
+                if record.stage == 'DIAG_CAPTURE_HTTP_HANDOFF' then handoffLifecycleCount = handoffLifecycleCount + 1 end
+                if record.stage == 'DIAG_CAPTURE_HTTP_CALLBACK' then callbackLifecycleCount = callbackLifecycleCount + 1 end
+            end
         ");
 
         var ui = lua.Globals.Get("BridgeState").Table.Get("ui").Table;
@@ -347,6 +357,119 @@ public sealed class TtsDiagnosticCaptureLuaTests
         Assert.True(lua.Globals.Get("panelAfterSecond").Boolean);
         Assert.Contains("report-2", lua.Globals.Get("statusAfterSecond").String);
         Assert.False(ui.Get("reportCaptureInFlight").Boolean);
+        Assert.Equal(2, lua.Globals.Get("ingressAfterSecond").Number);
+        Assert.Equal(2, lua.Globals.Get("ingressLifecycleCount").Number);
+        Assert.Equal(2, lua.Globals.Get("handoffLifecycleCount").Number);
+        Assert.Equal(2, lua.Globals.Get("callbackLifecycleCount").Number);
+    }
+
+    [Fact]
+    public void FailedXmlCapture_ReleasesTheButtonForASecondAttempt()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'capture-session'
+            BridgeState.ui = {mounted = false, reportCaptureInFlight = false, reportCaptureToken = 0,
+                reportCaptureIngressCount = 0, reportCategoryIndex = 1, reportPanelVisible = true}
+            function BridgeWaitTime(callback, delay) end
+            function BridgePerformanceDiagnosticPayload()
+                return {performanceSummary = {}, recentTtsTrace = {},
+                    diagnosticCaptureLifecycle = {}, eventDrainDiagnostics = {}}
+            end
+            function BridgeHudReportSummaryText() return 'retryable capture' end
+            function BridgeHudReportMappedCardInstanceIds() return {} end
+            function BridgeHudReportPhysicalMappings() return {} end
+            function BridgeUiMarkDirty(reason) end
+            JSON.encode = function(value) return '{}' end
+            captureCount = 0
+            BridgeHttp.requestJson = function(method, path, payload, callback)
+                if method == 'POST' and path == '/api/v1/diagnostics/report' then
+                    captureCount = captureCount + 1
+                    callback(false, nil, 'temporary capture failure ' .. tostring(captureCount))
+                end
+            end
+            BridgeHudReportCapture(nil, nil, 'BridgeHudReportCapture')
+            tokenAfterFirst = BridgeState.ui.reportCaptureToken
+            idleAfterFirst = BridgeState.ui.reportCaptureInFlight == false
+            BridgeHudReportCapture(nil, nil, 'BridgeHudReportCapture')
+            tokenAfterSecond = BridgeState.ui.reportCaptureToken
+            idleAfterSecond = BridgeState.ui.reportCaptureInFlight == false
+            ingressAfterSecond = BridgeState.ui.reportCaptureIngressCount
+        ");
+
+        var ui = lua.Globals.Get("BridgeState").Table.Get("ui").Table;
+        Assert.Equal(2, lua.Globals.Get("captureCount").Number);
+        Assert.Equal(1, lua.Globals.Get("tokenAfterFirst").Number);
+        Assert.Equal(2, lua.Globals.Get("tokenAfterSecond").Number);
+        Assert.True(lua.Globals.Get("idleAfterFirst").Boolean);
+        Assert.True(lua.Globals.Get("idleAfterSecond").Boolean);
+        Assert.Equal(2, lua.Globals.Get("ingressAfterSecond").Number);
+        Assert.Contains("temporary capture failure 2", ui.Get("reportStatus").String);
+    }
+
+    [Fact]
+    public void SuccessfulXmlCapture_FlushesAClickableButtonAfterLongStatusIsPublished()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BRIDGE_DEV_UI_ENABLED = true
+            BridgeState.eventSessionId = 'capture-session'
+            BridgeState.statusHeadline = 'READY'
+            BridgeState.currentPhase = 'MAIN'
+            BridgeState.playerStateBySeatId = {
+                ['forge-player-1'] = {life = 20, mana = {}},
+                ['forge-player-2'] = {life = 20, mana = {}}
+            }
+            BridgeState.selectedActionIds = {}
+            BridgeState.stackSummary = {}
+            BridgeState.ui = {mounted = true, dirty = false, flushScheduled = false,
+                reportCaptureInFlight = false, reportCaptureToken = 0,
+                reportCaptureIngressCount = 0, reportCategoryIndex = 1,
+                diagnosticsVisible = true,
+                reportPanelVisible = true, devDrawer = 'report', reportStatus = ''}
+            uiAttributes = {}
+            UI = {
+                setAttribute = function(id, attribute, value)
+                    uiAttributes[id .. ':' .. attribute] = value
+                end,
+                getAttribute = function(id, attribute)
+                    return uiAttributes[id .. ':' .. attribute]
+                end
+            }
+            Wait.frames = function(callback, frames) callback() end
+            function BridgePerformanceDiagnosticPayload()
+                return {performanceSummary = {}, recentTtsTrace = {},
+                    diagnosticCaptureLifecycle = {}, eventDrainDiagnostics = {}}
+            end
+            function BridgeHudReportSummaryText() return 'long status capture' end
+            function BridgeHudReportMappedCardInstanceIds() return {} end
+            function BridgeHudReportPhysicalMappings() return {} end
+            pendingReportCallback = nil
+            JSON.encode = function(value) return '{}' end
+            BridgeHttp.requestJson = function(method, path, payload, callback)
+                if method == 'POST' and path == '/api/v1/diagnostics/report' then
+                    pendingReportCallback = callback
+                end
+            end
+            BridgeHudReportCapture(nil, nil, 'BridgeHudReportCapture')
+            pendingReportCallback(true, {success = true, reportId = 'report-1',
+                reportPath = 'C:/BugReports/ForgeBot-Bug-report-1.zip'}, nil)
+            captureActive = uiAttributes['BridgeHudReportCapture:active']
+            captureInteractable = uiAttributes['BridgeHudReportCapture:interactable']
+            captureRaycastTarget = uiAttributes['BridgeHudReportCapture:raycastTarget']
+            statusRaycastTarget = uiAttributes['BridgeHudReportStatus:raycastTarget']
+            lifecycleRestored = false
+            for _, record in ipairs(BridgeState.diagnosticCaptureLifecycle or {}) do
+                if record.stage == 'DIAG_CAPTURE_UI_RESTORED' then lifecycleRestored = true end
+            end
+        ");
+
+        Assert.Equal("true", lua.Globals.Get("captureActive").String);
+        Assert.Equal("true", lua.Globals.Get("captureInteractable").String);
+        Assert.Equal("true", lua.Globals.Get("captureRaycastTarget").String);
+        Assert.Equal("false", lua.Globals.Get("statusRaycastTarget").String);
+        Assert.True(lua.Globals.Get("lifecycleRestored").Boolean);
+        Assert.False(lua.Globals.Get("BridgeState").Table.Get("ui").Table.Get("reportCaptureInFlight").Boolean);
     }
 
     [Fact]

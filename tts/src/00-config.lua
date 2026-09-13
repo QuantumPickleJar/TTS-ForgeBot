@@ -218,6 +218,13 @@ end
 -- that the presentation pumps survived it. Keep this ring intentionally
 -- small and free of card identities so the next report can explain a
 -- post-capture failure without retaining a large snapshot payload.
+function BridgeDiagnosticUiAttribute(id, attribute)
+    if UI == nil or type(UI.getAttribute) ~= "function" then return nil end
+    local ok, value = pcall(function() return UI.getAttribute(id, attribute) end)
+    if not ok then return nil end
+    return value
+end
+
 function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
     local decision = BridgeState.lastDecision
     local ui = BridgeState.ui or {}
@@ -326,7 +333,14 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncClickIngressJournal = BridgeDiagnosticSnapshot(BridgeState.resyncClickIngressJournal or {}),
         resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration,
         resyncReconcileStarted = BridgeState.resyncReconcileStarted == true,
-        reportCaptureInFlight = ui.reportCaptureInFlight == true
+        reportCaptureInFlight = ui.reportCaptureInFlight == true,
+        reportCaptureIngressCount = ui.reportCaptureIngressCount or 0,
+        reportCaptureToken = ui.reportCaptureToken,
+        reportPanelVisible = ui.reportPanelVisible == true,
+        reportCaptureUiActive = BridgeDiagnosticUiAttribute("BridgeHudReportCapture", "active"),
+        reportCaptureUiInteractable = BridgeDiagnosticUiAttribute("BridgeHudReportCapture", "interactable"),
+        reportCaptureUiRaycastTarget = BridgeDiagnosticUiAttribute("BridgeHudReportCapture", "raycastTarget"),
+        reportStatusUiRaycastTarget = BridgeDiagnosticUiAttribute("BridgeHudReportStatus", "raycastTarget")
     }
     local lifecycle = BridgeState.diagnosticCaptureLifecycle
     if lifecycle == nil then
@@ -3568,7 +3582,7 @@ BridgeState = {
         gameLog = {},
         diagnosticsVisible = false, devDrawer = "closed", reportPanelVisible = false, reportCategoryIndex = 1, reportSummaryDraft = "",
         creatureTypeDecisionId = nil, creatureTypeDraftActionId = nil, creatureTypeOptions = {},
-        reportStatus = "", reportCaptureInFlight = false, reportCaptureToken = 0, resyncInFlight = false, hudResyncPending = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
+        reportStatus = "", reportCaptureInFlight = false, reportCaptureToken = 0, reportCaptureIngressCount = 0, reportCaptureResultPending = false, resyncInFlight = false, hudResyncPending = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
         uiAttributeCache = {}, uiAttributeAttemptCount = 0, uiAttributeWriteCount = 0,
         uiAttributeSkippedCount = 0,
         actionPanelRenderCount = 0, candidatePanelRenderCount = 0, ephemeralPhysicalControlSpawnCount = 0},

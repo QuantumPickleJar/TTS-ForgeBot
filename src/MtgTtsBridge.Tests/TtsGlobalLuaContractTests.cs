@@ -3039,6 +3039,31 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void DevHud_ReportStatusCannotConsumeTheReusableCaptureButton()
+    {
+        var document = XElement.Parse("<root>" + File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml")) + "</root>");
+        var panel = document.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute("id"), "BridgeHudReportPanel", StringComparison.Ordinal));
+        var row = panel.Descendants().Single(element =>
+            element.Name.LocalName == "HorizontalLayout" && element.Descendants().Any(child =>
+                string.Equals((string?)child.Attribute("id"), "BridgeHudReportCapture", StringComparison.Ordinal)));
+        var capture = row.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute("id"), "BridgeHudReportCapture", StringComparison.Ordinal));
+        var status = row.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute("id"), "BridgeHudReportStatus", StringComparison.Ordinal));
+
+        Assert.Equal("false", (string?)panel.Attribute("raycastTarget"));
+        Assert.Equal("false", (string?)row.Attribute("raycastTarget"));
+        Assert.Equal("false", (string?)status.Attribute("raycastTarget"));
+        Assert.Equal("true", (string?)capture.Attribute("interactable"));
+        Assert.Equal("true", (string?)capture.Attribute("raycastTarget"));
+        Assert.Contains("BridgeUiSet(\"BridgeHudReportCapture\", \"interactable\"", Script);
+        Assert.Contains("BridgeUiSet(\"BridgeHudReportCapture\", \"raycastTarget\"", Script);
+        Assert.Contains("DIAG_CAPTURE_UI_RESTORED", Script);
+    }
+
+    [Fact]
     public void DevHud_ExposesSharedYieldControllerAndBothStopScopes()
     {
         var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));

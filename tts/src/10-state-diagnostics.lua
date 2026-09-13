@@ -432,13 +432,22 @@ function BridgeHttp.requestJson(method, path, payload, callback)
 
     local function handleIfCurrent(request)
         if not BridgeRuntimeIsCurrent(epoch) then
+            if path == "/api/v1/diagnostics/report" then
+                BridgeLog("[Bridge] DIAG_CAPTURE_HTTP_CALLBACK_IGNORED reason=retired-runtime")
+            end
             BridgeLog("[Bridge] ignored HTTP callback from retired Global.lua runtime")
             return
         end
         if connectionEpoch ~= (BridgeState.connectionEpoch or 0) then
+            if path == "/api/v1/diagnostics/report" then
+                BridgeLog("[Bridge] DIAG_CAPTURE_HTTP_CALLBACK_IGNORED reason=retired-connection-epoch")
+            end
             BridgeLog(string.format("[Bridge] ignored HTTP callback from retired Bridge connection epoch path=%s expected=%s current=%s",
                 tostring(path), tostring(connectionEpoch), tostring(BridgeState.connectionEpoch)))
             return
+        end
+        if path == "/api/v1/diagnostics/report" then
+            BridgeLog("[Bridge] DIAG_CAPTURE_HTTP_CALLBACK_ARRIVED")
         end
         BridgeHttp.handleResponse(request, callback)
     end
@@ -463,6 +472,9 @@ function BridgeHttp.requestJson(method, path, payload, callback)
         BridgeLog("[Bridge] CHOICE_WIRE_BODY " .. tostring(body))
     end
 
+    if path == "/api/v1/diagnostics/report" then
+        BridgeLog("[Bridge] DIAG_CAPTURE_HTTP_REQUEST_DISPATCHED method=" .. tostring(method))
+    end
     WebRequest.custom(url, method, true, body, headers, function(request)
         handleIfCurrent(request)
     end)

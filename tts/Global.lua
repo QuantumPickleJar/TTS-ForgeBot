@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 5337297fb270cf777e822403256f4353c1b69dea0b791c6ee4f58b860ba7eedf
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "5337297fb270cf777e822403256f4353c1b69dea0b791c6ee4f58b860ba7eedf"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 5ce04ec9901a188970e41f027028bf63998f5d590d226ec27fe2984b3acaf400
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "5ce04ec9901a188970e41f027028bf63998f5d590d226ec27fe2984b3acaf400"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -221,6 +221,13 @@ end
 -- that the presentation pumps survived it. Keep this ring intentionally
 -- small and free of card identities so the next report can explain a
 -- post-capture failure without retaining a large snapshot payload.
+function BridgeDiagnosticUiAttribute(id, attribute)
+    if UI == nil or type(UI.getAttribute) ~= "function" then return nil end
+    local ok, value = pcall(function() return UI.getAttribute(id, attribute) end)
+    if not ok then return nil end
+    return value
+end
+
 function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
     local decision = BridgeState.lastDecision
     local ui = BridgeState.ui or {}
@@ -329,7 +336,14 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         resyncClickIngressJournal = BridgeDiagnosticSnapshot(BridgeState.resyncClickIngressJournal or {}),
         resyncBootstrapGeneration = BridgeState.resyncBootstrapGeneration,
         resyncReconcileStarted = BridgeState.resyncReconcileStarted == true,
-        reportCaptureInFlight = ui.reportCaptureInFlight == true
+        reportCaptureInFlight = ui.reportCaptureInFlight == true,
+        reportCaptureIngressCount = ui.reportCaptureIngressCount or 0,
+        reportCaptureToken = ui.reportCaptureToken,
+        reportPanelVisible = ui.reportPanelVisible == true,
+        reportCaptureUiActive = BridgeDiagnosticUiAttribute("BridgeHudReportCapture", "active"),
+        reportCaptureUiInteractable = BridgeDiagnosticUiAttribute("BridgeHudReportCapture", "interactable"),
+        reportCaptureUiRaycastTarget = BridgeDiagnosticUiAttribute("BridgeHudReportCapture", "raycastTarget"),
+        reportStatusUiRaycastTarget = BridgeDiagnosticUiAttribute("BridgeHudReportStatus", "raycastTarget")
     }
     local lifecycle = BridgeState.diagnosticCaptureLifecycle
     if lifecycle == nil then
@@ -3571,7 +3585,7 @@ BridgeState = {
         gameLog = {},
         diagnosticsVisible = false, devDrawer = "closed", reportPanelVisible = false, reportCategoryIndex = 1, reportSummaryDraft = "",
         creatureTypeDecisionId = nil, creatureTypeDraftActionId = nil, creatureTypeOptions = {},
-        reportStatus = "", reportCaptureInFlight = false, reportCaptureToken = 0, resyncInFlight = false, hudResyncPending = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
+        reportStatus = "", reportCaptureInFlight = false, reportCaptureToken = 0, reportCaptureIngressCount = 0, reportCaptureResultPending = false, resyncInFlight = false, hudResyncPending = false, uiFullRebuildCount = 0, uiAttributeUpdateCount = 0,
         uiAttributeCache = {}, uiAttributeAttemptCount = 0, uiAttributeWriteCount = 0,
         uiAttributeSkippedCount = 0,
         actionPanelRenderCount = 0, candidatePanelRenderCount = 0, ephemeralPhysicalControlSpawnCount = 0},
@@ -5430,13 +5444,22 @@ function BridgeHttp.requestJson(method, path, payload, callback)
 
     local function handleIfCurrent(request)
         if not BridgeRuntimeIsCurrent(epoch) then
+            if path == "/api/v1/diagnostics/report" then
+                BridgeLog("[Bridge] DIAG_CAPTURE_HTTP_CALLBACK_IGNORED reason=retired-runtime")
+            end
             BridgeLog("[Bridge] ignored HTTP callback from retired Global.lua runtime")
             return
         end
         if connectionEpoch ~= (BridgeState.connectionEpoch or 0) then
+            if path == "/api/v1/diagnostics/report" then
+                BridgeLog("[Bridge] DIAG_CAPTURE_HTTP_CALLBACK_IGNORED reason=retired-connection-epoch")
+            end
             BridgeLog(string.format("[Bridge] ignored HTTP callback from retired Bridge connection epoch path=%s expected=%s current=%s",
                 tostring(path), tostring(connectionEpoch), tostring(BridgeState.connectionEpoch)))
             return
+        end
+        if path == "/api/v1/diagnostics/report" then
+            BridgeLog("[Bridge] DIAG_CAPTURE_HTTP_CALLBACK_ARRIVED")
         end
         BridgeHttp.handleResponse(request, callback)
     end
@@ -5461,6 +5484,9 @@ function BridgeHttp.requestJson(method, path, payload, callback)
         BridgeLog("[Bridge] CHOICE_WIRE_BODY " .. tostring(body))
     end
 
+    if path == "/api/v1/diagnostics/report" then
+        BridgeLog("[Bridge] DIAG_CAPTURE_HTTP_REQUEST_DISPATCHED method=" .. tostring(method))
+    end
     WebRequest.custom(url, method, true, body, headers, function(request)
         handleIfCurrent(request)
     end)
@@ -27205,7 +27231,15 @@ end
 
 function BridgeHudSubmitReport(category, summary)
     local ui = BridgeState.ui
-    if ui == nil or ui.reportCaptureInFlight then return end
+    if ui == nil then
+        BridgeLog("[Bridge] DIAG_CAPTURE_REJECTED reason=ui-unavailable")
+        return
+    end
+    if ui.reportCaptureInFlight then
+        BridgeRecordDiagnosticCaptureLifecycle(
+            "DIAG_CAPTURE_INGRESS_REJECTED", ui.reportCaptureToken, "capture-already-in-flight")
+        return
+    end
     local requestUi = ui
     local requestEpoch = BRIDGE_RUNTIME_EPOCH_LOCAL
     local requestSession = BridgeState.eventSessionId
@@ -27213,16 +27247,20 @@ function BridgeHudSubmitReport(category, summary)
     local captureToken = requestUi.reportCaptureToken
     local completed = false
 
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_TOKEN_ALLOCATED", captureToken, "new-capture-token")
     BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_REQUESTED", captureToken, "user-request")
-    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_BEGIN", captureToken, "capture-start")
     local capturePurityBefore = BridgeDiagnosticCaptureGameplayFingerprint()
 
     ui.reportCaptureInFlight = true
     ui.reportStatus = "Capturing..."
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_BEGIN", captureToken, "capture-start")
     BridgeUiMarkDirty("report-capture-start")
 
     local function finish(ok, body, err, recoveryReason, lifecycleStage)
         if completed then return end
+        BridgeRecordDiagnosticCaptureLifecycle(
+            "DIAG_CAPTURE_FINISH_ENTER", captureToken,
+            "ok=" .. tostring(ok == true) .. " error=" .. tostring(err or "none"))
         if lifecycleStage == "DIAG_CAPTURE_CALLBACK" then
             BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_HTTP_CALLBACK", captureToken, "http-callback")
         end
@@ -27247,6 +27285,8 @@ function BridgeHudSubmitReport(category, summary)
         -- or another REPORT BUG ingress. The token fence above still makes
         -- callbacks from an older capture inert.
         requestUi.reportPanelVisible = true
+        requestUi.reportCaptureResultPending = true
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_IDLE", captureToken, "capture-state-released")
         if ok and body ~= nil and body.success == true then
             local reportId = tostring(body.reportId or "unknown")
             local reportPath = tostring(body.reportPath or "BugReports")
@@ -27276,8 +27316,10 @@ function BridgeHudSubmitReport(category, summary)
         end
     end, BRIDGE_REPORT_CAPTURE_TIMEOUT_SECONDS)
 
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_PAYLOAD_BEGIN", captureToken, "payload-construction")
     local performanceOk, performance = pcall(BridgePerformanceDiagnosticPayload)
     if not performanceOk or performance == nil then
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_PAYLOAD_FAILED", captureToken, tostring(performance))
         finish(false, nil, "diagnostic payload failed: " .. tostring(performance), "payload-failure")
         return
     end
@@ -27340,10 +27382,12 @@ function BridgeHudSubmitReport(category, summary)
         encodedOk = pcall(function() JSON.encode(sanitizedRequest) end)
     end
     if not encodedOk then
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_PAYLOAD_FAILED", captureToken, "minimal-payload-not-encodable")
         finish(false, nil, "diagnostic request failed: minimal core payload is not JSON encodable", "serialization-error", "DIAG_CAPTURE_SERIALIZATION_FAILED")
         return
     end
     request = sanitizedRequest
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_PAYLOAD_READY", captureToken, "payload-constructed")
     -- Purity belongs to the synchronous payload collection owned by this
     -- capture. Once the request is handed off, normal event/resync callbacks
     -- are allowed to advance the match while ZIP creation runs asynchronously;
@@ -27352,6 +27396,7 @@ function BridgeHudSubmitReport(category, summary)
     BridgeCheckDiagnosticCapturePurity(capturePurityBefore, captureToken, "payload-copy")
     local requestOk, requestError = pcall(function()
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_HANDED_OFF", captureToken, "bridge-request")
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_HTTP_HANDOFF", captureToken, "POST /api/v1/diagnostics/report")
         BridgeHttp.requestJson("POST", "/api/v1/diagnostics/report", request, function(ok, body, err)
             finish(ok, body, err, "callback", "DIAG_CAPTURE_CALLBACK")
         end)
@@ -27362,6 +27407,14 @@ function BridgeHudSubmitReport(category, summary)
 end
 
 function BridgeHudReportCapture(player, value, id)
+    local ui = BridgeState.ui
+    local token = ui ~= nil and ui.reportCaptureToken or nil
+    if ui ~= nil then
+        ui.reportCaptureIngressCount = (tonumber(ui.reportCaptureIngressCount or 0) or 0) + 1
+    end
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_XML_CALLBACK_INGRESS", token, "BridgeHudReportCapture onClick")
+    BridgeLog(string.format("[Bridge] DIAG_CAPTURE_BUTTON_INGRESS count=%s token=%s inFlight=%s",
+        tostring(ui ~= nil and ui.reportCaptureIngressCount or 0), tostring(token), tostring(ui ~= nil and ui.reportCaptureInFlight == true)))
     BridgeHudSubmitReport(nil, nil)
 end
 
@@ -27683,10 +27736,21 @@ function BridgeUiFlush()
     -- attribute.  Keep this selection synchronized without rebuilding the
     -- stable Option children on every flush.
     BridgeUiSet("BridgeHudReportCategoryDropdown", "value", tostring(math.max(0, reportCategoryIndex - 1)))
-    BridgeUiSet("BridgeHudReportCapture", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
+    local reportCaptureReady = reportVisible and not ui.reportCaptureInFlight
+    BridgeUiSet("BridgeHudReportCapture", "active", reportCaptureReady and "true" or "false")
+    BridgeUiSet("BridgeHudReportCapture", "interactable", reportCaptureReady and "true" or "false")
+    BridgeUiSet("BridgeHudReportCapture", "raycastTarget", reportCaptureReady and "true" or "false")
     BridgeUiSet("BridgeHudReportCancel", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
+    -- The result/path text can become long after a successful capture. Keep
+    -- that display-only surface non-blocking even if a table client does not
+    -- retain the XML Text default when the UI is hot-reloaded.
+    BridgeUiSet("BridgeHudReportStatus", "raycastTarget", "false")
     BridgeUiSet("BridgeHudReportStatus", "text", ui.reportStatus or "")
     BridgeUiSet("BridgeHudReportStatus", "color", string.find(string.upper(tostring(ui.reportStatus or "")), "ERROR", 1, true) and BRIDGE_HUD_COLORS.danger or BRIDGE_HUD_COLORS.success)
+    if ui.reportCaptureResultPending and reportCaptureReady then
+        ui.reportCaptureResultPending = false
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_UI_RESTORED", ui.reportCaptureToken, "capture-button-active-interactable-raycastable")
+    end
 
     local decision = BridgeState.lastDecision
     local terminal = BridgeCurrentAuthoritativeResult ~= nil and BridgeCurrentAuthoritativeResult() or nil
