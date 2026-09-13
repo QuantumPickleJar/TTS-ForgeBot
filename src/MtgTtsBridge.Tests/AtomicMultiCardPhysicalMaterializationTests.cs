@@ -253,6 +253,100 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void VirtualAbilityProvenanceUsesMappedPhysicalPermanentForReadiness()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'activation-session'
+            BridgeState.eventSessionGeneration = 12
+            BridgeState.lastAppliedEventSequence = 410
+
+            local battlefieldTrio = BridgeTestCreateCard('forge:activation-session:32', 'Harmonized Trio', 'trio-guid')
+            battlefieldTrio._inLibrary = false
+            local duplicateName = BridgeTestCreateCard('forge:activation-session:31', 'Harmonized Trio', 'other-trio-guid')
+            duplicateName._inLibrary = false
+            BridgeRecordLooseCardIdentity('forge:activation-session:32', 'trio-guid', 'forge-player-1', 'battlefield')
+            BridgeRecordLooseCardIdentity('forge:activation-session:31', 'other-trio-guid', 'forge-player-1', 'graveyard')
+
+            -- This is the follow-up provenance shape that matters: the
+            -- logical ability/stack identity is virtual, while the exact
+            -- permanent that supplied it is still the physical source.
+            BridgeState.authoritativeObjectByInstanceId['forge:activation-session:stack:82'] = {
+                cardInstanceId='forge:activation-session:stack:82', objectId='forge-object:82',
+                isVirtual=true, materializationPolicy='virtual-stack',
+                zone='stack', seatId='forge-player-1'
+            }
+            BridgeState.authoritativeObjectByInstanceId['forge:activation-session:32'] = {
+                cardInstanceId='forge:activation-session:32', objectId='forge-object:32',
+                isVirtual=false, materializationPolicy='physical',
+                zone='battlefield', seatId='forge-player-1'
+            }
+            local followup = {
+                actionId='forge-tui-42-choice-1', type='activate_ability',
+                actionKind='activate_ability', cardInstanceId='forge:activation-session:stack:82',
+                sourceCardInstanceId='forge:activation-session:32', entityCardInstanceId='forge:activation-session:32',
+                sourceZone='stack', cardIdentity='Harmonized Trio',
+                provenance={sourceCardInstanceId='forge:activation-session:32', sourceZone='stack'}
+            }
+            local decision = {
+                decisionId='forge-tui-42', kind='main_priority',
+                seatId='forge-player-1', actions={followup}
+            }
+            recoverySchedules = 0
+            visibleErrors = 0
+            BridgeScheduleSnapshotReconcile = function(...) recoverySchedules = recoverySchedules + 1 end
+            BridgeShowError = function(...) visibleErrors = visibleErrors + 1 end
+            function BridgeResolveRevealForDecision() end
+            function BridgePresentationMetric() end
+            function BridgeRecordDecisionLifecycle() end
+            function BridgeRenderPreparedSpellPresentations() end
+            function BridgeClearHighlights() end
+            function BridgeResetSelectionState() end
+            function BridgeEnsureSelectionControls() end
+            function BridgeEnsureContextualCompletionControl() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeEnsureDecisionOptionControls() end
+            function BridgeApplyDiscardPresentation() end
+            function BridgeUiMarkDirty() end
+            function BridgeYieldControllerMode() return 'normal' end
+            BridgeState.ui = {mounted=true, actionRows={}, gameLogVisible=false,
+                fastForwardActive=false, autoAdvanceMode='NORMAL', autoPassEmpty=false}
+            BridgeState.lastDecision = decision
+
+            tapApplied, tapDelay, tapError = BridgeApplyAuthoritativeEvent({
+                sequence=411, kind='tap_changed', seatId='forge-player-1',
+                cardInstanceId='forge:activation-session:32',
+                cardName='Harmonized Trio', sourceZone='battlefield',
+                destinationZone='battlefield', tapped=true, forgeSequence=81
+            })
+            exact = BridgeActionExactPhysicalInstanceId(followup)
+            expectedZone = BridgeActionExpectedPhysicalSourceZone(followup)
+            ready, reason = BridgeDecisionPhysicalMappingsReady(decision)
+            resolved, resolveError = BridgeResolveExactActionPhysical(decision, followup)
+            BridgeRenderDecision(decision, true)
+            renderedKey = BridgeState.renderedDecisionPresentationKey
+            resolvedGuid = resolved and resolved.guid or 'nil'
+            trioGuid = BridgeState.physicalByInstanceId['forge:activation-session:32']
+            trioInverse = BridgeState.physicalInstanceIdByGuid['trio-guid']
+            trioZone = BridgeState.physicalZoneByGuid['trio-guid']
+        ");
+
+        Assert.Equal("forge:activation-session:32", lua.Globals.Get("exact").String);
+        Assert.Equal("battlefield", lua.Globals.Get("expectedZone").String);
+        Assert.True(lua.Globals.Get("tapApplied").Boolean, lua.Globals.Get("tapError").ToPrintString());
+        Assert.True(lua.Globals.Get("ready").Boolean, lua.Globals.Get("reason").ToPrintString());
+        Assert.False(lua.Globals.Get("renderedKey").IsNil());
+        Assert.True(lua.Globals.Get("resolvedGuid").String == "trio-guid",
+            lua.Globals.Get("resolveError").ToPrintString());
+        Assert.Equal("trio-guid", lua.Globals.Get("trioGuid").String);
+        Assert.Equal("forge:activation-session:32", lua.Globals.Get("trioInverse").String);
+        Assert.Equal("battlefield", lua.Globals.Get("trioZone").String);
+        Assert.Equal(0, lua.Globals.Get("recoverySchedules").Number);
+        Assert.Equal(0, lua.Globals.Get("visibleErrors").Number);
+    }
+
+    [Fact]
     public void SnapshotStackObjectIsVirtualDescriptorWithoutPhysicalMaterialization()
     {
         var lua = NewProbe();

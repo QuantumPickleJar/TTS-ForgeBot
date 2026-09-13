@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace MtgTtsBridge.Tests;
 
@@ -55,6 +56,23 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("property(json, \"copySourceObjectId\", copySource", Patch);
         Assert.Contains("copy-permanent", Patch);
         Assert.Contains("materializationPolicy", Patch);
+    }
+
+    [Fact]
+    public void RollDiceEffect_ProducesOneStructuredGroupWithNaturalAndFinalValues()
+    {
+        var rollStart = Patch.IndexOf(
+            "diff --git a/forge-game/src/main/java/forge/game/ability/effects/RollDiceEffect.java",
+            StringComparison.Ordinal);
+        var nextDiff = Patch.IndexOf("\ndiff --git ", rollStart + 1, StringComparison.Ordinal);
+        var rollEffect = Patch.Substring(rollStart, nextDiff >= 0 ? nextDiff - rollStart : Patch.Length - rollStart);
+
+        Assert.True(Regex.IsMatch(rollEffect, "new GameEventRollDie\\(\\s*\\+?\\s*rollGroupId, player, sides", RegexOptions.Singleline));
+        Assert.True(rollEffect.Contains("List.copyOf(getNaturalResults(resultsList))", StringComparison.Ordinal));
+        Assert.True(rollEffect.Contains("List.copyOf(getFinalResults(resultsList))", StringComparison.Ordinal));
+        Assert.DoesNotContain("+            player.getGame().fireEvent(new GameEventRollDie());", rollEffect);
+        Assert.True(Patch.Contains("appendIntegers(json, roll.naturalResults())", StringComparison.Ordinal));
+        Assert.True(Patch.Contains("appendIntegers(json, roll.finalResults())", StringComparison.Ordinal));
     }
 
     [Fact]

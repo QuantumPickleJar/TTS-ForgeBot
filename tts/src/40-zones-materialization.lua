@@ -4249,6 +4249,9 @@ end
 
 function BridgeApplyAuthoritativeEvent(event)
     BridgeUiRecordEvent(event)
+    if event.randomResultPresentation ~= nil then
+        return BridgeStartRandomResultPresentation(event)
+    end
     if event.containsHiddenIdentity == true then
         BridgeLog(string.format(
             "[Bridge] private event seq=%s kind=%s seat=%s instance=%s source=%s dest=%s (card identity redacted)",
