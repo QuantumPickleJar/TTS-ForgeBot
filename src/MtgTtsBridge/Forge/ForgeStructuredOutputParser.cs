@@ -287,7 +287,8 @@ public sealed record ForgeStructuredRandomResultPresentation(
     bool IsReroll = false,
     string Purpose = "rules/gameplay",
     string? SourceObjectId = null,
-    string? SourceName = null);
+    string? SourceName = null,
+    long? ForgeSequence = null);
 
 public sealed record ForgeDecisionReadyMarker(
     string SessionId,

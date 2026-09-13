@@ -3711,6 +3711,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.lastNewMatchCleanupFailure = nil
     if BridgeStopEventPolling ~= nil then BridgeStopEventPolling("session-boundary:" .. tostring(reason)) end
     if BridgeStopDecisionPolling ~= nil then BridgeStopDecisionPolling() end
+    if BridgeRetireRandomResultPresentations ~= nil then
+        BridgeRetireRandomResultPresentations("session-boundary:" .. tostring(reason))
+    end
     BridgeState.eventSessionGeneration = (BridgeState.eventSessionGeneration or 0) + 1
     BridgeState.decisionPresentationGeneration = (BridgeState.decisionPresentationGeneration or 0) + 1
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1

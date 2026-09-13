@@ -731,7 +731,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                             randomResult.Purpose,
                             sourceObjectId,
                             randomResult.SourceName,
-                            randomResult.Sequence);
+                            randomResult.ForgeSequence);
                         EnqueueEvent(new ForgeTuiRawEvent(
                             "random_result",
                             randomResult.SeatId,
@@ -740,11 +740,17 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                             null,
                             null,
                             $"Forge authoritative {randomResult.Sides}-sided roll: {string.Join(", ", randomResult.NaturalResults)}",
-                            ForgeSequence: randomResult.Sequence,
+                            ForgeSequence: randomResult.ForgeSequence,
                             RandomResultPresentation: presentation));
-                        _latestObservedForgeSequence = Math.Max(_latestObservedForgeSequence ?? 0, randomResult.Sequence);
+                        if (randomResult.ForgeSequence is not null)
+                        {
+                            _latestObservedForgeSequence = Math.Max(_latestObservedForgeSequence ?? 0, randomResult.ForgeSequence.Value);
+                        }
                         _latestCommittedMutationCursor = _latestEventSequence;
-                        _latestCommittedMutationForgeSequence = Math.Max(_latestCommittedMutationForgeSequence ?? 0, randomResult.Sequence);
+                        if (randomResult.ForgeSequence is not null)
+                        {
+                            _latestCommittedMutationForgeSequence = Math.Max(_latestCommittedMutationForgeSequence ?? 0, randomResult.ForgeSequence.Value);
+                        }
                         _latestDecisionEligibleCursor = _latestCommittedMutationCursor;
                     }
                     foreach (var marker in output.DecisionReadyMarkers ?? [])
