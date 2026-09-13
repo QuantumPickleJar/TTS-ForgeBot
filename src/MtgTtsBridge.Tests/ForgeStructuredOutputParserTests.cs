@@ -44,7 +44,7 @@ public sealed class ForgeStructuredOutputParserTests
         _ = reconciler.Apply("session-stack", Parse(parser, frame));
 
         var stackObject = Assert.Single(reconciler.Current!.StackObjects!);
-        Assert.Equal("forge-stack:44", stackObject.StackObjectId);
+        Assert.Equal("forge:session-stack:stack:44", stackObject.StackObjectId);
         Assert.Equal("triggered-ability", stackObject.StackKind);
         Assert.Equal("forge:session-stack:8", stackObject.SourceCardInstanceId);
         Assert.Equal("Mill three cards.", stackObject.AbilityText);

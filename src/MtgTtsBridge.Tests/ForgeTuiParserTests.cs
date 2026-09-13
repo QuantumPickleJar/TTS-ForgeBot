@@ -1033,6 +1033,7 @@ public sealed class ForgeTuiParserTests
         var action = Assert.Single(decision.Actions, candidate => candidate.CardInstanceId == "forge-object:41");
         Assert.Equal("discard_card", action.Type);
         Assert.Equal("hand", action.SourceZone);
+        Assert.Equal("forge-object:41", action.EntityCardInstanceId);
     }
 
     [Fact]
@@ -1042,7 +1043,7 @@ public sealed class ForgeTuiParserTests
         var result = parser.Append(
             "=== FORGE CHOICE ===\nProliferate\n" +
             "[kind=entity_selection selectionKind=proliferate min=0 max=2 selected=0 ordered=false]\n" +
-            "  0. Done\n  1. Ballista [id=41] [bridge entityKind=permanent cardInstanceId=41 sourceZone=battlefield]\n" +
+            "  0. Done\n  1. Ballista [id=41] [bridge entityKind=permanent cardInstanceId=41 sourceZone=battlefield] [bridge sourceZone=battlefield actionKind=choose_entity]\n" +
             "  2. You [bridge entityKind=player seatId=forge-player-1 sourceZone=command]\n" +
             "Enter choice (0-2): ");
 
@@ -1050,6 +1051,8 @@ public sealed class ForgeTuiParserTests
         Assert.All(decision.Actions.Where(candidate => candidate.CardInstanceId != null || candidate.EntitySeatId != null),
             action => Assert.Equal("choose_entity", action.Type));
         Assert.Equal("forge-player-1", decision.Actions[2].EntitySeatId);
+        Assert.Equal("forge-object:41", decision.Actions[1].EntityCardInstanceId);
+        Assert.Equal("forge-object:41", decision.Actions[1].Provenance?.SourceCardInstanceId);
     }
 
     [Fact]

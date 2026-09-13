@@ -49,6 +49,84 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
+    public async Task ActivationDecisionNormalizesEveryExactIdentityProvenancePath()
+    {
+        await using var adapter = WatermarkAdapter("activation-session", 80, 80);
+        var action = new LegalActionDto(
+            "forge-tui-40-choice-1",
+            "activate_ability",
+            "Harmonized Trio: {T}",
+            false,
+            "Harmonized Trio",
+            null,
+            CardInstanceId: "forge-object:32",
+            ActionKind: "activate_ability",
+            SourceCardInstanceId: "forge-object:32",
+            SourceCardName: "Harmonized Trio",
+            SourceZone: "battlefield",
+            AbilityKind: "abilityapibased",
+            CastMode: "normal",
+            CostKind: "printed",
+            EntityKind: "permanent",
+            EntitySeatId: "forge-player-1",
+            EntityCardInstanceId: "forge-object:32")
+        {
+            Provenance = new ActionProvenanceDto(
+                "activate_ability",
+                SourceCardInstanceId: "forge-object:32",
+                SourceZone: "battlefield",
+                AbilityKind: "abilityapibased",
+                CastMode: "normal")
+        };
+        var stackAction = action with
+        {
+            ActionId = "forge-stack-44-choice-1",
+            CardInstanceId = "forge-stack:44",
+            SourceCardInstanceId = "forge-stack:44",
+            EntityKind = null,
+            EntityCardInstanceId = null,
+            Provenance = action.Provenance! with { SourceCardInstanceId = "forge-stack:44" }
+        };
+        var payment = new PaymentContextDto(
+            "forge-tui-40-choice-1",
+            "P5",
+            SourceCardInstanceId: "forge-object:32",
+            SourceZone: "battlefield",
+            ActionKind: "activate_ability",
+            CastMode: "normal");
+        var candidate = new ForgeTuiDecision(
+            new DecisionDto(
+                "forge-tui-40",
+                "main_priority",
+                [action, stackAction],
+                SeatId: "forge-player-1")
+            {
+                SourceCardInstanceId = "forge-object:32",
+                ContextCardInstanceId = "forge-object:32",
+                PaymentContext = payment,
+            },
+            new Dictionary<string, string> { [action.ActionId] = "1" });
+
+        PrivateMethod("StageDecisionCandidate").Invoke(adapter, [candidate, false]);
+        var pending = GetPrivateField(adapter, "_pendingDecision");
+        Assert.NotNull(pending);
+        var decision = Assert.IsType<DecisionDto>(
+            pending!.GetType().GetProperty("Decision")!.GetValue(pending));
+        var normalized = Assert.Single(decision.Actions, candidate => candidate.ActionId == action.ActionId);
+        var normalizedStack = Assert.Single(decision.Actions, candidate => candidate.ActionId == stackAction.ActionId);
+
+        Assert.Equal("forge:activation-session:32", normalized.CardInstanceId);
+        Assert.Equal("forge:activation-session:32", normalized.SourceCardInstanceId);
+        Assert.Equal("forge:activation-session:32", normalized.EntityCardInstanceId);
+        Assert.Equal("forge:activation-session:32", normalized.Provenance?.SourceCardInstanceId);
+        Assert.Equal("forge:activation-session:32", decision.SourceCardInstanceId);
+        Assert.Equal("forge:activation-session:32", decision.ContextCardInstanceId);
+        Assert.Equal("forge:activation-session:32", decision.PaymentContext?.SourceCardInstanceId);
+        Assert.Equal("forge:activation-session:stack:44", normalizedStack.CardInstanceId);
+        Assert.Equal("forge:activation-session:stack:44", normalizedStack.Provenance?.SourceCardInstanceId);
+    }
+
+    [Fact]
     public async Task G2A_DecisionPublicationWaitsForStructuredWatermarkAdvance()
     {
         await using var adapter = new ForgeTuiAdapter(

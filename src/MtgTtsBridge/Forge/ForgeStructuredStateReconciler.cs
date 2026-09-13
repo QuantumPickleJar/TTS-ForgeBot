@@ -112,6 +112,8 @@ public sealed class ForgeStructuredStateReconciler
                 ? $"forge:{sessionId}:{fallbackForgeCardId}"
                 : value.StartsWith("forge:", StringComparison.Ordinal)
                     ? value
+                : value.StartsWith("forge-stack:", StringComparison.Ordinal)
+                    ? $"forge:{sessionId}:stack:{value["forge-stack:".Length..]}"
                     : $"forge:{sessionId}:{(value.StartsWith("forge-object:", StringComparison.Ordinal) ? value[13..] : value)}";
 
         GameCardSnapshotDto ConvertCard(ForgeStructuredCard card) => new GameCardSnapshotDto(
@@ -208,7 +210,7 @@ public sealed class ForgeStructuredStateReconciler
             source.Stack.Select(ConvertCard).ToArray(),
             StackObjects: (source.StackObjects ?? [])
                 .Select(stackObject => new GameStackObjectSnapshotDto(
-                    stackObject.StackObjectId,
+                    NormalizeObjectId(stackObject.StackObjectId, 0),
                     stackObject.StackKind,
                     string.IsNullOrWhiteSpace(stackObject.SourceCardInstanceId) ? null : NormalizeObjectId(stackObject.SourceCardInstanceId, 0),
                     stackObject.SourceName,

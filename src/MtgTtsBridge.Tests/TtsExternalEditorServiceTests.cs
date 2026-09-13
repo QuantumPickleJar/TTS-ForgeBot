@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MtgTtsBridge.Contracts.State;
@@ -117,7 +118,68 @@ public sealed class TtsExternalEditorServiceTests
         await service.StopAsync(CancellationToken.None);
     }
 
-    private static TtsExternalEditorService CreateService(int listenPort, int ttsPort, int timeoutSeconds)
+    [Fact]
+    public async Task HttpLookingCallback_IsRejectedWithoutNoisyJsonException_AndNextCallbackSucceeds()
+    {
+        var listenPort = GetFreeTcpPort();
+        var ttsPort = GetFreeTcpPort();
+        var logger = new RecordingLogger<TtsExternalEditorService>();
+        using var service = CreateService(listenPort, ttsPort, timeoutSeconds: 5, logger: logger);
+        await service.StartAsync(CancellationToken.None);
+
+        await SendBytesAsync(listenPort, Encoding.ASCII.GetBytes("GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
+        await FakeExternalEditorPeer.SendGlobalCallbackAsync(listenPort, BuildGeneratedScript('g', "after-http"));
+
+        var snapshot = await WaitForCallbackAsync(service);
+        Assert.Equal(1, snapshot.LatestCallbackSequence);
+        var rejection = Assert.Single(logger.Entries.Where(entry => entry.Message.Contains("HTTP-looking", StringComparison.Ordinal)));
+        Assert.Null(rejection.Exception);
+        Assert.Contains("http_get", rejection.Message, StringComparison.Ordinal);
+        Assert.Contains("GET /health HTTP/1.1", rejection.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(logger.Entries, entry => entry.Exception is JsonException);
+
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task OversizedCallback_IsRejected_AndListenerRemainsUsable()
+    {
+        var listenPort = GetFreeTcpPort();
+        var ttsPort = GetFreeTcpPort();
+        using var service = CreateService(listenPort, ttsPort, timeoutSeconds: 5, maxPayloadBytes: 512);
+        await service.StartAsync(CancellationToken.None);
+
+        await SendBytesAsync(listenPort, Encoding.UTF8.GetBytes(new string('x', 1024)));
+        await FakeExternalEditorPeer.SendGlobalCallbackAsync(listenPort, BuildGeneratedScript('h', "after-oversized"));
+
+        Assert.Equal(1, (await WaitForCallbackAsync(service)).LatestCallbackSequence);
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task FragmentedValidCallback_IsAccepted()
+    {
+        var listenPort = GetFreeTcpPort();
+        var ttsPort = GetFreeTcpPort();
+        using var service = CreateService(listenPort, ttsPort, timeoutSeconds: 5);
+        await service.StartAsync(CancellationToken.None);
+
+        var script = BuildGeneratedScript('i', "fragmented");
+        var payload = "{\"messageID\":1,\"scriptStates\":[{\"name\":\"Global\",\"guid\":\"-1\",\"script\":"
+            + JsonSerializer.Serialize(script) + ",\"ui\":\"\"}]}";
+        var bytes = Encoding.UTF8.GetBytes(payload);
+        await SendBytesAsync(listenPort, bytes[..(bytes.Length / 3)], bytes[(bytes.Length / 3)..]);
+
+        Assert.Equal(1, (await WaitForCallbackAsync(service)).LatestCallbackSequence);
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    private static TtsExternalEditorService CreateService(
+        int listenPort,
+        int ttsPort,
+        int timeoutSeconds,
+        int maxPayloadBytes = 8 * 1024 * 1024,
+        ILogger<TtsExternalEditorService>? logger = null)
     {
         var options = Options.Create(new TtsExternalEditorOptions
         {
@@ -126,9 +188,36 @@ public sealed class TtsExternalEditorServiceTests
             ListenPort = listenPort,
             TtsHost = IPAddress.Loopback.ToString(),
             TtsPort = ttsPort,
-            OperationTimeoutSeconds = timeoutSeconds
+            OperationTimeoutSeconds = timeoutSeconds,
+            MaxCallbackPayloadBytes = maxPayloadBytes,
+            CallbackReadTimeoutSeconds = 1
         });
-        return new TtsExternalEditorService(options, NullLogger<TtsExternalEditorService>.Instance);
+        return new TtsExternalEditorService(options, logger ?? NullLogger<TtsExternalEditorService>.Instance);
+    }
+
+    private static async Task SendBytesAsync(int port, params byte[][] chunks)
+    {
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, port);
+        await using var stream = client.GetStream();
+        foreach (var chunk in chunks)
+        {
+            await stream.WriteAsync(chunk);
+            await stream.FlushAsync();
+        }
+        try { client.Client.Shutdown(SocketShutdown.Send); } catch { }
+    }
+
+    private static async Task<TtsEditorStatusResponseDto> WaitForCallbackAsync(TtsExternalEditorService service)
+    {
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            var status = service.GetStatus();
+            if (status.LatestCallbackSequence > 0) return status;
+            await Task.Delay(10);
+        }
+
+        return service.GetStatus();
     }
 
     private static int GetFreeTcpPort()
@@ -149,6 +238,25 @@ public sealed class TtsExternalEditorServiceTests
     }
 
     private sealed record ExternalEditorCommand(int MessageId, string? GlobalScript);
+
+    private sealed record LogEntry(LogLevel Level, string Message, Exception? Exception);
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<LogEntry> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Entries.Add(new LogEntry(logLevel, formatter(state, exception), exception));
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+            public void Dispose() { }
+        }
+    }
 
     private sealed class FakeExternalEditorPeer : IAsyncDisposable
     {

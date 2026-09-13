@@ -10,6 +10,7 @@ public sealed class ForgeStructuredOutputParser
     public const string Sentinel = "@@FORGE_BRIDGE_STATE@@";
     public const string DecisionReadySentinel = "@@FORGE_BRIDGE_DECISION_READY@@";
     public const string RevealSentinel = "@@FORGE_BRIDGE_REVEAL@@";
+    public const string RandomResultSentinel = "@@FORGE_BRIDGE_RANDOM_RESULT@@";
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -34,6 +35,7 @@ public sealed class ForgeStructuredOutputParser
         var snapshots = new List<ForgeStructuredSnapshot>();
         var decisionReady = new List<ForgeDecisionReadyMarker>();
         var reveals = new List<ForgeStructuredRevealPresentation>();
+        var randomResults = new List<ForgeStructuredRandomResultPresentation>();
 
         while (true)
         {
@@ -57,6 +59,10 @@ public sealed class ForgeStructuredOutputParser
                 else if (string.Equals(_frameSentinel, RevealSentinel, StringComparison.Ordinal))
                 {
                     reveals.Add(ParseRevealFrame(json));
+                }
+                else if (string.Equals(_frameSentinel, RandomResultSentinel, StringComparison.Ordinal))
+                {
+                    randomResults.Add(ParseRandomResultFrame(json));
                 }
                 _frameSentinel = null;
                 continue;
@@ -100,7 +106,7 @@ public sealed class ForgeStructuredOutputParser
             }
         }
 
-        return new ForgeStructuredOutputResult(tui.ToString(), snapshots, decisionReady, _frameInProgress, reveals);
+        return new ForgeStructuredOutputResult(tui.ToString(), snapshots, decisionReady, _frameInProgress, reveals, randomResults);
     }
 
     private static (int Index, string Sentinel) FindFirstSentinel(string text)
@@ -108,24 +114,27 @@ public sealed class ForgeStructuredOutputParser
         var stateIndex = text.IndexOf(Sentinel, StringComparison.Ordinal);
         var decisionIndex = text.IndexOf(DecisionReadySentinel, StringComparison.Ordinal);
         var revealIndex = text.IndexOf(RevealSentinel, StringComparison.Ordinal);
-        if (stateIndex < 0 && decisionIndex < 0 && revealIndex < 0) return (-1, string.Empty);
+        var randomResultIndex = text.IndexOf(RandomResultSentinel, StringComparison.Ordinal);
+        if (stateIndex < 0 && decisionIndex < 0 && revealIndex < 0 && randomResultIndex < 0) return (-1, string.Empty);
         var candidates = new[]
         {
             (Index: stateIndex, Sentinel),
             (Index: decisionIndex, Sentinel: DecisionReadySentinel),
-            (Index: revealIndex, Sentinel: RevealSentinel)
+            (Index: revealIndex, Sentinel: RevealSentinel),
+            (Index: randomResultIndex, Sentinel: RandomResultSentinel)
         }.Where(item => item.Index >= 0).OrderBy(item => item.Index).First();
         return candidates;
     }
 
     private static int LongestSentinelPrefixSuffix(string text)
     {
-        var maximum = Math.Min(text.Length, new[] { Sentinel.Length, DecisionReadySentinel.Length, RevealSentinel.Length }.Max() - 1);
+        var maximum = Math.Min(text.Length, new[] { Sentinel.Length, DecisionReadySentinel.Length, RevealSentinel.Length, RandomResultSentinel.Length }.Max() - 1);
         for (var length = maximum; length > 0; length--)
         {
             if (length < Sentinel.Length && text.EndsWith(Sentinel[..length], StringComparison.Ordinal)) return length;
             if (length < DecisionReadySentinel.Length && text.EndsWith(DecisionReadySentinel[..length], StringComparison.Ordinal)) return length;
             if (length < RevealSentinel.Length && text.EndsWith(RevealSentinel[..length], StringComparison.Ordinal)) return length;
+            if (length < RandomResultSentinel.Length && text.EndsWith(RandomResultSentinel[..length], StringComparison.Ordinal)) return length;
         }
         return 0;
     }
@@ -212,6 +221,30 @@ public sealed class ForgeStructuredOutputParser
         }
     }
 
+    private static ForgeStructuredRandomResultPresentation ParseRandomResultFrame(string json)
+    {
+        try
+        {
+            var result = JsonSerializer.Deserialize<ForgeStructuredRandomResultPresentation>(json, JsonOptions)
+                ?? throw new ForgeStructuredFrameException("Forge emitted an empty random-result frame.");
+            if (result.Version != 1 || !string.Equals(result.Type, "random_result", StringComparison.Ordinal)
+                || string.IsNullOrWhiteSpace(result.RollGroupId) || string.IsNullOrWhiteSpace(result.SeatId)
+                || result.Sides < 2 || result.NaturalResults is null || result.NaturalResults.Count == 0)
+            {
+                throw new ForgeStructuredFrameException("Forge random-result frame omitted required roll data.");
+            }
+            return result;
+        }
+        catch (ForgeStructuredFrameException)
+        {
+            throw;
+        }
+        catch (JsonException ex)
+        {
+            throw new ForgeStructuredFrameException(BuildMalformedJsonMessage(ex), ex);
+        }
+    }
+
     private static string BuildMalformedJsonMessage(JsonException ex)
     {
         var metadata = new List<string>();
@@ -239,7 +272,22 @@ public sealed record ForgeStructuredOutputResult(
     IReadOnlyList<ForgeStructuredSnapshot> Snapshots,
     IReadOnlyList<ForgeDecisionReadyMarker>? DecisionReadyMarkers = null,
     bool FrameInProgress = false,
-    IReadOnlyList<ForgeStructuredRevealPresentation>? Reveals = null);
+    IReadOnlyList<ForgeStructuredRevealPresentation>? Reveals = null,
+    IReadOnlyList<ForgeStructuredRandomResultPresentation>? RandomResults = null);
+
+public sealed record ForgeStructuredRandomResultPresentation(
+    int Version,
+    string Type,
+    long Sequence,
+    string RollGroupId,
+    string SeatId,
+    int Sides,
+    IReadOnlyList<int> NaturalResults,
+    IReadOnlyList<int>? FinalResults = null,
+    bool IsReroll = false,
+    string Purpose = "rules/gameplay",
+    string? SourceObjectId = null,
+    string? SourceName = null);
 
 public sealed record ForgeDecisionReadyMarker(
     string SessionId,

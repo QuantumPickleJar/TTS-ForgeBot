@@ -454,7 +454,8 @@ public sealed partial class ForgeTuiParser
             PrototypeToughness: provenance.Success ? NullIfBlank(provenance.Groups["prototypeToughness"].Value) : null,
             DisplayManaCost: provenance.Success ? NullIfBlank(provenance.Groups["displayManaCost"].Value) : null,
             EntityKind: entityKind,
-            EntitySeatId: entitySeatId)
+            EntitySeatId: entitySeatId,
+            EntityCardInstanceId: entityCardId)
         {
             IsPresentationAuthorized = presentationAuthorized,
             // U2: Populate structured action provenance when bridge metadata is present

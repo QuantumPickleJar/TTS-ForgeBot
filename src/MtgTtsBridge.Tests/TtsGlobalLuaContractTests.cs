@@ -317,7 +317,7 @@ public sealed class TtsGlobalLuaContractTests
         var defer = Script[deferStart..retryStart];
 
         Assert.Contains("BridgeBuildSeatHandGuidSet(decision.seatId)", defer);
-        Assert.Contains("action.preparedSourceCardInstanceId", defer);
+        Assert.Contains("BridgeActionExactPhysicalInstanceId(action)", defer);
         Assert.Contains("BridgeState.physicalByInstanceId[instanceId]", defer);
         Assert.Contains("BridgeState.physicalInstanceIdByGuid[guid] ~= instanceId", defer);
         Assert.Contains("handGuids[guid] ~= true", defer);

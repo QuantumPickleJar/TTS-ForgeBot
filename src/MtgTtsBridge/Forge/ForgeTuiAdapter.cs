@@ -718,6 +718,35 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
                         _latestCommittedMutationForgeSequence = Math.Max(_latestCommittedMutationForgeSequence ?? 0, reveal.Sequence);
                         _latestDecisionEligibleCursor = _latestCommittedMutationCursor;
                     }
+                    foreach (var randomResult in output.RandomResults ?? [])
+                    {
+                        var sourceObjectId = NormalizeInstanceId(_sessionId, randomResult.SourceObjectId);
+                        var presentation = new MtgTtsBridge.Contracts.Events.RandomResultPresentationDto(
+                            randomResult.RollGroupId,
+                            randomResult.SeatId,
+                            randomResult.Sides,
+                            randomResult.NaturalResults,
+                            randomResult.FinalResults,
+                            randomResult.IsReroll,
+                            randomResult.Purpose,
+                            sourceObjectId,
+                            randomResult.SourceName,
+                            randomResult.Sequence);
+                        EnqueueEvent(new ForgeTuiRawEvent(
+                            "random_result",
+                            randomResult.SeatId,
+                            null,
+                            null,
+                            null,
+                            null,
+                            $"Forge authoritative {randomResult.Sides}-sided roll: {string.Join(", ", randomResult.NaturalResults)}",
+                            ForgeSequence: randomResult.Sequence,
+                            RandomResultPresentation: presentation));
+                        _latestObservedForgeSequence = Math.Max(_latestObservedForgeSequence ?? 0, randomResult.Sequence);
+                        _latestCommittedMutationCursor = _latestEventSequence;
+                        _latestCommittedMutationForgeSequence = Math.Max(_latestCommittedMutationForgeSequence ?? 0, randomResult.Sequence);
+                        _latestDecisionEligibleCursor = _latestCommittedMutationCursor;
+                    }
                     foreach (var marker in output.DecisionReadyMarkers ?? [])
                     {
                         ApplyDecisionReadyMarker(marker);
@@ -848,10 +877,29 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
     }
 
-    private static string? NormalizeInstanceId(string sessionId, string? value) =>
-        value is not null && value.StartsWith("forge-object:", StringComparison.Ordinal)
-            ? $"forge:{sessionId}:{value["forge-object:".Length..]}"
-            : value;
+    private static string? NormalizeInstanceId(string sessionId, string? value)
+    {
+        if (value is null) return null;
+        if (value.StartsWith("forge-object:", StringComparison.Ordinal))
+            return $"forge:{sessionId}:{value["forge-object:".Length..]}";
+        if (value.StartsWith("forge-stack:", StringComparison.Ordinal))
+            return $"forge:{sessionId}:stack:{value["forge-stack:".Length..]}";
+        return value;
+    }
+
+    private static ActionProvenanceDto? NormalizeActionProvenance(
+        string sessionId, ActionProvenanceDto? provenance) =>
+        provenance is null ? null : provenance with
+        {
+            SourceCardInstanceId = NormalizeInstanceId(sessionId, provenance.SourceCardInstanceId)
+        };
+
+    private static PaymentContextDto? NormalizePaymentContext(
+        string sessionId, PaymentContextDto? paymentContext) =>
+        paymentContext is null ? null : paymentContext with
+        {
+            SourceCardInstanceId = NormalizeInstanceId(sessionId, paymentContext.SourceCardInstanceId)
+        };
 
     private void StageDecisionCandidate(ForgeTuiDecision parsed, bool structuredFrameInProgress)
     {
@@ -863,7 +911,9 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         {
             CardInstanceId = NormalizeInstanceId(sessionId, action.CardInstanceId),
             SourceCardInstanceId = NormalizeInstanceId(sessionId, action.SourceCardInstanceId),
-            PreparedSourceCardInstanceId = NormalizeInstanceId(sessionId, action.PreparedSourceCardInstanceId)
+            PreparedSourceCardInstanceId = NormalizeInstanceId(sessionId, action.PreparedSourceCardInstanceId),
+            EntityCardInstanceId = NormalizeInstanceId(sessionId, action.EntityCardInstanceId),
+            Provenance = NormalizeActionProvenance(sessionId, action.Provenance)
         }).ToArray();
         // Forge can enumerate the same virtual prepared spell once per
         // equivalent SpellAbility.  They are one legal choice when the
@@ -883,6 +933,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             Actions = dedupedActions,
             SourceCardInstanceId = NormalizeInstanceId(sessionId, parsed.Decision.SourceCardInstanceId),
             ContextCardInstanceId = NormalizeInstanceId(sessionId, parsed.Decision.ContextCardInstanceId),
+            PaymentContext = NormalizePaymentContext(sessionId, parsed.Decision.PaymentContext),
             SessionId = sessionId,
         };
         // Target prompts are emitted synchronously while Forge is blocked on
@@ -996,9 +1047,17 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             .SelectMany(zone => zone.Cards)
             .Select(card => card.CardInstanceId)
             .Concat(current.Stack.Select(card => card.CardInstanceId))
+            .Concat((current.StackObjects ?? []).Select(stackObject => stackObject.StackObjectId))
             .ToHashSet(StringComparer.Ordinal);
 
         bool HasInstance(string? instanceId) => string.IsNullOrWhiteSpace(instanceId) || visibleInstances.Contains(instanceId);
+
+        bool HasActionReference(LegalActionDto action, bool includePreparedSource) =>
+            HasInstance(action.CardInstanceId)
+            && HasInstance(action.SourceCardInstanceId)
+            && (!includePreparedSource || HasInstance(action.PreparedSourceCardInstanceId))
+            && HasInstance(action.EntityCardInstanceId)
+            && HasInstance(action.Provenance?.SourceCardInstanceId);
 
         bool ValidatePreparedSource(LegalActionDto action)
         {
@@ -1027,9 +1086,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         foreach (var action in decision.Actions)
         {
             var virtualPrepared = string.Equals(action.CastMode, "prepare", StringComparison.OrdinalIgnoreCase);
-            if ((!virtualPrepared && (!HasInstance(action.CardInstanceId)
-                    || !HasInstance(action.SourceCardInstanceId)
-                    || !HasInstance(action.PreparedSourceCardInstanceId)))
+            if ((!virtualPrepared && !HasActionReference(action, includePreparedSource: true))
                 || (virtualPrepared && !ValidatePreparedSource(action)))
             {
                 reason = "action_card_reference_missing";
@@ -1312,7 +1369,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             IsVirtual: rawEvent.IsVirtual,
             MaterializationPolicy: rawEvent.MaterializationPolicy,
             IsToken: rawEvent.IsToken,
-            RevealPresentation: rawEvent.RevealPresentation)
+            RevealPresentation: rawEvent.RevealPresentation,
+            RandomResultPresentation: rawEvent.RandomResultPresentation)
         {
             Characteristics = rawEvent.Characteristics
         };
