@@ -933,14 +933,19 @@ function BridgeEventDrainQueueState()
     for seatId, _ in pairs(BRIDGE_SEATS or {}) do
         local extractionActive = BridgeState.libraryExtractionActiveBySeatId[seatId] == true
         local extractionLength = #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {})
+        local graveyardExtractionActive = BridgeState.graveyardExtractionActiveBySeatId[seatId] == true
+        local graveyardExtractionLength = #(BridgeState.graveyardExtractionQueueBySeatId[seatId] or {})
         local mulliganActive = BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
         local mulliganLength = #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {})
-        if extractionActive or extractionLength > 0 or mulliganActive or mulliganLength > 0 then
+        if extractionActive or extractionLength > 0 or graveyardExtractionActive
+            or graveyardExtractionLength > 0 or mulliganActive or mulliganLength > 0 then
             physicalIdle = false
         end
         physical[seatId] = {
             libraryExtractionActive = extractionActive,
             libraryExtractionLength = extractionLength,
+            graveyardExtractionActive = graveyardExtractionActive,
+            graveyardExtractionLength = graveyardExtractionLength,
             mulliganInsertionActive = mulliganActive,
             mulliganInsertionLength = mulliganLength,
             generation = BridgeState.physicalTransactionGeneration
@@ -3360,12 +3365,14 @@ BridgeState = {
     libraryExtractionQueueBySeatId = {},
     libraryExtractionActiveBySeatId = {},
     libraryExtractionTransactionBySeatId = {},
+    graveyardExtractionQueueBySeatId = {},
     libraryInsertionHandReleaseByGuid = {},
     newMatchCleanupOwner = nil,
     physicalContainmentTransitionsByGuid = {},
     physicalDurableContainedAliasesByGuid = {},
     lastNewMatchCleanupFailure = nil,
     graveyardExtractionActiveBySeatId = {},
+    graveyardExtractionTransactionBySeatId = {},
     -- Consecutive library transitions emitted by one Forge mutation are one
     -- physical transaction.  The queue still serializes Deck operations, but
     -- this owner prevents verification/recovery from observing its middle.
@@ -3822,7 +3829,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.libraryExtractionQueueBySeatId = {}
     BridgeState.libraryExtractionActiveBySeatId = {}
     BridgeState.libraryExtractionTransactionBySeatId = {}
+    BridgeState.graveyardExtractionQueueBySeatId = {}
     BridgeState.graveyardExtractionActiveBySeatId = {}
+    BridgeState.graveyardExtractionTransactionBySeatId = {}
     BridgeState.libraryBatchBySeatId = {}
     BridgeState.mulliganBottomQueueBySeatId = {}
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
@@ -4645,12 +4654,31 @@ function BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
         return nil, nil, "contained mapping is in " .. tostring(mapping.zoneName)
     end
     local deck = BridgeGetLiveObjectByGuid(mapping.deckGuid)
-    if deck == nil or deck.tag ~= "Deck" then
-        return nil, nil, "containing Deck is unavailable"
-    end
     local entries = {}
-    local ok = pcall(function() entries = deck.getObjects() or {} end)
-    if not ok then return nil, nil, "containing Deck inventory is unavailable" end
+    local function readDeck(candidate)
+        if candidate == nil or candidate.tag ~= "Deck" then return false end
+        local ok = pcall(function() entries = candidate.getObjects() or {} end)
+        return ok
+    end
+    if not readDeck(deck) then
+        -- Native TTS may replace a Deck (and its GUID) while an exact
+        -- takeObject callback is settling. Re-resolve only the seat-local
+        -- expected zone and only accept the exact contained GUID; proximity
+        -- or printed name is never a replacement identity.
+        local replacement = nil
+        if expectedZone == "graveyard" and BridgeFindGraveyardContainer ~= nil then
+            replacement = BridgeFindGraveyardContainer(mapping.seatId, nil, true, true)
+        end
+        if replacement == nil or not readDeck(replacement) then
+            return nil, nil, "containing Deck is unavailable"
+        end
+        mapping.deckGuid = BridgeSafeObjectGuid(replacement)
+        BridgeRecordPhysicalMutationJournal({
+            operation = "GRAVEYARD_EXTRACTION", stage = "DECK_REACQUIRED",
+            cardInstanceId = cardInstanceId, deckGuid = mapping.deckGuid,
+            expectedZone = expectedZone
+        })
+    end
     if mapping.locatorType == "SLOT_LOCATOR" then
         local targetIndex = tonumber(mapping.slotIndex)
         local expectedGeneration = BridgeState.libraryBindingGenerationBySeatId

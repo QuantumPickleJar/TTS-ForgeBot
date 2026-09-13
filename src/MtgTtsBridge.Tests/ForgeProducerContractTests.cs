@@ -67,7 +67,11 @@ public sealed class ForgeProducerContractTests
         var nextDiff = Patch.IndexOf("\ndiff --git ", rollStart + 1, StringComparison.Ordinal);
         var rollEffect = Patch.Substring(rollStart, nextDiff >= 0 ? nextDiff - rollStart : Patch.Length - rollStart);
 
-        Assert.True(Regex.IsMatch(rollEffect, "new GameEventRollDie\\(\\s*\\+?\\s*rollGroupId, player, sides", RegexOptions.Singleline));
+        // Unified diffs prefix each added source line with '+', including
+        // the wrapped constructor arguments.
+        Assert.True(Regex.IsMatch(rollEffect,
+            "new GameEventRollDie\\(\\s*\\+?\\s*rollGroupId,\\s*\\+?\\s*player,\\s*\\+?\\s*sides",
+            RegexOptions.Singleline));
         Assert.True(rollEffect.Contains("List.copyOf(getNaturalResults(resultsList))", StringComparison.Ordinal));
         Assert.True(rollEffect.Contains("List.copyOf(getFinalResults(resultsList))", StringComparison.Ordinal));
         Assert.DoesNotContain("+            player.getGame().fireEvent(new GameEventRollDie());", rollEffect);

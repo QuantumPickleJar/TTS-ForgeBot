@@ -2463,10 +2463,12 @@ function BridgeHudSubmitReport(category, summary)
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FENCE_ACCEPTED", captureToken, "capture-owner-current")
         BridgeRecordDiagnosticCaptureLifecycle(lifecycleStage or "DIAG_CAPTURE_CALLBACK", captureToken, recoveryReason or "callback")
         requestUi.reportCaptureInFlight = false
-        -- The report surface is modal in the HUD. Leaving it open after the
-        -- HTTP callback can consume ordinary action controls and look like a
-        -- gameplay lock even though polling and choice ownership are healthy.
-        requestUi.reportPanelVisible = false
+        -- Return to a reusable idle form. The report surface is already
+        -- decision-scoped and contains no gameplay controls, so keeping it
+        -- open makes a second capture available without requiring Save & Play
+        -- or another REPORT BUG ingress. The token fence above still makes
+        -- callbacks from an older capture inert.
+        requestUi.reportPanelVisible = true
         if ok and body ~= nil and body.success == true then
             local reportId = tostring(body.reportId or "unknown")
             local reportPath = tostring(body.reportPath or "BugReports")

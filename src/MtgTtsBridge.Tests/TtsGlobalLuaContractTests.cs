@@ -2743,6 +2743,37 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void ResyncXmlRoute_UsesAnExplicitClickableButtonAndNonBlockingContainers()
+    {
+        var xmlPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml");
+        var document = XElement.Parse("<root>" + File.ReadAllText(xmlPath) + "</root>");
+        var button = document.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute("id"), "BridgeHudResyncFromForge", StringComparison.Ordinal));
+
+        Assert.Equal("true", (string?)button.Attribute("interactable"));
+        Assert.Equal("true", (string?)button.Attribute("raycastTarget"));
+
+        var blockingAncestors = button.Ancestors()
+            .Where(element => element.Attribute("id") != null)
+            .Select(element => new
+            {
+                Id = (string)element.Attribute("id")!,
+                RaycastTarget = (string?)element.Attribute("raycastTarget")
+            })
+            .Where(element => string.Equals(element.RaycastTarget, "true", StringComparison.OrdinalIgnoreCase))
+            .Select(element => element.Id)
+            .ToArray();
+
+        Assert.Empty(blockingAncestors);
+        Assert.Equal("false", (string?)document.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute("id"), "BridgeHudRevealOverlay", StringComparison.Ordinal)).Attribute("raycastTarget"));
+        Assert.Equal("false", (string?)document.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute("id"), "BridgeHudRevealOverlayBlue", StringComparison.Ordinal)).Attribute("raycastTarget"));
+        Assert.Contains("function BridgeRecordResyncClickIngress", Script);
+        Assert.Contains("BridgeRecordResyncClickIngress(player, value, id)", Script);
+    }
+
+    [Fact]
     public void StartupPerformanceAndStatusStages_AreExposedInLuaContracts()
     {
         Assert.Contains("function BridgeStartupPerfReset", Script);

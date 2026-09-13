@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 903004664a6149d8d57966f2a63797e89c85b79942b21f63d4a98b367461bcd3
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "903004664a6149d8d57966f2a63797e89c85b79942b21f63d4a98b367461bcd3"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 5337297fb270cf777e822403256f4353c1b69dea0b791c6ee4f58b860ba7eedf
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "5337297fb270cf777e822403256f4353c1b69dea0b791c6ee4f58b860ba7eedf"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -936,14 +936,19 @@ function BridgeEventDrainQueueState()
     for seatId, _ in pairs(BRIDGE_SEATS or {}) do
         local extractionActive = BridgeState.libraryExtractionActiveBySeatId[seatId] == true
         local extractionLength = #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {})
+        local graveyardExtractionActive = BridgeState.graveyardExtractionActiveBySeatId[seatId] == true
+        local graveyardExtractionLength = #(BridgeState.graveyardExtractionQueueBySeatId[seatId] or {})
         local mulliganActive = BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
         local mulliganLength = #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {})
-        if extractionActive or extractionLength > 0 or mulliganActive or mulliganLength > 0 then
+        if extractionActive or extractionLength > 0 or graveyardExtractionActive
+            or graveyardExtractionLength > 0 or mulliganActive or mulliganLength > 0 then
             physicalIdle = false
         end
         physical[seatId] = {
             libraryExtractionActive = extractionActive,
             libraryExtractionLength = extractionLength,
+            graveyardExtractionActive = graveyardExtractionActive,
+            graveyardExtractionLength = graveyardExtractionLength,
             mulliganInsertionActive = mulliganActive,
             mulliganInsertionLength = mulliganLength,
             generation = BridgeState.physicalTransactionGeneration
@@ -3363,12 +3368,14 @@ BridgeState = {
     libraryExtractionQueueBySeatId = {},
     libraryExtractionActiveBySeatId = {},
     libraryExtractionTransactionBySeatId = {},
+    graveyardExtractionQueueBySeatId = {},
     libraryInsertionHandReleaseByGuid = {},
     newMatchCleanupOwner = nil,
     physicalContainmentTransitionsByGuid = {},
     physicalDurableContainedAliasesByGuid = {},
     lastNewMatchCleanupFailure = nil,
     graveyardExtractionActiveBySeatId = {},
+    graveyardExtractionTransactionBySeatId = {},
     -- Consecutive library transitions emitted by one Forge mutation are one
     -- physical transaction.  The queue still serializes Deck operations, but
     -- this owner prevents verification/recovery from observing its middle.
@@ -3825,7 +3832,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.libraryExtractionQueueBySeatId = {}
     BridgeState.libraryExtractionActiveBySeatId = {}
     BridgeState.libraryExtractionTransactionBySeatId = {}
+    BridgeState.graveyardExtractionQueueBySeatId = {}
     BridgeState.graveyardExtractionActiveBySeatId = {}
+    BridgeState.graveyardExtractionTransactionBySeatId = {}
     BridgeState.libraryBatchBySeatId = {}
     BridgeState.mulliganBottomQueueBySeatId = {}
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
@@ -4648,12 +4657,31 @@ function BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
         return nil, nil, "contained mapping is in " .. tostring(mapping.zoneName)
     end
     local deck = BridgeGetLiveObjectByGuid(mapping.deckGuid)
-    if deck == nil or deck.tag ~= "Deck" then
-        return nil, nil, "containing Deck is unavailable"
-    end
     local entries = {}
-    local ok = pcall(function() entries = deck.getObjects() or {} end)
-    if not ok then return nil, nil, "containing Deck inventory is unavailable" end
+    local function readDeck(candidate)
+        if candidate == nil or candidate.tag ~= "Deck" then return false end
+        local ok = pcall(function() entries = candidate.getObjects() or {} end)
+        return ok
+    end
+    if not readDeck(deck) then
+        -- Native TTS may replace a Deck (and its GUID) while an exact
+        -- takeObject callback is settling. Re-resolve only the seat-local
+        -- expected zone and only accept the exact contained GUID; proximity
+        -- or printed name is never a replacement identity.
+        local replacement = nil
+        if expectedZone == "graveyard" and BridgeFindGraveyardContainer ~= nil then
+            replacement = BridgeFindGraveyardContainer(mapping.seatId, nil, true, true)
+        end
+        if replacement == nil or not readDeck(replacement) then
+            return nil, nil, "containing Deck is unavailable"
+        end
+        mapping.deckGuid = BridgeSafeObjectGuid(replacement)
+        BridgeRecordPhysicalMutationJournal({
+            operation = "GRAVEYARD_EXTRACTION", stage = "DECK_REACQUIRED",
+            cardInstanceId = cardInstanceId, deckGuid = mapping.deckGuid,
+            expectedZone = expectedZone
+        })
+    end
     if mapping.locatorType == "SLOT_LOCATOR" then
         local targetIndex = tonumber(mapping.slotIndex)
         local expectedGeneration = BridgeState.libraryBindingGenerationBySeatId
@@ -6518,6 +6546,164 @@ function BridgeQueueLibraryExtraction(seatId, job, metadata)
     BridgeLogLibraryExtraction(seatId, "ENQUEUE", BridgeState.physicalTransactionGeneration or 0, item, queuedLibrary)
     BridgeProcessMulliganBottomQueue(seatId)
     BridgeProcessLibraryExtractionQueue(seatId)
+end
+
+-- A graveyard Deck is also a native mutable container.  A single Forge
+-- mutation can therefore ask for several exact contained cards to leave it
+-- before any of TTS' takeObject callbacks have settled.  Keep those
+-- extractions serialized per seat, just like library extraction.  The active
+-- flag is deliberately not a drop guard: every queued item owns its exact
+-- CardInstanceId and its event completion callback.
+function BridgeLogGraveyardExtraction(seatId, stage, generation, item, deckGuid, reason)
+    local queue = BridgeState.graveyardExtractionQueueBySeatId[seatId] or {}
+    local active = BridgeState.graveyardExtractionTransactionBySeatId[seatId]
+    local itemCardInstanceId = type(item) == "table" and item.cardInstanceId or nil
+    BridgeLog(string.format(
+        "[Bridge] GRAVEYARD_EXTRACTION_%s seat=%s generation=%s queueLength=%s activeItem=%s cardInstanceId=%s deckGuid=%s reason=%s",
+        tostring(stage), tostring(seatId), tostring(generation), tostring(#queue),
+        tostring(active and active.cardInstanceId or itemCardInstanceId),
+        tostring(itemCardInstanceId), tostring(deckGuid or ""), tostring(reason or "")))
+    BridgeRecordPhysicalMutationJournal({
+        operation = "GRAVEYARD_EXTRACTION", stage = tostring(stage), seatId = seatId,
+        generation = generation,
+        cardInstanceId = active and active.cardInstanceId or itemCardInstanceId,
+        deckGuid = deckGuid, reason = reason
+    })
+    local tx = BridgeState.eventDrainTransaction
+    if tx ~= nil then
+        BridgeRecordPhysicalMutationProgress(tx, "GRAVEYARD_" .. tostring(stage),
+            tostring(itemCardInstanceId or "") .. ":" .. tostring(reason or ""))
+    end
+end
+
+function BridgeProcessGraveyardExtractionQueue(seatId)
+    BridgeState.graveyardExtractionQueueBySeatId = BridgeState.graveyardExtractionQueueBySeatId or {}
+    BridgeState.graveyardExtractionActiveBySeatId = BridgeState.graveyardExtractionActiveBySeatId or {}
+    BridgeState.graveyardExtractionTransactionBySeatId = BridgeState.graveyardExtractionTransactionBySeatId or {}
+    if BridgeState.graveyardExtractionActiveBySeatId[seatId] == true then return end
+    local queue = BridgeState.graveyardExtractionQueueBySeatId[seatId]
+    local item = queue and queue[1] or nil
+    if item == nil then return end
+
+    local transactionQueue = queue
+    local transactionSessionId = BridgeState.eventSessionId
+    local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
+    local transaction = {
+        job = item,
+        cardInstanceId = type(item) == "table" and item.cardInstanceId or nil,
+        sessionId = transactionSessionId,
+        generation = transactionGeneration
+    }
+    BridgeState.graveyardExtractionActiveBySeatId[seatId] = true
+    BridgeState.graveyardExtractionTransactionBySeatId[seatId] = transaction
+    BridgeLogGraveyardExtraction(seatId, "DISPATCH", transactionGeneration, item, item.deckGuid)
+
+    local function current()
+        return transactionSessionId == BridgeState.eventSessionId
+            and transactionGeneration == (BridgeState.physicalTransactionGeneration or 0)
+    end
+    local function removeOwnedItem()
+        if transactionQueue[1] ~= item then return end
+        local index = 1
+        while transactionQueue[index + 1] ~= nil do
+            transactionQueue[index] = transactionQueue[index + 1]
+            index = index + 1
+        end
+        transactionQueue[index] = nil
+    end
+    local function retireStale()
+        local ownsTransaction = BridgeState.graveyardExtractionTransactionBySeatId[seatId] == transaction
+        if ownsTransaction then
+            removeOwnedItem()
+            BridgeState.graveyardExtractionTransactionBySeatId[seatId] = nil
+            BridgeState.graveyardExtractionActiveBySeatId[seatId] = nil
+        end
+        BridgeLogGraveyardExtraction(seatId, "STALE_CALLBACK", transactionGeneration, item,
+            nil, "session-or-generation-changed")
+    end
+    local finished = false
+    local function finish(ok, reason)
+        if finished then return end
+        finished = true
+        local succeeded = ok ~= false
+        local ownsTransaction = BridgeState.graveyardExtractionTransactionBySeatId[seatId] == transaction
+        local wasCurrent = current()
+        if ownsTransaction then
+            removeOwnedItem()
+            if not wasCurrent and BridgeState.graveyardExtractionTransactionBySeatId[seatId] == transaction then
+                BridgeState.graveyardExtractionQueueBySeatId[seatId] = transactionQueue or {}
+            end
+            BridgeState.graveyardExtractionTransactionBySeatId[seatId] = nil
+            BridgeState.graveyardExtractionActiveBySeatId[seatId] = nil
+        end
+        BridgeLogGraveyardExtraction(seatId, succeeded and "COMPLETE" or "FAILED",
+            transactionGeneration, item, nil, reason or (wasCurrent and "success" or "stale-generation"))
+        local completion = item.physicalCompletion
+        item.physicalCompletion = nil
+        if item.event ~= nil then item.event._bridgePhysicalCompletionPending = false end
+        if completion ~= nil then
+            pcall(completion, succeeded and wasCurrent, reason)
+        elseif not succeeded and wasCurrent then
+            BridgeStopOnDesync("contained graveyard extraction failed: " .. tostring(reason))
+        end
+        if not ownsTransaction then return end
+        if not wasCurrent then
+            BridgeProcessGraveyardExtractionQueue(seatId)
+            return
+        end
+        if not succeeded or BridgeState.desyncLatched == true then
+            -- A failed exact extraction is terminal for this physical drain.
+            -- Recovery must inspect the post-rollback topology before another
+            -- queued event is allowed to mutate the same native Deck.
+            return
+        end
+        BridgeProcessGraveyardExtractionQueue(seatId)
+        BridgeWakePhysicalReadinessDependency(transactionGeneration, "graveyard-extraction-terminal")
+        BridgeTryPresentPendingDecision("graveyard-extraction-complete")
+        if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
+            BridgeRenderDecision(BridgeState.lastDecision)
+        end
+        BridgeTryApplyDeferredSnapshotReconcile("graveyard-extraction-complete")
+    end
+
+    local started, startError = pcall(function()
+        item.run(function(ok, reason)
+            if not current() then
+                retireStale()
+                return
+            end
+            finish(ok, reason)
+        end)
+    end)
+    if not started then
+        finish(false, "start-error: " .. tostring(startError))
+    elseif not current() then
+        retireStale()
+    end
+end
+
+function BridgeQueueGraveyardExtraction(seatId, job, metadata)
+    BridgeState.graveyardExtractionQueueBySeatId = BridgeState.graveyardExtractionQueueBySeatId or {}
+    if BridgeState.graveyardExtractionQueueBySeatId[seatId] == nil then
+        BridgeState.graveyardExtractionQueueBySeatId[seatId] = {}
+    end
+    local item = {run = job}
+    if type(metadata) == "table" then
+        item.cardInstanceId = metadata.cardInstanceId
+        item.physicalCompletion = metadata.physicalCompletion
+        item.event = metadata.event
+        item.deckGuid = metadata.deckGuid
+        if item.event ~= nil then item.event._bridgePhysicalCompletionPending = true end
+    end
+    if item.event == nil and BridgeState.eventMutationApplyingEvent ~= nil then
+        local currentEvent = BridgeState.eventMutationApplyingEvent
+        item.event = currentEvent
+        item.physicalCompletion = currentEvent._bridgePhysicalCompletion
+        currentEvent._bridgePhysicalCompletionPending = true
+    end
+    table.insert(BridgeState.graveyardExtractionQueueBySeatId[seatId], item)
+    BridgeLogGraveyardExtraction(seatId, "ENQUEUE", BridgeState.physicalTransactionGeneration or 0, item, item.deckGuid)
+    BridgeProcessGraveyardExtractionQueue(seatId)
 end
 
 function BridgeReturnGraveyardPilesToLibraries(callback)
@@ -18895,7 +19081,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.libraryExtractionQueueBySeatId = {}
     BridgeState.libraryExtractionActiveBySeatId = {}
     BridgeState.libraryExtractionTransactionBySeatId = {}
+    BridgeState.graveyardExtractionQueueBySeatId = {}
     BridgeState.graveyardExtractionActiveBySeatId = {}
+    BridgeState.graveyardExtractionTransactionBySeatId = {}
     BridgeState.libraryBatchBySeatId = {}
     BridgeState.battlefieldCounts = {}
     BridgeState.graveyardCounts = {}
@@ -19441,6 +19629,7 @@ function BridgePhysicalMutationOperationsIdle()
         if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
             or #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}) > 0
             or BridgeState.graveyardExtractionActiveBySeatId[seatId] == true
+            or #(BridgeState.graveyardExtractionQueueBySeatId[seatId] or {}) > 0
             or BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
             or #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {}) > 0 then
             return false
@@ -19981,6 +20170,86 @@ function BridgeMutationPhysicalBatchesReady(tx)
     return true, nil
 end
 
+-- A failed destination formation can leave TTS exposing the just-inserted
+-- Card userdata for a short time even though the native Deck already owns
+-- that exact GUID.  Rollback must canonicalize that observation before
+-- recovery inventories loose Cards; otherwise recovery can send the same
+-- authoritative card to another zone and create a loose+contained duplicate.
+-- This helper only acts when the native Deck contains the same exact GUID. It
+-- never identifies a contained entry by name or by array position, and it
+-- leaves an unproven loose card for the normal exact recovery path.
+function BridgeRollbackAtomicGraveyardAliases(tx, batch)
+    if batch == nil or batch.stagedPhysicalMoves == nil then return end
+    local candidates = {}
+    local function eachNumeric(values, callback)
+        if BridgeForEachNumericSequence ~= nil then
+            BridgeForEachNumericSequence(values or {}, callback)
+            return
+        end
+        for _, value in ipairs(values or {}) do callback(value) end
+    end
+    eachNumeric(getAllObjects() or {}, function(object)
+        if BridgeObjectIsUsable(object) and BridgeSafeObjectTag(object) == "Deck" then
+            local deckGuid = BridgeSafeObjectGuid(object)
+            eachNumeric(BridgeLibraryEntries(object) or {}, function(entry)
+                local guid = entry and (entry.guid or entry.GUID) or nil
+                if guid ~= nil then
+                    eachNumeric(batch.stagedPhysicalMoves or {}, function(staged)
+                        if staged ~= nil and tostring(staged.guid or "") == tostring(guid)
+                            and tostring(staged.seatId or batch.seatId or "") == tostring(batch.seatId or "") then
+                            table.insert(candidates, {
+                                deck = object, deckGuid = deckGuid, guid = guid,
+                                cardInstanceId = staged.cardInstanceId,
+                                seatId = batch.seatId,
+                                cardName = BridgeState.cardNameByInstanceId[staged.cardInstanceId]
+                            })
+                            BridgeRecordPhysicalMutationJournal({
+                                token = tx and tx.token or nil,
+                                stage = "MUTATION_ROLLBACK_ALIAS_FOUND", seatId = batch.seatId,
+                                cardInstanceId = staged.cardInstanceId, cardGuid = guid,
+                                destinationDeck = deckGuid
+                            })
+                        end
+                    end)
+                end
+            end)
+        end
+    end)
+    eachNumeric(candidates, function(candidate)
+        local inverse = BridgeState.physicalInstanceIdByGuid[candidate.guid]
+        local mappedGuid = BridgeState.physicalByInstanceId[candidate.cardInstanceId]
+        if (inverse == nil or inverse == candidate.cardInstanceId)
+            and (mappedGuid == nil or tostring(mappedGuid) == tostring(candidate.guid)) then
+            local published = BridgeRecordContainedCardIdentity(
+                candidate.cardInstanceId, candidate.deckGuid, candidate.guid,
+                candidate.seatId, "graveyard", candidate.cardName)
+            if published then
+                local loose = BridgeGetLiveObjectByGuid(candidate.guid)
+                local retired = false
+                if BridgeObjectIsUsable(loose) and BridgeSafeObjectTag(loose) == "Card" then
+                    local ok = pcall(function() loose.destruct() end)
+                    retired = ok
+                end
+                BridgeRecordPhysicalMutationJournal({
+                    token = tx and tx.token or nil, forgeSequence = tx and tx.forgeSequence or nil,
+                    stage = "MUTATION_ROLLBACK_CANONICALIZED", seatId = candidate.seatId,
+                    cardInstanceId = candidate.cardInstanceId, cardGuid = candidate.guid,
+                    destinationDeck = candidate.deckGuid, looseAliasRetired = retired,
+                    reason = "failed-graveyard-formation"
+                })
+            else
+                BridgeRecordPhysicalMutationJournal({
+                    token = tx and tx.token or nil,
+                    stage = "MUTATION_ROLLBACK_ALIAS_REJECTED", seatId = candidate.seatId,
+                    cardInstanceId = candidate.cardInstanceId, cardGuid = candidate.guid,
+                    destinationDeck = candidate.deckGuid,
+                    reason = tostring(BridgeState.lastContainedIdentitySetFailure or "unknown")
+                })
+            end
+        end
+    end)
+end
+
 function BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
     if batch ~= nil then
         batch.state = "FAILED"
@@ -20005,6 +20274,11 @@ function BridgeAbortAtomicGraveyardMutation(tx, batch, reason)
         tostring(tx and tx.firstEventSequence), tostring(tx and tx.lastEventSequence),
         tostring(batch and batch.seatId), BridgeMutationJoinInstanceIds(batch and batch.incomingInstanceIds or nil),
         tostring(tx and tx.physicalTransactionGeneration), tostring(reason)))
+    -- Canonicalize any exact loose aliases before stopping the owning event
+    -- transaction. BridgeStopOnDesync may schedule snapshot recovery, and
+    -- recovery must observe the post-rollback topology rather than racing a
+    -- still-visible Card proxy which the native Deck already owns.
+    BridgeRollbackAtomicGraveyardAliases(tx, batch)
     if tx ~= nil and BridgeEventMutationIsCurrent(tx) then
         BridgeAbortEventMutationTransaction(tx, "atomic graveyard mutation failed: " .. tostring(reason))
     end
@@ -21114,6 +21388,7 @@ function BridgeProcessEventQueue()
         BridgeState.libraryBatchBySeatId = BridgeState.libraryBatchBySeatId or {}
         BridgeState.libraryExtractionQueueBySeatId = BridgeState.libraryExtractionQueueBySeatId or {}
         BridgeState.libraryExtractionActiveBySeatId = BridgeState.libraryExtractionActiveBySeatId or {}
+        BridgeState.graveyardExtractionQueueBySeatId = BridgeState.graveyardExtractionQueueBySeatId or {}
         BridgeState.graveyardExtractionActiveBySeatId = BridgeState.graveyardExtractionActiveBySeatId or {}
         BridgeState.mulliganBottomQueueBySeatId = BridgeState.mulliganBottomQueueBySeatId or {}
         BridgeState.mulliganBottomInsertionActiveBySeatId = BridgeState.mulliganBottomInsertionActiveBySeatId or {}
@@ -22441,40 +22716,48 @@ local function BridgeApplyStructuredCardMoveCore(event)
     local contained = BridgeState.physicalContainerByInstanceId[event.cardInstanceId]
     if object == nil and event.sourceZone == "graveyard" and event.destinationZone ~= "graveyard"
         and contained ~= nil then
-        if BridgeState.graveyardExtractionActiveBySeatId[event.seatId] == true then
-            return true, nil
-        end
-        BridgeState.graveyardExtractionActiveBySeatId[event.seatId] = true
         local extractionSessionId = BridgeState.eventSessionId
         local extractionGeneration = BridgeState.physicalTransactionGeneration or 0
-        local function finishGraveyardExtraction(taken, extractionError)
-            if BridgeState.graveyardExtractionActiveBySeatId[event.seatId] ~= true then
-                if taken ~= nil then BridgeSafeObjectCall(taken, function(card) card.destruct() end) end
+        local function runGraveyardExtraction(complete)
+            local current = extractionSessionId == BridgeState.eventSessionId
+                and extractionGeneration == (BridgeState.physicalTransactionGeneration or 0)
+            if not current then
+                complete(false, "stale-graveyard-extraction-generation")
                 return
             end
-            BridgeState.graveyardExtractionActiveBySeatId[event.seatId] = nil
-            if extractionSessionId ~= BridgeState.eventSessionId
-                or extractionGeneration ~= (BridgeState.physicalTransactionGeneration or 0) then
-                BridgeLog(string.format("[Bridge] stale graveyard extraction completion seat=%s generation=%s instance=%s",
-                    tostring(event.seatId), tostring(extractionGeneration), tostring(event.cardInstanceId)))
-                return
-            end
-            if taken == nil then
-                BridgeStopOnDesync("contained graveyard extraction failed: " .. tostring(extractionError))
-                return
-            end
-            local takenGuid = BridgeSafeObjectGuid(taken)
-            local recorded = BridgeRecordLooseCardIdentity(event.cardInstanceId, takenGuid,
-                event.seatId, event.destinationZone, true)
-            if not recorded then
-                BridgeStopOnDesync("contained graveyard extraction could not rebind exact Card")
-                return
-            end
-            BridgeApplyStructuredCardMove(event)
+            BridgeTakeContainedCardByIdentity(event.cardInstanceId,
+                BridgeResolveSeatZoneAnchor(event.seatId, event.destinationZone or "graveyard"), false,
+                function(taken, extractionError)
+                    if extractionSessionId ~= BridgeState.eventSessionId
+                        or extractionGeneration ~= (BridgeState.physicalTransactionGeneration or 0) then
+                        complete(false, "stale-graveyard-extraction-callback")
+                        return
+                    end
+                    if taken == nil then
+                        complete(false, extractionError or "contained graveyard extraction returned no Card")
+                        return
+                    end
+                    local takenGuid = BridgeSafeObjectGuid(taken)
+                    local recorded = BridgeRecordLooseCardIdentity(event.cardInstanceId, takenGuid,
+                        event.seatId, event.destinationZone, true)
+                    if not recorded then
+                        complete(false, "contained graveyard extraction could not rebind exact Card")
+                        return
+                    end
+                    local applied, applyError = BridgeApplyStructuredCardMove(event)
+                    if not applied then
+                        complete(false, applyError or "extracted graveyard Card could not reach destination")
+                        return
+                    end
+                    complete(true, nil)
+                end)
         end
-        BridgeTakeContainedCardByIdentity(event.cardInstanceId,
-            BridgeResolveSeatZoneAnchor(event.seatId, event.destinationZone or "graveyard"), false,
-            finishGraveyardExtraction)
+        BridgeQueueGraveyardExtraction(event.seatId, runGraveyardExtraction, {
+            cardInstanceId = event.cardInstanceId,
+            event = event,
+            physicalCompletion = event._bridgePhysicalCompletion,
+            deckGuid = contained.deckGuid
+        })
         return true, nil
     end
     if guid ~= nil and object == nil then
@@ -26958,10 +27241,12 @@ function BridgeHudSubmitReport(category, summary)
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FENCE_ACCEPTED", captureToken, "capture-owner-current")
         BridgeRecordDiagnosticCaptureLifecycle(lifecycleStage or "DIAG_CAPTURE_CALLBACK", captureToken, recoveryReason or "callback")
         requestUi.reportCaptureInFlight = false
-        -- The report surface is modal in the HUD. Leaving it open after the
-        -- HTTP callback can consume ordinary action controls and look like a
-        -- gameplay lock even though polling and choice ownership are healthy.
-        requestUi.reportPanelVisible = false
+        -- Return to a reusable idle form. The report surface is already
+        -- decision-scoped and contains no gameplay controls, so keeping it
+        -- open makes a second capture available without requiring Save & Play
+        -- or another REPORT BUG ingress. The token fence above still makes
+        -- callbacks from an older capture inert.
+        requestUi.reportPanelVisible = true
         if ok and body ~= nil and body.success == true then
             local reportId = tostring(body.reportId or "unknown")
             local reportPath = tostring(body.reportPath or "BugReports")

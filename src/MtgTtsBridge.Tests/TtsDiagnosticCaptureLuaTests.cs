@@ -204,7 +204,7 @@ public sealed class TtsDiagnosticCaptureLuaTests
 
         var bridgeState = lua.Globals.Get("BridgeState").Table;
         Assert.False(bridgeState.Get("ui").Table.Get("reportCaptureInFlight").Boolean);
-        Assert.False(bridgeState.Get("ui").Table.Get("reportPanelVisible").Boolean);
+        Assert.True(bridgeState.Get("ui").Table.Get("reportPanelVisible").Boolean);
         Assert.Equal(0, lua.Globals.Get("decisionGets").Number);
         Assert.Equal(0, lua.Globals.Get("accepted").Number);
         Assert.Equal(0, lua.Globals.Get("submitted").Number);
@@ -267,7 +267,7 @@ public sealed class TtsDiagnosticCaptureLuaTests
         var ui = state.Get("ui").Table;
         Assert.True(lua.Globals.Get("captureInFlightWhilePending").Boolean);
         Assert.True(ui.Get("reportCaptureInFlight").Boolean == false);
-        Assert.False(ui.Get("reportPanelVisible").Boolean);
+        Assert.True(ui.Get("reportPanelVisible").Boolean);
         Assert.True(lua.Globals.Get("blockedWhilePending").IsNil());
         Assert.Equal("desync-latched", lua.Globals.Get("blockedAfterCompletion").String);
         Assert.Equal(1, lua.Globals.Get("resyncCalls").Number);
@@ -280,6 +280,73 @@ public sealed class TtsDiagnosticCaptureLuaTests
         Assert.Equal(22, state.Get("lastAppliedEventSequence").Number);
         Assert.Equal(7, state.Get("physicalTransactionGeneration").Number);
         Assert.Equal("NORMAL", state.Get("schedulerOwner").String);
+    }
+
+    [Fact]
+    public void SequentialCaptures_ReturnToReusableIdleAndFenceOlderCallbacks()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'capture-session'
+            BridgeState.ui = {reportCaptureInFlight = false, reportCaptureToken = 0,
+                reportCategoryIndex = 1, reportPanelVisible = true}
+            function BridgeWaitTime(callback, delay) end
+            function BridgePerformanceDiagnosticPayload()
+                return {performanceSummary = {}, recentTtsTrace = {},
+                    diagnosticCaptureLifecycle = {}, eventDrainDiagnostics = {}}
+            end
+            function BridgeHudReportSummaryText() return 'repeatable capture' end
+            function BridgeHudReportMappedCardInstanceIds() return {} end
+            function BridgeHudReportPhysicalMappings() return {} end
+            function BridgeUiMarkDirty(reason) end
+            JSON.encode = function(value) return '{}' end
+            captureCount = 0
+            callback1 = nil
+            callback2 = nil
+            BridgeHttp.requestJson = function(method, path, payload, callback)
+                if method == 'POST' and path == '/api/v1/diagnostics/report' then
+                    captureCount = captureCount + 1
+                    if captureCount == 1 then callback1 = callback else callback2 = callback end
+                end
+            end
+
+            BridgeHudSubmitReport('Gameplay sync', 'first')
+            token1 = BridgeState.ui.reportCaptureToken
+            callback1(true, {success = true, reportId = 'report-1'}, nil)
+            idleAfterFirst = BridgeState.ui.reportCaptureInFlight == false
+            panelAfterFirst = BridgeState.ui.reportPanelVisible == true
+            statusAfterFirst = BridgeState.ui.reportStatus
+
+            BridgeHudReportOpen()
+            BridgeHudSubmitReport('Card movement', 'second')
+            token2 = BridgeState.ui.reportCaptureToken
+            inFlightDuringSecond = BridgeState.ui.reportCaptureInFlight == true
+            statusBeforeStaleCallback = BridgeState.ui.reportStatus
+            callback1(false, nil, 'stale callback')
+            inFlightAfterStaleCallback = BridgeState.ui.reportCaptureInFlight == true
+            tokenAfterStaleCallback = BridgeState.ui.reportCaptureToken
+            statusAfterStaleCallback = BridgeState.ui.reportStatus
+            callback2(true, {success = true, reportId = 'report-2'}, nil)
+            idleAfterSecond = BridgeState.ui.reportCaptureInFlight == false
+            panelAfterSecond = BridgeState.ui.reportPanelVisible == true
+            statusAfterSecond = BridgeState.ui.reportStatus
+        ");
+
+        var ui = lua.Globals.Get("BridgeState").Table.Get("ui").Table;
+        Assert.True(lua.Globals.Get("idleAfterFirst").Boolean);
+        Assert.True(lua.Globals.Get("panelAfterFirst").Boolean);
+        Assert.Contains("report-1", lua.Globals.Get("statusAfterFirst").String);
+        Assert.Equal(1, lua.Globals.Get("token1").Number);
+        Assert.Equal(2, lua.Globals.Get("token2").Number);
+        Assert.True(lua.Globals.Get("inFlightDuringSecond").Boolean);
+        Assert.True(lua.Globals.Get("inFlightAfterStaleCallback").Boolean);
+        Assert.Equal(2, lua.Globals.Get("tokenAfterStaleCallback").Number);
+        Assert.Equal(lua.Globals.Get("statusBeforeStaleCallback").String,
+            lua.Globals.Get("statusAfterStaleCallback").String);
+        Assert.True(lua.Globals.Get("idleAfterSecond").Boolean);
+        Assert.True(lua.Globals.Get("panelAfterSecond").Boolean);
+        Assert.Contains("report-2", lua.Globals.Get("statusAfterSecond").String);
+        Assert.False(ui.Get("reportCaptureInFlight").Boolean);
     }
 
     [Fact]

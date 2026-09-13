@@ -1550,6 +1550,164 @@ function BridgeQueueLibraryExtraction(seatId, job, metadata)
     BridgeProcessLibraryExtractionQueue(seatId)
 end
 
+-- A graveyard Deck is also a native mutable container.  A single Forge
+-- mutation can therefore ask for several exact contained cards to leave it
+-- before any of TTS' takeObject callbacks have settled.  Keep those
+-- extractions serialized per seat, just like library extraction.  The active
+-- flag is deliberately not a drop guard: every queued item owns its exact
+-- CardInstanceId and its event completion callback.
+function BridgeLogGraveyardExtraction(seatId, stage, generation, item, deckGuid, reason)
+    local queue = BridgeState.graveyardExtractionQueueBySeatId[seatId] or {}
+    local active = BridgeState.graveyardExtractionTransactionBySeatId[seatId]
+    local itemCardInstanceId = type(item) == "table" and item.cardInstanceId or nil
+    BridgeLog(string.format(
+        "[Bridge] GRAVEYARD_EXTRACTION_%s seat=%s generation=%s queueLength=%s activeItem=%s cardInstanceId=%s deckGuid=%s reason=%s",
+        tostring(stage), tostring(seatId), tostring(generation), tostring(#queue),
+        tostring(active and active.cardInstanceId or itemCardInstanceId),
+        tostring(itemCardInstanceId), tostring(deckGuid or ""), tostring(reason or "")))
+    BridgeRecordPhysicalMutationJournal({
+        operation = "GRAVEYARD_EXTRACTION", stage = tostring(stage), seatId = seatId,
+        generation = generation,
+        cardInstanceId = active and active.cardInstanceId or itemCardInstanceId,
+        deckGuid = deckGuid, reason = reason
+    })
+    local tx = BridgeState.eventDrainTransaction
+    if tx ~= nil then
+        BridgeRecordPhysicalMutationProgress(tx, "GRAVEYARD_" .. tostring(stage),
+            tostring(itemCardInstanceId or "") .. ":" .. tostring(reason or ""))
+    end
+end
+
+function BridgeProcessGraveyardExtractionQueue(seatId)
+    BridgeState.graveyardExtractionQueueBySeatId = BridgeState.graveyardExtractionQueueBySeatId or {}
+    BridgeState.graveyardExtractionActiveBySeatId = BridgeState.graveyardExtractionActiveBySeatId or {}
+    BridgeState.graveyardExtractionTransactionBySeatId = BridgeState.graveyardExtractionTransactionBySeatId or {}
+    if BridgeState.graveyardExtractionActiveBySeatId[seatId] == true then return end
+    local queue = BridgeState.graveyardExtractionQueueBySeatId[seatId]
+    local item = queue and queue[1] or nil
+    if item == nil then return end
+
+    local transactionQueue = queue
+    local transactionSessionId = BridgeState.eventSessionId
+    local transactionGeneration = BridgeState.physicalTransactionGeneration or 0
+    local transaction = {
+        job = item,
+        cardInstanceId = type(item) == "table" and item.cardInstanceId or nil,
+        sessionId = transactionSessionId,
+        generation = transactionGeneration
+    }
+    BridgeState.graveyardExtractionActiveBySeatId[seatId] = true
+    BridgeState.graveyardExtractionTransactionBySeatId[seatId] = transaction
+    BridgeLogGraveyardExtraction(seatId, "DISPATCH", transactionGeneration, item, item.deckGuid)
+
+    local function current()
+        return transactionSessionId == BridgeState.eventSessionId
+            and transactionGeneration == (BridgeState.physicalTransactionGeneration or 0)
+    end
+    local function removeOwnedItem()
+        if transactionQueue[1] ~= item then return end
+        local index = 1
+        while transactionQueue[index + 1] ~= nil do
+            transactionQueue[index] = transactionQueue[index + 1]
+            index = index + 1
+        end
+        transactionQueue[index] = nil
+    end
+    local function retireStale()
+        local ownsTransaction = BridgeState.graveyardExtractionTransactionBySeatId[seatId] == transaction
+        if ownsTransaction then
+            removeOwnedItem()
+            BridgeState.graveyardExtractionTransactionBySeatId[seatId] = nil
+            BridgeState.graveyardExtractionActiveBySeatId[seatId] = nil
+        end
+        BridgeLogGraveyardExtraction(seatId, "STALE_CALLBACK", transactionGeneration, item,
+            nil, "session-or-generation-changed")
+    end
+    local finished = false
+    local function finish(ok, reason)
+        if finished then return end
+        finished = true
+        local succeeded = ok ~= false
+        local ownsTransaction = BridgeState.graveyardExtractionTransactionBySeatId[seatId] == transaction
+        local wasCurrent = current()
+        if ownsTransaction then
+            removeOwnedItem()
+            if not wasCurrent and BridgeState.graveyardExtractionTransactionBySeatId[seatId] == transaction then
+                BridgeState.graveyardExtractionQueueBySeatId[seatId] = transactionQueue or {}
+            end
+            BridgeState.graveyardExtractionTransactionBySeatId[seatId] = nil
+            BridgeState.graveyardExtractionActiveBySeatId[seatId] = nil
+        end
+        BridgeLogGraveyardExtraction(seatId, succeeded and "COMPLETE" or "FAILED",
+            transactionGeneration, item, nil, reason or (wasCurrent and "success" or "stale-generation"))
+        local completion = item.physicalCompletion
+        item.physicalCompletion = nil
+        if item.event ~= nil then item.event._bridgePhysicalCompletionPending = false end
+        if completion ~= nil then
+            pcall(completion, succeeded and wasCurrent, reason)
+        elseif not succeeded and wasCurrent then
+            BridgeStopOnDesync("contained graveyard extraction failed: " .. tostring(reason))
+        end
+        if not ownsTransaction then return end
+        if not wasCurrent then
+            BridgeProcessGraveyardExtractionQueue(seatId)
+            return
+        end
+        if not succeeded or BridgeState.desyncLatched == true then
+            -- A failed exact extraction is terminal for this physical drain.
+            -- Recovery must inspect the post-rollback topology before another
+            -- queued event is allowed to mutate the same native Deck.
+            return
+        end
+        BridgeProcessGraveyardExtractionQueue(seatId)
+        BridgeWakePhysicalReadinessDependency(transactionGeneration, "graveyard-extraction-terminal")
+        BridgeTryPresentPendingDecision("graveyard-extraction-complete")
+        if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
+            BridgeRenderDecision(BridgeState.lastDecision)
+        end
+        BridgeTryApplyDeferredSnapshotReconcile("graveyard-extraction-complete")
+    end
+
+    local started, startError = pcall(function()
+        item.run(function(ok, reason)
+            if not current() then
+                retireStale()
+                return
+            end
+            finish(ok, reason)
+        end)
+    end)
+    if not started then
+        finish(false, "start-error: " .. tostring(startError))
+    elseif not current() then
+        retireStale()
+    end
+end
+
+function BridgeQueueGraveyardExtraction(seatId, job, metadata)
+    BridgeState.graveyardExtractionQueueBySeatId = BridgeState.graveyardExtractionQueueBySeatId or {}
+    if BridgeState.graveyardExtractionQueueBySeatId[seatId] == nil then
+        BridgeState.graveyardExtractionQueueBySeatId[seatId] = {}
+    end
+    local item = {run = job}
+    if type(metadata) == "table" then
+        item.cardInstanceId = metadata.cardInstanceId
+        item.physicalCompletion = metadata.physicalCompletion
+        item.event = metadata.event
+        item.deckGuid = metadata.deckGuid
+        if item.event ~= nil then item.event._bridgePhysicalCompletionPending = true end
+    end
+    if item.event == nil and BridgeState.eventMutationApplyingEvent ~= nil then
+        local currentEvent = BridgeState.eventMutationApplyingEvent
+        item.event = currentEvent
+        item.physicalCompletion = currentEvent._bridgePhysicalCompletion
+        currentEvent._bridgePhysicalCompletionPending = true
+    end
+    table.insert(BridgeState.graveyardExtractionQueueBySeatId[seatId], item)
+    BridgeLogGraveyardExtraction(seatId, "ENQUEUE", BridgeState.physicalTransactionGeneration or 0, item, item.deckGuid)
+    BridgeProcessGraveyardExtractionQueue(seatId)
+end
+
 function BridgeReturnGraveyardPilesToLibraries(callback)
     local jobs = {}
     local seen = {}

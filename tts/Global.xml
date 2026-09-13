@@ -4,13 +4,14 @@
        offsetXY="-20 -70"
        width="700"
        height="630"
+       raycastTarget="false"
        color="#00000000">
-  <VerticalLayout spacing="6" padding="0 0 0 0" childForceExpandHeight="false" childForceExpandWidth="true">
+  <VerticalLayout spacing="6" padding="0 0 0 0" childForceExpandHeight="false" childForceExpandWidth="true" raycastTarget="false">
 
     <Text id="BridgeHudXmlCanary" text="HUD V3 • XML ACTIVE" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="11" color="#7BD88F" alignment="MiddleCenter" />
 
     <!-- Player-facing HUD. Kept flat because TTS layout sizing is most reliable when the visible controls are direct layout descendants. -->
-    <VerticalLayout id="BridgeHudGamePanel" minHeight="216" preferredHeight="216" flexibleHeight="0" spacing="5" padding="10 10 8 8" childForceExpandHeight="false" childForceExpandWidth="true" color="#08111DE6">
+    <VerticalLayout id="BridgeHudGamePanel" minHeight="216" preferredHeight="216" flexibleHeight="0" spacing="5" padding="10 10 8 8" childForceExpandHeight="false" childForceExpandWidth="true" raycastTarget="false" color="#08111DE6">
 
       <HorizontalLayout minHeight="25" preferredHeight="25" flexibleHeight="0" spacing="6" childAlignment="MiddleCenter" childForceExpandWidth="false" childForceExpandHeight="true">
         <Text id="BridgeHudTop" text="FORGEBOT" minWidth="500" preferredWidth="500" flexibleWidth="0" fontSize="12" color="#E8EDF5" alignment="MiddleLeft" />
@@ -48,7 +49,7 @@
 
       <HorizontalLayout minHeight="34" preferredHeight="34" flexibleHeight="0" spacing="10" childAlignment="MiddleCenter" childForceExpandWidth="false" childForceExpandHeight="true">
         <Button id="BridgeHudNewMatch" active="false" onClick="BridgeHudNewMatch" text="NEW MATCH" tooltip="Replace the completed Forge match. A second click confirms the destructive reset." minWidth="190" preferredWidth="190" flexibleWidth="0" fontSize="13" color="#7F1D1DEE" textColor="#FFFFFF" />
-        <Button id="BridgeHudResyncFromForge" visibility="Host|Admin" active="true" onClick="BridgeHudResyncFromForge" text="RESYNC FORGE" tooltip="Rebuild physical cards from Forge's authoritative snapshot, then resume after its event cursor. Forge rules state is never changed." minWidth="112" preferredWidth="112" flexibleWidth="0" fontSize="10" color="#854D0EDD" textColor="#FFFFFF" />
+        <Button id="BridgeHudResyncFromForge" visibility="Host|Admin" active="true" interactable="true" raycastTarget="true" onClick="BridgeHudResyncFromForge" text="RESYNC FORGE" tooltip="Rebuild physical cards from Forge's authoritative snapshot, then resume after its event cursor. Forge rules state is never changed." minWidth="112" preferredWidth="112" flexibleWidth="0" fontSize="10" color="#854D0EDD" textColor="#FFFFFF" />
       </HorizontalLayout>
 
       <Text id="BridgeHudSelection" text="" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="12" color="#AAB7C6" alignment="MiddleCenter" />
@@ -216,7 +217,8 @@
      IDs in place; no client installs a separate script and no dynamic panels
      are created for individual reveals. -->
 <Panel id="BridgeHudRevealOverlayBlue" active="true" visibility="Blue"
-       rectAlignment="UpperLeft" offsetXY="20 -370" width="900" height="280" color="#00000000">
+       rectAlignment="UpperLeft" offsetXY="20 -370" width="900" height="280"
+       raycastTarget="false" color="#00000000">
   <VerticalLayout id="BridgeHudRevealSurfaceBlue" active="false" minHeight="270" preferredHeight="270" flexibleHeight="0" spacing="6" padding="10 10 10 10" childForceExpandHeight="false" childForceExpandWidth="true" color="#111827F2">
     <HorizontalLayout minHeight="24" preferredHeight="24" flexibleHeight="0" spacing="6" childForceExpandWidth="false" childForceExpandHeight="true">
       <Text id="BridgeHudRevealHeadingBlue" text="REVEALED CARDS" minWidth="300" preferredWidth="300" flexibleWidth="0" fontSize="13" color="#F8FAFC" alignment="MiddleLeft" />
@@ -240,14 +242,14 @@
 </Panel>
 
 <!-- Fixed accessibility magnifiers; native TTS ALT Zoom remains untouched. -->
-<Panel id="BridgeHudRevealMagnifierOverlay" active="false" visibility="White" rectAlignment="MiddleCenter" width="560" height="680" color="#050A12F5">
+<Panel id="BridgeHudRevealMagnifierOverlay" active="false" visibility="White" rectAlignment="MiddleCenter" width="560" height="680" raycastTarget="false" color="#050A12F5">
   <VerticalLayout id="BridgeHudRevealMagnifier" minWidth="540" minHeight="660" preferredHeight="660" spacing="8" padding="12 12 12 12" childForceExpandWidth="true" childForceExpandHeight="false">
     <Text id="BridgeHudRevealMagnifierHeading" text="MAGNIFIED REVEAL" minHeight="28" preferredHeight="28" flexibleHeight="0" fontSize="16" color="#F8FAFC" alignment="MiddleCenter" />
     <Image id="BridgeHudRevealMagnifierImage" active="false" image="" preserveAspect="true" minHeight="570" preferredHeight="570" flexibleHeight="0" />
     <Text id="BridgeHudRevealMagnifierFallback" active="false" text="" minHeight="570" preferredHeight="570" flexibleHeight="0" fontSize="18" color="#F8FAFC" alignment="MiddleCenter" />
   </VerticalLayout>
 </Panel>
-<Panel id="BridgeHudRevealMagnifierOverlayBlue" active="false" visibility="Blue" rectAlignment="MiddleCenter" width="560" height="680" color="#050A12F5">
+<Panel id="BridgeHudRevealMagnifierOverlayBlue" active="false" visibility="Blue" rectAlignment="MiddleCenter" width="560" height="680" raycastTarget="false" color="#050A12F5">
   <VerticalLayout id="BridgeHudRevealMagnifierBlue" minWidth="540" minHeight="660" preferredHeight="660" spacing="8" padding="12 12 12 12" childForceExpandWidth="true" childForceExpandHeight="false">
     <Text id="BridgeHudRevealMagnifierHeadingBlue" text="MAGNIFIED REVEAL" minHeight="28" preferredHeight="28" flexibleHeight="0" fontSize="16" color="#F8FAFC" alignment="MiddleCenter" />
     <Image id="BridgeHudRevealMagnifierImageBlue" active="false" image="" preserveAspect="true" minHeight="570" preferredHeight="570" flexibleHeight="0" />
@@ -265,6 +267,7 @@
        offsetXY="20 -70"
        width="900"
        height="280"
+       raycastTarget="false"
        color="#00000000">
   <VerticalLayout id="BridgeHudRevealSurface" active="false" minHeight="270" preferredHeight="270" flexibleHeight="0" spacing="6" padding="10 10 10 10" childForceExpandHeight="false" childForceExpandWidth="true" color="#111827F2">
     <HorizontalLayout minHeight="24" preferredHeight="24" flexibleHeight="0" spacing="6" childForceExpandWidth="false" childForceExpandHeight="true">
