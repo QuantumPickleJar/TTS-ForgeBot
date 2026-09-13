@@ -814,15 +814,22 @@ end
 -- graveyard Deck beside a battlefield permanent).
 function BridgeActionExactPhysicalInstanceId(action)
     if action == nil then return nil end
-    return action.preparedSourceCardInstanceId
-        or action.sourceCardInstanceId
-        or action.cardInstanceId
-        or action.entityCardInstanceId
+    local exact = action.preparedSourceCardInstanceId or action.sourceCardInstanceId
+    if exact ~= nil then return exact end
+    -- Older/alternate bridge payloads may carry the exact source only in
+    -- structured provenance. This is still an exact identity path; it is not
+    -- a name fallback. The Forge adapter is responsible for session-scoping
+    -- forge-object:* before this reaches the TTS boundary.
+    local provenanceSource = action.provenance and action.provenance.sourceCardInstanceId or nil
+    return provenanceSource or action.cardInstanceId or action.entityCardInstanceId
 end
 
 function BridgeActionExpectedSourceZone(action)
     if action == nil then return nil end
     local zone = action.sourceZone or action.candidateSourceZone
+    if (zone == nil or tostring(zone) == "") and action.provenance ~= nil then
+        zone = action.provenance.sourceZone
+    end
     if zone == nil or tostring(zone) == "" then return nil end
     return string.lower(tostring(zone))
 end
@@ -870,23 +877,64 @@ function BridgePreparedSourceIsAuthoritativelyPrepared(action)
 end
 
 function BridgeRecordActionPhysicalResolution(decision, action, kind, reason, guid, containerGuid, observedZone)
+    local exactInstanceId = BridgeActionExactPhysicalInstanceId(action)
+    local mappedGuid = action ~= nil and exactInstanceId ~= nil
+        and BridgeState.physicalByInstanceId[exactInstanceId] or nil
+    local containerMapping = action ~= nil and exactInstanceId ~= nil
+        and BridgeState.physicalContainerByInstanceId
+        and BridgeState.physicalContainerByInstanceId[exactInstanceId] or nil
+    local diagnosticGuid = guid or mappedGuid
+    local liveObject = diagnosticGuid ~= nil and BridgeGetLiveObjectByGuid(diagnosticGuid) or nil
+    local authoritativeDescriptor = exactInstanceId ~= nil
+        and BridgeState.authoritativeObjectByInstanceId[exactInstanceId] or nil
     BridgeState.lastActionPhysicalResolution = {
         decisionId = decision and decision.decisionId or nil,
+        decisionKind = decision and decision.kind or nil,
+        decisionSeatId = decision and decision.seatId or nil,
         actionId = action and action.actionId or nil,
-        cardInstanceId = BridgeActionExactPhysicalInstanceId(action),
+        actionType = action and (action.type or action.actionKind) or nil,
+        cardInstanceId = exactInstanceId,
         logicalCardInstanceId = action and (action.cardInstanceId or action.entityCardInstanceId) or nil,
         logicalSourceCardInstanceId = action and (action.sourceCardInstanceId
             or action.cardInstanceId or action.entityCardInstanceId) or nil,
+        entityCardInstanceId = action and action.entityCardInstanceId or nil,
+        provenanceSourceCardInstanceId = action and action.provenance
+            and action.provenance.sourceCardInstanceId or nil,
         sourceZone = BridgeActionExpectedSourceZone(action),
         logicalSourceZone = BridgeActionExpectedSourceZone(action),
         preparedSourceCardInstanceId = action and action.preparedSourceCardInstanceId or nil,
-        physicalInstanceId = BridgeActionExactPhysicalInstanceId(action),
+        physicalInstanceId = exactInstanceId,
+        forwardMappedGuid = mappedGuid,
+        inverseMappedInstanceId = diagnosticGuid ~= nil
+            and BridgeState.physicalInstanceIdByGuid[diagnosticGuid] or nil,
+        mappedSeat = diagnosticGuid ~= nil and BridgeState.physicalSeatByGuid[diagnosticGuid] or nil,
+        mappedZone = diagnosticGuid ~= nil and BridgeState.physicalZoneByGuid[diagnosticGuid] or nil,
+        physicalContainerMapping = containerMapping and {
+            deckGuid = containerMapping.deckGuid,
+            cardGuid = containerMapping.cardGuid or containerMapping.containedGuid,
+            slotIndex = containerMapping.slotIndex,
+            seatId = containerMapping.seatId,
+            zoneName = containerMapping.zoneName,
+            locatorType = containerMapping.locatorType
+        } or nil,
         expectedPhysicalZone = BridgeActionExpectedPhysicalSourceZone(action),
         resolutionKind = kind,
         reason = reason,
         physicalGuid = guid,
         containerGuid = containerGuid,
         observedZone = observedZone,
+        liveGuid = BridgeSafeObjectGuid(liveObject),
+        liveTag = BridgeSafeObjectTag(liveObject),
+        liveName = BridgeSafeObjectName(liveObject),
+        authoritativeDescriptor = authoritativeDescriptor and {
+            objectId = authoritativeDescriptor.objectId or authoritativeDescriptor.authoritativeObjectId,
+            objectKind = authoritativeDescriptor.objectKind,
+            isVirtual = authoritativeDescriptor.isVirtual == true,
+            materializationPolicy = authoritativeDescriptor.materializationPolicy,
+            zone = authoritativeDescriptor.zone,
+            seatId = authoritativeDescriptor.seatId
+        } or nil,
+        physicalPresentationGeneration = BridgeState.currentPhysicalPresentationGeneration,
         sessionId = BridgeState.eventSessionId,
         sessionGeneration = BridgeState.eventSessionGeneration
     }

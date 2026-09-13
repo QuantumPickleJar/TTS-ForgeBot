@@ -5398,6 +5398,23 @@ local function BridgeApplyStructuredCardMoveCore(event)
         characteristics = event.characteristics
     }
 
+    -- Forge can report a logical stack/ability or prepared-copy transition
+    -- through the same structured event channel as physical cards. Its exact
+    -- identity remains authoritative in the descriptor registry, but it has
+    -- no TTS Card to extract or move. Treat the event as physically complete
+    -- without creating a proxy: the decision gate will use the explicit
+    -- virtual/materialization policy when it sees this identity later.
+    if event.isVirtual == true
+        or tostring(event.materializationPolicy or "") == "virtual"
+        or tostring(event.materializationPolicy or "") == "virtual-stack" then
+        BridgeLog(string.format(
+            "[Bridge] virtual structured transition recorded without physical materialization event=%s instance=%s source=%s destination=%s policy=%s",
+            tostring(event.sequence), tostring(event.cardInstanceId),
+            tostring(event.sourceZone), tostring(event.destinationZone),
+            tostring(event.materializationPolicy)))
+        return true, nil
+    end
+
     local staleMappedGuid = nil
     local attemptedZones = {}
     local resolveError = nil

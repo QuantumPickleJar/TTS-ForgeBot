@@ -12,6 +12,16 @@ BRIDGE_MANA_COLORS = {"W", "U", "B", "R", "G", "C"}
 -- come from Forge snapshots/events; this table is only presentation metadata.
 BRIDGE_RESOURCE_ORDER = {"W", "U", "B", "R", "G", "C", "energy", "experience", "poison", "speed"}
 BRIDGE_RESOURCE_ROW_SPACING = 1.05
+-- Presentation-only random-result settings. The hold is intentionally one
+-- seam so Options can expose it later without changing the roll lifecycle.
+BRIDGE_RANDOM_RESULT_PRESENTATION_SETTINGS = {
+    readableHoldSeconds = 1.5,
+    settleSeconds = 0.25,
+    settleTimeoutSeconds = 4.0,
+    maxAuthoritativeFaceAttempts = 80,
+    extraReturnDelayFrames = 2,
+    dieBagGuids = {},
+}
 BRIDGE_EVENT_POLL_INTERVAL_IDLE = 1.0
 -- Slightly slower active polling reduces frequent full decision/highlight churn
 -- in TTS without materially affecting interactive responsiveness.
@@ -2951,6 +2961,8 @@ BRIDGE_SEATS = {
         monarchRotation = {x = 0, y = 180, z = 0},
         includeCardGuids = {},
         excludeCardGuids = {},
+        -- Empty means discover the already-placed battlefield dice safely.
+        battlefieldDieGuidBySides = {},
         battlefieldAnchors = {
             land = {x = 6.5, y = 2.0, z = -11.5},
             creature = {x = 7.0, y = 2.0, z = -3.5}
@@ -2985,6 +2997,7 @@ BRIDGE_SEATS = {
         monarchRotation = {x = 0, y = 0, z = 0},
         includeCardGuids = {},
         excludeCardGuids = {},
+        battlefieldDieGuidBySides = {},
         battlefieldAnchors = {
             land = {x = 6.5, y = 2.0, z = 19.0},
             creature = {x = 7.0, y = 2.0, z = 3.5}
@@ -3231,6 +3244,9 @@ BridgeState = {
     currentPhysicalPresentationGeneration = 0,
     physicalTransactionGeneration = 0,
     physicalReadinessDependency = nil,
+    randomResultPresentationGeneration = 0,
+    activeRandomResultPresentation = nil,
+    randomResultPresentationDiagnostics = {},
     renderedDecisionPresentationKey = nil,
     renderedDecisionPhysicalGeneration = nil,
     physicalByInstanceId = {},

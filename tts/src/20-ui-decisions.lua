@@ -236,7 +236,7 @@ function BridgeUiFlush()
     if ui.contextInstanceId ~= nil and decision ~= nil then
         local contextual = {}
         for _, action in ipairs(actions) do
-            local source = action.preparedSourceCardInstanceId or action.sourceCardInstanceId or action.cardInstanceId
+            local source = BridgeActionExactPhysicalInstanceId(action)
             if source == ui.contextInstanceId then table.insert(contextual, action) end
         end
         if #contextual > 0 then actions = contextual else ui.contextInstanceId = nil end
@@ -2435,8 +2435,7 @@ function BridgeShouldDeferDecision(decision)
         local handGuids, handError = BridgeBuildSeatHandGuidSet(decision.seatId)
         for _, action in ipairs(decision.actions or {}) do
             if string.lower(tostring(action.sourceZone or "")) == "hand" then
-                local instanceId = action.preparedSourceCardInstanceId
-                    or action.sourceCardInstanceId or action.cardInstanceId
+                local instanceId = BridgeActionExactPhysicalInstanceId(action)
                 local guid = instanceId and BridgeState.physicalByInstanceId[instanceId] or nil
                 if instanceId == nil or guid == nil
                     or BridgeState.physicalInstanceIdByGuid[guid] ~= instanceId
@@ -2956,6 +2955,21 @@ function BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(snapshot)
     end
     for _, card in ipairs((snapshot and snapshot.stack) or {}) do
         record(card, "stack", card.controllerSeatId or card.ownerSeatId)
+    end
+    for _, stackObject in ipairs((snapshot and snapshot.stackObjects) or {}) do
+        local stackObjectId = stackObject and stackObject.stackObjectId or nil
+        if stackObjectId ~= nil and tostring(stackObjectId) ~= "" then
+            rebuilt[stackObjectId] = {
+                cardInstanceId = stackObjectId,
+                authoritativeObjectId = stackObjectId,
+                originObjectId = stackObject.sourceCardInstanceId,
+                objectKind = "virtual-stack-object",
+                isVirtual = true,
+                materializationPolicy = "virtual-stack",
+                zone = "stack",
+                seatId = stackObject.controllerSeatId
+            }
+        end
     end
     BridgeState.authoritativeObjectByInstanceId = rebuilt
     return rebuilt

@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: e4be7ee8361a920cfea1b33a12f5ec266309a52acc4aabeabf89303877036e6b
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "e4be7ee8361a920cfea1b33a12f5ec266309a52acc4aabeabf89303877036e6b"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: d077087100bd74868a2a2def07ebfc7cfbf2a5bbb08a9736902128a805b0c901
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "d077087100bd74868a2a2def07ebfc7cfbf2a5bbb08a9736902128a805b0c901"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -7520,7 +7520,7 @@ function BridgeUiFlush()
     if ui.contextInstanceId ~= nil and decision ~= nil then
         local contextual = {}
         for _, action in ipairs(actions) do
-            local source = action.preparedSourceCardInstanceId or action.sourceCardInstanceId or action.cardInstanceId
+            local source = BridgeActionExactPhysicalInstanceId(action)
             if source == ui.contextInstanceId then table.insert(contextual, action) end
         end
         if #contextual > 0 then actions = contextual else ui.contextInstanceId = nil end
@@ -9719,8 +9719,7 @@ function BridgeShouldDeferDecision(decision)
         local handGuids, handError = BridgeBuildSeatHandGuidSet(decision.seatId)
         for _, action in ipairs(decision.actions or {}) do
             if string.lower(tostring(action.sourceZone or "")) == "hand" then
-                local instanceId = action.preparedSourceCardInstanceId
-                    or action.sourceCardInstanceId or action.cardInstanceId
+                local instanceId = BridgeActionExactPhysicalInstanceId(action)
                 local guid = instanceId and BridgeState.physicalByInstanceId[instanceId] or nil
                 if instanceId == nil or guid == nil
                     or BridgeState.physicalInstanceIdByGuid[guid] ~= instanceId
@@ -10240,6 +10239,21 @@ function BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(snapshot)
     end
     for _, card in ipairs((snapshot and snapshot.stack) or {}) do
         record(card, "stack", card.controllerSeatId or card.ownerSeatId)
+    end
+    for _, stackObject in ipairs((snapshot and snapshot.stackObjects) or {}) do
+        local stackObjectId = stackObject and stackObject.stackObjectId or nil
+        if stackObjectId ~= nil and tostring(stackObjectId) ~= "" then
+            rebuilt[stackObjectId] = {
+                cardInstanceId = stackObjectId,
+                authoritativeObjectId = stackObjectId,
+                originObjectId = stackObject.sourceCardInstanceId,
+                objectKind = "virtual-stack-object",
+                isVirtual = true,
+                materializationPolicy = "virtual-stack",
+                zone = "stack",
+                seatId = stackObject.controllerSeatId
+            }
+        end
     end
     BridgeState.authoritativeObjectByInstanceId = rebuilt
     return rebuilt
@@ -14007,15 +14021,22 @@ end
 -- graveyard Deck beside a battlefield permanent).
 function BridgeActionExactPhysicalInstanceId(action)
     if action == nil then return nil end
-    return action.preparedSourceCardInstanceId
-        or action.sourceCardInstanceId
-        or action.cardInstanceId
-        or action.entityCardInstanceId
+    local exact = action.preparedSourceCardInstanceId or action.sourceCardInstanceId
+    if exact ~= nil then return exact end
+    -- Older/alternate bridge payloads may carry the exact source only in
+    -- structured provenance. This is still an exact identity path; it is not
+    -- a name fallback. The Forge adapter is responsible for session-scoping
+    -- forge-object:* before this reaches the TTS boundary.
+    local provenanceSource = action.provenance and action.provenance.sourceCardInstanceId or nil
+    return provenanceSource or action.cardInstanceId or action.entityCardInstanceId
 end
 
 function BridgeActionExpectedSourceZone(action)
     if action == nil then return nil end
     local zone = action.sourceZone or action.candidateSourceZone
+    if (zone == nil or tostring(zone) == "") and action.provenance ~= nil then
+        zone = action.provenance.sourceZone
+    end
     if zone == nil or tostring(zone) == "" then return nil end
     return string.lower(tostring(zone))
 end
@@ -14063,23 +14084,64 @@ function BridgePreparedSourceIsAuthoritativelyPrepared(action)
 end
 
 function BridgeRecordActionPhysicalResolution(decision, action, kind, reason, guid, containerGuid, observedZone)
+    local exactInstanceId = BridgeActionExactPhysicalInstanceId(action)
+    local mappedGuid = action ~= nil and exactInstanceId ~= nil
+        and BridgeState.physicalByInstanceId[exactInstanceId] or nil
+    local containerMapping = action ~= nil and exactInstanceId ~= nil
+        and BridgeState.physicalContainerByInstanceId
+        and BridgeState.physicalContainerByInstanceId[exactInstanceId] or nil
+    local diagnosticGuid = guid or mappedGuid
+    local liveObject = diagnosticGuid ~= nil and BridgeGetLiveObjectByGuid(diagnosticGuid) or nil
+    local authoritativeDescriptor = exactInstanceId ~= nil
+        and BridgeState.authoritativeObjectByInstanceId[exactInstanceId] or nil
     BridgeState.lastActionPhysicalResolution = {
         decisionId = decision and decision.decisionId or nil,
+        decisionKind = decision and decision.kind or nil,
+        decisionSeatId = decision and decision.seatId or nil,
         actionId = action and action.actionId or nil,
-        cardInstanceId = BridgeActionExactPhysicalInstanceId(action),
+        actionType = action and (action.type or action.actionKind) or nil,
+        cardInstanceId = exactInstanceId,
         logicalCardInstanceId = action and (action.cardInstanceId or action.entityCardInstanceId) or nil,
         logicalSourceCardInstanceId = action and (action.sourceCardInstanceId
             or action.cardInstanceId or action.entityCardInstanceId) or nil,
+        entityCardInstanceId = action and action.entityCardInstanceId or nil,
+        provenanceSourceCardInstanceId = action and action.provenance
+            and action.provenance.sourceCardInstanceId or nil,
         sourceZone = BridgeActionExpectedSourceZone(action),
         logicalSourceZone = BridgeActionExpectedSourceZone(action),
         preparedSourceCardInstanceId = action and action.preparedSourceCardInstanceId or nil,
-        physicalInstanceId = BridgeActionExactPhysicalInstanceId(action),
+        physicalInstanceId = exactInstanceId,
+        forwardMappedGuid = mappedGuid,
+        inverseMappedInstanceId = diagnosticGuid ~= nil
+            and BridgeState.physicalInstanceIdByGuid[diagnosticGuid] or nil,
+        mappedSeat = diagnosticGuid ~= nil and BridgeState.physicalSeatByGuid[diagnosticGuid] or nil,
+        mappedZone = diagnosticGuid ~= nil and BridgeState.physicalZoneByGuid[diagnosticGuid] or nil,
+        physicalContainerMapping = containerMapping and {
+            deckGuid = containerMapping.deckGuid,
+            cardGuid = containerMapping.cardGuid or containerMapping.containedGuid,
+            slotIndex = containerMapping.slotIndex,
+            seatId = containerMapping.seatId,
+            zoneName = containerMapping.zoneName,
+            locatorType = containerMapping.locatorType
+        } or nil,
         expectedPhysicalZone = BridgeActionExpectedPhysicalSourceZone(action),
         resolutionKind = kind,
         reason = reason,
         physicalGuid = guid,
         containerGuid = containerGuid,
         observedZone = observedZone,
+        liveGuid = BridgeSafeObjectGuid(liveObject),
+        liveTag = BridgeSafeObjectTag(liveObject),
+        liveName = BridgeSafeObjectName(liveObject),
+        authoritativeDescriptor = authoritativeDescriptor and {
+            objectId = authoritativeDescriptor.objectId or authoritativeDescriptor.authoritativeObjectId,
+            objectKind = authoritativeDescriptor.objectKind,
+            isVirtual = authoritativeDescriptor.isVirtual == true,
+            materializationPolicy = authoritativeDescriptor.materializationPolicy,
+            zone = authoritativeDescriptor.zone,
+            seatId = authoritativeDescriptor.seatId
+        } or nil,
+        physicalPresentationGeneration = BridgeState.currentPhysicalPresentationGeneration,
         sessionId = BridgeState.eventSessionId,
         sessionGeneration = BridgeState.eventSessionGeneration
     }
@@ -22247,6 +22309,23 @@ local function BridgeApplyStructuredCardMoveCore(event)
         battlefieldKind = event.battlefieldKind,
         characteristics = event.characteristics
     }
+
+    -- Forge can report a logical stack/ability or prepared-copy transition
+    -- through the same structured event channel as physical cards. Its exact
+    -- identity remains authoritative in the descriptor registry, but it has
+    -- no TTS Card to extract or move. Treat the event as physically complete
+    -- without creating a proxy: the decision gate will use the explicit
+    -- virtual/materialization policy when it sees this identity later.
+    if event.isVirtual == true
+        or tostring(event.materializationPolicy or "") == "virtual"
+        or tostring(event.materializationPolicy or "") == "virtual-stack" then
+        BridgeLog(string.format(
+            "[Bridge] virtual structured transition recorded without physical materialization event=%s instance=%s source=%s destination=%s policy=%s",
+            tostring(event.sequence), tostring(event.cardInstanceId),
+            tostring(event.sourceZone), tostring(event.destinationZone),
+            tostring(event.materializationPolicy)))
+        return true, nil
+    end
 
     local staleMappedGuid = nil
     local attemptedZones = {}

@@ -26,6 +26,8 @@ builder.Services.PostConfigure<TtsExternalEditorOptions>(options =>
 	if (options.ListenPort <= 0) options.ListenPort = 39998;
 	if (options.TtsPort <= 0) options.TtsPort = 39999;
 	if (options.OperationTimeoutSeconds <= 0) options.OperationTimeoutSeconds = 120;
+	if (options.MaxCallbackPayloadBytes <= 0) options.MaxCallbackPayloadBytes = 8 * 1024 * 1024;
+	if (options.CallbackReadTimeoutSeconds <= 0) options.CallbackReadTimeoutSeconds = 15;
 	if (string.IsNullOrWhiteSpace(options.ListenHost)) options.ListenHost = "127.0.0.1";
 	if (string.IsNullOrWhiteSpace(options.TtsHost)) options.TtsHost = "127.0.0.1";
 });
