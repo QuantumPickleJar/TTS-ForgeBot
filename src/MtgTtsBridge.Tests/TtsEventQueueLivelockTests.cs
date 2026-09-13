@@ -3156,11 +3156,14 @@ public sealed class TtsEventQueueLivelockTests
                 BridgeState.resyncInFlight = true
                 return true
             end
-            BridgeHudResyncFromForge(nil, nil, nil)
+            BridgeHudResyncFromForge('White', 'button-value', 'BridgeHudResyncFromForge')
+            firstIngress = BridgeState.resyncClickIngress
             BridgeHudResyncFromForge(nil, nil, nil)
             firstAction = BridgeState.resyncActionJournal[1]
             startedAction = BridgeState.resyncActionJournal[2]
             joinedAction = BridgeState.resyncActionJournal[4]
+            ingressCount = BridgeState.resyncClickIngressCount
+            ingress = firstIngress
         ");
 
         Assert.Equal(1, lua.Globals.Get("hudCalls").Number);
@@ -3169,6 +3172,9 @@ public sealed class TtsEventQueueLivelockTests
         Assert.Equal("RESYNC_CLICK_RECEIVED", lua.Globals.Get("firstAction").Table.Get("stage").String);
         Assert.Equal("RESYNC_CLICK_STARTED", lua.Globals.Get("startedAction").Table.Get("stage").String);
         Assert.Equal("RESYNC_CLICK_JOINED_EXISTING", lua.Globals.Get("joinedAction").Table.Get("stage").String);
+        Assert.Equal(2, lua.Globals.Get("ingressCount").Number);
+        Assert.Equal("White", lua.Globals.Get("ingress").Table.Get("callbackPlayerColor").String);
+        Assert.Equal("BridgeHudResyncFromForge", lua.Globals.Get("ingress").Table.Get("id").String);
     }
 
     [Fact]

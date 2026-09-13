@@ -30,12 +30,40 @@ public sealed class PrepareLuaMappingTests
             BridgeState.physicalSeatByGuid = { ['g31'] = 'forge-player-1' }
             BridgeState.physicalZoneByGuid = { ['g31'] = 'battlefield' }
             BridgeState.physicalContainerByInstanceId = {}
-            BridgeState.authoritativeObjectByInstanceId = {
-                ['forge:prepare-session:31'] = {
-                    zone='battlefield', seatId='forge-player-1', isVirtual=false,
-                    materializationPolicy='physical', cardDesignations={'prepared'}
-                }
+            BridgeState.authoritativeObjectByInstanceId = {}
+            local preparedCard = {cardInstanceId='forge:prepare-session:31',
+                authoritativeObjectId='forge:prepare-session:31', objectKind='physical-original',
+                isVirtual=false, materializationPolicy='physical', cardDesignations={[1]='prepared'},
+                controllerSeatId='forge-player-1', ownerSeatId='forge-player-1'}
+            local helperCard = {cardInstanceId='forge:prepare-session:82',
+                authoritativeObjectId='forge:prepare-session:82', objectKind='prepared-helper',
+                isVirtual=true, materializationPolicy='virtual', cardDesignations={}}
+            local exileCard = {cardInstanceId='forge:prepare-session:91',
+                authoritativeObjectId='forge:prepare-session:91', objectKind='physical-original',
+                isVirtual=false, materializationPolicy='physical', cardDesignations={},
+                controllerSeatId='forge-player-1', ownerSeatId='forge-player-1'}
+            local battlefieldZone = {name='battlefield', cards={preparedCard}}
+            local commandZone = {name='command', cards={helperCard}}
+            local exileZone = {name='exile', cards={exileCard}}
+            local snapshotSeat = {seatId='forge-player-1', zones={battlefieldZone, commandZone, exileZone}}
+            local authoritativeSnapshot = {
+                sessionId='prepare-session', eventCursor=306,
+                seats={snapshotSeat}, stack={}
             }
+            assert(preparedCard.cardDesignations[1] == 'prepared', 'source designation missing')
+            BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(authoritativeSnapshot)
+            local preparedDescriptor = BridgeState.authoritativeObjectByInstanceId['forge:prepare-session:31']
+            local helperDescriptor = BridgeState.authoritativeObjectByInstanceId['forge:prepare-session:82']
+            assert(preparedDescriptor ~= nil, 'prepared descriptor missing')
+            assert(preparedDescriptor.zone == 'battlefield', 'zone=' .. tostring(preparedDescriptor.zone))
+            assert(preparedDescriptor.seatId == 'forge-player-1', 'seat=' .. tostring(preparedDescriptor.seatId))
+            assert(preparedDescriptor.cardDesignations ~= nil, 'designations table missing')
+            designationKeys = {}
+            for key, value in pairs(preparedDescriptor.cardDesignations) do table.insert(designationKeys, tostring(key) .. '=' .. tostring(value)) end
+            assert(preparedDescriptor.cardDesignations[1] == 'prepared', 'designation=' .. table.concat(designationKeys, ','))
+            assert(helperDescriptor ~= nil, 'helper descriptor missing')
+            assert(helperDescriptor.isVirtual == true, 'helper virtual=' .. tostring(helperDescriptor.isVirtual))
+            assert(helperDescriptor.materializationPolicy == 'virtual', 'helper policy=' .. tostring(helperDescriptor.materializationPolicy))
             BridgeFindContainedCardEntry = function() return nil, nil, nil end
             BridgeState.actionByGuid = {}
             BridgeState.highlightedGuids = {}
@@ -68,6 +96,7 @@ public sealed class PrepareLuaMappingTests
                 actions={preparedAction}
             }
 
+            assert(BridgePreparedSourceIsAuthoritativelyPrepared(preparedAction), 'prepared predicate false before readiness')
             ready, readyError = BridgeDecisionPhysicalMappingsReady(decision)
             assert(ready, tostring(readyError))
             resolved, resolveError = BridgeResolveExactActionPhysical(decision, preparedAction)
@@ -80,12 +109,14 @@ public sealed class PrepareLuaMappingTests
             BridgeState.physicalByInstanceId['forge:prepare-session:31'] = nil
             missingReady = BridgeDecisionPhysicalMappingsReady(decision)
             assert(not missingReady)
-            assert(BridgeState.lastActionPhysicalResolution.logicalCardInstanceId == 'forge:prepare-session:81')
-            assert(BridgeState.lastActionPhysicalResolution.logicalSourceCardInstanceId == 'forge:prepare-session:81')
-            assert(BridgeState.lastActionPhysicalResolution.logicalSourceZone == 'exile')
-            assert(BridgeState.lastActionPhysicalResolution.preparedSourceCardInstanceId == 'forge:prepare-session:31')
-            assert(BridgeState.lastActionPhysicalResolution.expectedPhysicalZone == 'battlefield')
-            assert(BridgeState.lastActionPhysicalResolution.physicalInstanceId == 'forge:prepare-session:31')
+            local missingResolution = BridgeState.lastActionPhysicalResolution
+            assert(missingResolution ~= nil, 'missing resolution record')
+            assert(missingResolution.logicalCardInstanceId == 'forge:prepare-session:81')
+            assert(missingResolution.logicalSourceCardInstanceId == 'forge:prepare-session:81')
+            assert(missingResolution.logicalSourceZone == 'exile')
+            assert(missingResolution.preparedSourceCardInstanceId == 'forge:prepare-session:31')
+            assert(missingResolution.expectedPhysicalZone == 'battlefield')
+            assert(missingResolution.physicalInstanceId == 'forge:prepare-session:31')
             BridgeState.physicalByInstanceId['forge:prepare-session:31'] = 'g31'
             BridgeState.physicalInstanceIdByGuid['g31'] = 'wrong-instance'
             inverseReady = BridgeDecisionPhysicalMappingsReady(decision)
@@ -104,14 +135,31 @@ public sealed class PrepareLuaMappingTests
             assert(BridgeState.lastActionPhysicalResolution.expectedPhysicalZone == 'battlefield')
             BridgeState.physicalZoneByGuid['g31'] = 'battlefield'
 
-            BridgeState.authoritativeObjectByInstanceId['forge:prepare-session:31'].cardDesignations = {}
+            preparedCard.cardDesignations = {}
+            BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(authoritativeSnapshot)
             designationReady = BridgeDecisionPhysicalMappingsReady(decision)
             assert(not designationReady)
-            BridgeState.authoritativeObjectByInstanceId['forge:prepare-session:31'].cardDesignations = {'prepared'}
+            preparedCard.cardDesignations = {[1]='prepared'}
+            BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(authoritativeSnapshot)
 
-            BridgeState.authoritativeObjectByInstanceId['forge:prepare-session:91'] = {
-                zone='exile', seatId='forge-player-1', isVirtual=false, materializationPolicy='physical'
-            }
+            helperReady = BridgeDecisionPhysicalMappingsReady({
+                seatId='forge-player-1', actions={{actionId='helper', cardInstanceId='forge:prepare-session:82'}}})
+            assert(helperReady)
+
+            preparedCard.controllerSeatId = 'forge-player-2'
+            preparedCard.ownerSeatId = 'forge-player-2'
+            BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(authoritativeSnapshot)
+            wrongAuthoritativeSeatReady = BridgeDecisionPhysicalMappingsReady(decision)
+            assert(not wrongAuthoritativeSeatReady)
+            preparedCard.controllerSeatId = 'forge-player-1'
+            preparedCard.ownerSeatId = 'forge-player-1'
+            battlefieldZone.name = 'graveyard'
+            BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(authoritativeSnapshot)
+            movedAuthoritativeReady = BridgeDecisionPhysicalMappingsReady(decision)
+            assert(not movedAuthoritativeReady)
+            battlefieldZone.name = 'battlefield'
+            BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(authoritativeSnapshot)
+
             BridgeState.physicalByInstanceId['forge:prepare-session:91'] = 'g91'
             BridgeState.physicalInstanceIdByGuid['g91'] = 'forge:prepare-session:91'
             BridgeState.physicalSeatByGuid['g91'] = 'forge-player-1'
@@ -157,6 +205,12 @@ public sealed class PrepareLuaMappingTests
             assert(submitted.actionId == 'cast-brainstorm')
             assert(submitted.source == 'prepared_spell_tile')
             assert(source.moveCount == 0)
+
+            battlefieldZone.cards = {}
+            BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(authoritativeSnapshot)
+            assert(BridgeState.authoritativeObjectByInstanceId['forge:prepare-session:31'] == nil)
+            removedPreparedReady = BridgeDecisionPhysicalMappingsReady(decision)
+            assert(not removedPreparedReady)
         ");
     }
 

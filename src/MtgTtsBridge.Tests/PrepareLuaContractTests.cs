@@ -66,6 +66,22 @@ public sealed class PrepareLuaContractTests
     }
 
     [Fact]
+    public void SnapshotReconcile_RebuildsAuthoritativePrepareDescriptorsBeforeRendering()
+    {
+        Assert.Contains("function BridgeRebuildAuthoritativeObjectRegistryFromSnapshot", Script);
+        Assert.Contains("cardDesignations = copyDesignations(card.cardDesignations)", Script);
+        Assert.Contains("zone = resolvedZone ~= nil and string.lower(tostring(resolvedZone)) or nil", Script);
+        var reconcileStart = Script.IndexOf("function BridgeApplySafeSnapshotReconcile", StringComparison.Ordinal);
+        var reconcileEnd = Script.IndexOf("function BridgeTryApplyDeferredSnapshotReconcile", reconcileStart, StringComparison.Ordinal);
+        Assert.True(reconcileStart >= 0 && reconcileEnd > reconcileStart);
+        Assert.Contains("BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(snapshot)", Script[reconcileStart..reconcileEnd]);
+        var registryStart = Script.IndexOf("function BridgeRebuildAuthoritativeObjectRegistryFromSnapshot", StringComparison.Ordinal);
+        var registryEnd = Script.IndexOf("function BridgeApplySafeSnapshotReconcile", registryStart, StringComparison.Ordinal);
+        Assert.Contains("isVirtual = card.isVirtual == true", Script[registryStart..registryEnd]);
+        Assert.Contains("materializationPolicy = card.materializationPolicy", Script[registryStart..registryEnd]);
+    }
+
+    [Fact]
     public void PreparedDesignation_RemainsSeparateFromKeywordState()
     {
         var designationStart = Script.IndexOf("function BridgeSetPreparedDesignationPresentation", StringComparison.Ordinal);

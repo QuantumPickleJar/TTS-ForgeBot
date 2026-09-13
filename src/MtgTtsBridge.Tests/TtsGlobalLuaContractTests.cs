@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 
 namespace MtgTtsBridge.Tests;
 
@@ -2632,12 +2633,14 @@ public sealed class TtsGlobalLuaContractTests
         var choiceTrayStart = xml.IndexOf("id=\"BridgeHudChoiceTray\"", StringComparison.Ordinal);
         Assert.True(gamePanelStart >= 0 && choiceTrayStart > gamePanelStart);
         var gamePanel = xml[gamePanelStart..choiceTrayStart];
+        Assert.Contains("id=\"BridgeHudResyncFromForge\"", gamePanel);
         var devPanelStart = xml.IndexOf("id=\"BridgeHudDevRoot\"", StringComparison.Ordinal);
         var devPanelEnd = xml.IndexOf("id=\"BridgeHudStackSurface\"", devPanelStart, StringComparison.Ordinal);
         Assert.True(devPanelStart >= 0 && devPanelEnd > devPanelStart);
         var devPanel = xml[devPanelStart..devPanelEnd];
         Assert.Contains("id=\"BridgeHudRollingCapture\"", devPanel);
         Assert.Contains("visibility=\"Host|Admin\"", devPanel);
+        Assert.DoesNotContain("id=\"BridgeHudResyncFromForge\"", devPanel);
         Assert.Contains("function BridgeHudReportCategoryChanged", Script);
         Assert.Contains("function BridgeHudRollingCapture", Script);
         var rollingStart = Script.IndexOf("function BridgeHudRollingCapture", StringComparison.Ordinal);
@@ -2704,8 +2707,32 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeStopOnDesync", Script);
         Assert.Contains("BridgeUiSet(\"BridgeHudResyncFromForge\", \"active\", devEnabled", Script);
         Assert.Contains("not BridgeState.hudResyncPending", Script);
+        Assert.Contains("function BridgeRecordResyncClickIngress", Script);
+        Assert.Contains("BridgeRecordResyncClickIngress(player, value, id)", Script);
+        Assert.Contains("resyncClickIngress", Script);
+        var resyncStart = Script.IndexOf("function BridgeHudResyncFromForge", StringComparison.Ordinal);
+        var resyncEnd = Script.IndexOf("function BridgeHudPhaseElementId", resyncStart, StringComparison.Ordinal);
+        var ingressCall = Script.IndexOf("BridgeRecordResyncClickIngress(player, value, id)", resyncStart, StringComparison.Ordinal);
+        var uiLookup = Script.IndexOf("local ui = BridgeState.ui", resyncStart, StringComparison.Ordinal);
+        Assert.True(resyncStart >= 0 && resyncEnd > resyncStart && ingressCall >= 0 && uiLookup > ingressCall);
         Assert.Contains("if sessionId == nil then", Script);
         Assert.Contains("cannot resync before Forge has started a session", Script);
+    }
+
+    [Fact]
+    public void ResyncXmlCallback_IsDefinedAndMountedOutsideTheCollapsibleDevRoot()
+    {
+        var xmlPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml");
+        var document = XElement.Parse("<root>" + File.ReadAllText(xmlPath) + "</root>");
+        var button = document.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute("id"), "BridgeHudResyncFromForge", StringComparison.Ordinal));
+        var callback = (string?)button.Attribute("onClick");
+        Assert.Equal("BridgeHudResyncFromForge", callback);
+        Assert.Contains($"function {callback}(", Script);
+        Assert.Equal("BridgeHudGamePanel", button.Ancestors().First(element =>
+            element.Attribute("id") != null).Attribute("id")!.Value);
+        Assert.DoesNotContain("BridgeHudDevRoot", button.Ancestors().Select(element =>
+            (string?)element.Attribute("id")));
     }
 
     [Fact]
