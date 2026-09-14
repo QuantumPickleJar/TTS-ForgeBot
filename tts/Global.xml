@@ -10,6 +10,11 @@
 
     <Text id="BridgeHudXmlCanary" text="HUD V3 • XML ACTIVE" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="11" color="#7BD88F" alignment="MiddleCenter" />
 
+    <HorizontalLayout id="BridgeHudMainPanelBar" minHeight="22" preferredHeight="22" flexibleHeight="0" spacing="8" childForceExpandWidth="false" childForceExpandHeight="true" raycastTarget="false">
+      <Button id="BridgeHudMainPanelToggle" onClick="BridgeHudMainPanelToggle" text="COLLAPSE HUD" tooltip="Collapse or expand the main ForgeBot panel." minWidth="118" preferredWidth="118" flexibleWidth="0" fontSize="10" color="#334155CC" textColor="#F8FAFC" />
+      <Text id="BridgeHudMainPanelState" text="" minWidth="560" preferredWidth="560" flexibleWidth="1" fontSize="10" color="#AAB7C6" alignment="MiddleLeft" />
+    </HorizontalLayout>
+
     <!-- Player-facing HUD. Kept flat because TTS layout sizing is most reliable when the visible controls are direct layout descendants. -->
     <VerticalLayout id="BridgeHudGamePanel" minHeight="216" preferredHeight="216" flexibleHeight="0" spacing="5" padding="10 10 8 8" childForceExpandHeight="false" childForceExpandWidth="true" raycastTarget="false" color="#08111DE6">
 

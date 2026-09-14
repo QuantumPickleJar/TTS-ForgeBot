@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 2c4ea18fce59de8eb79f8396cdb9e375032423b44fca2720960d9e5cf4b40202
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "2c4ea18fce59de8eb79f8396cdb9e375032423b44fca2720960d9e5cf4b40202"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 81f1b6f890c7325ce32f2260f71d88dde8d759530e4c62e75663575427a5580d
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "81f1b6f890c7325ce32f2260f71d88dde8d759530e4c62e75663575427a5580d"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -121,11 +121,13 @@ BRIDGE_SCRIPT_REVISION = "2026-09-07-h0-supplier-recovery-watchdog"
 -- every bridge timer/request; a callback from an older script is then inert.
 BRIDGE_RUNTIME_EPOCH = (tonumber(BRIDGE_RUNTIME_EPOCH) or 0) + 1
 local BRIDGE_RUNTIME_EPOCH_LOCAL = BRIDGE_RUNTIME_EPOCH
-local BRIDGE_CLIENT_RUNTIME_ID = table.concat({
-    tostring(os.time()),
-    tostring(math.floor(os.clock() * 1000000)),
-    tostring(math.random(100000, 999999))
-}, "-")
+-- Keep runtime identity construction compatible with the reduced Lua host used
+-- by contract tests as well as TTS.  The individual values are already bounded
+-- strings; table.concat is unnecessary here and some embedded hosts reject
+-- tables containing a missing optional clock/random value.
+local BRIDGE_CLIENT_RUNTIME_ID = tostring(os.time()) .. "-"
+    .. tostring(math.floor(os.clock() * 1000000)) .. "-"
+    .. tostring(math.random(100000, 999999))
 
 function BridgeRuntimeIsCurrent(epoch)
     return epoch == BRIDGE_RUNTIME_EPOCH
@@ -3483,6 +3485,10 @@ BridgeState = {
     libraryLookInteractionSession = nil,
     libraryLookSessionGeneration = 0,
     libraryLookLastFailure = nil,
+    nativeSearchSelectionSession = nil,
+    nativeSearchSessionGeneration = 0,
+    hudMainPanelCollapsedManual = false,
+    hudMainPanelAutoCollapseOwner = nil,
     diagnosticCaptureFollowupToken = nil,
     diagnosticCaptureFollowupUntil = 0,
     resyncNoProgress = {
@@ -3792,6 +3798,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     if BridgeRetireOpponentSpellPresentations ~= nil then
         BridgeRetireOpponentSpellPresentations("session-boundary:" .. tostring(reason))
     end
+    if BridgeEndNativeSearchSelectionSession ~= nil then
+        BridgeEndNativeSearchSelectionSession("session-boundary:" .. tostring(reason))
+    end
     BridgeState.eventSessionGeneration = (BridgeState.eventSessionGeneration or 0) + 1
     BridgeState.decisionPresentationGeneration = (BridgeState.decisionPresentationGeneration or 0) + 1
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
@@ -3933,6 +3942,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
         BridgeState.libraryLookInteractionSession = nil
         BridgeState.libraryLookSessionGeneration = (BridgeState.libraryLookSessionGeneration or 0) + 1
     end
+    BridgeState.nativeSearchSelectionSession = nil
+    BridgeState.nativeSearchSessionGeneration = (BridgeState.nativeSearchSessionGeneration or 0) + 1
+    BridgeState.hudMainPanelAutoCollapseOwner = nil
     BridgeState.stackSummary = {}
     BridgeState.stackObjects = {}
     BridgeState.combatSelectedByGuid = {}
@@ -7840,7 +7852,7 @@ function BridgeUiFlush()
         end
         prompt = "DELVE — " .. limitText
             .. " FROM YOUR GRAVEYARD TO EXILE, THEN CONFIRM."
-            .. " Each exiled card pays {1} of this spell's generic mana cost."
+            .. " Each exiled card pays {1} of this spell's generic mana cost. CANCEL CAST abandons the entire cast."
     elseif decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew" then
         prompt = "CREW — SELECT CREATURES"
     end
@@ -7964,6 +7976,7 @@ function BridgeUiFlush()
     local targetCanCancel = decision ~= nil and decision.allowsCancel == true
         and (decision.kind == "target_selection" or decision.kind == "defender_selection"
             or decision.kind == "player_selection")
+    local paymentCanCancel = BridgeDecisionHasPaymentCancel(decision)
     local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil
         and BridgeCurrentTerminalRecoveryError() == nil
         and not BridgeDecisionNeedsConfirmation(decision)
@@ -7980,10 +7993,15 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudConfirm", "tooltip", castPreviewPending
         and "Submit this Forge-approved spell after reviewing the cast preview."
         or "Submit the staged Forge selection when its required count is satisfied.")
-    BridgeUiSet("BridgeHudCancel", "active", (castPreviewPending or (decision and
+    BridgeUiSet("BridgeHudCancel", "active", (castPreviewPending or paymentCanCancel or (decision and
         ((BridgeDecisionNeedsConfirmation(decision) and not BridgeIsStructuredForgeToggleChoice(decision))
             or targetCanCancel))) and "true" or "false")
-    BridgeUiSet("BridgeHudCancel", "text", castPreviewPending and "CANCEL / RETURN" or "CANCEL")
+    BridgeUiSet("BridgeHudCancel", "text", castPreviewPending and "CANCEL / RETURN"
+        or paymentCanCancel and "CANCEL CAST" or "CANCEL")
+    BridgeUiSet("BridgeHudCancel", "tooltip", castPreviewPending
+        and "Return this unsubmitted cast preview."
+        or paymentCanCancel and "Cancel the Forge cast and abandon all provisional payment selections."
+        or "Cancel the current selection when Forge permits it.")
     BridgeUiSet("BridgeHudNewMatch", "active", (terminal or protocolStopped) and "true" or "false")
     BridgeUiSet("BridgeHudNewMatch", "text", BridgeState.resetConfirmationArmed and "CONFIRM NEW MATCH" or "NEW MATCH")
     local footer = terminal and "NEW MATCH is available on the table."
@@ -8024,6 +8042,10 @@ function BridgeHudAction(player, value, id)
     BridgeRecordInteractionProducer("hud_action", decision, action)
     BridgeClaimHumanTtsColor(decision.seatId, player)
     if BridgeDecisionNeedsConfirmation(decision) then
+        if BridgeIsPaymentCancelAction(action) then
+            BridgeCancelSelection(nil, player, false)
+            return
+        end
         -- A legacy discard menu may arrive as `card_selection`.  Discarding
         -- is a Forge action, not a local hand-selection draft: submit the
         -- exact card action immediately so Forge can move it to its graveyard.
@@ -9202,6 +9224,29 @@ function BridgeDecisionNeedsConfirmation(decision)
     return decision.requiresConfirmation == true or decision.confirmRequired == true
 end
 
+function BridgeIsPaymentCancelAction(action)
+    if action == nil then return false end
+    return action.type == "cancel_payment"
+        or (action.type == "cancel_cast" and tostring(action.cancelScope or "") == "payment")
+end
+
+function BridgeFindCancelAction(decision)
+    if decision == nil then return nil end
+    for _, action in ipairs(decision.actions or {}) do
+        if BridgeIsPaymentCancelAction(action)
+            or (action.type == "cancel_cast" and tostring(action.cancelScope or "") ~= "payment") then
+            return action
+        end
+    end
+    return nil
+end
+
+function BridgeDecisionHasPaymentCancel(decision)
+    return decision ~= nil
+        and (decision.kind == "cost_selection" or decision.kind == "sacrifice" or decision.kind == "discard")
+        and BridgeFindCancelAction(decision) ~= nil
+end
+
 function BridgeIsStructuredForgeToggleChoice(decision)
     if decision == nil or decision.confirmRequired ~= true then return false end
     local kind = tostring(decision.kind or "")
@@ -9663,7 +9708,8 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         end
         if not ok then
             activeTransaction.state = "rejected"
-            if activeTransaction.actionType == "cancel_cast" then
+            if activeTransaction.actionType == "cancel_cast"
+                or activeTransaction.actionType == "cancel_payment" then
                 BridgeRecordCancelAction("SUBMIT_REJECTED", BridgeState.lastDecision,
                     { actionId = actionId }, tostring(body and body.errorCode or err or "request-failed"))
             end
@@ -9715,7 +9761,8 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         end
 
         activeTransaction.state = "accepted"
-        if activeTransaction.actionType == "cancel_cast" then
+        if activeTransaction.actionType == "cancel_cast"
+            or activeTransaction.actionType == "cancel_payment" then
             BridgeRecordCancelAction("SUBMIT_ACCEPTED", BridgeState.lastDecision,
                 { actionId = actionId }, "forge-accepted")
         end
@@ -9767,6 +9814,9 @@ function BridgeSubmitChoice(decisionId, actionId, source)
             BridgeTryFinishFixedRequiredSelection(body.currentDecision, activeTransaction.source)
         else
             BridgeState.lastDecision = nil
+            if BridgeEndNativeSearchSelectionSession ~= nil then
+                BridgeEndNativeSearchSelectionSession("no-pending-decision")
+            end
             BridgeClearHighlights()
             BridgeHideMainPriorityControls()
             BridgeLog("[Bridge] no pending decision.")
@@ -14213,10 +14263,12 @@ function BridgeEnsureSelectionControls(decision)
         or decision.kind == "blocker_selection" or decision.kind == "blocker_assignment") then
         return
     end
+    local paymentCanCancel = BridgeDecisionHasPaymentCancel(decision)
     if not BridgeDecisionNeedsConfirmation(decision)
         and not (decision ~= nil and decision.allowsCancel == true
             and (decision.kind == "target_selection" or decision.kind == "defender_selection"
-                or decision.kind == "player_selection")) then return end
+                or decision.kind == "player_selection"))
+        and not paymentCanCancel then return end
     local targetCanCancel = decision ~= nil and decision.allowsCancel == true
         and (decision.kind == "target_selection" or decision.kind == "defender_selection"
             or decision.kind == "player_selection")
@@ -14251,7 +14303,9 @@ function BridgeEnsureSelectionControls(decision)
     if BridgeDecisionNeedsConfirmation(decision) then
         spawnSelectionControl("Forge Confirm Selection", "DONE /\nCONFIRM", 2.0, {0.12, 0.52, 0.24}, "BridgeConfirmSelection")
     end
-    if targetCanCancel then
+    if paymentCanCancel then
+        spawnSelectionControl("Forge Cancel Cast", "CANCEL /\nCAST", 7.5, {0.65, 0.2, 0.12}, "BridgeCancelSelection")
+    elseif targetCanCancel then
         spawnSelectionControl("Forge Cancel Cast", "CANCEL /\nCAST", 7.5, {0.65, 0.2, 0.12}, "BridgeCancelSelection")
     elseif not BridgeIsStructuredForgeToggleChoice(decision) then
         spawnSelectionControl("Forge Cancel Selection", "CANCEL /\nUNDO", 7.5, {0.65, 0.2, 0.12}, "BridgeCancelSelection")
@@ -14353,6 +14407,15 @@ function BridgeCancelSelection(object, playerColor, altClick)
     end
     local decision = BridgeState.lastDecision
     BridgeRecordCancelAction("CLICK_RECEIVED", decision, nil, nil)
+    local cancelAction = BridgeFindCancelAction(decision)
+    if cancelAction ~= nil then
+        BridgeRecordCancelAction("SUBMIT_STARTED", decision, cancelAction, "hud-cancel")
+        BridgeClaimHumanTtsColor(decision.seatId, playerColor)
+        BridgeClearHighlights()
+        BridgeResetSelectionState()
+        BridgeSubmitChoice(decision.decisionId, cancelAction.actionId, "physical_cancel_cast")
+        return
+    end
     if BridgeIsStructuredForgeToggleChoice(decision) then
         -- Forge owns the selected set for a structured collection. There is
         -- no generic cancel action in this protocol, so never visually clear
@@ -14362,26 +14425,6 @@ function BridgeCancelSelection(object, playerColor, altClick)
             .. " reason=no_forge_cancel_action")
         BridgeShowError("Forge-owned selection cannot be cancelled here; deselect cards through Forge choices")
         BridgeRecordCancelAction("SUBMIT_REJECTED", decision, nil, "structured-selection-no-cancel-action")
-        return
-    end
-    if decision ~= nil and decision.allowsCancel == true then
-        local cancelAction = nil
-        for _, action in ipairs(decision.actions or {}) do
-            if action.type == "cancel_cast" then
-                cancelAction = action
-                break
-            end
-        end
-        if cancelAction == nil then
-            BridgeShowError("Forge supplied no current cast-cancel action")
-            BridgeRecordCancelAction("SUBMIT_REJECTED", decision, nil, "cancel-action-missing")
-            return
-        end
-        BridgeRecordCancelAction("SUBMIT_STARTED", decision, cancelAction, "hud-cancel")
-        BridgeClaimHumanTtsColor(decision.seatId, playerColor)
-        BridgeClearHighlights()
-        BridgeResetSelectionState()
-        BridgeSubmitChoice(decision.decisionId, cancelAction.actionId, "physical_cancel_cast")
         return
     end
     BridgeResetSelectionState()
@@ -14721,6 +14764,261 @@ function BridgeResolveExactActionPhysical(decision, action)
     return nil, reason, instanceId
 end
 
+local function BridgeNativeSearchZoneSupported(zoneName)
+    local zone = string.lower(tostring(zoneName or ""))
+    return zone == "library" or zone == "graveyard" or zone == "exile" or zone == "command"
+end
+
+local function BridgeNativeSearchFindAction(decision, actionId)
+    if decision == nil or actionId == nil then return nil end
+    for _, action in ipairs(decision.actions or {}) do
+        if action.actionId == actionId then return action end
+    end
+    return nil
+end
+
+local function BridgeNativeSearchResolveInstanceId(object)
+    if object == nil then return nil end
+    local guid = BridgeSafeObjectGuid(object)
+    if guid ~= nil then
+        local mapped = BridgeState.physicalInstanceIdByGuid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+        if mapped ~= nil then return mapped end
+        local contained = BridgeState.physicalContainedInstanceIdByGuid and BridgeState.physicalContainedInstanceIdByGuid[guid] or nil
+        if contained ~= nil then return contained end
+    end
+    if BridgeReadPhysicalIdentity ~= nil then
+        return BridgeReadPhysicalIdentity(object)
+    end
+    return nil
+end
+
+local function BridgeNativeSearchSessionIsCurrent(session)
+    if session == nil then return false end
+    if session.sessionId ~= BridgeState.eventSessionId then return false end
+    if session.sessionGeneration ~= BridgeState.eventSessionGeneration then return false end
+    local decision = BridgeState.lastDecision
+    if decision == nil or decision.decisionId ~= session.decisionId then return false end
+    return true
+end
+
+function BridgeEndNativeSearchSelectionSession(reason)
+    local session = BridgeState.nativeSearchSelectionSession
+    if session == nil then return false end
+    BridgeState.selectedActionIds = BridgeState.selectedActionIds or {}
+    for _, actionId in pairs(session.actionIdByInstanceId or {}) do
+        BridgeState.selectedActionIds[actionId] = nil
+    end
+    if BridgeHudReleaseMainPanelAutoCollapse ~= nil and session.hudAutoCollapseOwner ~= nil then
+        BridgeHudReleaseMainPanelAutoCollapse(session.hudAutoCollapseOwner)
+    end
+    BridgeState.nativeSearchSelectionSession = nil
+    BridgeState.nativeSearchSessionGeneration = (BridgeState.nativeSearchSessionGeneration or 0) + 1
+    BridgeUiMarkDirty("native-search-session-ended")
+    BridgeLog("[Bridge] native search session ended reason=" .. tostring(reason or "unspecified"))
+    return true
+end
+
+local function BridgeNativeSearchScheduleDispatch(session, reason)
+    if session == nil or session.dispatchScheduled == true then return end
+    session.dispatchScheduled = true
+    BridgeWaitFrames(function()
+        local current = BridgeState.nativeSearchSelectionSession
+        if current == nil or current ~= session then return end
+        session.dispatchScheduled = false
+        if BridgeNativeSearchDispatchDesired ~= nil then
+            BridgeNativeSearchDispatchDesired(session, reason or "scheduled")
+        end
+    end, 2)
+end
+
+function BridgeNativeSearchDispatchDesired(session, reason)
+    if session == nil then return false end
+    BridgeState.selectedActionIds = BridgeState.selectedActionIds or {}
+    if not BridgeNativeSearchSessionIsCurrent(session) then
+        BridgeEndNativeSearchSelectionSession("stale-dispatch")
+        return false
+    end
+    if BridgeState.submitting then
+        BridgeNativeSearchScheduleDispatch(session, "submit-busy")
+        return false
+    end
+    local decision = BridgeState.lastDecision
+    if decision == nil then return false end
+    for actionId, desired in pairs(session.desiredSelectionByActionId or {}) do
+        local action = BridgeNativeSearchFindAction(decision, actionId)
+        if action == nil then
+            session.desiredSelectionByActionId[actionId] = nil
+            BridgeState.selectedActionIds[actionId] = nil
+        else
+            local authoritative = action.isSelected == true
+            if desired == authoritative then
+                session.desiredSelectionByActionId[actionId] = nil
+                BridgeState.selectedActionIds[actionId] = authoritative and true or nil
+            else
+                BridgeSubmitChoice(decision.decisionId, actionId, "physical_structured_toggle")
+                BridgeNativeSearchScheduleDispatch(session, "post-toggle")
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function BridgeNativeSearchBuildSessionSnapshot(decision)
+    if decision == nil or BridgeIsStructuredForgeToggleChoice(decision) ~= true then return nil end
+    local kind = tostring(decision.kind or "")
+    local eligibleKind = kind == "search_selection" or kind == "cost_selection" or kind == "entity_selection"
+    if not eligibleKind then return nil end
+
+    local actionIdByInstanceId = {}
+    local sourceContainerByGuid = {}
+    local selectedByActionId = {}
+    local sourceZone = nil
+    local candidateCount = 0
+    for _, action in ipairs(decision.actions or {}) do
+        if action.actionId ~= nil and action.type ~= "choose_none" then
+            local instanceId = BridgeActionExactPhysicalInstanceId(action)
+            if instanceId ~= nil then
+                local resolved = BridgeResolveExactActionPhysical ~= nil
+                    and select(1, BridgeResolveExactActionPhysical(decision, action)) or nil
+                if resolved ~= nil and resolved.kind == "exact-contained" and resolved.deckGuid ~= nil then
+                    local zone = string.lower(tostring(resolved.zone
+                        or BridgeActionExpectedPhysicalSourceZone(action)
+                        or BridgeActionExpectedSourceZone(action)
+                        or ""))
+                    if BridgeNativeSearchZoneSupported(zone) then
+                        actionIdByInstanceId[instanceId] = action.actionId
+                        selectedByActionId[action.actionId] = action.isSelected == true
+                        sourceContainerByGuid[resolved.deckGuid] = {
+                            zoneName = zone,
+                            seatId = BridgeState.physicalContainerByInstanceId
+                                and BridgeState.physicalContainerByInstanceId[instanceId]
+                                and BridgeState.physicalContainerByInstanceId[instanceId].seatId
+                                or decision.seatId
+                        }
+                        sourceZone = sourceZone or zone
+                        candidateCount = candidateCount + 1
+                    end
+                end
+            end
+        end
+    end
+
+    if candidateCount == 0 then return nil end
+    return {
+        decisionId = decision.decisionId,
+        seatId = decision.seatId,
+        kind = decision.kind,
+        sourceZone = sourceZone,
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
+        presentationGeneration = BridgeState.decisionPresentationGeneration,
+        actionIdByInstanceId = actionIdByInstanceId,
+        selectedByActionId = selectedByActionId,
+        sourceContainerByGuid = sourceContainerByGuid
+    }
+end
+
+function BridgeSyncNativeSearchSelectionSession(decision)
+    BridgeState.selectedActionIds = BridgeState.selectedActionIds or {}
+    local existing = BridgeState.nativeSearchSelectionSession
+    local snapshot = BridgeNativeSearchBuildSessionSnapshot(decision)
+    if snapshot == nil then
+        if existing ~= nil then BridgeEndNativeSearchSelectionSession("decision-not-supported") end
+        return nil
+    end
+
+    local replacing = existing == nil
+        or existing.decisionId ~= snapshot.decisionId
+        or existing.sessionId ~= snapshot.sessionId
+        or existing.sessionGeneration ~= snapshot.sessionGeneration
+
+    if replacing and existing ~= nil then
+        BridgeEndNativeSearchSelectionSession("decision-replaced")
+        existing = nil
+    end
+
+    local session = snapshot
+    if replacing then
+        BridgeState.nativeSearchSessionGeneration = (BridgeState.nativeSearchSessionGeneration or 0) + 1
+        session.generation = BridgeState.nativeSearchSessionGeneration
+        session.desiredSelectionByActionId = {}
+        session.localSelectionByActionId = {}
+        session.dispatchScheduled = false
+        session.hudAutoCollapseOwner = "native-search:"
+            .. tostring(session.sessionId or "none") .. ":"
+            .. tostring(session.decisionId or "none") .. ":"
+            .. tostring(session.generation or 0)
+        BridgeState.nativeSearchSelectionSession = session
+        if BridgeHudAcquireMainPanelAutoCollapse ~= nil then
+            BridgeHudAcquireMainPanelAutoCollapse(session.hudAutoCollapseOwner)
+        end
+        BridgeLog("[Bridge] native search session started decision=" .. tostring(session.decisionId)
+            .. " zone=" .. tostring(session.sourceZone))
+    else
+        session.generation = existing.generation
+        session.desiredSelectionByActionId = existing.desiredSelectionByActionId or {}
+        session.localSelectionByActionId = existing.localSelectionByActionId or {}
+        session.dispatchScheduled = existing.dispatchScheduled == true
+        session.hudAutoCollapseOwner = existing.hudAutoCollapseOwner
+        BridgeState.nativeSearchSelectionSession = session
+    end
+
+    local retainedActionIds = {}
+    for _, actionId in pairs(session.actionIdByInstanceId or {}) do
+        retainedActionIds[actionId] = true
+        local desired = session.desiredSelectionByActionId[actionId]
+        local selected = desired
+        if selected == nil then selected = session.selectedByActionId[actionId] == true end
+        BridgeState.selectedActionIds[actionId] = selected and true or nil
+        session.localSelectionByActionId[actionId] = selected and true or nil
+    end
+    if existing ~= nil then
+        for _, oldActionId in pairs(existing.actionIdByInstanceId or {}) do
+            if retainedActionIds[oldActionId] ~= true then
+                BridgeState.selectedActionIds[oldActionId] = nil
+            end
+        end
+    end
+    BridgeState.selectionDecisionId = session.decisionId
+    BridgeUiMarkDirty("native-search-sync")
+    BridgeNativeSearchDispatchDesired(session, "decision-sync")
+    return session
+end
+
+function BridgeNativeSearchHandleContainerTransition(container, object, transitionKind)
+    BridgeState.selectedActionIds = BridgeState.selectedActionIds or {}
+    local session = BridgeState.nativeSearchSelectionSession
+    if session == nil then return false end
+    if not BridgeNativeSearchSessionIsCurrent(session) then
+        BridgeEndNativeSearchSelectionSession("stale-container-callback")
+        return false
+    end
+    if container == nil or object == nil then return false end
+
+    local containerGuid = BridgeSafeObjectGuid(container)
+    if containerGuid == nil or session.sourceContainerByGuid[containerGuid] == nil then
+        return false
+    end
+
+    local instanceId = BridgeNativeSearchResolveInstanceId(object)
+    if instanceId == nil then return false end
+    local actionId = session.actionIdByInstanceId[instanceId]
+    if actionId == nil then return false end
+
+    local selecting = transitionKind == "leave"
+    session.desiredSelectionByActionId[actionId] = selecting
+    session.localSelectionByActionId[actionId] = selecting
+    BridgeState.selectedActionIds[actionId] = selecting and true or nil
+    local decision = BridgeState.lastDecision
+    local action = BridgeNativeSearchFindAction(decision, actionId)
+    BridgeRecordInteractionProducer("native_search_" .. tostring(transitionKind), decision,
+        action or { actionId = actionId })
+    BridgeUiMarkDirty("native-search-" .. tostring(transitionKind))
+    BridgeNativeSearchDispatchDesired(session, "native-search-" .. tostring(transitionKind))
+    return true
+end
+
 function BridgeDecisionPhysicalMappingsReady(decision)
     if decision == nil then return true, nil end
     for _, action in ipairs(decision.actions or {}) do
@@ -14745,6 +15043,7 @@ function BridgeRenderDecision(decision, force)
     if BridgeResolveRevealForDecision ~= nil then BridgeResolveRevealForDecision(decision) end
     BridgePresentationMetric("decisionRenderAttempts")
     BridgeRecordDecisionLifecycle(decision, "render", "RENDER_BEGIN", force == true and "forced" or "normal")
+    BridgeSyncNativeSearchSelectionSession(decision)
     local key = BridgeDecisionPresentationKey(decision)
     if force ~= true
         and key == BridgeState.renderedDecisionPresentationKey
@@ -15345,6 +15644,17 @@ function onObjectPickUp(playerColor, object)
     -- ActionId; the returned Forge decision redraws both physical highlights
     -- and the HUD from the same staged state. No local zone move is made.
     if object.tag == "Card" and BridgeIsStructuredForgeToggleChoice(decision) then
+        local nativeSession = BridgeState.nativeSearchSelectionSession
+        local sessionMapped = nativeSession ~= nil
+            and BridgeNativeSearchSessionIsCurrent(nativeSession)
+            and nativeSession.actionIdByInstanceId ~= nil
+            and nativeSession.actionIdByInstanceId[exactInstanceId] == action.actionId
+        if sessionMapped then
+            -- Native Deck search extraction/reinsertion owns this toggle path.
+            -- Suppress pickup submission so one extraction cannot emit a
+            -- duplicate action before Forge redraws the decision.
+            return
+        end
         BridgeSubmitChoice(decision.decisionId, action.actionId, "physical_structured_toggle")
         return
     end
@@ -15406,6 +15716,18 @@ function onObjectPickUp(playerColor, object)
     -- not draggable game pieces, so the grab itself commits the offered target.
     if object.tag ~= "Card" then
         BridgeSubmitChoice(decision.decisionId, action.actionId, "physical_target_pickup")
+    end
+end
+
+function onObjectLeaveContainer(container, leaveObject)
+    if BridgeNativeSearchHandleContainerTransition(container, leaveObject, "leave") then
+        return
+    end
+end
+
+function onObjectEnterContainer(container, enterObject)
+    if BridgeNativeSearchHandleContainerTransition(container, enterObject, "enter") then
+        return
     end
 end
 
@@ -19088,6 +19410,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     if (replacingMatch or forceReset) and BridgeResetRevealSessionState ~= nil then
         BridgeResetRevealSessionState("event-session-prepare")
     end
+    if (replacingMatch or forceReset) and BridgeEndNativeSearchSelectionSession ~= nil then
+        BridgeEndNativeSearchSelectionSession("event-session-prepare")
+    end
     if preserveLiveMappings == true and BridgeState.eventSessionId == sessionId
         and BridgeState.physicalOwnershipSessionId == sessionId then
         preservedLiveMappings = {}
@@ -19292,6 +19617,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.discardPresentation = nil
     BridgeState.mulliganBottomInstanceIds = {}
     BridgeState.mulliganReturningInstanceIds = {}
+    BridgeState.nativeSearchSelectionSession = nil
+    BridgeState.nativeSearchSessionGeneration = (BridgeState.nativeSearchSessionGeneration or 0) + 1
+    BridgeState.hudMainPanelAutoCollapseOwner = nil
     BridgeState.mulliganBottomQueueBySeatId = {}
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
     BridgeState.libraryExtractionQueueBySeatId = {}
@@ -27308,6 +27636,9 @@ function BridgeStopOnDesync(message)
     BridgeState.pendingDecisionDeferredAt = nil
     BridgeState.pendingDecisionDeferredCursor = 0
     BridgeState.pendingDecisionDeferredApplied = 0
+    if BridgeEndNativeSearchSelectionSession ~= nil then
+        BridgeEndNativeSearchSelectionSession("desync")
+    end
     BridgeClearHighlights()
     BridgeResetSelectionState()
     BridgeHideMainPriorityControls()
@@ -28231,6 +28562,34 @@ function BridgeHudConnectionPresentation()
     return "○ SETUP", BRIDGE_HUD_COLORS.warning
 end
 
+function BridgeHudMainPanelCollapsed()
+    return BridgeState.hudMainPanelCollapsedManual == true
+        or BridgeState.hudMainPanelAutoCollapseOwner ~= nil
+end
+
+function BridgeHudAcquireMainPanelAutoCollapse(owner)
+    if owner == nil or tostring(owner) == "" then return false end
+    if BridgeState.hudMainPanelAutoCollapseOwner == owner then return true end
+    BridgeState.hudMainPanelAutoCollapseOwner = owner
+    BridgeUiMarkDirty("hud-main-auto-collapse")
+    return true
+end
+
+function BridgeHudReleaseMainPanelAutoCollapse(owner)
+    if owner ~= nil and BridgeState.hudMainPanelAutoCollapseOwner ~= owner then
+        return false
+    end
+    if BridgeState.hudMainPanelAutoCollapseOwner == nil then return true end
+    BridgeState.hudMainPanelAutoCollapseOwner = nil
+    BridgeUiMarkDirty("hud-main-auto-release")
+    return true
+end
+
+function BridgeHudMainPanelToggle(player, value, id)
+    BridgeState.hudMainPanelCollapsedManual = not (BridgeState.hudMainPanelCollapsedManual == true)
+    BridgeUiMarkDirty("hud-main-manual-toggle")
+end
+
 -- Preserve the existing HUD renderer and layer game-HUD presentation over it.
 -- Existing IDs, action rows, exact Forge choices, FAST/MANA/LOG behavior, and
 -- footer semantics remain owned by the original renderer above.
@@ -28239,6 +28598,18 @@ function BridgeUiFlush()
     BridgeUiFlushBase()
     local ui = BridgeState.ui
     if ui == nil or not ui.mounted then return end
+
+    local mainPanelCollapsed = BridgeHudMainPanelCollapsed()
+    local autoCollapsed = BridgeState.hudMainPanelAutoCollapseOwner ~= nil
+    local collapseLabel = mainPanelCollapsed and "EXPAND HUD" or "COLLAPSE HUD"
+    local collapseState = autoCollapsed and "AUTO-COLLAPSED FOR NATIVE SEARCH"
+        or (BridgeState.hudMainPanelCollapsedManual == true and "MANUALLY COLLAPSED" or "")
+    BridgeUiSet("BridgeHudMainPanelToggle", "text", collapseLabel)
+    BridgeUiSet("BridgeHudMainPanelToggle", "tooltip", mainPanelCollapsed
+        and "Expand the main ForgeBot panel."
+        or "Collapse the main ForgeBot panel.")
+    BridgeUiSet("BridgeHudMainPanelState", "text", collapseState)
+    BridgeUiSet("BridgeHudGamePanel", "active", mainPanelCollapsed and "false" or "true")
 
     local devEnabled = BRIDGE_DEV_UI_ENABLED == true
     local devExpanded = devEnabled and ui.diagnosticsVisible == true

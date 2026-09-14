@@ -118,11 +118,13 @@ BRIDGE_SCRIPT_REVISION = "2026-09-07-h0-supplier-recovery-watchdog"
 -- every bridge timer/request; a callback from an older script is then inert.
 BRIDGE_RUNTIME_EPOCH = (tonumber(BRIDGE_RUNTIME_EPOCH) or 0) + 1
 local BRIDGE_RUNTIME_EPOCH_LOCAL = BRIDGE_RUNTIME_EPOCH
-local BRIDGE_CLIENT_RUNTIME_ID = table.concat({
-    tostring(os.time()),
-    tostring(math.floor(os.clock() * 1000000)),
-    tostring(math.random(100000, 999999))
-}, "-")
+-- Keep runtime identity construction compatible with the reduced Lua host used
+-- by contract tests as well as TTS.  The individual values are already bounded
+-- strings; table.concat is unnecessary here and some embedded hosts reject
+-- tables containing a missing optional clock/random value.
+local BRIDGE_CLIENT_RUNTIME_ID = tostring(os.time()) .. "-"
+    .. tostring(math.floor(os.clock() * 1000000)) .. "-"
+    .. tostring(math.random(100000, 999999))
 
 function BridgeRuntimeIsCurrent(epoch)
     return epoch == BRIDGE_RUNTIME_EPOCH
@@ -3480,6 +3482,10 @@ BridgeState = {
     libraryLookInteractionSession = nil,
     libraryLookSessionGeneration = 0,
     libraryLookLastFailure = nil,
+    nativeSearchSelectionSession = nil,
+    nativeSearchSessionGeneration = 0,
+    hudMainPanelCollapsedManual = false,
+    hudMainPanelAutoCollapseOwner = nil,
     diagnosticCaptureFollowupToken = nil,
     diagnosticCaptureFollowupUntil = 0,
     resyncNoProgress = {
@@ -3789,6 +3795,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     if BridgeRetireOpponentSpellPresentations ~= nil then
         BridgeRetireOpponentSpellPresentations("session-boundary:" .. tostring(reason))
     end
+    if BridgeEndNativeSearchSelectionSession ~= nil then
+        BridgeEndNativeSearchSelectionSession("session-boundary:" .. tostring(reason))
+    end
     BridgeState.eventSessionGeneration = (BridgeState.eventSessionGeneration or 0) + 1
     BridgeState.decisionPresentationGeneration = (BridgeState.decisionPresentationGeneration or 0) + 1
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
@@ -3930,6 +3939,9 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
         BridgeState.libraryLookInteractionSession = nil
         BridgeState.libraryLookSessionGeneration = (BridgeState.libraryLookSessionGeneration or 0) + 1
     end
+    BridgeState.nativeSearchSelectionSession = nil
+    BridgeState.nativeSearchSessionGeneration = (BridgeState.nativeSearchSessionGeneration or 0) + 1
+    BridgeState.hudMainPanelAutoCollapseOwner = nil
     BridgeState.stackSummary = {}
     BridgeState.stackObjects = {}
     BridgeState.combatSelectedByGuid = {}

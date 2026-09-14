@@ -200,7 +200,7 @@ function BridgeUiFlush()
         end
         prompt = "DELVE — " .. limitText
             .. " FROM YOUR GRAVEYARD TO EXILE, THEN CONFIRM."
-            .. " Each exiled card pays {1} of this spell's generic mana cost."
+            .. " Each exiled card pays {1} of this spell's generic mana cost. CANCEL CAST abandons the entire cast."
     elseif decision ~= nil and decision.kind == "cost_selection" and decision.costKind == "crew" then
         prompt = "CREW — SELECT CREATURES"
     end
@@ -324,6 +324,7 @@ function BridgeUiFlush()
     local targetCanCancel = decision ~= nil and decision.allowsCancel == true
         and (decision.kind == "target_selection" or decision.kind == "defender_selection"
             or decision.kind == "player_selection")
+    local paymentCanCancel = BridgeDecisionHasPaymentCancel(decision)
     local yieldPolicyAvailable = BridgeCurrentAuthoritativeResult() == nil
         and BridgeCurrentTerminalRecoveryError() == nil
         and not BridgeDecisionNeedsConfirmation(decision)
@@ -340,10 +341,15 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudConfirm", "tooltip", castPreviewPending
         and "Submit this Forge-approved spell after reviewing the cast preview."
         or "Submit the staged Forge selection when its required count is satisfied.")
-    BridgeUiSet("BridgeHudCancel", "active", (castPreviewPending or (decision and
+    BridgeUiSet("BridgeHudCancel", "active", (castPreviewPending or paymentCanCancel or (decision and
         ((BridgeDecisionNeedsConfirmation(decision) and not BridgeIsStructuredForgeToggleChoice(decision))
             or targetCanCancel))) and "true" or "false")
-    BridgeUiSet("BridgeHudCancel", "text", castPreviewPending and "CANCEL / RETURN" or "CANCEL")
+    BridgeUiSet("BridgeHudCancel", "text", castPreviewPending and "CANCEL / RETURN"
+        or paymentCanCancel and "CANCEL CAST" or "CANCEL")
+    BridgeUiSet("BridgeHudCancel", "tooltip", castPreviewPending
+        and "Return this unsubmitted cast preview."
+        or paymentCanCancel and "Cancel the Forge cast and abandon all provisional payment selections."
+        or "Cancel the current selection when Forge permits it.")
     BridgeUiSet("BridgeHudNewMatch", "active", (terminal or protocolStopped) and "true" or "false")
     BridgeUiSet("BridgeHudNewMatch", "text", BridgeState.resetConfirmationArmed and "CONFIRM NEW MATCH" or "NEW MATCH")
     local footer = terminal and "NEW MATCH is available on the table."
@@ -384,6 +390,10 @@ function BridgeHudAction(player, value, id)
     BridgeRecordInteractionProducer("hud_action", decision, action)
     BridgeClaimHumanTtsColor(decision.seatId, player)
     if BridgeDecisionNeedsConfirmation(decision) then
+        if BridgeIsPaymentCancelAction(action) then
+            BridgeCancelSelection(nil, player, false)
+            return
+        end
         -- A legacy discard menu may arrive as `card_selection`.  Discarding
         -- is a Forge action, not a local hand-selection draft: submit the
         -- exact card action immediately so Forge can move it to its graveyard.
@@ -1562,6 +1572,29 @@ function BridgeDecisionNeedsConfirmation(decision)
     return decision.requiresConfirmation == true or decision.confirmRequired == true
 end
 
+function BridgeIsPaymentCancelAction(action)
+    if action == nil then return false end
+    return action.type == "cancel_payment"
+        or (action.type == "cancel_cast" and tostring(action.cancelScope or "") == "payment")
+end
+
+function BridgeFindCancelAction(decision)
+    if decision == nil then return nil end
+    for _, action in ipairs(decision.actions or {}) do
+        if BridgeIsPaymentCancelAction(action)
+            or (action.type == "cancel_cast" and tostring(action.cancelScope or "") ~= "payment") then
+            return action
+        end
+    end
+    return nil
+end
+
+function BridgeDecisionHasPaymentCancel(decision)
+    return decision ~= nil
+        and (decision.kind == "cost_selection" or decision.kind == "sacrifice" or decision.kind == "discard")
+        and BridgeFindCancelAction(decision) ~= nil
+end
+
 function BridgeIsStructuredForgeToggleChoice(decision)
     if decision == nil or decision.confirmRequired ~= true then return false end
     local kind = tostring(decision.kind or "")
@@ -2023,7 +2056,8 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         end
         if not ok then
             activeTransaction.state = "rejected"
-            if activeTransaction.actionType == "cancel_cast" then
+            if activeTransaction.actionType == "cancel_cast"
+                or activeTransaction.actionType == "cancel_payment" then
                 BridgeRecordCancelAction("SUBMIT_REJECTED", BridgeState.lastDecision,
                     { actionId = actionId }, tostring(body and body.errorCode or err or "request-failed"))
             end
@@ -2075,7 +2109,8 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         end
 
         activeTransaction.state = "accepted"
-        if activeTransaction.actionType == "cancel_cast" then
+        if activeTransaction.actionType == "cancel_cast"
+            or activeTransaction.actionType == "cancel_payment" then
             BridgeRecordCancelAction("SUBMIT_ACCEPTED", BridgeState.lastDecision,
                 { actionId = actionId }, "forge-accepted")
         end
@@ -2127,6 +2162,9 @@ function BridgeSubmitChoice(decisionId, actionId, source)
             BridgeTryFinishFixedRequiredSelection(body.currentDecision, activeTransaction.source)
         else
             BridgeState.lastDecision = nil
+            if BridgeEndNativeSearchSelectionSession ~= nil then
+                BridgeEndNativeSearchSelectionSession("no-pending-decision")
+            end
             BridgeClearHighlights()
             BridgeHideMainPriorityControls()
             BridgeLog("[Bridge] no pending decision.")
