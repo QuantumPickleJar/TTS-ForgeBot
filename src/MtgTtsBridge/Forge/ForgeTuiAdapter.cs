@@ -911,6 +911,29 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             SourceCardInstanceId = NormalizeInstanceId(sessionId, paymentContext.SourceCardInstanceId)
         };
 
+    private static string PreparedActionSemanticKey(LegalActionDto action, string? seatId)
+    {
+        // ActionId is intentionally excluded: Forge can expose the same
+        // PreparedSpell more than once while walking equivalent SpellAbility
+        // objects. All structured legality/provenance fields which distinguish
+        // a real alternate mode remain in the key; display text and card name
+        // never become identity.
+        var provenance = action.Provenance;
+        return string.Join("\u001f", new object?[] {
+            action.Type, action.ActionKind, action.CardInstanceId, action.SourceCardInstanceId,
+            action.SourceZone, action.AbilityKind, action.CastMode, action.CostKind,
+            action.PreparedSourceCardInstanceId, action.TargetKind, action.TargetSeatId,
+            action.EntityKind, action.EntitySeatId, action.EntityCardInstanceId,
+            action.RequiresFollowup, action.RequiresSelection, action.MinSelections,
+            action.MaxSelections, action.PrototypePower, action.PrototypeToughness,
+            action.DisplayManaCost, action.CancelScope, seatId,
+            provenance?.ActionKind, provenance?.SourceCardInstanceId, provenance?.SourceZone,
+            provenance?.SourceSeatId, provenance?.AbilityKind, provenance?.CastMode,
+            provenance?.CastFace, provenance?.DisplayCost, provenance?.PaymentContextId,
+            provenance?.CancelScope
+        }.Select(value => value?.ToString() ?? ""));
+    }
+
     private void StageDecisionCandidate(ForgeTuiDecision parsed, bool structuredFrameInProgress)
     {
         var baselineForgeSequence = _latestCommittedMutationForgeSequence
@@ -932,8 +955,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         var dedupedActions = normalizedActions.Where(action =>
         {
             if (!string.Equals(action.CastMode, "prepare", StringComparison.OrdinalIgnoreCase)) return true;
-            var key = string.Join("|", action.CardInstanceId, action.PreparedSourceCardInstanceId,
-                action.AbilityKind, action.CostKind, parsed.Decision.SeatId);
+            var key = PreparedActionSemanticKey(action, parsed.Decision.SeatId);
             return seenPrepared.Add(key);
         }).ToArray();
         var retainedActionIds = dedupedActions.Select(action => action.ActionId).ToHashSet(StringComparer.Ordinal);

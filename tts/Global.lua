@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 568c36757df6f612f96d8cd0e877820bfe1c5ce0a6163f195b5b32617cf39a3f
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "568c36757df6f612f96d8cd0e877820bfe1c5ce0a6163f195b5b32617cf39a3f"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 9b05fa38021a8a8d7bb62b54e5542145cd32f0e99d4bbcc8f2e739c1f2ec3799
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "9b05fa38021a8a8d7bb62b54e5542145cd32f0e99d4bbcc8f2e739c1f2ec3799"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -5806,6 +5806,9 @@ function BridgeStageSeatCardsForBootstrap(snapshot, callback)
     local knownSeatIds = {}
     local knownSeatIdSet = {}
     local context = BridgeBuildGameCardContext(snapshot)
+    local sameSessionRecovery = BridgeState.resyncInFlight == true
+        or (BridgeState.embodimentTransaction ~= nil
+            and BridgeState.embodimentTransaction.resumeFromSnapshotCursor == true)
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
         table.insert(knownSeatIds, seatSnapshot.seatId)
         knownSeatIdSet[seatSnapshot.seatId] = true
@@ -5860,19 +5863,23 @@ function BridgeStageSeatCardsForBootstrap(snapshot, callback)
             -- Moving them into the library would erase their exact identity
             -- before snapshot reconciliation and force a duplicate-name deck
             -- extraction (the Thought Scour failure mode). Unknown loose
-            -- objects are still staged so a real new-match/bootstrap rebuild
-            -- remains strict and deterministic.
+            -- objects are staged only for initial/new-match bootstrap; a
+            -- same-session recovery fails closed instead of moving them.
             local preserveTrackedPublicCard = trackedInstanceId ~= nil
                 and trackedZone ~= nil and trackedZone ~= "library"
             if seatId ~= nil
                 and not isInHand
                 and not preserveTrackedPublicCard
+                and not sameSessionRecovery
                 and IsGameCardCandidate(object, seatId, context) then
                 table.insert(staged, {object = object, seatId = seatId, guid = guid})
             end
         end
     end
 
+    if sameSessionRecovery and #staged == 0 then
+        BridgeLog("[Bridge] same-session snapshot recovery will not stage unknown loose cards")
+    end
     local stagedCount = 0
     local function stageNext(index)
         local item = staged[index]
@@ -6763,6 +6770,7 @@ local function BridgeTopLevelGraveyardCardByGuid(seatId, expectedGuid)
             end
         end
     end
+
     return nil
 end
 
@@ -9803,11 +9811,10 @@ function BridgeSubmitChoice(decisionId, actionId, source)
     local exactInstanceId = BridgeActionExactPhysicalInstanceId
         and BridgeActionExactPhysicalInstanceId(activeAction) or nil
     if exactInstanceId ~= nil then
-        local descriptor = BridgeState.authoritativeObjectByInstanceId
-            and BridgeState.authoritativeObjectByInstanceId[exactInstanceId] or nil
-        local policy = descriptor and tostring(descriptor.materializationPolicy or "") or ""
-        local physicalRequired = descriptor == nil
-            or (descriptor.isVirtual ~= true and policy ~= "virtual" and policy ~= "virtual-stack")
+        local physicalRequired = true
+        if BridgeActionRequiresPhysicalPresentation ~= nil then
+            physicalRequired = BridgeActionRequiresPhysicalPresentation(activeAction)
+        end
         if physicalRequired and BridgeResolveExactActionPhysical ~= nil then
             local resolved, reason = BridgeResolveExactActionPhysical(activeDecision, activeAction)
             if resolved == nil then
@@ -10811,6 +10818,49 @@ function BridgeSnapshotMayMutatePublicZones(snapshot)
     return snapshotCursor <= tonumber(BridgeState.lastAppliedEventSequence or 0)
 end
 
+-- Snapshot reconciliation reasons about the authoritative *current* zone.
+-- A card in a native Deck is intentionally absent from physicalByInstanceId,
+-- so checking only that loose index makes an already-correct graveyard card
+-- look missing and can replay an old library -> graveyard transition. Require
+-- the complete exact identity proof for either current representation.
+function BridgePhysicalIdentitySatisfiesSnapshot(cardInstanceId, seatId, zoneName)
+    if cardInstanceId == nil or seatId == nil or zoneName == nil then return false end
+    local id = tostring(cardInstanceId)
+    local zone = string.lower(tostring(zoneName))
+    local looseGuid = BridgeState.physicalByInstanceId
+        and BridgeState.physicalByInstanceId[id] or nil
+    if looseGuid ~= nil
+        and BridgeState.physicalInstanceIdByGuid[looseGuid] == id
+        and BridgeState.physicalSeatByGuid[looseGuid] == seatId
+        and string.lower(tostring(BridgeState.physicalZoneByGuid[looseGuid] or "")) == zone then
+        local loose = BridgeGetLiveObjectByGuid(looseGuid)
+        if loose ~= nil and BridgeSafeObjectTag(loose) == "Card"
+            and not BridgeIsPresentationOnlyObject(loose) then
+            return true, {kind = "loose", guid = looseGuid}
+        end
+    end
+
+    local contained = BridgeState.physicalContainerByInstanceId
+        and BridgeState.physicalContainerByInstanceId[id] or nil
+    if contained == nil or string.lower(tostring(contained.zoneName or "")) ~= zone
+        or tostring(contained.seatId or "") ~= tostring(seatId) then
+        return false
+    end
+    local cardGuid = contained.cardGuid
+    if cardGuid == nil or tostring(cardGuid) == ""
+        or BridgeState.physicalContainedInstanceIdByGuid[cardGuid] ~= id
+        or BridgeState.physicalSeatByGuid[cardGuid] ~= seatId
+        or string.lower(tostring(BridgeState.physicalZoneByGuid[cardGuid] or "")) ~= zone then
+        return false
+    end
+    local deck = contained.deckGuid ~= nil and BridgeGetLiveObjectByGuid(contained.deckGuid) or nil
+    if deck == nil or BridgeSafeObjectTag(deck) ~= "Deck"
+        or not BridgeLibraryContainsGuid(deck, cardGuid) then
+        return false
+    end
+    return true, {kind = "contained", deckGuid = contained.deckGuid, cardGuid = cardGuid}
+end
+
 -- A snapshot can be authoritative while its physical library transitions are
 -- still being embodied.  Applying it during a Thought Scour-style burst lets
 -- bootstrap/reconcile extract a same-name card from the current Deck top,
@@ -11033,15 +11083,26 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                     local mappedGuid = BridgeState.physicalByInstanceId[card.cardInstanceId]
                     local mappedObject = mappedGuid and getObjectFromGUID(mappedGuid) or nil
                     local mappedZone = mappedGuid and BridgeState.physicalZoneByGuid[mappedGuid] or nil
+                    local alreadySatisfied, satisfiedRepresentation =
+                        BridgePhysicalIdentitySatisfiesSnapshot(card.cardInstanceId, seatSnapshot.seatId, zoneName)
                     local snapshotRow = zoneName == "battlefield"
                         and (card.battlefieldKind == "land" and "land" or "creature") or nil
                     local priorRow = BridgeState.battlefieldKindByInstanceId[card.cardInstanceId]
                     local strandedAtStack = zoneName == "battlefield"
                         and mappedObject ~= nil and mappedObject.tag == "Card"
                         and BridgePhysicalObjectAtStackAnchor(mappedObject)
-                    local mappedNeedsFix = mappedObject == nil or mappedObject.tag ~= "Card" or mappedZone ~= zoneName
+                    local mappedNeedsFix = not alreadySatisfied
+                        and (mappedObject == nil or mappedObject.tag ~= "Card" or mappedZone ~= zoneName
                         or (snapshotRow ~= nil and priorRow ~= snapshotRow)
-                        or strandedAtStack
+                        or strandedAtStack)
+                    if alreadySatisfied then
+                        BridgeRecordPhysicalMutationJournal({
+                            operation = "SNAPSHOT_RECONCILE", stage = "ALREADY_SATISFIED",
+                            cardInstanceId = card.cardInstanceId, seatId = seatSnapshot.seatId,
+                            zone = zoneName, representation = satisfiedRepresentation
+                                and satisfiedRepresentation.kind or "exact"
+                        })
+                    end
                     if strandedAtStack then
                         BridgeTracePermanentTransition(
                             "SNAPSHOT_ZONE battlefield", {
@@ -14861,6 +14922,26 @@ function BridgeActionExpectedPhysicalSourceZone(action)
     return BridgeActionExpectedSourceZone(action)
 end
 
+-- A logical action can name a Forge object which has no physical embodiment.
+-- PreparedSpell copies are the important case: the copy's CardInstanceId is
+-- authoritative for the Forge choice, while preparedSourceCardInstanceId is
+-- the only physical presentation context. Keep this policy in one helper so
+-- rendering and final submission cannot disagree about whether a TTS Card is
+-- required.
+function BridgeActionRequiresPhysicalPresentation(action)
+    if action == nil then return false end
+    if tostring(action.castMode or "") == "prepare"
+        and action.preparedSourceCardInstanceId ~= nil
+        and tostring(action.preparedSourceCardInstanceId) ~= "" then
+        return true
+    end
+    local instanceId = BridgeActionExactPhysicalInstanceId(action)
+    if instanceId == nil then return false end
+    local descriptor = BridgeActionAuthoritativeDescriptor(instanceId)
+    if descriptor == nil then return true end
+    return not BridgeAuthoritativeDescriptorIsVirtual(descriptor)
+end
+
 function BridgePreparedSourceIsAuthoritativelyPrepared(action)
     if action == nil or tostring(action.castMode or "") ~= "prepare"
         or action.preparedSourceCardInstanceId == nil then return true end
@@ -15280,16 +15361,10 @@ function BridgeDecisionPhysicalMappingsReady(decision)
     if decision == nil then return true, nil end
     for _, action in ipairs(decision.actions or {}) do
         local instanceId = BridgeActionExactPhysicalInstanceId(action)
-        if instanceId ~= nil then
-            local descriptor = BridgeState.authoritativeObjectByInstanceId[instanceId]
-            local policy = descriptor and tostring(descriptor.materializationPolicy or "") or ""
-            local physicalRequired = descriptor == nil
-                or (descriptor.isVirtual ~= true and policy ~= "virtual" and policy ~= "virtual-stack")
-            if physicalRequired then
-                local resolved, reason = BridgeResolveExactActionPhysical(decision, action)
-                if resolved == nil then
-                    return false, tostring(instanceId) .. ":" .. tostring(reason)
-                end
+        if instanceId ~= nil and BridgeActionRequiresPhysicalPresentation(action) then
+            local resolved, reason = BridgeResolveExactActionPhysical(decision, action)
+            if resolved == nil then
+                return false, tostring(instanceId) .. ":" .. tostring(reason)
             end
         end
     end
@@ -18633,6 +18708,9 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
     local looseCountByName = {}
     local assetByGuid = {}
     local mappings = {}
+    local sameSessionRecovery = BridgeState.resyncInFlight == true
+        or (BridgeState.embodimentTransaction ~= nil
+            and BridgeState.embodimentTransaction.resumeFromSnapshotCursor == true)
     local handGuids = BridgeBuildSeatHandGuidSet(seatSnapshot.seatId)
     for _, asset in ipairs(assets) do
         local name = BridgeNormalizeCardName(asset.cardName)
@@ -18747,6 +18825,21 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
                 end
             end
         end
+        -- A physical Card can retain its exact bridge variables while the
+        -- in-memory forward index is being rebuilt. In same-session recovery
+        -- that advertised identity is safe evidence; a printed-name match is
+        -- not.
+        if preservedAsset == nil then
+            for assetGuid, asset in pairs(assetByGuid) do
+                local advertised = asset.object ~= nil
+                    and BridgeReadCurrentSessionPhysicalIdentity(asset.object) or nil
+                if advertised ~= nil and tostring(advertised) == tostring(card.cardInstanceId) then
+                    preservedGuid = assetGuid
+                    preservedAsset = asset
+                    break
+                end
+            end
+        end
         local preservedContainer = BridgeState.physicalContainerByInstanceId[card.cardInstanceId]
         local preservedContained = preservedContainer ~= nil and zoneName == "graveyard"
         if preservedContained then
@@ -18767,6 +18860,12 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
         if assigned == nil and preservedAsset ~= nil and preservedAsset.assigned ~= true then
             assigned = preservedAsset
             preservedAsset.assigned = true
+        elseif sameSessionRecovery then
+            -- Same-session reconciliation may repair an exact physical
+            -- identity or a proven contained locator only. It must not choose
+            -- a same-name asset from another zone, because that turns a
+            -- recoverable mapping defect into physical corruption.
+            assigned = nil
         elseif zoneName == "library" then
             consumeContained()
             if assigned == nil then consumeLoose() end
@@ -18978,6 +19077,13 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
         -- this diagnostic visible because a name-only fallback is only a
         -- recovery path, never an identity source.
         BridgeLog("[Bridge] resync materialization using contained-library fallback for unmapped public card")
+    end
+    if BridgeState.resyncInFlight == true
+        or (BridgeState.embodimentTransaction ~= nil
+            and BridgeState.embodimentTransaction.resumeFromSnapshotCursor == true) then
+        callback(false, "same-session snapshot materialization has no exact physical identity for "
+            .. tostring(card.cardInstanceId))
+        return
     end
     local deck = BridgeFindSeatLibraryDeckWithCard(seat, card.cardName)
     if deck == nil then deck = BridgeFindLibraryDeckForSeat(seatSnapshot.seatId) end
@@ -28673,6 +28779,10 @@ function BridgeRecordResyncClickIngress(player, value, id)
     BridgeState.resyncClickIngressCount = count
     while #journal > 16 do table.remove(journal, 1) end
     BridgeState.resyncClickIngress = record
+    BridgeLog(string.format("[Bridge] RESYNC_LUA_INGRESS count=%s id=%s active=%s interactable=%s raycastTarget=%s",
+        tostring(count), tostring(id), tostring(record.uiMounted),
+        tostring(record.effectiveParentExpectedActive),
+        tostring(BridgeDiagnosticUiAttribute("BridgeHudResyncFromForge", "raycastTarget"))))
     return record
 end
 
