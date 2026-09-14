@@ -1337,6 +1337,70 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
+    public async Task CollectionChoice_CancelPaymentIsAOneShotForgeActionAndRetiresCollectionIdentity()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-cancel-payment-{Guid.NewGuid():N}.cmd");
+        var inputLog = Path.Combine(Path.GetTempPath(), $"forge-tui-cancel-payment-{Guid.NewGuid():N}.log");
+        await WriteForgeScriptAsync(script, """
+            @echo off
+            echo === FORGE CHOICE ===
+            echo DELVE - Choose cards from your graveyard to exile
+            echo [bridge paymentContextId=P7 originActionId=forge-tui-1-choice-1 sourceCardId=99 sourceZone=hand actionKind=cast_spell paymentStage=nonmana_payment]
+            echo [kind=cost_selection costKind=delve sourceZone=graveyard min=0 max=2 selected=0 ordered=false]
+            echo   0. Done
+            echo   1. Card A [id=41] [bridge entityKind=card cardInstanceId=41 sourceZone=graveyard]
+            echo   2. Card B [id=42] [bridge entityKind=card cardInstanceId=42 sourceZone=graveyard]
+            echo   3. CANCEL CAST [bridge sourceZone=unknown actionKind=cancel_payment cancelScope=cast paymentContextId=P7]
+            <nul set /p "=Enter choice (0-3): "
+            set /p choice=
+            >>"__INPUT_LOG__" echo(%choice%
+            if not "%choice%"=="3" exit /b 51
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """.Replace("__INPUT_LOG__", inputLog));
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                    DecisionTimeoutSeconds = 5,
+                }), NullLogger<ForgeTuiAdapter>.Instance);
+
+            var initial = await adapter.StartSessionAsync(CancellationToken.None);
+            var decision = Assert.IsType<DecisionDto>(initial.CurrentDecision);
+            var cancel = Assert.Single(decision.Actions, action => action.Type == "cancel_payment");
+            Assert.Null(cancel.CardInstanceId);
+            Assert.Equal("cast", cancel.CancelScope);
+            Assert.Equal("P7", cancel.Provenance?.PaymentContextId);
+
+            var accepted = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(decision.DecisionId, cancel.ActionId) { SessionId = initial.SessionId }, CancellationToken.None);
+            Assert.True(accepted.Accepted);
+            Assert.Equal("main_priority", accepted.State.CurrentDecision?.Kind);
+
+            var duplicate = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(decision.DecisionId, cancel.ActionId) { SessionId = initial.SessionId }, CancellationToken.None);
+            Assert.True(duplicate.Accepted);
+            Assert.Equal(["3"], (await File.ReadAllLinesAsync(inputLog)).Select(line => line.Trim()).ToArray());
+        }
+        finally
+        {
+            File.Delete(script);
+            File.Delete(inputLog);
+        }
+    }
+
+    [Fact]
     public async Task MultiCardDiscardWaitsForAllForgeRedrawsBeforeDone()
     {
         var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");

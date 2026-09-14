@@ -407,8 +407,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             var currentAction = _currentDecision?.Actions.FirstOrDefault(action =>
                 string.Equals(action.ActionId, request.ActionId, StringComparison.Ordinal));
             currentActionForRequest = currentAction;
+            var isPaymentCancellation = IsPaymentCancellation(currentAction, _currentDecision);
             var isCollectionToggle = IsCollectionDecision(_currentDecision)
                 && currentAction is not null
+                && !isPaymentCancellation
                 && !string.Equals(currentAction.Type, "choose_none", StringComparison.Ordinal);
             ResolvedChoice? resolvedChoice = null;
             var resolvedAlready = !isCollectionToggle
@@ -501,8 +503,10 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
 
         var activeProcess = process!;
         _logger.LogInformation("Forge TUI stdin action={ActionId} input={ForgeInput}", request.ActionId, forgeInput);
-        if (currentActionForRequest is not null && string.Equals(currentActionForRequest.Type, "choose_none", StringComparison.Ordinal)
-            && IsCollectionDecision(decisionForRequest))
+        if (IsCollectionDecision(decisionForRequest)
+            && (currentActionForRequest is not null
+                && (string.Equals(currentActionForRequest.Type, "choose_none", StringComparison.Ordinal)
+                    || IsPaymentCancellation(currentActionForRequest, decisionForRequest))))
         {
             _parser.CompleteCollectionDecision();
         }
@@ -1565,6 +1569,14 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             or "entity_selection" or "cost_selection"
             || decision.Kind == "mulligan"
                 && string.Equals(decision.MulliganStage, "bottom_selection", StringComparison.Ordinal));
+
+    private static bool IsPaymentCancellation(LegalActionDto? action, DecisionDto? decision) =>
+        action is not null
+        && decision is not null
+        && IsCollectionDecision(decision)
+        && (string.Equals(action.Type, "cancel_payment", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(action.Type, "cancel_cast", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(action.CancelScope, "payment", StringComparison.OrdinalIgnoreCase));
 
     private void MarkGameEnded(GameResultDto result)
     {
