@@ -1377,6 +1377,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
             end
             BridgeWaitFrames = function(callback, frames) queueWaitCallback(callback) end
             BridgeWaitTime = function(callback, delay) queueWaitCallback(callback) end
+            bridgeTest.collapseGraveyardAtOne = true
             function BridgeTestDrainWaitCallbacks()
                 local guard = 0
                 while pendingWaitCallbacks[1] ~= nil do
@@ -1550,6 +1551,428 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void FourCardGraveyardDrainReobservesDeckCollapseBeforeFinalExactExtraction()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = '2e629fa847ea4b1f9e3e1d61a75eeb31'
+            BridgeState.eventSessionGeneration = 2
+            BridgeState.physicalTransactionGeneration = 2
+            BridgeState.lastAppliedEventSequence = 164
+            BridgeState.desyncLatched = false
+            bridgeTest.collapseGraveyardAtOne = true
+            bridgeTest.collapsedGraveyardLooseVisible = false
+
+            local i6 = 'forge:2e629fa847ea4b1f9e3e1d61a75eeb31:6'
+            local i24 = 'forge:2e629fa847ea4b1f9e3e1d61a75eeb31:24'
+            local i2 = 'forge:2e629fa847ea4b1f9e3e1d61a75eeb31:2'
+            local i31 = 'forge:2e629fa847ea4b1f9e3e1d61a75eeb31:31'
+            local function seed(instanceId, cardName, guid)
+                BridgeState.cardNameByInstanceId[instanceId] = cardName
+                local card = BridgeTestCreateCard(instanceId, cardName, guid)
+                card._inDeck = true
+                card._inLibrary = false
+                table.insert(bridgeTest.graveyardDeck.entries,
+                    {instanceId=instanceId, name=cardName, guid=guid})
+                BridgeRecordContainedCardIdentity(instanceId, 'grave-deck', guid,
+                    'forge-player-1', 'graveyard', cardName)
+            end
+            seed(i6, 'Murderous Cut', 'grave-6')
+            seed(i24, 'Swamp', 'grave-24')
+            seed(i2, 'Treasure Cruise', 'grave-2')
+            seed(i31, 'Harmonized Trio', 'grave-31')
+            bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
+
+            -- Same-name physical data elsewhere must not participate in the
+            -- final-card correlation.
+            local duplicate = BridgeTestCreateCard(
+                'forge:2e629fa847ea4b1f9e3e1d61a75eeb31:duplicate',
+                'Harmonized Trio', 'duplicate-trio')
+            duplicate._inLibrary = false
+            BridgeRecordLooseCardIdentity(
+                'forge:2e629fa847ea4b1f9e3e1d61a75eeb31:duplicate',
+                'duplicate-trio', 'forge-player-1', 'battlefield')
+
+            -- A contained GUID may still be addressable as a Card proxy. It
+            -- is not a top-level object until the collapse is visible.
+            local rawGetLive = BridgeGetLiveObjectByGuid
+            BridgeGetLiveObjectByGuid = function(guid)
+                local object = rawGetLive(guid)
+                if object ~= nil and object._graveyardLooseVisible == false then return nil end
+                if object ~= nil and object.tag == 'Card' and object._inDeck == true then return nil end
+                return object
+            end
+
+            pendingWaitCallbacks = {}
+            function BridgeTestFlushOneWait()
+                local callback = pendingWaitCallbacks[1]
+                if callback == nil then return false end
+                local count = BridgeTestArrayLength(pendingWaitCallbacks)
+                for index = 1, count - 1 do pendingWaitCallbacks[index] = pendingWaitCallbacks[index + 1] end
+                pendingWaitCallbacks[count] = nil
+                callback()
+                return true
+            end
+            BridgeWaitFrames = function(callback, frames)
+                if callback ~= nil then table.insert(pendingWaitCallbacks, callback) end
+            end
+            BridgeWaitTime = function(callback, delay)
+                if callback ~= nil then table.insert(pendingWaitCallbacks, callback) end
+            end
+
+            BridgeTestSetEventQueue(
+                {sequence=165, kind='tap_changed', seatId='forge-player-1',
+                    sourceZone='battlefield', destinationZone='battlefield',
+                    cardInstanceId='forge:2e629fa847ea4b1f9e3e1d61a75eeb31:20',
+                    cardName='Swamp', tapped=true, forgeSequence=58},
+                {sequence=166, kind='card_moved', seatId='forge-player-1',
+                    sourceZone='graveyard', destinationZone='exile', cardInstanceId=i6,
+                    cardName='Murderous Cut', forgeSequence=58},
+                {sequence=167, kind='card_moved', seatId='forge-player-1',
+                    sourceZone='graveyard', destinationZone='exile', cardInstanceId=i24,
+                    cardName='Swamp', forgeSequence=58},
+                {sequence=168, kind='card_moved', seatId='forge-player-1',
+                    sourceZone='graveyard', destinationZone='exile', cardInstanceId=i2,
+                    cardName='Treasure Cruise', forgeSequence=58},
+                {sequence=169, kind='card_moved', seatId='forge-player-1',
+                    sourceZone='graveyard', destinationZone='exile', cardInstanceId=i31,
+                    cardName='Harmonized Trio', forgeSequence=58})
+            local swamp = BridgeTestCreateCard(
+                'forge:2e629fa847ea4b1f9e3e1d61a75eeb31:20', 'Swamp', 'swamp-20')
+            swamp._inLibrary = false
+            BridgeRecordLooseCardIdentity(
+                'forge:2e629fa847ea4b1f9e3e1d61a75eeb31:20', 'swamp-20',
+                'forge-player-1', 'battlefield')
+
+            BridgeProcessEventQueue()
+            local function advanceUntilTakeCount(expected)
+                local guard = 0
+                while bridgeTest.graveyardTakeDispatchCount < expected do
+                    local progressed = BridgeTestFlushNextGraveyardTake()
+                    if not progressed then progressed = BridgeTestFlushOneWait() end
+                    if not progressed then error('serialized graveyard drain stopped before expected take') end
+                    guard = guard + 1
+                    if guard > 100 then error('serialized graveyard drain livelock') end
+                end
+            end
+            advanceUntilTakeCount(3)
+            BridgeTestFlushNextGraveyardTake()
+            -- The third take callback retired the native Deck. The final
+            -- loose Card is intentionally still undiscoverable here.
+            BridgeTestFlushOneWait()
+            dispatchBeforeReveal = bridgeTest.graveyardTakeDispatchCount
+            finalStillContainedBeforeReveal = BridgeState.physicalContainerByInstanceId[i31] ~= nil
+            BridgeTestRevealCollapsedGraveyardCard()
+            local guard = 0
+            while BridgeState.lastAppliedEventSequence < 169 do
+                local progressed = BridgeTestFlushNextGraveyardTake()
+                if not progressed then progressed = BridgeTestFlushOneWait() end
+                if not progressed then error('serialized graveyard drain stopped before commit') end
+                guard = guard + 1
+                if guard > 200 then error('serialized graveyard drain commit livelock') end
+            end
+
+            finalMapping = BridgeState.physicalByInstanceId[i31]
+            finalInverse = finalMapping and BridgeState.physicalInstanceIdByGuid[finalMapping] or nil
+            finalSeat = finalMapping and BridgeState.physicalSeatByGuid[finalMapping] or nil
+            finalZone = finalMapping and BridgeState.physicalZoneByGuid[finalMapping] or nil
+            finalContainer = BridgeState.physicalContainerByInstanceId[i31]
+            finalContainedInverse = BridgeState.physicalContainedInstanceIdByGuid['grave-31']
+            graveyardEntries = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries or {})
+            graveyardContainer = bridgeTest.graveyardContainer ~= nil
+            finalTakeDispatchCount = bridgeTest.graveyardTakeDispatchCount
+            commitCount = BridgeTestCountLogToken('MUTATION_COMMIT')
+            abortCount = BridgeTestCountLogToken('MUTATION_ABORT')
+            local function journalStageCount(stage)
+                local count = 0
+                for _, entry in pairs(BridgeState.physicalMutationJournal or {}) do
+                    if entry ~= nil and entry.stage == stage then count = count + 1 end
+                end
+                return count
+            end
+            topologyRebindCount = journalStageCount('TOPOLOGY_REBOUND')
+            looseExtractionCount = journalStageCount('LOOSE_LOCATOR_RESOLVED')
+            locatorFailureCount = journalStageCount('LOCATOR_RESOLVE_FAILED')
+            staleDeckDispatchCount = BridgeTestCountLogToken('no contained mapping for card instance')
+            finalApplied = BridgeState.lastAppliedEventSequence
+            desync = BridgeState.desyncLatched == true
+        ");
+
+        Assert.Equal(3, lua.Globals.Get("dispatchBeforeReveal").Number);
+        Assert.True(lua.Globals.Get("finalStillContainedBeforeReveal").Boolean);
+        Assert.Equal(3, lua.Globals.Get("finalTakeDispatchCount").Number);
+        Assert.Equal("grave-31", lua.Globals.Get("finalMapping").String);
+        Assert.Equal("forge:2e629fa847ea4b1f9e3e1d61a75eeb31:31",
+            lua.Globals.Get("finalInverse").String);
+        Assert.Equal("forge-player-1", lua.Globals.Get("finalSeat").String);
+        Assert.Equal("exile", lua.Globals.Get("finalZone").String);
+        Assert.True(lua.Globals.Get("finalContainer").IsNil());
+        Assert.True(lua.Globals.Get("finalContainedInverse").IsNil());
+        Assert.Equal(0, lua.Globals.Get("graveyardEntries").Number);
+        Assert.False(lua.Globals.Get("graveyardContainer").Boolean);
+        Assert.Equal(169, lua.Globals.Get("finalApplied").Number, 0);
+        Assert.Equal(1, lua.Globals.Get("commitCount").Number);
+        Assert.Equal(0, lua.Globals.Get("abortCount").Number);
+        Assert.True(lua.Globals.Get("topologyRebindCount").Number >= 1);
+        Assert.True(lua.Globals.Get("looseExtractionCount").Number >= 1);
+        Assert.Equal(0, lua.Globals.Get("locatorFailureCount").Number);
+        Assert.Equal(0, lua.Globals.Get("staleDeckDispatchCount").Number);
+        Assert.False(lua.Globals.Get("desync").Boolean, CapturedLogsTail(lua));
+    }
+
+    [Fact]
+    public void GraveyardCollapseLeavesOneExactLooseCardForTheNextDecision()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'leave-one-session'
+            BridgeState.eventSessionGeneration = 1
+            BridgeState.physicalTransactionGeneration = 1
+            BridgeState.lastAppliedEventSequence = 0
+            bridgeTest.collapseGraveyardAtOne = true
+
+            local i1 = 'forge:leave-one-session:1'
+            local i2 = 'forge:leave-one-session:2'
+            local i3 = 'forge:leave-one-session:3'
+            local i4 = 'forge:leave-one-session:4'
+            local function seed(instanceId, cardName, guid)
+                BridgeState.cardNameByInstanceId[instanceId] = cardName
+                local card = BridgeTestCreateCard(instanceId, cardName, guid)
+                card._inDeck = true
+                card._inLibrary = false
+                table.insert(bridgeTest.graveyardDeck.entries,
+                    {instanceId=instanceId, name=cardName, guid=guid})
+                BridgeRecordContainedCardIdentity(instanceId, 'grave-deck', guid,
+                    'forge-player-1', 'graveyard', cardName)
+            end
+            seed(i1, 'Harmonized Trio', 'leave-1')
+            seed(i2, 'Swamp', 'leave-2')
+            seed(i3, 'Harmonized Trio', 'leave-3')
+            seed(i4, 'Treasure Cruise', 'leave-4')
+            bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
+            pendingWaitCallbacks = {}
+            function BridgeTestFlushOneWait()
+                local callback = pendingWaitCallbacks[1]
+                if callback == nil then return false end
+                local count = BridgeTestArrayLength(pendingWaitCallbacks)
+                for index = 1, count - 1 do pendingWaitCallbacks[index] = pendingWaitCallbacks[index + 1] end
+                pendingWaitCallbacks[count] = nil
+                callback()
+                return true
+            end
+            BridgeWaitFrames = function(callback, frames)
+                if callback ~= nil then table.insert(pendingWaitCallbacks, callback) end
+            end
+            BridgeWaitTime = function(callback, delay)
+                if callback ~= nil then table.insert(pendingWaitCallbacks, callback) end
+            end
+            BridgeTestSetEventQueue(
+                {sequence=1, kind='card_moved', seatId='forge-player-1', sourceZone='graveyard', destinationZone='exile', cardInstanceId=i1, cardName='Harmonized Trio', forgeSequence=1},
+                {sequence=2, kind='card_moved', seatId='forge-player-1', sourceZone='graveyard', destinationZone='exile', cardInstanceId=i2, cardName='Swamp', forgeSequence=1},
+                {sequence=3, kind='card_moved', seatId='forge-player-1', sourceZone='graveyard', destinationZone='exile', cardInstanceId=i3, cardName='Harmonized Trio', forgeSequence=1})
+            BridgeProcessEventQueue()
+            local guard = 0
+            while BridgeState.lastAppliedEventSequence < 3 do
+                local progressed = BridgeTestFlushNextGraveyardTake()
+                if not progressed then progressed = BridgeTestFlushOneWait() end
+                if not progressed then error('leave-one extraction stopped') end
+                guard = guard + 1
+                if guard > 100 then error('leave-one extraction livelock') end
+            end
+            while BridgeTestFlushOneWait() do end
+            remaining = BridgeState.physicalByInstanceId[i4]
+            remainingInverse = remaining and BridgeState.physicalInstanceIdByGuid[remaining] or nil
+            remainingContainer = BridgeState.physicalContainerByInstanceId[i4]
+            remainingContainedInverse = BridgeState.physicalContainedInstanceIdByGuid['leave-4']
+            remainingSeat = remaining and BridgeState.physicalSeatByGuid[remaining] or nil
+            remainingZone = remaining and BridgeState.physicalZoneByGuid[remaining] or nil
+            BridgeTestSetEventQueue({sequence=4, kind='card_moved', seatId='forge-player-1', sourceZone='graveyard', destinationZone='exile', cardInstanceId=i4, cardName='Treasure Cruise', forgeSequence=2})
+            BridgeProcessEventQueue()
+            guard = 0
+            while BridgeState.lastAppliedEventSequence < 4 do
+                local progressed = BridgeTestFlushNextGraveyardTake()
+                if not progressed then progressed = BridgeTestFlushOneWait() end
+                if not progressed then error('later loose-card extraction stopped') end
+                guard = guard + 1
+                if guard > 100 then error('later loose-card extraction livelock') end
+            end
+            finalZone = BridgeState.physicalZoneByGuid['leave-4']
+            finalContainer = bridgeTest.graveyardContainer ~= nil
+            finalEntries = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries or {})
+            finalTakeCount = bridgeTest.graveyardTakeDispatchCount
+            finalDesync = BridgeState.desyncLatched == true
+        ");
+
+        Assert.Equal("leave-4", lua.Globals.Get("remaining").String);
+        Assert.Equal("forge:leave-one-session:4", lua.Globals.Get("remainingInverse").String);
+        Assert.True(lua.Globals.Get("remainingContainer").IsNil());
+        Assert.True(lua.Globals.Get("remainingContainedInverse").IsNil());
+        Assert.Equal("forge-player-1", lua.Globals.Get("remainingSeat").String);
+        Assert.Equal("graveyard", lua.Globals.Get("remainingZone").String);
+        Assert.Equal("exile", lua.Globals.Get("finalZone").String);
+        Assert.False(lua.Globals.Get("finalContainer").Boolean);
+        Assert.Equal(0, lua.Globals.Get("finalEntries").Number);
+        Assert.Equal(3, lua.Globals.Get("finalTakeCount").Number);
+        Assert.False(lua.Globals.Get("finalDesync").Boolean, CapturedLogsTail(lua));
+    }
+
+    [Fact]
+    public void TwoCardAndOneLooseCardGraveyardsUseExactPhysicalSources()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'boundary-session'
+            BridgeState.eventSessionGeneration = 1
+            BridgeState.physicalTransactionGeneration = 1
+            BridgeState.lastAppliedEventSequence = 0
+            bridgeTest.collapseGraveyardAtOne = true
+            local iA = 'forge:boundary-session:1'
+            local iB = 'forge:boundary-session:2'
+            local function seedBoundary(instanceId, cardName, guid)
+                BridgeState.cardNameByInstanceId[instanceId] = cardName
+                local card = BridgeTestCreateCard(instanceId, cardName, guid)
+                card._inDeck = true
+                card._inLibrary = false
+                table.insert(bridgeTest.graveyardDeck.entries,
+                    {instanceId=instanceId, name=cardName, guid=guid})
+                BridgeRecordContainedCardIdentity(instanceId, 'grave-deck', guid,
+                    'forge-player-1', 'graveyard', cardName)
+            end
+            seedBoundary(iA, 'Swamp', 'boundary-a')
+            seedBoundary(iB, 'Harmonized Trio', 'boundary-b')
+            bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
+            BridgeRecordContainedCardIdentity(iA, 'grave-deck', 'boundary-a', 'forge-player-1', 'graveyard', 'Swamp')
+            BridgeRecordContainedCardIdentity(iB, 'grave-deck', 'boundary-b', 'forge-player-1', 'graveyard', 'Harmonized Trio')
+            pendingWaitCallbacks = {}
+            function BridgeTestFlushOneWait()
+                local callback = pendingWaitCallbacks[1]
+                if callback == nil then return false end
+                local count = BridgeTestArrayLength(pendingWaitCallbacks)
+                for index = 1, count - 1 do pendingWaitCallbacks[index] = pendingWaitCallbacks[index + 1] end
+                pendingWaitCallbacks[count] = nil
+                callback()
+                return true
+            end
+            BridgeWaitFrames = function(callback, frames)
+                if callback ~= nil then table.insert(pendingWaitCallbacks, callback) end
+            end
+            BridgeWaitTime = function(callback, delay)
+                if callback ~= nil then table.insert(pendingWaitCallbacks, callback) end
+            end
+            local function drainUntil(sequence)
+                local guard = 0
+                while BridgeState.lastAppliedEventSequence < sequence do
+                    local progressed = BridgeTestFlushNextGraveyardTake()
+                    if not progressed then progressed = BridgeTestFlushOneWait() end
+                    if not progressed then error('boundary extraction stopped applied=' .. tostring(BridgeState.lastAppliedEventSequence)
+                        .. ' active=' .. tostring(BridgeState.graveyardExtractionActiveBySeatId['forge-player-1'])
+                        .. ' settling=' .. tostring(BridgeState.graveyardExtractionTopologySettlingBySeatId['forge-player-1'])
+                        .. ' desync=' .. tostring(BridgeState.desyncLatched)
+                        .. ' reason=' .. tostring(desyncReason)) end
+                    guard = guard + 1
+                    if guard > 100 then error('boundary extraction livelock') end
+                end
+                while BridgeTestFlushOneWait() do end
+            end
+            BridgeTestSetEventQueue({sequence=1, kind='card_moved', seatId='forge-player-1', sourceZone='graveyard', destinationZone='exile', cardInstanceId=iA, cardName='Swamp', forgeSequence=1})
+            BridgeProcessEventQueue()
+            drainUntil(1)
+            afterFirst = BridgeState.physicalByInstanceId[iB]
+            afterFirstContainer = BridgeState.physicalContainerByInstanceId[iB]
+            BridgeTestSetEventQueue({sequence=2, kind='card_moved', seatId='forge-player-1', sourceZone='graveyard', destinationZone='exile', cardInstanceId=iB, cardName='Harmonized Trio', forgeSequence=2})
+            BridgeProcessEventQueue()
+            drainUntil(2)
+
+            local one = 'forge:boundary-session:one'
+            BridgeState.cardNameByInstanceId[one] = 'Swamp'
+            local loose = BridgeTestCreateCard(one, 'Swamp', 'boundary-one')
+            loose._inLibrary = false
+            BridgeRecordLooseCardIdentity(one, 'boundary-one', 'forge-player-1', 'graveyard')
+            BridgeTestSetEventQueue({sequence=3, kind='card_moved', seatId='forge-player-1', sourceZone='graveyard', destinationZone='exile', cardInstanceId=one, cardName='Swamp', forgeSequence=3})
+            BridgeProcessEventQueue()
+            drainUntil(3)
+            oneZone = BridgeState.physicalZoneByGuid['boundary-one']
+            oneContainer = BridgeState.physicalContainerByInstanceId[one]
+            takeCount = bridgeTest.graveyardTakeDispatchCount
+            finalContainer = bridgeTest.graveyardContainer ~= nil
+            finalEntries = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries or {})
+            finalDesync = BridgeState.desyncLatched == true
+        ");
+
+        Assert.Equal("boundary-b", lua.Globals.Get("afterFirst").String);
+        Assert.True(lua.Globals.Get("afterFirstContainer").IsNil());
+        Assert.Equal("exile", lua.Globals.Get("oneZone").String);
+        Assert.True(lua.Globals.Get("oneContainer").IsNil());
+        Assert.Equal(1, lua.Globals.Get("takeCount").Number);
+        Assert.False(lua.Globals.Get("finalContainer").Boolean);
+        Assert.Equal(0, lua.Globals.Get("finalEntries").Number);
+        Assert.False(lua.Globals.Get("finalDesync").Boolean, CapturedLogsTail(lua));
+    }
+
+    [Fact]
+    public void LateContainedCallbackCannotOverwritePublishedCollapsedLooseIdentity()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'stale-collapse-session'
+            BridgeState.eventSessionGeneration = 1
+            BridgeState.physicalTransactionGeneration = 1
+            bridgeTest.collapseGraveyardAtOne = true
+            local iA = 'forge:stale-collapse-session:1'
+            local iB = 'forge:stale-collapse-session:2'
+            local function seedStale(instanceId, cardName, guid)
+                BridgeState.cardNameByInstanceId[instanceId] = cardName
+                local card = BridgeTestCreateCard(instanceId, cardName, guid)
+                card._inDeck = true
+                card._inLibrary = false
+                table.insert(bridgeTest.graveyardDeck.entries,
+                    {instanceId=instanceId, name=cardName, guid=guid})
+                return card
+            end
+            local cardA = seedStale(iA, 'Swamp', 'stale-a')
+            local cardB = seedStale(iB, 'Harmonized Trio', 'stale-b')
+            bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
+            BridgeRecordContainedCardIdentity(iA, 'grave-deck', 'stale-a', 'forge-player-1', 'graveyard', 'Swamp')
+            BridgeRecordContainedCardIdentity(iB, 'grave-deck', 'stale-b', 'forge-player-1', 'graveyard', 'Harmonized Trio')
+            callbackOk = nil
+            callbackReason = nil
+            BridgeTakeContainedCardByIdentity(iA, {x=0, y=0, z=0}, false, function(card, reason)
+                callbackOk = card ~= nil
+                callbackReason = tostring(reason or 'nil')
+            end)
+            -- The old Deck has collapsed while the callback is delayed. A
+            -- newer topology publication owns the exact remaining Card.
+            bridgeTest.graveyardDeck.entries = {}
+            bridgeTest.graveyardContainer = nil
+            bridgeTest.collapsedGraveyardDeck = true
+            bridgeTest.collapsedGraveyardOldDeckGuid = 'grave-deck'
+            bridgeTest.activeGraveyardDeckGuid = nil
+            cardB._inDeck = false
+            cardB._graveyardLooseVisible = true
+            BridgeState.physicalTransactionGeneration = 2
+            BridgeRecordLooseCardIdentity(iB, 'stale-b', 'forge-player-1', 'graveyard', true)
+            BridgeTestFlushNextGraveyardTake()
+            publishedLoose = BridgeState.physicalByInstanceId[iB]
+            publishedInverse = BridgeState.physicalInstanceIdByGuid['stale-b']
+            publishedContainer = BridgeState.physicalContainerByInstanceId[iB]
+            oldContained = BridgeState.physicalContainerByInstanceId[iA]
+            oldContainedInverse = BridgeState.physicalContainedInstanceIdByGuid['stale-a']
+        ");
+
+        Assert.False(lua.Globals.Get("callbackOk").Boolean);
+        Assert.Contains("stale", lua.Globals.Get("callbackReason").String);
+        Assert.Equal("stale-b", lua.Globals.Get("publishedLoose").String);
+        Assert.Equal("forge:stale-collapse-session:2", lua.Globals.Get("publishedInverse").String);
+        Assert.True(lua.Globals.Get("publishedContainer").IsNil());
+        Assert.True(lua.Globals.Get("oldContained").IsNotNil());
+        Assert.Equal("forge:stale-collapse-session:1", lua.Globals.Get("oldContainedInverse").String);
+    }
+
+    [Fact]
     public void GraveyardMergeSettlesBeforeCommitThenDelveExtractsRecentlyMergedCardExactly()
     {
         var lua = NewProbe();
@@ -1583,6 +2006,9 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
             supplier._inLibrary = false
             BridgeState.cardNameByInstanceId[i9] = ""Stitcher's Supplier""
             BridgeRecordLooseCardIdentity(i9, 'supplier-loose', 'forge-player-1', 'battlefield')
+
+            -- Model TTS' native 2 -> 1 Deck collapse for the Delve drain.
+            bridgeTest.collapseGraveyardAtOne = true
 
             -- A duplicate printed name elsewhere must not affect exact extraction.
             local unrelatedSwamp = BridgeTestCreateCard('forge:delve-session:other-swamp', 'Swamp', 'other-swamp')
@@ -3157,7 +3583,12 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     reassignContainedEveryPut = true,
                     nativeDeckZeroBasedIndices = true,
                     unstableReadCounter = 0,
-                    graveyardContainer = nil
+                    graveyardContainer = nil,
+                    collapseGraveyardAtOne = false,
+                    collapsedGraveyardDeck = false,
+                    collapsedGraveyardLooseVisible = true,
+                    graveyardTakeDispatchCount = 0,
+                    graveyardTakeDispatchInstanceIds = {}
                 }
 
                 function bridgeTest.nextContainedGuid(instanceId)
@@ -3266,6 +3697,9 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                 -- GUID is allowed to change as the pile is mutated, and the
                 -- callback is flushed explicitly by the regression tests.
                 bridgeTest.graveyardDeck.takeObject = function(options)
+                    if bridgeTest.collapsedGraveyardDeck == true then
+                        error('graveyard takeObject was called after native Deck collapsed')
+                    end
                     local requestedGuid = options and options.guid or nil
                     local requestedIndex = options and options.index or nil
                     local selectedIndex = nil
@@ -3283,6 +3717,8 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     end)
                     if selectedIndex == nil then error('graveyard takeObject could not find exact contained GUID') end
                     local entry = bridgeTest.graveyardDeck.entries[selectedIndex]
+                    bridgeTest.graveyardTakeDispatchCount = bridgeTest.graveyardTakeDispatchCount + 1
+                    table.insert(bridgeTest.graveyardTakeDispatchInstanceIds, requestedGuid)
                     local oldDeckGuid = bridgeTest.activeGraveyardDeckGuid or 'grave-deck'
                     local entryCount = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries)
                     for shift = selectedIndex, entryCount - 1 do
@@ -3305,6 +3741,30 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     bridgeTest.graveyardDeckAliases[oldDeckGuid] = true
                     if BridgeTestArrayLength(bridgeTest.graveyardDeck.entries) == 0 then
                         bridgeTest.graveyardContainer = nil
+                    elseif bridgeTest.collapseGraveyardAtOne == true
+                        and BridgeTestArrayLength(bridgeTest.graveyardDeck.entries) == 1 then
+                        -- TTS no longer exposes a one-card native Deck. Keep
+                        -- the exact remaining Card object alive, but retire
+                        -- the old Deck and optionally delay its visibility so
+                        -- the serialized worker must reobserve the type
+                        -- transition rather than racing the take callback.
+                        local remaining = bridgeTest.graveyardDeck.entries[1]
+                        local remainingCard = remaining ~= nil
+                            and bridgeTest.cardsByGuid[remaining.guid] or nil
+                        if remainingCard == nil then
+                            error('collapsed graveyard Deck has no exact remaining Card')
+                        end
+                        remainingCard._inDeck = false
+                        remainingCard._inLibrary = false
+                        remainingCard._inHand = false
+                        remainingCard._lastPosition = bridgeTest.graveyardDeck._lastPosition
+                        remainingCard._graveyardLooseVisible = bridgeTest.collapsedGraveyardLooseVisible == true
+                        bridgeTest.graveyardDeck.entries = {}
+                        bridgeTest.collapsedGraveyardDeck = true
+                        bridgeTest.collapsedGraveyardLooseGuid = remaining.guid
+                        bridgeTest.collapsedGraveyardOldDeckGuid = oldDeckGuid
+                        bridgeTest.activeGraveyardDeckGuid = nil
+                        bridgeTest.graveyardContainer = nil
                     end
                 end
 
@@ -3316,6 +3776,15 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     for shift = 1, pendingCount - 1 do pending[shift] = pending[shift + 1] end
                     pending[pendingCount] = nil
                     if item.callback ~= nil then item.callback(item.card) end
+                    return true
+                end
+
+                function BridgeTestRevealCollapsedGraveyardCard()
+                    if bridgeTest.collapsedGraveyardLooseGuid == nil then return false end
+                    local card = bridgeTest.cardsByGuid[bridgeTest.collapsedGraveyardLooseGuid]
+                    if card == nil then return false end
+                    card._graveyardLooseVisible = true
+                    bridgeTest.collapsedGraveyardLooseVisible = true
                     return true
                 end
 
@@ -3364,6 +3833,9 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     end
                     if bridgeTest.reassignContainedEveryPut then bridgeTest.reassignContainedGuids() end
                     bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
+                    bridgeTest.collapsedGraveyardDeck = false
+                    bridgeTest.collapsedGraveyardLooseGuid = nil
+                    bridgeTest.collapsedGraveyardOldDeckGuid = nil
                     return bridgeTest.graveyardDeck
                 end
 
@@ -3474,6 +3946,10 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                 function BridgeTestSeedExistingDeck(...)
                     bridgeTest.graveyardDeck.entries = {}
                     bridgeTest.graveyardContainer = bridgeTest.graveyardDeck
+                    bridgeTest.collapsedGraveyardDeck = false
+                    bridgeTest.collapsedGraveyardLooseGuid = nil
+                    bridgeTest.collapsedGraveyardOldDeckGuid = nil
+                    bridgeTest.activeGraveyardDeckGuid = 'grave-deck'
                     BridgeState.physicalContainerByInstanceId = BridgeState.physicalContainerByInstanceId or {}
                     BridgeState.physicalContainedInstanceIdByGuid = BridgeState.physicalContainedInstanceIdByGuid or {}
                     BridgeState.physicalSeatByGuid = BridgeState.physicalSeatByGuid or {}
@@ -3590,6 +4066,14 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                 function getObjectFromGUID(guid)
                     if guid == 'lib-zone' then return bridgeTest.libraryZone end
                     if guid == 'library-deck' then return bridgeTest.libraryDeck end
+                    if bridgeTest.collapsedGraveyardDeck == true
+                        and (guid == 'grave-deck'
+                            or guid == bridgeTest.activeGraveyardDeckGuid
+                            or guid == bridgeTest.collapsedGraveyardOldDeckGuid
+                            or (bridgeTest.graveyardDeckAliases ~= nil
+                                and bridgeTest.graveyardDeckAliases[guid] == true)) then
+                        return nil
+                    end
                     if guid == 'grave-deck' or guid == bridgeTest.activeGraveyardDeckGuid
                         or (bridgeTest.graveyardDeckAliases ~= nil and bridgeTest.graveyardDeckAliases[guid] == true) then
                         return bridgeTest.graveyardDeck
@@ -3604,7 +4088,8 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                     end
                     bridgeTest.forEachArrayEntry(bridgeTest.allCards or {}, function(card)
                         if card._destructed ~= true and card._inDeck ~= true
-                            and card._inLibrary ~= true and card._inHand ~= true then
+                            and card._inLibrary ~= true and card._inHand ~= true
+                            and (card._graveyardLooseVisible ~= false) then
                             table.insert(objects, card)
                         end
                     end)
@@ -3837,6 +4322,7 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
                 BridgeState.graveyardExtractionQueueBySeatId = {}
                 BridgeState.graveyardExtractionActiveBySeatId = {}
                 BridgeState.graveyardExtractionTransactionBySeatId = {}
+                BridgeState.graveyardExtractionTopologySettlingBySeatId = {}
                 BridgeState.mulliganBottomQueueBySeatId = {}
                 BridgeState.mulliganBottomInsertionActiveBySeatId = {}
                 BridgeState.zoneLedgerBySeatAndZone = {}
