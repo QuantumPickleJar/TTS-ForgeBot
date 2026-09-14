@@ -270,6 +270,15 @@ public sealed class DiagnosticReportCollector
             processId = _identity.ProcessId, capturedAtUtc = capturedAt, truncated, recordsDropped = dropped
         };
         var currentDecision = state?.CurrentDecision;
+        var ttsState = new
+        {
+            request.HumanActionReadiness,
+            request.HumanActionReadinessLifecycle,
+            request.TtsPresentation,
+            request.ActionRowCount,
+            request.ActiveActionButtonCount,
+            request.ChoiceTrayActive
+        };
         try
         {
             Directory.CreateDirectory(root);
@@ -283,6 +292,7 @@ public sealed class DiagnosticReportCollector
                 WriteJsonLinesBytes(archive, "perf/process-samples.jsonl", samples);
                 DiagnosticBundleWriter.WriteJsonEntry(archive, "state/bridge-health.json", health);
                 DiagnosticBundleWriter.WriteJsonEntry(archive, "state/current-decision.json", currentDecision);
+                DiagnosticBundleWriter.WriteJsonEntry(archive, "state/tts-state.json", ttsState);
                 WriteJsonLinesBytes(archive, "protocol/recent-events.jsonl", recentEvents);
                 WriteJsonLinesBytes(archive, "protocol/recent-choices.jsonl", choices);
                 WriteJsonLinesBytes(archive, "protocol/recent-requests.jsonl", requests);
@@ -308,6 +318,7 @@ public sealed class DiagnosticReportCollector
     [
         "report.json", "report.txt", "perf/summary.json", "perf/tts-trace.jsonl", "diagnostics/capture-lifecycle.jsonl", "perf/process-samples.jsonl",
         "state/bridge-health.json", "state/current-decision.json", "protocol/recent-events.jsonl",
+        "state/tts-state.json",
         "protocol/recent-choices.jsonl", "protocol/recent-requests.jsonl", "logs/recent-bridge.log",
         "logs/recent-forge-stdout.log", "logs/recent-forge-stderr.log",
         "diagnostics/tts-execution-breadcrumbs.jsonl", "state/tts-execution-watchdog.json"

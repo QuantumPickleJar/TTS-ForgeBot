@@ -206,7 +206,8 @@ public sealed class TtsHumanActionReadinessLuaTests
 
         Assert.False(lua.Globals.Get("blocked").Table.Get("ready").Boolean);
         Assert.Equal("RESYNC", lua.Globals.Get("blocked").Table.Get("classification").String);
-        Assert.True(lua.Globals.Get("unlocked").Table.Get("ready").Boolean);
+        Assert.True(lua.Globals.Get("unlocked").Table.Get("ready").Boolean,
+            lua.Globals.Get("unlocked").Table.Get("reason").String);
     }
 
     [Fact]
@@ -395,6 +396,103 @@ public sealed class TtsHumanActionReadinessLuaTests
         Assert.False(diagnostic.Get("probe").Table.Get("ready").Boolean);
         Assert.Equal("RECONCILE", diagnostic.Get("probe").Table.Get("classification").String);
         Assert.True(lua.Globals.Get("BridgeState").Table.Get("humanActionReadiness").Table.Get("certified").Boolean);
+    }
+
+    [Fact]
+    public void DecisionArrivingBeforeSetupReleaseUnlocksOnSetupBusyEdge()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeState.eventSessionId = 'startup-race-session'
+            BridgeState.eventSessionGeneration = 6
+            BridgeState.physicalTransactionGeneration = 3
+            BridgeState.lastAppliedEventSequence = 54
+            BridgeState.lastStateProjectedEventSequence = 54
+            BridgeState.snapshotReconcileLastAppliedCursor = 54
+            BridgeState.physicalStateCertificate = {
+                sessionId='startup-race-session', sessionGeneration=6,
+                physicalTransactionGeneration=3, authoritativeCursor=54
+            }
+            BridgeState.setupBusy = true
+            BridgeState.bootstrapping = false
+            BridgeState.setupStage = 'READY'
+            BridgeState.bootstrapStage = 'BOOTSTRAP_COMPLETE'
+            BridgeState.resyncStage = 'Idle'
+            BridgeState.resyncInFlight = false
+            BridgeState.desyncLatched = false
+            BridgeState.snapshotReconcileInFlight = false
+            BridgeState.retiredChoiceDecisionIds = {}
+            BridgeState.lastDecision = {
+                decisionId='forge-tui-1', sessionId='startup-race-session', kind='mulligan',
+                mulliganStage='keep_or_mulligan', eventCursor=54,
+                actions={{actionId='forge-tui-1-choice-0', type='keep_hand'},
+                    {actionId='forge-tui-1-choice-1', type='mulligan'}}
+            }
+            BridgeDecisionPhysicalMappingsReady = function() return true end
+            BridgePhysicalMutationOperationsIdle = function() return true end
+            BridgeUiMarkDirty = function() end
+            BridgeSetStatus = function() end
+            BridgeStartupPerfEvent = function() end
+            BridgeClearHighlights = function() end
+            BridgeHideMainPriorityControls = function() end
+            BridgeCertifyHumanActionReadiness(BridgeState.lastDecision, 'decision-presentation-start')
+            blocked = BridgeHumanActionReadiness(BridgeState.lastDecision, nil, 'hud')
+            BridgeSetSetupBusy(false, 'startup complete')
+            unlocked = BridgeHumanActionReadiness(BridgeState.lastDecision, nil, 'hud')
+            journalCount = #BridgeState.humanActionReadinessLifecycle
+            certifiedJournal = false
+            journalSummary = ''
+            for _, record in ipairs(BridgeState.humanActionReadinessLifecycle) do
+                if record.stage == 'READINESS_CERTIFIED' then certifiedJournal = true end
+                journalSummary = journalSummary .. tostring(record.stage) .. '|'
+            end
+        ");
+
+        Assert.False(lua.Globals.Get("blocked").Table.Get("ready").Boolean);
+        Assert.Equal("BOOTSTRAP", lua.Globals.Get("blocked").Table.Get("classification").String);
+        Assert.True(lua.Globals.Get("unlocked").Table.Get("ready").Boolean,
+            lua.Globals.Get("unlocked").Table.Get("reason").String);
+        Assert.True(lua.Globals.Get("BridgeState").Table.Get("humanActionReadiness").Table.Get("certified").Boolean);
+        Assert.Equal("forge-tui-1", lua.Globals.Get("BridgeState").Table.Get("humanActionReadiness").Table.Get("decisionId").String);
+        Assert.True(lua.Globals.Get("journalCount").Number >= 4);
+        Assert.True(lua.Globals.Get("certifiedJournal").Boolean, lua.Globals.Get("journalSummary").String);
+    }
+
+    [Fact]
+    public void SetupBusyReleaseDoesNotUnlockFailedBootstrap()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeState.eventSessionId = 'failed-start-session'
+            BridgeState.eventSessionGeneration = 2
+            BridgeState.physicalTransactionGeneration = 4
+            BridgeState.physicalStateCertificate = {
+                sessionId='failed-start-session', sessionGeneration=2,
+                physicalTransactionGeneration=4, authoritativeCursor=54
+            }
+            BridgeState.setupBusy = true
+            BridgeState.bootstrapping = true
+            BridgeState.setupStage = 'VERIFYING_PHYSICAL_SNAPSHOT'
+            BridgeState.bootstrapStage = 'BOOTSTRAP_ABORTED'
+            BridgeState.resyncStage = 'Idle'
+            BridgeState.resyncInFlight = false
+            BridgeState.desyncLatched = false
+            BridgeState.snapshotReconcileInFlight = false
+            BridgeState.retiredChoiceDecisionIds = {}
+            BridgeState.lastDecision = {decisionId='forge-tui-1', sessionId='failed-start-session',
+                kind='mulligan', eventCursor=54, actions={{actionId='keep', type='keep_hand'}}}
+            BridgeDecisionPhysicalMappingsReady = function() return true end
+            BridgePhysicalMutationOperationsIdle = function() return true end
+            BridgeUiMarkDirty = function() end
+            BridgeSetStatus = function() end
+            BridgeStartupPerfEvent = function() end
+            BridgeSetSetupBusy(false, 'startup aborted')
+            result = BridgeHumanActionReadiness(BridgeState.lastDecision, nil, 'hud')
+        ");
+
+        Assert.False(lua.Globals.Get("result").Table.Get("ready").Boolean);
+        Assert.Equal("BOOTSTRAP", lua.Globals.Get("result").Table.Get("classification").String);
+        Assert.False(lua.Globals.Get("BridgeState").Table.Get("humanActionReadiness").Table.Get("certified").Boolean);
     }
 
     private static Script NewProbe()

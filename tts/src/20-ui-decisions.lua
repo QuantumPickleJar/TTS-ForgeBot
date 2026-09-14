@@ -361,6 +361,54 @@ function BridgeInvalidateHumanActionReadiness(reason)
     readiness.lastInvalidationAt = os.clock()
     BridgeState.lastHumanActionReadinessInvalidationReason = readiness.reason
     BridgeState.humanActionReadiness = readiness
+    BridgeRecordHumanActionReadinessLifecycle("READINESS_INVALIDATED", nil, reason,
+        "INVALIDATED", reason)
+end
+
+function BridgeRecordHumanActionReadinessLifecycle(stage, decision, reason, classification, detail)
+    local record = {
+        stage = stage,
+        time = os.clock(),
+        sessionId = BridgeState.eventSessionId,
+        decisionId = decision and decision.decisionId or (BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil),
+        decisionKind = decision and decision.kind or (BridgeState.lastDecision and BridgeState.lastDecision.kind or nil),
+        decisionCursor = decision and decision.eventCursor or (BridgeState.lastDecision and BridgeState.lastDecision.eventCursor or nil),
+        reason = reason,
+        attemptedReason = reason,
+        blockingClassification = classification,
+        blockingDetail = detail,
+        setupBusy = BridgeState.setupBusy == true,
+        bootstrapping = BridgeState.bootstrapping == true,
+        setupStage = BridgeState.setupStage,
+        bootstrapStage = BridgeState.bootstrapStage,
+        resyncStage = BridgeState.resyncStage,
+        resyncInFlight = BridgeState.resyncInFlight == true,
+        desyncLatched = BridgeState.desyncLatched == true,
+        snapshotReconcileInFlight = BridgeState.snapshotReconcileInFlight == true,
+        physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
+        certificatePhysicalTransactionGeneration = BridgeState.physicalStateCertificate
+            and BridgeState.physicalStateCertificate.physicalTransactionGeneration or nil,
+        eventSessionGeneration = BridgeState.eventSessionGeneration,
+        lastAppliedEventSequence = BridgeState.lastAppliedEventSequence,
+        lastStateProjectedEventSequence = BridgeState.lastStateProjectedEventSequence,
+        snapshotReconcileLastAppliedCursor = BridgeState.snapshotReconcileLastAppliedCursor,
+        physicalStateCertificateCursor = BridgeState.physicalStateCertificate
+            and BridgeState.physicalStateCertificate.authoritativeCursor or nil
+    }
+    local journal = BridgeState.humanActionReadinessLifecycle or {}
+    table.insert(journal, record)
+    while #journal > 64 do table.remove(journal, 1) end
+    BridgeState.humanActionReadinessLifecycle = journal
+    BridgeLog(string.format("[Bridge] %s session=%s decision=%s cursor=%s reason=%s classification=%s detail=%s setupBusy=%s bootstrapping=%s setupStage=%s bootstrapStage=%s resyncStage=%s resyncInFlight=%s desync=%s reconcile=%s physicalGeneration=%s certificateGeneration=%s eventGeneration=%s applied=%s projected=%s snapshotCursor=%s certificateCursor=%s",
+        tostring(stage), tostring(record.sessionId), tostring(record.decisionId), tostring(record.decisionCursor),
+        tostring(reason), tostring(classification), tostring(detail), tostring(record.setupBusy),
+        tostring(record.bootstrapping), tostring(record.setupStage), tostring(record.bootstrapStage),
+        tostring(record.resyncStage), tostring(record.resyncInFlight), tostring(record.desyncLatched),
+        tostring(record.snapshotReconcileInFlight), tostring(record.physicalTransactionGeneration),
+        tostring(record.certificatePhysicalTransactionGeneration), tostring(record.eventSessionGeneration),
+        tostring(record.lastAppliedEventSequence), tostring(record.lastStateProjectedEventSequence),
+        tostring(record.snapshotReconcileLastAppliedCursor), tostring(record.physicalStateCertificateCursor)))
+    return record
 end
 
 local function BridgeReadinessGlobalBlock()
@@ -384,22 +432,32 @@ local function BridgeReadinessGlobalBlock()
 end
 
 function BridgeCertifyHumanActionReadiness(decision, reason)
+    BridgeRecordHumanActionReadinessLifecycle("READINESS_CERTIFY_ATTEMPT", decision, reason,
+        nil, "certification requested")
     local blocked, classification = BridgeReadinessGlobalBlock()
     if blocked ~= nil then
+        BridgeRecordHumanActionReadinessLifecycle("READINESS_CERTIFY_BLOCKED", decision, reason,
+            classification, blocked)
         BridgeInvalidateHumanActionReadiness(blocked)
         return false, blocked
     end
     if decision == nil or (decision.sessionId ~= nil and decision.sessionId ~= BridgeState.eventSessionId) then
+        BridgeRecordHumanActionReadinessLifecycle("READINESS_CERTIFY_BLOCKED", decision, reason,
+            "DECISION", "decision does not belong to current session")
         BridgeInvalidateHumanActionReadiness("decision does not belong to current session")
         return false, "decision does not belong to current session"
     end
     if BridgeState.lastDecision ~= decision then
+        BridgeRecordHumanActionReadinessLifecycle("READINESS_CERTIFY_BLOCKED", decision, reason,
+            "DECISION", "decision has not been accepted by TTS")
         BridgeInvalidateHumanActionReadiness("decision has not been accepted by TTS")
         return false, "decision has not been accepted by TTS"
     end
     if BridgeDecisionPhysicalMappingsReady ~= nil then
         local mappingsReady, mappingReason = BridgeDecisionPhysicalMappingsReady(decision)
         if not mappingsReady then
+            BridgeRecordHumanActionReadinessLifecycle("READINESS_CERTIFY_BLOCKED", decision, reason,
+                "EXACT_PHYSICAL", mappingReason)
             BridgeInvalidateHumanActionReadiness("physical mapping is not ready: " .. tostring(mappingReason))
             return false, tostring(mappingReason)
         end
@@ -411,6 +469,8 @@ function BridgeCertifyHumanActionReadiness(decision, reason)
     local physical = BridgeState.physicalStateCertificate
     local physicalCursor = physical and tonumber(physical.authoritativeCursor or 0) or 0
     if cursor > applied and cursor > physicalCursor then
+        BridgeRecordHumanActionReadinessLifecycle("READINESS_CERTIFY_BLOCKED", decision, reason,
+            "CURSOR_LAG", "authoritative cursor is ahead of applied physical state")
         BridgeInvalidateHumanActionReadiness("authoritative cursor is ahead of applied physical state")
         return false, "authoritative cursor is ahead of applied physical state"
     end
@@ -429,6 +489,8 @@ function BridgeCertifyHumanActionReadiness(decision, reason)
     readiness.lastCertificationAt = os.clock()
     BridgeState.lastHumanActionReadinessCertificationReason = readiness.reason
     BridgeState.humanActionReadiness = readiness
+    BridgeRecordHumanActionReadinessLifecycle("READINESS_CERTIFIED", decision, reason,
+        "READY", readiness.reason)
     return true, nil
 end
 
@@ -658,6 +720,81 @@ function BridgeHumanActionReadinessDiagnosticPayload()
     }
 end
 
+-- Re-evaluate a current decision when a transient lifecycle owner releases
+-- the table. This is edge-triggered; it is not a polling loop and it never
+-- bypasses the physical certificate or mapping checks.
+function BridgeTryCertifyCurrentDecisionAfterReadinessTransition(reason)
+    local decision = BridgeState.lastDecision
+    BridgeRecordHumanActionReadinessLifecycle("READINESS_RECERTIFY_REQUESTED", decision, reason,
+        nil, "readiness transition")
+    if decision == nil then return false, "no current decision" end
+    if decision.sessionId ~= nil and tostring(decision.sessionId) ~= tostring(BridgeState.eventSessionId) then
+        return false, "current decision belongs to another session"
+    end
+    if BridgeState.retiredChoiceDecisionIds ~= nil
+        and BridgeState.retiredChoiceDecisionIds[decision.decisionId] == true then
+        return false, "current decision is retired"
+    end
+    local blocked, classification = BridgeReadinessGlobalBlock()
+    if blocked ~= nil then
+        BridgeRecordHumanActionReadinessLifecycle("READINESS_CERTIFY_BLOCKED", decision, reason,
+            classification, blocked)
+        return false, blocked
+    end
+    local physical = BridgeState.physicalStateCertificate
+    local decisionCursor = tonumber(decision.eventCursor or 0) or 0
+    local physicalCursor = physical and tonumber(physical.authoritativeCursor or 0) or 0
+    if physical == nil or tostring(physical.sessionId or "") ~= tostring(BridgeState.eventSessionId)
+        or physicalCursor < decisionCursor then
+        local detail = "current physical certificate is absent or behind decision cursor"
+        BridgeRecordHumanActionReadinessLifecycle("READINESS_CERTIFY_BLOCKED", decision, reason,
+            "PHYSICAL_CERTIFICATE", detail)
+        return false, detail
+    end
+    if BridgeDecisionPhysicalMappingsReady ~= nil then
+        local mappingsReady, mappingReason = BridgeDecisionPhysicalMappingsReady(decision)
+        if not mappingsReady then
+            BridgeRecordHumanActionReadinessLifecycle("READINESS_CERTIFY_BLOCKED", decision, reason,
+                "EXACT_PHYSICAL", mappingReason)
+            return false, tostring(mappingReason or "physical mapping is not ready")
+        end
+    end
+    local certified, certifyReason = BridgeCertifyHumanActionReadiness(decision, reason)
+    if not certified then
+        return false, tostring(certifyReason or "current decision remains blocked")
+    end
+    BridgeUiMarkDirty("readiness-transition-certified")
+    return true, nil
+end
+
+function BridgeMaybeRecordHumanActionReadinessStall(decision, readiness)
+    if decision == nil or readiness == nil or readiness.ready == true then
+        BridgeState.humanActionReadinessStall = nil
+        return
+    end
+    local physical = BridgeState.physicalStateCertificate
+    local cursor = tonumber(decision.eventCursor or 0) or 0
+    local physicalCursor = physical and tonumber(physical.authoritativeCursor or 0) or 0
+    if physical == nil or physicalCursor < cursor then return end
+    local blocked = BridgeReadinessGlobalBlock()
+    if blocked ~= nil then return end
+    local stall = BridgeState.humanActionReadinessStall
+    local now = os.clock()
+    if stall == nil or stall.decisionId ~= decision.decisionId
+        or stall.sessionId ~= BridgeState.eventSessionId then
+        BridgeState.humanActionReadinessStall = {
+            sessionId = BridgeState.eventSessionId, decisionId = decision.decisionId,
+            startedAt = now, logged = false
+        }
+        return
+    end
+    if stall.logged ~= true and now - (stall.startedAt or now) >= 2 then
+        stall.logged = true
+        BridgeRecordHumanActionReadinessLifecycle("READINESS_STALLED", decision,
+            readiness.reason, readiness.classification, readiness.reason)
+    end
+end
+
 function BridgeShowHumanActionBlocked(readiness)
     local reason = readiness and readiness.reason or "physical state is not ready"
     local classification = readiness and readiness.classification or "NOT_CERTIFIED"
@@ -846,6 +983,9 @@ function BridgeUiFlush()
     local protocolStopped = BridgeCurrentTerminalRecoveryError() ~= nil
     local interactionReadiness = BridgeHumanActionReadiness(decision, nil, "hud")
     local interactionReady = interactionReadiness.ready == true
+    if BridgeMaybeRecordHumanActionReadinessStall ~= nil then
+        BridgeMaybeRecordHumanActionReadinessStall(decision, interactionReadiness)
+    end
     local owner = BridgeState.currentTurnSeatId == "forge-player-1" and "YOUR TURN"
         or (BridgeState.currentTurnSeatId and "OPPONENT TURN" or "TURN OWNER UNKNOWN")
     local turn = BridgeTurnLabel() .. " — " .. owner .. " — " .. tostring(BridgeState.currentPhase or "WAITING")
@@ -4669,7 +4809,12 @@ function BridgeSetSetupBusy(busy, message)
     -- Some table states surface a Unity-side object-reference fault during editButton.
     if busy and message ~= nil then broadcastToAll("[Bridge] " .. message, {1.0, 0.8, 0.2}) end
     if busy then BridgeSetStatus("FORGE INITIALIZING", message or "Please wait") end
-    if not busy then BridgeStartupPerfEvent("setupBusy-released", tostring(message or "")) end
+    if not busy then
+        BridgeStartupPerfEvent("setupBusy-released", tostring(message or ""))
+        if BridgeTryCertifyCurrentDecisionAfterReadinessTransition ~= nil then
+            BridgeTryCertifyCurrentDecisionAfterReadinessTransition("setupBusy-cleared")
+        end
+    end
 end
 
 function BridgeEnsureSetupControls()

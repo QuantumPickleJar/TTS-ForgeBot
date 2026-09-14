@@ -634,6 +634,48 @@ public sealed class DiagnosticsTests
     }
 
     [Fact]
+    public async Task DiagnosticEndpoint_PreservesReadinessEvidenceInReport()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var client = factory.CreateClient();
+        using var content = new StringContent("""
+            {
+              "summary": "readiness evidence",
+              "humanActionReadiness": {
+                "certified": true,
+                "decisionId": "forge-tui-1",
+                "classification": "READY",
+                "reason": "setupBusy-cleared"
+              },
+              "humanActionReadinessLifecycle": [
+                { "stage": "READINESS_CERTIFIED", "decisionId": "forge-tui-1" }
+              ],
+              "ttsPresentation": {
+                "actionRowCount": 2,
+                "activeActionButtonCount": 2,
+                "choiceTrayActive": true
+              }
+            }
+            """, Encoding.UTF8, "application/json");
+
+        var response = await client.PostAsync("/api/v1/diagnostics/report", content);
+        var body = await response.Content.ReadFromJsonAsync<DiagnosticReportResponseDto>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(body);
+        using var archive = ZipFile.OpenRead(body!.ReportPath);
+        var entry = Assert.Single(archive.Entries, item => item.FullName == "state/tts-state.json");
+        using var stream = entry.Open();
+        using var document = await JsonDocument.ParseAsync(stream);
+        var root = document.RootElement;
+        Assert.True(root.GetProperty("humanActionReadiness").GetProperty("certified").GetBoolean());
+        Assert.Equal("READINESS_CERTIFIED", root.GetProperty("humanActionReadinessLifecycle")[0].GetProperty("stage").GetString());
+        var presentation = root.GetProperty("ttsPresentation");
+        Assert.Equal(2, presentation.GetProperty("activeActionButtonCount").GetInt32());
+        Assert.True(presentation.GetProperty("choiceTrayActive").GetBoolean());
+    }
+
+    [Fact]
     public async Task DiagnosticEndpoint_AllowsSequentialIdenticalRequestsFromOneRuntime()
     {
         using var factory = new TestWebApplicationFactory();
@@ -736,6 +778,9 @@ public sealed class DiagnosticsTests
             var result = await collector.CaptureAsync(new DiagnosticReportRequestDto(
                 Category: "Performance / Freeze",
                 SessionId: state.SessionId,
+                HumanActionReadiness: JsonDocument.Parse("{\"certified\":true}").RootElement.Clone(),
+                HumanActionReadinessLifecycle: JsonDocument.Parse("[{\"stage\":\"READINESS_CERTIFIED\"}]").RootElement.Clone(),
+                TtsPresentation: JsonDocument.Parse("{\"actionRowCount\":2,\"activeActionButtonCount\":2,\"choiceTrayActive\":true}").RootElement.Clone(),
                 PerformanceSummary: new DiagnosticPerformanceSummaryDto(DecisionRenderAttempts: 3, WallClockKind: "Time.time-game"),
                 RecentTtsTrace: [new TtsPerformanceTraceRecordDto(
                     1.25, "decision_render_end", DurationMs: 321.5, CpuDurationMs: 321.5,
@@ -754,10 +799,13 @@ public sealed class DiagnosticsTests
             {
                 "report.json", "report.txt", "perf/summary.json", "perf/tts-trace.jsonl", "perf/process-samples.jsonl",
                 "diagnostics/capture-lifecycle.jsonl",
-                "state/bridge-health.json", "state/current-decision.json", "protocol/recent-events.jsonl",
+                "state/bridge-health.json", "state/current-decision.json", "state/tts-state.json", "protocol/recent-events.jsonl",
                 "protocol/recent-choices.jsonl", "protocol/recent-requests.jsonl", "logs/recent-bridge.log",
                 "logs/recent-forge-stdout.log", "logs/recent-forge-stderr.log"
             }) Assert.NotNull(zip.GetEntry(required));
+            using var ttsStateDocument = await JsonDocument.ParseAsync(zip.GetEntry("state/tts-state.json")!.Open());
+            Assert.True(ttsStateDocument.RootElement.GetProperty("humanActionReadiness").GetProperty("certified").GetBoolean());
+            Assert.Equal(2, ttsStateDocument.RootElement.GetProperty("ttsPresentation").GetProperty("activeActionButtonCount").GetInt32());
             var summary = zip.GetEntry("perf/summary.json")!;
             using var summaryReader = new StreamReader(summary.Open());
             var compact = await summaryReader.ReadToEndAsync();

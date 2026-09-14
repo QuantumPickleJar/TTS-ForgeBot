@@ -2601,6 +2601,7 @@ function BridgeHudSubmitReport(category, summary)
         presentedResult = BridgeDiagnosticPresentedResult ~= nil and BridgeDiagnosticPresentedResult() or nil,
         performanceSummary = performance.performanceSummary,
         humanActionReadiness = performance.humanActionReadiness,
+        humanActionReadinessLifecycle = performance.humanActionReadinessLifecycle,
         ttsPresentation = performance.ttsPresentation,
         recentTtsTrace = performance.recentTtsTrace,
         diagnosticCaptureLifecycle = performance.diagnosticCaptureLifecycle,

@@ -2466,6 +2466,9 @@ function BridgeLegacyBootstrapCurrentSnapshot(sessionId, callback, resumeFromSna
         BridgeState.bootstrapStage = ok and "BOOTSTRAP_COMPLETE" or "BOOTSTRAP_ABORTED"
         local success, callbackError = xpcall(function()
             BridgeState.bootstrapping = false
+            if BridgeTryCertifyCurrentDecisionAfterReadinessTransition ~= nil then
+                BridgeTryCertifyCurrentDecisionAfterReadinessTransition("bootstrap-completed")
+            end
             BridgeState.resyncCompletionCallback = nil
             local resultStatus = ok and "SUCCESS" or "FAILED"
             if outcome ~= nil and outcome.status == "WAITING_FOR_PHYSICAL_SETTLEMENT" then

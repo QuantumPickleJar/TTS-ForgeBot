@@ -24,6 +24,15 @@ public sealed record DiagnosticReportRequestDto(
     string? Status = null,
     DiagnosticPresentedResultDto? PresentedResult = null,
     DiagnosticPerformanceSummaryDto? PerformanceSummary = null,
+    /// <summary>Opaque, presentation-only readiness evidence from TTS.</summary>
+    JsonElement? HumanActionReadiness = null,
+    /// <summary>Bounded readiness lifecycle journal from TTS.</summary>
+    JsonElement? HumanActionReadinessLifecycle = null,
+    int? ActionRowCount = null,
+    int? ActiveActionButtonCount = null,
+    bool? ChoiceTrayActive = null,
+    /// <summary>Opaque TTS presentation state, including action-row diagnostics.</summary>
+    JsonElement? TtsPresentation = null,
     IReadOnlyList<TtsPerformanceTraceRecordDto>? RecentTtsTrace = null,
     IReadOnlyList<DiagnosticCaptureLifecycleRecordDto>? DiagnosticCaptureLifecycle = null,
     DiagnosticEventDrainDiagnosticsDto? EventDrainDiagnostics = null,

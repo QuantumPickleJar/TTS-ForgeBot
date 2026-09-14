@@ -2444,6 +2444,9 @@ function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
     -- already observed; only callback ownership is discarded.
     BridgeState.resyncBootstrapGeneration = (BridgeState.resyncBootstrapGeneration or 0) + 1
     BridgeState.bootstrapping = false
+    if BridgeTryCertifyCurrentDecisionAfterReadinessTransition ~= nil then
+        BridgeTryCertifyCurrentDecisionAfterReadinessTransition("bootstrapping-cleared")
+    end
     local callback = tx.callback
     local result = BridgeMakeEmbodimentResult(ok and "SUCCESS" or "FAILED",
         tx.snapshot, errorMessage, nil)
@@ -3027,6 +3030,7 @@ function BridgePerformanceDiagnosticPayload()
     return {
         performanceSummary = summary,
         recentTtsTrace = BridgeDiagnosticSnapshot(BridgePerformanceTraceSnapshot()),
+        humanActionReadinessLifecycle = BridgeDiagnosticSnapshot(BridgeState.humanActionReadinessLifecycle or {}),
         diagnosticCaptureLifecycle = BridgeDiagnosticSnapshot(BridgeState.diagnosticCaptureLifecycle or {}),
         authoritativeForge = {
             turn = decision and decision.turnNumber or nil,
