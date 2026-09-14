@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 77b79638e79a4f88b6af76e0761d2751948d80cea1f9286b3bda01729a5b5e6a
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "77b79638e79a4f88b6af76e0761d2751948d80cea1f9286b3bda01729a5b5e6a"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: c2c95f83ff24403a39ce9e42a8a027f30151b3ea473538817ce5d67c0d8ae84d
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "c2c95f83ff24403a39ce9e42a8a027f30151b3ea473538817ce5d67c0d8ae84d"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -24109,7 +24109,10 @@ end
 function BridgePreparedBadgePosition(object)
     local ok, position = pcall(function() return object.getPosition() end)
     if not ok or position == nil then return nil end
-    return {x = position.x, y = position.y + 0.55, z = position.z}
+    -- Position the badge as a small tab at the top center, just outside the card face.
+    -- Standard card height is ~1.0, so half-height is ~0.5. Add small gap to clear top edge.
+    -- Move z toward viewer (negative) to place outside the card face without obscuring mana/PT.
+    return {x = position.x, y = position.y + 0.5, z = position.z - 0.45}
 end
 
 function BridgeEnsurePreparedBadge(object, instanceId, prepared)
@@ -24135,7 +24138,7 @@ function BridgeEnsurePreparedBadge(object, instanceId, prepared)
         type = "BlockSquare",
         position = position,
         rotation = object.getRotation(),
-        scale = {1.45, 0.18, 0.34},
+        scale = {0.7, 0.15, 0.25},
         callback_function = function(badge)
             if not BridgeRuntimeIsCurrent(epoch) then
                 if badge ~= nil then badge.destruct() end
@@ -24155,9 +24158,9 @@ function BridgeEnsurePreparedBadge(object, instanceId, prepared)
                 function_owner = Global,
                 label = "PREPARED",
                 position = {0, 0.45, 0},
-                width = 900,
-                height = 250,
-                font_size = 90,
+                width = 550,
+                height = 180,
+                font_size = 70,
                 color = {0.42, 0.16, 0.62, 1},
                 font_color = {1, 1, 1, 1},
                 tooltip = "Forge designation: Prepared"

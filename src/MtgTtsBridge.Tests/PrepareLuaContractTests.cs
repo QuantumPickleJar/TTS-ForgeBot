@@ -38,6 +38,15 @@ public sealed class PrepareLuaContractTests
         Assert.Contains("preparedBadgeGuidByInstanceId", Script);
         Assert.Contains("hadPreparedBaseline", Script);
         Assert.Contains("isPrepared and hadPreparedBaseline and not wasPrepared", Script);
+        
+        // Verify badge is positioned outside card-face region (negative z offset, top center).
+        Assert.Contains("z = position.z - 0.45", Script);
+        Assert.Contains("y = position.y + 0.5", Script);
+        // Verify smaller tab-like scale (width: 0.7 instead of 1.45).
+        Assert.Contains("scale = {0.7, 0.15, 0.25}", Script);
+        // Verify smaller button dimensions to match tab scale.
+        Assert.Contains("width = 550", Script);
+        Assert.Contains("height = 180", Script);
     }
 
     [Fact]
