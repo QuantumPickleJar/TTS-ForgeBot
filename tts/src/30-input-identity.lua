@@ -921,6 +921,26 @@ function BridgeActionExpectedPhysicalSourceZone(action)
     return BridgeActionExpectedSourceZone(action)
 end
 
+-- A logical action can name a Forge object which has no physical embodiment.
+-- PreparedSpell copies are the important case: the copy's CardInstanceId is
+-- authoritative for the Forge choice, while preparedSourceCardInstanceId is
+-- the only physical presentation context. Keep this policy in one helper so
+-- rendering and final submission cannot disagree about whether a TTS Card is
+-- required.
+function BridgeActionRequiresPhysicalPresentation(action)
+    if action == nil then return false end
+    if tostring(action.castMode or "") == "prepare"
+        and action.preparedSourceCardInstanceId ~= nil
+        and tostring(action.preparedSourceCardInstanceId) ~= "" then
+        return true
+    end
+    local instanceId = BridgeActionExactPhysicalInstanceId(action)
+    if instanceId == nil then return false end
+    local descriptor = BridgeActionAuthoritativeDescriptor(instanceId)
+    if descriptor == nil then return true end
+    return not BridgeAuthoritativeDescriptorIsVirtual(descriptor)
+end
+
 function BridgePreparedSourceIsAuthoritativelyPrepared(action)
     if action == nil or tostring(action.castMode or "") ~= "prepare"
         or action.preparedSourceCardInstanceId == nil then return true end
@@ -1340,16 +1360,10 @@ function BridgeDecisionPhysicalMappingsReady(decision)
     if decision == nil then return true, nil end
     for _, action in ipairs(decision.actions or {}) do
         local instanceId = BridgeActionExactPhysicalInstanceId(action)
-        if instanceId ~= nil then
-            local descriptor = BridgeState.authoritativeObjectByInstanceId[instanceId]
-            local policy = descriptor and tostring(descriptor.materializationPolicy or "") or ""
-            local physicalRequired = descriptor == nil
-                or (descriptor.isVirtual ~= true and policy ~= "virtual" and policy ~= "virtual-stack")
-            if physicalRequired then
-                local resolved, reason = BridgeResolveExactActionPhysical(decision, action)
-                if resolved == nil then
-                    return false, tostring(instanceId) .. ":" .. tostring(reason)
-                end
+        if instanceId ~= nil and BridgeActionRequiresPhysicalPresentation(action) then
+            local resolved, reason = BridgeResolveExactActionPhysical(decision, action)
+            if resolved == nil then
+                return false, tostring(instanceId) .. ":" .. tostring(reason)
             end
         end
     end

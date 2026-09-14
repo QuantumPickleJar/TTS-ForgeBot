@@ -657,6 +657,9 @@ function BridgeStageSeatCardsForBootstrap(snapshot, callback)
     local knownSeatIds = {}
     local knownSeatIdSet = {}
     local context = BridgeBuildGameCardContext(snapshot)
+    local sameSessionRecovery = BridgeState.resyncInFlight == true
+        or (BridgeState.embodimentTransaction ~= nil
+            and BridgeState.embodimentTransaction.resumeFromSnapshotCursor == true)
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
         table.insert(knownSeatIds, seatSnapshot.seatId)
         knownSeatIdSet[seatSnapshot.seatId] = true
@@ -711,19 +714,23 @@ function BridgeStageSeatCardsForBootstrap(snapshot, callback)
             -- Moving them into the library would erase their exact identity
             -- before snapshot reconciliation and force a duplicate-name deck
             -- extraction (the Thought Scour failure mode). Unknown loose
-            -- objects are still staged so a real new-match/bootstrap rebuild
-            -- remains strict and deterministic.
+            -- objects are staged only for initial/new-match bootstrap; a
+            -- same-session recovery fails closed instead of moving them.
             local preserveTrackedPublicCard = trackedInstanceId ~= nil
                 and trackedZone ~= nil and trackedZone ~= "library"
             if seatId ~= nil
                 and not isInHand
                 and not preserveTrackedPublicCard
+                and not sameSessionRecovery
                 and IsGameCardCandidate(object, seatId, context) then
                 table.insert(staged, {object = object, seatId = seatId, guid = guid})
             end
         end
     end
 
+    if sameSessionRecovery and #staged == 0 then
+        BridgeLog("[Bridge] same-session snapshot recovery will not stage unknown loose cards")
+    end
     local stagedCount = 0
     local function stageNext(index)
         local item = staged[index]
@@ -1614,6 +1621,7 @@ local function BridgeTopLevelGraveyardCardByGuid(seatId, expectedGuid)
             end
         end
     end
+
     return nil
 end
 
