@@ -640,6 +640,9 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
     local looseCountByName = {}
     local assetByGuid = {}
     local mappings = {}
+    local sameSessionRecovery = BridgeState.resyncInFlight == true
+        or (BridgeState.embodimentTransaction ~= nil
+            and BridgeState.embodimentTransaction.resumeFromSnapshotCursor == true)
     local handGuids = BridgeBuildSeatHandGuidSet(seatSnapshot.seatId)
     for _, asset in ipairs(assets) do
         local name = BridgeNormalizeCardName(asset.cardName)
@@ -754,6 +757,21 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
                 end
             end
         end
+        -- A physical Card can retain its exact bridge variables while the
+        -- in-memory forward index is being rebuilt. In same-session recovery
+        -- that advertised identity is safe evidence; a printed-name match is
+        -- not.
+        if preservedAsset == nil then
+            for assetGuid, asset in pairs(assetByGuid) do
+                local advertised = asset.object ~= nil
+                    and BridgeReadCurrentSessionPhysicalIdentity(asset.object) or nil
+                if advertised ~= nil and tostring(advertised) == tostring(card.cardInstanceId) then
+                    preservedGuid = assetGuid
+                    preservedAsset = asset
+                    break
+                end
+            end
+        end
         local preservedContainer = BridgeState.physicalContainerByInstanceId[card.cardInstanceId]
         local preservedContained = preservedContainer ~= nil and zoneName == "graveyard"
         if preservedContained then
@@ -774,6 +792,12 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
         if assigned == nil and preservedAsset ~= nil and preservedAsset.assigned ~= true then
             assigned = preservedAsset
             preservedAsset.assigned = true
+        elseif sameSessionRecovery then
+            -- Same-session reconciliation may repair an exact physical
+            -- identity or a proven contained locator only. It must not choose
+            -- a same-name asset from another zone, because that turns a
+            -- recoverable mapping defect into physical corruption.
+            assigned = nil
         elseif zoneName == "library" then
             consumeContained()
             if assigned == nil then consumeLoose() end
@@ -985,6 +1009,13 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
         -- this diagnostic visible because a name-only fallback is only a
         -- recovery path, never an identity source.
         BridgeLog("[Bridge] resync materialization using contained-library fallback for unmapped public card")
+    end
+    if BridgeState.resyncInFlight == true
+        or (BridgeState.embodimentTransaction ~= nil
+            and BridgeState.embodimentTransaction.resumeFromSnapshotCursor == true) then
+        callback(false, "same-session snapshot materialization has no exact physical identity for "
+            .. tostring(card.cardInstanceId))
+        return
     end
     local deck = BridgeFindSeatLibraryDeckWithCard(seat, card.cardName)
     if deck == nil then deck = BridgeFindLibraryDeckForSeat(seatSnapshot.seatId) end

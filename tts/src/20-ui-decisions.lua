@@ -1894,11 +1894,10 @@ function BridgeSubmitChoice(decisionId, actionId, source)
     local exactInstanceId = BridgeActionExactPhysicalInstanceId
         and BridgeActionExactPhysicalInstanceId(activeAction) or nil
     if exactInstanceId ~= nil then
-        local descriptor = BridgeState.authoritativeObjectByInstanceId
-            and BridgeState.authoritativeObjectByInstanceId[exactInstanceId] or nil
-        local policy = descriptor and tostring(descriptor.materializationPolicy or "") or ""
-        local physicalRequired = descriptor == nil
-            or (descriptor.isVirtual ~= true and policy ~= "virtual" and policy ~= "virtual-stack")
+        local physicalRequired = true
+        if BridgeActionRequiresPhysicalPresentation ~= nil then
+            physicalRequired = BridgeActionRequiresPhysicalPresentation(activeAction)
+        end
         if physicalRequired and BridgeResolveExactActionPhysical ~= nil then
             local resolved, reason = BridgeResolveExactActionPhysical(activeDecision, activeAction)
             if resolved == nil then
@@ -2902,6 +2901,49 @@ function BridgeSnapshotMayMutatePublicZones(snapshot)
     return snapshotCursor <= tonumber(BridgeState.lastAppliedEventSequence or 0)
 end
 
+-- Snapshot reconciliation reasons about the authoritative *current* zone.
+-- A card in a native Deck is intentionally absent from physicalByInstanceId,
+-- so checking only that loose index makes an already-correct graveyard card
+-- look missing and can replay an old library -> graveyard transition. Require
+-- the complete exact identity proof for either current representation.
+function BridgePhysicalIdentitySatisfiesSnapshot(cardInstanceId, seatId, zoneName)
+    if cardInstanceId == nil or seatId == nil or zoneName == nil then return false end
+    local id = tostring(cardInstanceId)
+    local zone = string.lower(tostring(zoneName))
+    local looseGuid = BridgeState.physicalByInstanceId
+        and BridgeState.physicalByInstanceId[id] or nil
+    if looseGuid ~= nil
+        and BridgeState.physicalInstanceIdByGuid[looseGuid] == id
+        and BridgeState.physicalSeatByGuid[looseGuid] == seatId
+        and string.lower(tostring(BridgeState.physicalZoneByGuid[looseGuid] or "")) == zone then
+        local loose = BridgeGetLiveObjectByGuid(looseGuid)
+        if loose ~= nil and BridgeSafeObjectTag(loose) == "Card"
+            and not BridgeIsPresentationOnlyObject(loose) then
+            return true, {kind = "loose", guid = looseGuid}
+        end
+    end
+
+    local contained = BridgeState.physicalContainerByInstanceId
+        and BridgeState.physicalContainerByInstanceId[id] or nil
+    if contained == nil or string.lower(tostring(contained.zoneName or "")) ~= zone
+        or tostring(contained.seatId or "") ~= tostring(seatId) then
+        return false
+    end
+    local cardGuid = contained.cardGuid
+    if cardGuid == nil or tostring(cardGuid) == ""
+        or BridgeState.physicalContainedInstanceIdByGuid[cardGuid] ~= id
+        or BridgeState.physicalSeatByGuid[cardGuid] ~= seatId
+        or string.lower(tostring(BridgeState.physicalZoneByGuid[cardGuid] or "")) ~= zone then
+        return false
+    end
+    local deck = contained.deckGuid ~= nil and BridgeGetLiveObjectByGuid(contained.deckGuid) or nil
+    if deck == nil or BridgeSafeObjectTag(deck) ~= "Deck"
+        or not BridgeLibraryContainsGuid(deck, cardGuid) then
+        return false
+    end
+    return true, {kind = "contained", deckGuid = contained.deckGuid, cardGuid = cardGuid}
+end
+
 -- A snapshot can be authoritative while its physical library transitions are
 -- still being embodied.  Applying it during a Thought Scour-style burst lets
 -- bootstrap/reconcile extract a same-name card from the current Deck top,
@@ -3124,15 +3166,26 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
                     local mappedGuid = BridgeState.physicalByInstanceId[card.cardInstanceId]
                     local mappedObject = mappedGuid and getObjectFromGUID(mappedGuid) or nil
                     local mappedZone = mappedGuid and BridgeState.physicalZoneByGuid[mappedGuid] or nil
+                    local alreadySatisfied, satisfiedRepresentation =
+                        BridgePhysicalIdentitySatisfiesSnapshot(card.cardInstanceId, seatSnapshot.seatId, zoneName)
                     local snapshotRow = zoneName == "battlefield"
                         and (card.battlefieldKind == "land" and "land" or "creature") or nil
                     local priorRow = BridgeState.battlefieldKindByInstanceId[card.cardInstanceId]
                     local strandedAtStack = zoneName == "battlefield"
                         and mappedObject ~= nil and mappedObject.tag == "Card"
                         and BridgePhysicalObjectAtStackAnchor(mappedObject)
-                    local mappedNeedsFix = mappedObject == nil or mappedObject.tag ~= "Card" or mappedZone ~= zoneName
+                    local mappedNeedsFix = not alreadySatisfied
+                        and (mappedObject == nil or mappedObject.tag ~= "Card" or mappedZone ~= zoneName
                         or (snapshotRow ~= nil and priorRow ~= snapshotRow)
-                        or strandedAtStack
+                        or strandedAtStack)
+                    if alreadySatisfied then
+                        BridgeRecordPhysicalMutationJournal({
+                            operation = "SNAPSHOT_RECONCILE", stage = "ALREADY_SATISFIED",
+                            cardInstanceId = card.cardInstanceId, seatId = seatSnapshot.seatId,
+                            zone = zoneName, representation = satisfiedRepresentation
+                                and satisfiedRepresentation.kind or "exact"
+                        })
+                    end
                     if strandedAtStack then
                         BridgeTracePermanentTransition(
                             "SNAPSHOT_ZONE battlefield", {
