@@ -957,8 +957,8 @@ public sealed class ForgeTuiParserTests
         var result = parser.Append(
             "What would you like to do?\n" +
             "  0. Pass priority (do nothing)\n" +
-            "  1. Cast planeswalker: Ashiok, Nightmare Weaver [id=98] - {3}{U}{B} [bridge sourceZone=hand actionKind=cast_spell abilityKind=spell castMode=normal costKind=printed]\n" +
-            "  2. Cast battle: Invasion of Zendikar [id=99] - {3}{G} [bridge sourceZone=hand actionKind=cast_spell abilityKind=spell castMode=normal costKind=printed]\n" +
+            "  1. Cast planeswalker: Ashiok, Nightmare Weaver [id=98] - {3}{U}{B} [bridge sourceZone=hand actionKind=cast_spell cardInstanceId=98 abilityKind=spell castMode=normal costKind=printed]\n" +
+            "  2. Cast battle: Invasion of Zendikar [id=99] - {3}{G} [bridge sourceZone=hand actionKind=cast_spell cardInstanceId=99 abilityKind=spell castMode=normal costKind=printed]\n" +
             "Enter choice (0-2): ");
 
         var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;

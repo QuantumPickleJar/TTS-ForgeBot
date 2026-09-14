@@ -277,6 +277,7 @@ public sealed class ForgeProducerContractTests
     {
         Assert.Contains("bridgeChoiceMetadata", Patch);
         Assert.Contains("sourceZone=", Patch);
+        Assert.Contains("cardInstanceId=", Patch);
         Assert.Contains("getCastableSpellAbilities", Patch);
         Assert.Contains("for (ZoneType zone : ZoneType.values())", Patch);
         Assert.Contains("getZone().getZoneType()", Patch);

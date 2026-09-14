@@ -1745,6 +1745,18 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void PaymentDecision_CancelCastIsASeparateForgeAction()
+    {
+        Assert.Contains("function BridgeFindCancelAction", Script);
+        Assert.Contains("action.type == \"cancel_payment\"", Script);
+        Assert.Contains("BridgeDecisionHasPaymentCancel(decision)", Script);
+        Assert.Contains("physical_cancel_cast", Script);
+        Assert.Contains("CANCEL CAST", Script);
+        Assert.Contains("BridgeSubmitChoice(decision.decisionId, cancelAction.actionId, \"physical_cancel_cast\")", Script);
+        Assert.Contains("if BridgeIsPaymentCancelAction(action) then", Script);
+    }
+
+    [Fact]
     public void CombatCandidates_AreOrangeFollowupChoices()
     {
         Assert.Contains("or (decision.kind ~= \"main_priority\" and not BridgeIsStructuredForgeToggleChoice(decision))", Script);
