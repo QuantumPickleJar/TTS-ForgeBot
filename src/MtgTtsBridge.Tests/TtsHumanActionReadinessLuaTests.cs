@@ -209,6 +209,194 @@ public sealed class TtsHumanActionReadinessLuaTests
         Assert.True(lua.Globals.Get("unlocked").Table.Get("ready").Boolean);
     }
 
+    [Fact]
+    public void SuccessfulSameSessionReconcileRecertifiesMulliganAndKeepsChoicesVisible()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeState.eventSessionId = 'mulligan-session'
+            BridgeState.eventSessionGeneration = 12
+            BridgeState.physicalTransactionGeneration = 4
+            BridgeState.lastAppliedEventSequence = 54
+            BridgeState.lastStateProjectedEventSequence = 54
+            BridgeState.snapshotReconcileLastAppliedCursor = 54
+            BridgeState.setupStage = 'READY'
+            BridgeState.bootstrapStage = 'READY'
+            BridgeState.resyncStage = 'Idle'
+            BridgeState.desyncLatched = false
+            BridgeState.resyncInFlight = false
+            BridgeState.setupBusy = false
+            BridgeState.bootstrapping = false
+            BridgeState.snapshotReconcileInFlight = false
+            BridgeState.physicalStateCertificate = {
+                sessionId='mulligan-session', sessionGeneration=12,
+                physicalTransactionGeneration=4, authoritativeCursor=54
+            }
+            BridgeState.lastDecision = {
+                decisionId='forge-tui-1', sessionId='mulligan-session', kind='mulligan',
+                mulliganStage='keep_or_mulligan', eventCursor=54, seatId='forge-player-1',
+                actions={{actionId='forge-tui-1-choice-0', type='keep_hand', displayName='Keep', shortLabel='Keep'},
+                    {actionId='forge-tui-1-choice-1', type='mulligan', displayName='Mulligan', shortLabel='Mulligan'}}
+            }
+            BridgeState.humanActionReadiness = {
+                certified=true, globalCertified=true, decisionAccepted=true,
+                sessionId='mulligan-session', decisionId='forge-tui-1',
+                sessionGeneration=12, physicalTransactionGeneration=4,
+                authoritativeCursor=54
+            }
+            BridgeState.ui = {mounted=true, dirty=true, actionRows={}, selectedActionIds={},
+                gameLogVisible=false, fastPlaytest=false, manaMode='AUTO', autoPassEmpty=false,
+                graveyardActionRows={}, playerStateBySeatId={}, contextInstanceId=nil}
+            BridgeState.playerStateBySeatId = {['forge-player-1']={}, ['forge-player-2']={}}
+            BridgeState.retiredChoiceDecisionIds = {}
+            BridgeState.highlightedGuids = {}
+            BridgeState.pendingIntent = nil
+            BridgeState.gameEnded = nil
+            BridgeState.currentTurnSeatId = nil
+            BridgeState.prioritySeatId = nil
+            BridgeState.currentPhase = nil
+            BridgeState.stackSummary = {}
+            uiAttributes = {}
+            submissions = {}
+            UI = {setAttribute=function(id, attribute, value)
+                uiAttributes[id .. '.' .. attribute] = tostring(value)
+            end, getAttribute=function(id, attribute) return uiAttributes[id .. '.' .. attribute] end}
+            BridgePhysicalMutationOperationsIdle = function() return true end
+            BridgeDecisionPhysicalMappingsReady = function() return true end
+            BridgeCheckOpeningHandReadiness = function() return true, 7, 7, '' end
+            BridgeUiMarkDirty = function(reason) BridgeState.ui.dirty = true end
+            BridgeSetStatus = function() end
+            BridgeShowError = function() end
+            BridgeRecordInteractionProducer = function() end
+            BridgeClaimHumanTtsColor = function() end
+            BridgeCurrentAuthoritativeResult = function() return nil end
+            BridgeCurrentTerminalRecoveryError = function() return nil end
+            BridgeYieldControllerMode = function() return 'normal' end
+            BridgeTurnLabel = function() return 'TURN 0' end
+            BridgeHudPhaseColor = function() return '#ffffff' end
+            BridgeActionPresentationAuthorized = function() return true end
+            BridgeCreatureTypePrepare = function() end
+            BridgeGraveyardPrepareDecision = function(_, actions) return actions end
+            BridgeIsDiscardChoice = function() return false end
+            BridgeDecisionNeedsConfirmation = function() return false end
+            BridgeSelectionCount = function() return 0 end
+            BridgeIsStructuredForgeToggleChoice = function() return false end
+            BridgeSubmitChoice = function(decisionId, actionId, source)
+                table.insert(submissions, {decisionId=decisionId, actionId=actionId, source=source})
+            end
+
+            -- A legitimate physical generation change blocks the decision
+            -- until the successful verified snapshot is finalized.
+            BridgeState.physicalTransactionGeneration = 5
+            BridgeState.snapshotReconcileInFlight = true
+            blocked = BridgeHumanActionReadiness(BridgeState.lastDecision, nil, 'hud')
+            BridgeState.ui.dirty = true
+            BridgeUiFlush()
+            blockedActive = uiAttributes['BridgeHudAction1.active']
+            blockedInteractable = uiAttributes['BridgeHudAction1.interactable']
+            blockedPrompt = uiAttributes['BridgeHudPrompt.text']
+            BridgeState.snapshotReconcileInFlight = false
+            recertified, recertifyReason = BridgeFinalizeSuccessfulSnapshotReconcileReadiness(
+                {sessionId='mulligan-session', eventCursor=54}, 'safe-snapshot-verified')
+            BridgeState.humanActionReadiness = {
+                certified=false, globalCertified=false, decisionAccepted=false,
+                sessionId='mulligan-session', reason='temporary reconcile'
+            }
+            BridgeState.ui.dirty = true
+            BridgeUiFlush()
+            temporarilyBlockedActive = uiAttributes['BridgeHudAction1.active']
+            temporarilyBlockedInteractable = uiAttributes['BridgeHudAction1.interactable']
+            BridgeFinalizeSuccessfulSnapshotReconcileReadiness(
+                {sessionId='mulligan-session', eventCursor=54}, 'second-verified')
+            BridgeState.ui.dirty = true
+            BridgeUiFlush()
+            readyActive = uiAttributes['BridgeHudAction1.active']
+            readyInteractable = uiAttributes['BridgeHudAction1.interactable']
+            readyPrompt = uiAttributes['BridgeHudPrompt.text']
+            readyStatus = uiAttributes['BridgeHudStatus.text']
+            actionRowCount = #BridgeState.ui.actionRows
+            actionRow1Id = BridgeState.ui.actionRows[1] and BridgeState.ui.actionRows[1].actionId or 'nil'
+            actionRow2Id = BridgeState.ui.actionRows[2] and BridgeState.ui.actionRows[2].actionId or 'nil'
+            actionButton1Text = uiAttributes['BridgeHudAction1.text']
+            actionButton2Text = uiAttributes['BridgeHudAction2.text']
+        ");
+
+        Assert.False(lua.Globals.Get("blocked").Table.Get("ready").Boolean);
+        Assert.Equal("RECONCILE", lua.Globals.Get("blocked").Table.Get("classification").String);
+        Assert.True(lua.Globals.Get("recertified").Boolean, lua.Globals.Get("recertifyReason").String);
+        Assert.Equal("true", lua.Globals.Get("blockedActive").String);
+        Assert.Equal("false", lua.Globals.Get("blockedInteractable").String);
+        Assert.True(lua.Globals.Get("blockedPrompt").String.Contains("OPENING HAND"), lua.Globals.Get("blockedPrompt").String);
+        Assert.Equal("true", lua.Globals.Get("temporarilyBlockedActive").String);
+        Assert.Equal("false", lua.Globals.Get("temporarilyBlockedInteractable").String);
+        Assert.Equal("true", lua.Globals.Get("readyActive").String);
+        Assert.Equal("true", lua.Globals.Get("readyInteractable").String);
+        Assert.Contains("OPENING HAND - KEEP OR MULLIGAN", lua.Globals.Get("readyPrompt").String);
+        Assert.Contains("OPENING HAND", lua.Globals.Get("readyStatus").String);
+        Assert.Equal(2, lua.Globals.Get("actionRowCount").Number);
+        Assert.NotEqual(lua.Globals.Get("actionRow1Id").String, lua.Globals.Get("actionRow2Id").String);
+    }
+
+    [Fact]
+    public void FailedSameSessionReconcileDoesNotRecertifyDecision()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeState.eventSessionId = 'failed-session'
+            BridgeState.eventSessionGeneration = 2
+            BridgeState.physicalTransactionGeneration = 8
+            BridgeState.lastAppliedEventSequence = 54
+            BridgeState.setupStage = 'READY'
+            BridgeState.resyncStage = 'Idle'
+            BridgeState.snapshotReconcileInFlight = false
+            BridgeState.desyncLatched = false
+            BridgeState.resyncInFlight = false
+            BridgeState.lastDecision = {decisionId='forge-tui-1', sessionId='failed-session',
+                kind='mulligan', mulliganStage='keep_or_mulligan', eventCursor=54,
+                actions={{actionId='keep', type='keep_hand'}, {actionId='mulligan', type='mulligan'}}}
+            BridgeState.humanActionReadiness = {certified=false, globalCertified=false,
+                decisionAccepted=false, sessionId='failed-session', reason='reconcile failed'}
+            BridgeDecisionPhysicalMappingsReady = function() return false, 'missing exact hand mapping' end
+            result, reason = BridgeFinalizeSuccessfulSnapshotReconcileReadiness(
+                {sessionId='failed-session', eventCursor=54}, 'failed-verification')
+        ");
+
+        Assert.False(lua.Globals.Get("result").Boolean);
+        Assert.Contains("missing exact hand mapping", lua.Globals.Get("reason").String);
+        Assert.False(lua.Globals.Get("BridgeState").Table.Get("humanActionReadiness").Table.Get("certified").Boolean);
+    }
+
+    [Fact]
+    public void ReadinessDiagnosticProbeReportsPredicateWithoutMutatingCertificate()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeState.eventSessionId = 'diagnostic-session'
+            BridgeState.eventSessionGeneration = 3
+            BridgeState.physicalTransactionGeneration = 9
+            BridgeState.snapshotReconcileInFlight = true
+            BridgeState.lastDecision = {decisionId='forge-tui-1', sessionId='diagnostic-session',
+                kind='mulligan', eventCursor=54, actions={}}
+            BridgeState.humanActionReadiness = {
+                certified=true, globalCertified=true, decisionAccepted=true,
+                sessionId='diagnostic-session', decisionId='forge-tui-1',
+                sessionGeneration=3, physicalTransactionGeneration=8,
+                authoritativeCursor=54, reason='certified-before-reconcile'
+            }
+            diagnostic = BridgeHumanActionReadinessDiagnosticPayload()
+        ");
+
+        var diagnostic = lua.Globals.Get("diagnostic").Table;
+        Assert.True(diagnostic.Get("certified").Boolean);
+        Assert.Equal("diagnostic-session", diagnostic.Get("sessionId").String);
+        Assert.Equal("forge-tui-1", diagnostic.Get("decisionId").String);
+        Assert.Equal(8, diagnostic.Get("physicalTransactionGeneration").Number);
+        Assert.Equal(9, diagnostic.Get("currentPhysicalTransactionGeneration").Number);
+        Assert.False(diagnostic.Get("probe").Table.Get("ready").Boolean);
+        Assert.Equal("RECONCILE", diagnostic.Get("probe").Table.Get("classification").String);
+        Assert.True(lua.Globals.Get("BridgeState").Table.Get("humanActionReadiness").Table.Get("certified").Boolean);
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script(CoreModules.Preset_Complete);

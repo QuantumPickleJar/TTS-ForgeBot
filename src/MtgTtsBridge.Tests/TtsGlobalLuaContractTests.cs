@@ -1174,6 +1174,19 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void MulliganHudKeepsChoicesVisibleWhileReadinessBlocksSubmission()
+    {
+        Assert.Contains("BridgeHumanActionReadinessDiagnosticPayload", Script);
+        Assert.Contains("lastInvalidationReason", Script);
+        Assert.Contains("currentPhysicalTransactionGeneration", Script);
+        Assert.Contains("snapshot reconcile re-certified current decision", Script);
+        Assert.Contains("OPENING HAND - KEEP OR MULLIGAN", Script);
+        Assert.Contains("OPENING HAND - SYNCING TABLE", Script);
+        Assert.Contains("action ~= nil and \"true\" or \"false\")", Script);
+        Assert.Contains("interactable", Script);
+    }
+
+    [Fact]
     public void CreatureTypeDecision_UsesDecisionScopedDropdownAndExplicitConfirm()
     {
         var xml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Global.xml"));
