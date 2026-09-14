@@ -368,9 +368,30 @@ public sealed class TtsDiagnosticCaptureLuaTests
     {
         var lua = NewProbe();
         lua.DoString(@"
+            BRIDGE_DEV_UI_ENABLED = true
             BridgeState.eventSessionId = 'capture-session'
-            BridgeState.ui = {mounted = false, reportCaptureInFlight = false, reportCaptureToken = 0,
-                reportCaptureIngressCount = 0, reportCategoryIndex = 1, reportPanelVisible = true}
+            BridgeState.statusHeadline = 'READY'
+            BridgeState.currentPhase = 'MAIN'
+            BridgeState.playerStateBySeatId = {
+                ['forge-player-1'] = {life = 20, mana = {}},
+                ['forge-player-2'] = {life = 20, mana = {}}
+            }
+            BridgeState.selectedActionIds = {}
+            BridgeState.stackSummary = {}
+            BridgeState.ui = {mounted = true, dirty = false, flushScheduled = false,
+                reportCaptureInFlight = false, reportCaptureToken = 0,
+                reportCaptureIngressCount = 0, reportCategoryIndex = 1,
+                diagnosticsVisible = true, reportPanelVisible = true,
+                devDrawer = 'report', reportStatus = ''}
+            uiAttributes = {}
+            UI = {
+                setAttribute = function(id, attribute, value)
+                    uiAttributes[id .. ':' .. attribute] = value
+                end,
+                getAttribute = function(id, attribute)
+                    return uiAttributes[id .. ':' .. attribute]
+                end
+            }
             function BridgeWaitTime(callback, delay) end
             function BridgePerformanceDiagnosticPayload()
                 return {performanceSummary = {}, recentTtsTrace = {},
@@ -379,7 +400,7 @@ public sealed class TtsDiagnosticCaptureLuaTests
             function BridgeHudReportSummaryText() return 'retryable capture' end
             function BridgeHudReportMappedCardInstanceIds() return {} end
             function BridgeHudReportPhysicalMappings() return {} end
-            function BridgeUiMarkDirty(reason) end
+            function BridgeUiMarkDirty(reason) BridgeUiFlush() end
             JSON.encode = function(value) return '{}' end
             captureCount = 0
             BridgeHttp.requestJson = function(method, path, payload, callback)
@@ -391,10 +412,12 @@ public sealed class TtsDiagnosticCaptureLuaTests
             BridgeHudReportCapture(nil, nil, 'BridgeHudReportCapture')
             tokenAfterFirst = BridgeState.ui.reportCaptureToken
             idleAfterFirst = BridgeState.ui.reportCaptureInFlight == false
+            buttonAfterFirst = uiAttributes['BridgeHudReportCapture:active']
             BridgeHudReportCapture(nil, nil, 'BridgeHudReportCapture')
             tokenAfterSecond = BridgeState.ui.reportCaptureToken
             idleAfterSecond = BridgeState.ui.reportCaptureInFlight == false
             ingressAfterSecond = BridgeState.ui.reportCaptureIngressCount
+            buttonAfterSecond = uiAttributes['BridgeHudReportCapture:active']
         ");
 
         var ui = lua.Globals.Get("BridgeState").Table.Get("ui").Table;
@@ -403,6 +426,8 @@ public sealed class TtsDiagnosticCaptureLuaTests
         Assert.Equal(2, lua.Globals.Get("tokenAfterSecond").Number);
         Assert.True(lua.Globals.Get("idleAfterFirst").Boolean);
         Assert.True(lua.Globals.Get("idleAfterSecond").Boolean);
+        Assert.Equal("true", lua.Globals.Get("buttonAfterFirst").String);
+        Assert.Equal("true", lua.Globals.Get("buttonAfterSecond").String);
         Assert.Equal(2, lua.Globals.Get("ingressAfterSecond").Number);
         Assert.Contains("temporary capture failure 2", ui.Get("reportStatus").String);
     }
@@ -469,6 +494,134 @@ public sealed class TtsDiagnosticCaptureLuaTests
         Assert.Equal("true", lua.Globals.Get("captureRaycastTarget").String);
         Assert.Equal("false", lua.Globals.Get("statusRaycastTarget").String);
         Assert.True(lua.Globals.Get("lifecycleRestored").Boolean);
+        Assert.False(lua.Globals.Get("BridgeState").Table.Get("ui").Table.Get("reportCaptureInFlight").Boolean);
+    }
+
+    [Fact]
+    public void XmlCaptureSuccess_FlushThenSecondPhysicalIngressProducesSecondPost()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BRIDGE_DEV_UI_ENABLED = true
+            BridgeState.eventSessionId = 'capture-session'
+            BridgeState.statusHeadline = 'READY'
+            BridgeState.currentPhase = 'MAIN'
+            BridgeState.playerStateBySeatId = {
+                ['forge-player-1'] = {life = 20, mana = {}},
+                ['forge-player-2'] = {life = 20, mana = {}}
+            }
+            BridgeState.selectedActionIds = {}
+            BridgeState.stackSummary = {}
+            BridgeState.ui = {mounted = true, dirty = false, flushScheduled = false,
+                reportCaptureInFlight = false, reportCaptureToken = 0,
+                reportCaptureIngressCount = 0, reportCategoryIndex = 1,
+                diagnosticsVisible = true, reportPanelVisible = true,
+                devDrawer = 'report', reportStatus = ''}
+            uiAttributes = {}
+            UI = {
+                setAttribute = function(id, attribute, value)
+                    uiAttributes[id .. ':' .. attribute] = value
+                end,
+                getAttribute = function(id, attribute)
+                    return uiAttributes[id .. ':' .. attribute]
+                end
+            }
+            function BridgePerformanceDiagnosticPayload()
+                return {performanceSummary = {}, recentTtsTrace = {},
+                    diagnosticCaptureLifecycle = {}, eventDrainDiagnostics = {}}
+            end
+            function BridgeHudReportSummaryText() return 'pointer-path probe' end
+            function BridgeHudReportMappedCardInstanceIds() return {} end
+            function BridgeHudReportPhysicalMappings() return {} end
+            function BridgeUiMarkDirty(reason) BridgeUiFlush() end
+            function BridgeWaitTime(callback, delay) end
+            JSON.encode = function(value) return '{}' end
+            postCount = 0
+            pendingCallbacks = {}
+            BridgeHttp.requestJson = function(method, path, payload, callback)
+                if method == 'POST' and path == '/api/v1/diagnostics/report' then
+                    postCount = postCount + 1
+                    pendingCallbacks[postCount] = callback
+                end
+            end
+
+            -- This is the same XML callback shape as a physical pointer click.
+            BridgeHudReportCapture({color = 'White'}, 'pointer-value-1', 'BridgeHudReportCapture')
+            pendingCallbacks[1](true, {success = true, reportId = 'report-a', reportPath = 'C:/BugReports/report-a.zip'}, nil)
+            BridgeUiFlush()
+            firstIngress = BridgeState.ui.reportCaptureIngressCount
+            firstButtonActive = uiAttributes['BridgeHudReportCapture:active']
+            firstButtonInteractable = uiAttributes['BridgeHudReportCapture:interactable']
+            firstButtonRaycast = uiAttributes['BridgeHudReportCapture:raycastTarget']
+            firstDrawer = BridgeState.ui.devDrawer
+
+            BridgeHudReportCapture({color = 'White'}, 'pointer-value-2', 'BridgeHudReportCapture')
+            secondIngress = BridgeState.ui.reportCaptureIngressCount
+            pendingCallbacks[2](true, {success = true, reportId = 'report-b', reportPath = 'C:/BugReports/report-b.zip'}, nil)
+            BridgeUiFlush()
+            secondButtonActive = uiAttributes['BridgeHudReportCapture:active']
+            secondDrawer = BridgeState.ui.devDrawer
+            secondStatus = BridgeState.ui.reportStatus
+            ingressCallbackIds = {}
+            for _, record in ipairs(BridgeState.diagnosticCaptureLifecycle or {}) do
+                if record.stage == 'DIAG_CAPTURE_XML_CALLBACK_INGRESS' then
+                    table.insert(ingressCallbackIds, record.callbackId)
+                end
+            end
+        ");
+
+        Assert.Equal(2, lua.Globals.Get("postCount").Number);
+        Assert.Equal(1, lua.Globals.Get("firstIngress").Number);
+        Assert.Equal(2, lua.Globals.Get("secondIngress").Number);
+        Assert.Equal("true", lua.Globals.Get("firstButtonActive").String);
+        Assert.Equal("true", lua.Globals.Get("firstButtonInteractable").String);
+        Assert.Equal("true", lua.Globals.Get("firstButtonRaycast").String);
+        Assert.Equal("report", lua.Globals.Get("firstDrawer").String);
+        Assert.Equal("true", lua.Globals.Get("secondButtonActive").String);
+        Assert.Equal("report", lua.Globals.Get("secondDrawer").String);
+        Assert.Contains("report-b", lua.Globals.Get("secondStatus").String);
+        Assert.Equal(2, lua.Globals.Get("ingressCallbackIds").Table.Length);
+    }
+
+    [Fact]
+    public void NormalCaptureThenRollingFreezeCaptureShareReleasedUiState()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'capture-session'
+            BridgeState.ui = {mounted = false, reportCaptureInFlight = false, reportCaptureToken = 0,
+                reportCaptureIngressCount = 0, reportCategoryIndex = 1,
+                diagnosticsVisible = true, reportPanelVisible = true, devDrawer = 'report'}
+            function BridgeWaitTime(callback, delay) end
+            function BridgePerformanceDiagnosticPayload()
+                return {performanceSummary = {}, recentTtsTrace = {},
+                    diagnosticCaptureLifecycle = {}, eventDrainDiagnostics = {}}
+            end
+            function BridgeHudReportSummaryText() return 'shared state probe' end
+            function BridgeHudReportMappedCardInstanceIds() return {} end
+            function BridgeHudReportPhysicalMappings() return {} end
+            function BridgeUiMarkDirty(reason) end
+            JSON.encode = function(value) return '{}' end
+            postCount = 0
+            callbacks = {}
+            categories = {}
+            BridgeHttp.requestJson = function(method, path, payload, callback)
+                if method == 'POST' and path == '/api/v1/diagnostics/report' then
+                    postCount = postCount + 1
+                    categories[postCount] = payload.category
+                    callbacks[postCount] = callback
+                end
+            end
+            BridgeHudReportCapture(nil, nil, 'BridgeHudReportCapture')
+            callbacks[1](true, {success = true, reportId = 'normal'}, nil)
+            BridgeHudRollingCapture(nil, nil, 'BridgeHudRollingCapture')
+            callbacks[2](true, {success = true, reportId = 'freeze'}, nil)
+        ");
+
+        Assert.Equal(2, lua.Globals.Get("postCount").Number);
+        Assert.NotEqual("Performance / Freeze", lua.Globals.Get("categories").Table.Get(1).String);
+        Assert.Equal("Performance / Freeze", lua.Globals.Get("categories").Table.Get(2).String);
+        Assert.Equal(2, lua.Globals.Get("BridgeState").Table.Get("ui").Table.Get("reportCaptureToken").Number);
         Assert.False(lua.Globals.Get("BridgeState").Table.Get("ui").Table.Get("reportCaptureInFlight").Boolean);
     }
 

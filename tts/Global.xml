@@ -197,11 +197,11 @@
           <Option>Crash/error</Option>
           <Option>Other</Option>
         </Dropdown>
-        <HorizontalLayout minHeight="27" preferredHeight="27" flexibleHeight="0" spacing="5" childForceExpandWidth="false" childForceExpandHeight="true" raycastTarget="false">
+        <HorizontalLayout id="BridgeHudReportActions" minHeight="27" preferredHeight="27" flexibleHeight="0" spacing="5" childForceExpandWidth="false" childForceExpandHeight="true" raycastTarget="false">
           <Button id="BridgeHudReportCapture" onClick="BridgeHudReportCapture" text="CAPTURE" interactable="true" raycastTarget="true" minWidth="105" preferredWidth="105" flexibleWidth="0" fontSize="11" color="#166534DD" textColor="#FFFFFF" />
           <Button id="BridgeHudReportCancel" onClick="BridgeHudReportCancel" text="CANCEL" interactable="true" raycastTarget="true" minWidth="90" preferredWidth="90" flexibleWidth="0" fontSize="11" color="#334155DD" textColor="#F8FAFC" />
           <Button id="BridgeHudRecoverPumps" onClick="BridgeHudRecoverPumps" text="RECOVER PUMPS" tooltip="Re-observe Forge and restart missing gameplay pumps without resyncing or submitting a choice." interactable="true" raycastTarget="true" minWidth="125" preferredWidth="125" flexibleWidth="0" fontSize="10" color="#7C4D1FCC" textColor="#FFFFFF" />
-          <Text id="BridgeHudReportStatus" text="" minWidth="350" preferredWidth="350" flexibleWidth="0" fontSize="10" color="#AAB7C6" alignment="MiddleLeft" raycastTarget="false" />
+          <Text id="BridgeHudReportStatus" text="" minWidth="350" preferredWidth="350" flexibleWidth="0" fontSize="9" color="#AAB7C6" alignment="MiddleLeft" raycastTarget="false" />
         </HorizontalLayout>
       </VerticalLayout>
       <Text id="BridgeHudDevDiagnostic" text="" minHeight="18" preferredHeight="18" flexibleHeight="0" fontSize="10" color="#8291A4" alignment="MiddleLeft" />

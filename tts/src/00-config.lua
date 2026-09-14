@@ -257,7 +257,76 @@ function BridgeDiagnosticUiAttribute(id, attribute)
     return value
 end
 
-function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
+function BridgeDiagnosticCaptureUiSnapshot()
+    local ids = {
+        "BridgeHudDevRoot", "BridgeHudReportPanel", "BridgeHudReportActions",
+        "BridgeHudReportCapture", "BridgeHudReportStatus", "BridgeHudReportSummary",
+        "BridgeHudReportCategoryDropdown", "BridgeHudReportCancel"
+    }
+    local attributes = {}
+    for _, id in ipairs(ids) do
+        attributes[id] = {
+            active = BridgeDiagnosticUiAttribute(id, "active"),
+            interactable = BridgeDiagnosticUiAttribute(id, "interactable"),
+            raycastTarget = BridgeDiagnosticUiAttribute(id, "raycastTarget")
+        }
+    end
+    return attributes
+end
+
+function BridgeDiagnosticCaptureLogUiHierarchy(label)
+    local snapshot = BridgeDiagnosticCaptureUiSnapshot()
+    local parts = {}
+    for _, id in ipairs({
+        "BridgeHudDevRoot", "BridgeHudReportPanel", "BridgeHudReportActions",
+        "BridgeHudReportCapture", "BridgeHudReportStatus", "BridgeHudReportSummary",
+        "BridgeHudReportCategoryDropdown"
+    }) do
+        local state = snapshot[id] or {}
+        table.insert(parts, id .. "=" .. tostring(state.active) .. "/"
+            .. tostring(state.interactable) .. "/" .. tostring(state.raycastTarget))
+    end
+    BridgeLog("[Bridge] DIAG_CAPTURE_UI_HIERARCHY label=" .. tostring(label)
+        .. " attrs=" .. table.concat(parts, ","))
+    if UI == nil or type(UI.getXml) ~= "function" then return false end
+    local ok, xml = pcall(function() return UI.getXml() end)
+    if not ok or xml == nil then
+        BridgeLog("[Bridge] DIAG_CAPTURE_UI_HIERARCHY_XML_FAILED label=" .. tostring(label))
+        return false
+    end
+    local ids = {}
+    for id in string.gmatch(tostring(xml), 'id="(BridgeHud[^" ]+)"') do
+        table.insert(ids, id)
+    end
+    BridgeLog("[Bridge] DIAG_CAPTURE_UI_HIERARCHY_XML label=" .. tostring(label)
+        .. " bytes=" .. tostring(#xml) .. " ids=" .. table.concat(ids, ","))
+    return true
+end
+
+function BridgeDiagnosticCaptureCallbackDetails(player, value, id)
+    local ui = BridgeState.ui or {}
+    local playerColor = nil
+    if type(player) == "table" then
+        playerColor = player.color
+    elseif type(player) == "string" then
+        playerColor = player
+    elseif player ~= nil then
+        pcall(function() playerColor = player.color end)
+    end
+    return {
+        callbackPlayerColor = playerColor,
+        callbackValue = value ~= nil and tostring(value) or nil,
+        callbackId = id ~= nil and tostring(id) or nil,
+        callbackReportCaptureIngressCount = ui.reportCaptureIngressCount or 0,
+        callbackReportCaptureInFlight = ui.reportCaptureInFlight == true,
+        callbackReportPanelVisible = ui.reportPanelVisible == true,
+        callbackDevDrawer = ui.devDrawer,
+        callbackDiagnosticsVisible = ui.diagnosticsVisible == true,
+        callbackUi = BridgeDiagnosticCaptureUiSnapshot()
+    }
+end
+
+function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason, details)
     local decision = BridgeState.lastDecision
     local ui = BridgeState.ui or {}
     local record = {
@@ -372,8 +441,17 @@ function BridgeRecordDiagnosticCaptureLifecycle(stage, token, reason)
         reportCaptureUiActive = BridgeDiagnosticUiAttribute("BridgeHudReportCapture", "active"),
         reportCaptureUiInteractable = BridgeDiagnosticUiAttribute("BridgeHudReportCapture", "interactable"),
         reportCaptureUiRaycastTarget = BridgeDiagnosticUiAttribute("BridgeHudReportCapture", "raycastTarget"),
-        reportStatusUiRaycastTarget = BridgeDiagnosticUiAttribute("BridgeHudReportStatus", "raycastTarget")
+        reportStatusUiRaycastTarget = BridgeDiagnosticUiAttribute("BridgeHudReportStatus", "raycastTarget"),
+        reportPanelUiActive = BridgeDiagnosticUiAttribute("BridgeHudReportPanel", "active"),
+        reportPanelUiRaycastTarget = BridgeDiagnosticUiAttribute("BridgeHudReportPanel", "raycastTarget"),
+        reportActionsUiActive = BridgeDiagnosticUiAttribute("BridgeHudReportActions", "active"),
+        reportActionsUiRaycastTarget = BridgeDiagnosticUiAttribute("BridgeHudReportActions", "raycastTarget"),
+        devRootUiActive = BridgeDiagnosticUiAttribute("BridgeHudDevRoot", "active"),
+        devRootUiRaycastTarget = BridgeDiagnosticUiAttribute("BridgeHudDevRoot", "raycastTarget")
     }
+    if details ~= nil then
+        for key, value in pairs(details) do record[key] = value end
+    end
     local lifecycle = BridgeState.diagnosticCaptureLifecycle
     if lifecycle == nil then
         lifecycle = {}

@@ -3063,7 +3063,8 @@ public sealed class TtsGlobalLuaContractTests
         var panel = document.Descendants().Single(element =>
             string.Equals((string?)element.Attribute("id"), "BridgeHudReportPanel", StringComparison.Ordinal));
         var row = panel.Descendants().Single(element =>
-            element.Name.LocalName == "HorizontalLayout" && element.Descendants().Any(child =>
+            string.Equals((string?)element.Attribute("id"), "BridgeHudReportActions", StringComparison.Ordinal)
+                && element.Descendants().Any(child =>
                 string.Equals((string?)child.Attribute("id"), "BridgeHudReportCapture", StringComparison.Ordinal)));
         var capture = row.Descendants().Single(element =>
             string.Equals((string?)element.Attribute("id"), "BridgeHudReportCapture", StringComparison.Ordinal));

@@ -2487,7 +2487,11 @@ function BridgeHudSubmitReport(category, summary)
     BridgeUiMarkDirty("report-capture-start")
 
     local function finish(ok, body, err, recoveryReason, lifecycleStage)
-        if completed then return end
+        if completed then
+            BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FINISH_IGNORED", captureToken,
+                "already-completed")
+            return
+        end
         BridgeRecordDiagnosticCaptureLifecycle(
             "DIAG_CAPTURE_FINISH_ENTER", captureToken,
             "ok=" .. tostring(ok == true) .. " error=" .. tostring(err or "none"))
@@ -2514,24 +2518,41 @@ function BridgeHudSubmitReport(category, summary)
         -- open makes a second capture available without requiring Save & Play
         -- or another REPORT BUG ingress. The token fence above still makes
         -- callbacks from an older capture inert.
+        -- Restore the entire report drawer, not only the panel flag. A
+        -- delayed UI flush or a focus/layout transition must not leave the
+        -- completed capture with a hidden successor button.
+        requestUi.diagnosticsVisible = true
+        requestUi.devDrawer = "report"
         requestUi.reportPanelVisible = true
         requestUi.reportCaptureResultPending = true
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_IDLE", captureToken, "capture-state-released")
         if ok and body ~= nil and body.success == true then
             local reportId = tostring(body.reportId or "unknown")
             local reportPath = tostring(body.reportPath or "BugReports")
-            requestUi.reportStatus = "CAPTURED â€¢ " .. reportId .. "\n" .. reportPath
-            BridgeLog("[Bridge] diagnostic report captured id=" .. reportId .. " path=" .. reportPath)
+            local fullReportPath = reportPath
+            -- Keep the rendered status compact. The complete path remains in
+            -- the log and report payload, while a multiline/very long Text
+            -- node must not grow over the action row and steal its pointer.
+            local displayPath = reportPath
+            local lastSlash = string.find(displayPath, "[/\\\\][^/\\\\]*$")
+            if lastSlash ~= nil then displayPath = string.sub(displayPath, lastSlash + 1) end
+            if #displayPath > 96 then displayPath = string.sub(displayPath, 1, 93) .. "..." end
+            if #displayPath > 0 then
+                reportPath = displayPath
+            end
+            requestUi.reportStatus = "CAPTURED - " .. reportId .. " (" .. reportPath .. ")"
+            BridgeLog("[Bridge] diagnostic report captured id=" .. reportId .. " path=" .. fullReportPath)
             BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_COMPLETED", captureToken, "response-success")
         else
             local detail = BridgeHttpFailureDetail(body, err or "capture failed")
-            requestUi.reportStatus = "ERROR â€¢ " .. detail
+            requestUi.reportStatus = "ERROR - " .. detail
             BridgeLog("[Bridge] diagnostic report failed: " .. detail)
             BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_FAILED", captureToken, detail)
         end
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_CLEANUP_COMPLETED", captureToken, "capture-state-released")
         BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_RELEASED", captureToken, "capture-ui-released")
         BridgeUiMarkDirty("report-capture-result")
+        BridgeDiagnosticCaptureLogUiHierarchy("capture-result-scheduled")
         -- A report is an observer. Completion must not restart pollers,
         -- refresh a decision, or rebuild presentation; normal liveness and
         -- recovery watchdogs own those mutations.
@@ -2642,15 +2663,40 @@ function BridgeHudReportCapture(player, value, id)
     if ui ~= nil then
         ui.reportCaptureIngressCount = (tonumber(ui.reportCaptureIngressCount or 0) or 0) + 1
     end
-    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_XML_CALLBACK_INGRESS", token, "BridgeHudReportCapture onClick")
-    BridgeLog(string.format("[Bridge] DIAG_CAPTURE_BUTTON_INGRESS count=%s token=%s inFlight=%s",
-        tostring(ui ~= nil and ui.reportCaptureIngressCount or 0), tostring(token), tostring(ui ~= nil and ui.reportCaptureInFlight == true)))
+    -- This is intentionally the first observable point in the physical
+    -- pointer path. Capture the rendered attributes here, before any request
+    -- or in-flight guard can obscure a missed XML callback.
+    local callbackDetails = BridgeDiagnosticCaptureCallbackDetails(player, value, id)
+    BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_XML_CALLBACK_INGRESS", token,
+        "BridgeHudReportCapture onClick", callbackDetails)
+    local captureUi = callbackDetails.callbackUi or {}
+    local captureButton = captureUi.BridgeHudReportCapture or {}
+    local status = captureUi.BridgeHudReportStatus or {}
+    local devRoot = captureUi.BridgeHudDevRoot or {}
+    BridgeLog(string.format(
+        "[Bridge] DIAG_CAPTURE_BUTTON_INGRESS count=%s session=%s token=%s inFlight=%s panel=%s drawer=%s devRoot=%s capture(active=%s interactable=%s raycast=%s) statusRaycast=%s player=%s id=%s value=%s",
+        tostring(ui ~= nil and ui.reportCaptureIngressCount or 0), tostring(BridgeState.eventSessionId),
+        tostring(token), tostring(ui ~= nil and ui.reportCaptureInFlight == true),
+        tostring(ui ~= nil and ui.reportPanelVisible == true), tostring(ui ~= nil and ui.devDrawer),
+        tostring(devRoot.active), tostring(captureButton.active),
+        tostring(captureButton.interactable), tostring(captureButton.raycastTarget),
+        tostring(status.raycastTarget), tostring(callbackDetails.callbackPlayerColor),
+        tostring(callbackDetails.callbackId), tostring(callbackDetails.callbackValue)))
+    BridgeDiagnosticCaptureLogUiHierarchy("xml-callback-ingress")
     BridgeHudSubmitReport(nil, nil)
 end
 
 function BridgeHudRollingCapture(player, value, id)
     local ui = BridgeState.ui
-    if ui == nil or ui.reportCaptureInFlight then return end
+    if ui == nil then
+        BridgeLog("[Bridge] DIAG_CAPTURE_ROLLING_REJECTED reason=ui-unavailable")
+        return
+    end
+    if ui.reportCaptureInFlight then
+        BridgeRecordDiagnosticCaptureLifecycle("DIAG_CAPTURE_INGRESS_REJECTED",
+            ui.reportCaptureToken, "rolling-capture-still-in-flight")
+        return
+    end
     -- This button is intentionally visible outside the developer drawer so a
     -- recovered freeze can be captured without first navigating another UI.
     -- Open the drawer after the one-click request so the result path/status is
@@ -3015,6 +3061,9 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudReportCapture", "interactable", reportCaptureReady and "true" or "false")
     BridgeUiSet("BridgeHudReportCapture", "raycastTarget", reportCaptureReady and "true" or "false")
     BridgeUiSet("BridgeHudReportCancel", "active", reportVisible and (ui.reportCaptureInFlight and "false" or "true") or "false")
+    BridgeUiSet("BridgeHudReportActions", "active", reportVisible and "true" or "false")
+    BridgeUiSet("BridgeHudReportActions", "raycastTarget", "false")
+    BridgeUiSet("BridgeHudReportPanel", "raycastTarget", "false")
     -- The result/path text can become long after a successful capture. Keep
     -- that display-only surface non-blocking even if a table client does not
     -- retain the XML Text default when the UI is hot-reloaded.
