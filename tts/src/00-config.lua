@@ -544,6 +544,11 @@ end
 
 function BridgeSetResyncStage(stage, reason, snapshot)
     local prior = BridgeState.resyncStage or "Idle"
+    if stage ~= "Idle" and stage ~= "Completed" then
+        BridgeInvalidateHumanActionReadiness("resync-stage-" .. tostring(stage))
+        if BridgeClearHighlights ~= nil then pcall(BridgeClearHighlights) end
+        if BridgeHideMainPriorityControls ~= nil then pcall(BridgeHideMainPriorityControls) end
+    end
     BridgeState.resyncStage = stage
     BridgeState.resyncStageChangedAt = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
     BridgeState.resyncLastProgressAt = BridgeState.resyncStageChangedAt
@@ -2312,6 +2317,15 @@ function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
     if ok then
         tx.candidatePhysicalLedger = BridgeCapturePhysicalLedger()
         BridgeState.committedPhysicalLedger = tx.candidatePhysicalLedger
+        if tx.snapshot ~= nil and tx.targetSessionId == BridgeState.eventSessionId then
+            BridgeState.physicalStateCertificate = {
+                sessionId = BridgeState.eventSessionId,
+                sessionGeneration = BridgeState.eventSessionGeneration,
+                physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
+                authoritativeCursor = tonumber(tx.targetCursor or 0) or 0,
+                reason = "embodiment-transaction-committed"
+            }
+        end
         BridgeRetireTerminalRecoveryErrorAfterVerifiedReplacementBootstrap(tx)
         BridgeReleaseTerminalPresentationAfterVerifiedReplacementBootstrap(tx)
     elseif tx.committedPhysicalLedger ~= nil
@@ -2471,6 +2485,14 @@ function BridgeNewMatchCleanupPhysicalReady()
                         break
                     end
                 end
+            end
+            if containedInLibrary and BridgeObjectIsUsable(object) then
+                -- A live top-level Card whose exact GUID is already in a
+                -- native library is a transitional alias, not a settled
+                -- inventory member. Do not certify cleanup/bootstrap while
+                -- it is still visible; the cleanup owner must retire it or
+                -- fail loudly as a genuine duplicate.
+                return false, "proven contained Card alias remains visible outside its library"
             end
             if libraryGuids[guid] ~= true and not containedInLibrary
                 and (advertised ~= nil or (trackedZone ~= nil and trackedZone ~= "library")) then
@@ -3168,9 +3190,17 @@ BridgeState = {
     selectedFormatProvenance = "tts-default-limited",
     allowDeckMinimumOverride = BRIDGE_ALLOW_DECK_MINIMUM_OVERRIDE,
     lastDecision = nil,
+    -- A physical source can participate in several simultaneous Forge
+    -- actions.  Keep the complete ordered collection for presentation and
+    -- retain actionByGuid only as a compatibility index for one unambiguous
+    -- direct gesture action.
+    actionsByGuid = {},
     actionByGuid = {},
+    gestureActionAmbiguousByGuid = {},
     highlightedGuids = {},
     targetButtonIndexByGuid = {},
+    contextualActionButtonIndexesByGuid = {},
+    contextualActionMenuByGuid = {},
     playerTargetControlGuids = {},
     endTurnObjectGuidBySeatId = {},
     passObjectGuidBySeatId = {},
@@ -3239,6 +3269,7 @@ BridgeState = {
     bootstrapCompletionInFlight = false,
     eventSessionId = nil,
     eventSessionGeneration = 0,
+    humanActionGeneration = 0,
     lastReceivedEventSequence = 0,
     lastAppliedEventSequence = 0,
     lastConsumedEventSequence = 0,
@@ -3303,6 +3334,21 @@ BridgeState = {
     currentPhysicalPresentationGeneration = 0,
     physicalTransactionGeneration = 0,
     physicalReadinessDependency = nil,
+    -- This is a cheap certificate, not a replacement for reconciliation. It
+    -- records the last verified physical state so every human input can be
+    -- rejected locally while bootstrap/resync/desync is unsafe.
+    physicalStateCertificate = nil,
+    humanActionReadiness = {
+        certified = false,
+        globalCertified = false,
+        decisionAccepted = false,
+        sessionId = nil,
+        decisionId = nil,
+        sessionGeneration = nil,
+        physicalTransactionGeneration = nil,
+        authoritativeCursor = nil,
+        reason = "not-certified"
+    },
     randomResultPresentationGeneration = 0,
     activeRandomResultPresentation = nil,
     randomResultPresentationDiagnostics = {},
@@ -3788,6 +3834,8 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
         return false
     end
 
+    if BridgeRetireHumanActionState ~= nil then BridgeRetireHumanActionState("session-boundary:" .. tostring(reason)) end
+    BridgeState.physicalStateCertificate = nil
     BridgeState.sessionCleanupApplied = true
     BridgeState.newMatchCleanupOwner = nil
     BridgeState.lastNewMatchCleanupFailure = nil
@@ -4410,6 +4458,7 @@ end
 
 function BridgeAdvancePhysicalTransactionGeneration(reason)
     BridgeState.physicalTransactionGeneration = (BridgeState.physicalTransactionGeneration or 0) + 1
+    BridgeInvalidateHumanActionReadiness("physical-transaction-generation-changed")
     -- Native aliases are only meaningful within the generation that proved
     -- their containment. Never carry a transition across a session/resync
     -- boundary.

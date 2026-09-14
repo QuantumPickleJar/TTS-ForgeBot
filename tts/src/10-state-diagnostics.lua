@@ -718,7 +718,24 @@ function BridgeStageSeatCardsForBootstrap(snapshot, callback)
             -- same-session recovery fails closed instead of moving them.
             local preserveTrackedPublicCard = trackedInstanceId ~= nil
                 and trackedZone ~= nil and trackedZone ~= "library"
-            if seatId ~= nil
+            local containedInLibrary = guid ~= nil
+                and BridgeFindLibraryDeckContainingGuid ~= nil
+                and BridgeFindLibraryDeckContainingGuid(seatId, guid) or nil
+            if containedInLibrary ~= nil then
+                -- getAllObjects can expose the old Card userdata after its
+                -- exact GUID is already in the native library Deck. It is a
+                -- proven contained alias, not a new source card. Do not stage
+                -- it (which can hit artless-card rejection); cleanup must
+                -- retire the alias and library binding will still verify the
+                -- native inventory count before gameplay is released.
+                BridgeRecordPhysicalMutationJournal({
+                    operation = "CardToLibrary", cardGuid = guid,
+                    destinationDeck = BridgeSafeObjectGuid(containedInLibrary),
+                    containmentProven = true, looseAliasStillVisible = true,
+                    classification = "bootstrap-contained-alias",
+                    finalDisposition = "excluded-from-staging"
+                })
+            elseif seatId ~= nil
                 and not isInHand
                 and not preserveTrackedPublicCard
                 and not sameSessionRecovery
@@ -2173,29 +2190,32 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
                                 deckClaims = deckClaims + 1
                             end
                         end
-                        if settleAttempt >= 3 and deckClaims == 1
-                            and BridgeState.physicalContainedInstanceIdByGuid[candidate.guid] ~= nil then
-                            BridgeState.physicalDurableContainedAliasesByGuid =
-                                BridgeState.physicalDurableContainedAliasesByGuid or {}
-                            local durable = BridgeState.physicalDurableContainedAliasesByGuid
-                            durable[candidate.guid] = {
-                                destinationDeck = BridgeSafeObjectGuid(alreadyContained),
-                                seatId = candidate.seatId, zoneName = "library",
-                                observations = settleAttempt,
-                                finalized = true,
-                                exactContainedGuid = candidate.guid
-                            }
-                            cleanupOwner.provenContainedGuids[candidate.guid] = true
+                        if settleAttempt >= 3 and deckClaims == 1 then
+                            -- A proven contained GUID plus a live top-level Card
+                            -- is not a durable duplicate whitelist. It is the
+                            -- stale Card userdata observed in the f8c0 reset.
+                            -- Retire only that proven alias, then reobserve the
+                            -- native Deck. If TTS cannot retire it, cleanup
+                            -- fails closed instead of accepting 41 as 40.
+                            cleanupOwner.aliasRetirementAttemptsByGuid = cleanupOwner.aliasRetirementAttemptsByGuid or {}
+                            local retirementAttempt = (cleanupOwner.aliasRetirementAttemptsByGuid[candidate.guid] or 0) + 1
+                            cleanupOwner.aliasRetirementAttemptsByGuid[candidate.guid] = retirementAttempt
+                            local retired, retireError = pcall(function() liveAlias.destruct() end)
                             BridgeRecordPhysicalMutationJournal({
                                 transitionToken = cleanupOwner.token,
                                 generation = BridgeState.physicalTransactionGeneration or 0,
                                 operation = "CardToLibrary", cardGuid = candidate.guid,
                                 destinationDeck = BridgeSafeObjectGuid(alreadyContained),
                                 containmentProven = true, looseAliasStillVisible = true,
-                                classification = "persistent_contained_alias",
-                                finalDisposition = "cleanup_done"
+                                classification = "transitional_alias_retirement",
+                                finalDisposition = retired and "retirement_requested" or "retirement_failed"
                             })
-                            insertCandidate(index + 1)
+                            if not retired then
+                                if callback then callback(false, "could not retire proven contained alias "
+                                    .. tostring(candidate.guid) .. ": " .. tostring(retireError)) end
+                                return
+                            end
+                            BridgeWaitFrames(function() insertCandidate(index) end, 2)
                             return
                         end
                         if settleAttempt <= 30 then
