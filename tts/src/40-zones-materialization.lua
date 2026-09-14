@@ -2473,14 +2473,20 @@ end
 -- retired. That bookkeeping must not block the transaction that retires the
 -- queue: only outstanding physical workers are a readiness fence here.
 function BridgePhysicalMutationOperationsIdle()
+    local libraryActive = BridgeState.libraryExtractionActiveBySeatId or {}
+    local libraryQueue = BridgeState.libraryExtractionQueueBySeatId or {}
+    local graveyardActive = BridgeState.graveyardExtractionActiveBySeatId or {}
+    local graveyardQueue = BridgeState.graveyardExtractionQueueBySeatId or {}
+    local mulliganActive = BridgeState.mulliganBottomInsertionActiveBySeatId or {}
+    local mulliganQueue = BridgeState.mulliganBottomQueueBySeatId or {}
     for seatId, _ in pairs(BRIDGE_SEATS or {}) do
-        if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
-            or #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}) > 0
-            or BridgeState.graveyardExtractionActiveBySeatId[seatId] == true
-            or #(BridgeState.graveyardExtractionQueueBySeatId[seatId] or {}) > 0
+        if libraryActive[seatId] == true
+            or #(libraryQueue[seatId] or {}) > 0
+            or graveyardActive[seatId] == true
+            or #(graveyardQueue[seatId] or {}) > 0
             or (BridgeState.graveyardExtractionTopologySettlingBySeatId or {})[seatId] ~= nil
-            or BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
-            or #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {}) > 0 then
+            or mulliganActive[seatId] == true
+            or #(mulliganQueue[seatId] or {}) > 0 then
             return false
         end
     end

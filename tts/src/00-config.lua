@@ -4848,7 +4848,7 @@ function BridgeRecordContainedCardIdentity(cardInstanceId, containingDeckGuid, c
 end
 
 function BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
-    local mapping = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+    local mapping = (BridgeState.physicalContainerByInstanceId or {})[cardInstanceId]
     if mapping == nil then return nil, nil, "no contained mapping for card instance" end
     if expectedZone ~= nil and mapping.zoneName ~= nil and mapping.zoneName ~= expectedZone then
         return nil, nil, "contained mapping is in " .. tostring(mapping.zoneName)

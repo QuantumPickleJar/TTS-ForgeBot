@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 9b05fa38021a8a8d7bb62b54e5542145cd32f0e99d4bbcc8f2e739c1f2ec3799
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "9b05fa38021a8a8d7bb62b54e5542145cd32f0e99d4bbcc8f2e739c1f2ec3799"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 77b79638e79a4f88b6af76e0761d2751948d80cea1f9286b3bda01729a5b5e6a
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "77b79638e79a4f88b6af76e0761d2751948d80cea1f9286b3bda01729a5b5e6a"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -547,6 +547,11 @@ end
 
 function BridgeSetResyncStage(stage, reason, snapshot)
     local prior = BridgeState.resyncStage or "Idle"
+    if stage ~= "Idle" and stage ~= "Completed" then
+        BridgeInvalidateHumanActionReadiness("resync-stage-" .. tostring(stage))
+        if BridgeClearHighlights ~= nil then pcall(BridgeClearHighlights) end
+        if BridgeHideMainPriorityControls ~= nil then pcall(BridgeHideMainPriorityControls) end
+    end
     BridgeState.resyncStage = stage
     BridgeState.resyncStageChangedAt = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
     BridgeState.resyncLastProgressAt = BridgeState.resyncStageChangedAt
@@ -2315,6 +2320,15 @@ function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
     if ok then
         tx.candidatePhysicalLedger = BridgeCapturePhysicalLedger()
         BridgeState.committedPhysicalLedger = tx.candidatePhysicalLedger
+        if tx.snapshot ~= nil and tx.targetSessionId == BridgeState.eventSessionId then
+            BridgeState.physicalStateCertificate = {
+                sessionId = BridgeState.eventSessionId,
+                sessionGeneration = BridgeState.eventSessionGeneration,
+                physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
+                authoritativeCursor = tonumber(tx.targetCursor or 0) or 0,
+                reason = "embodiment-transaction-committed"
+            }
+        end
         BridgeRetireTerminalRecoveryErrorAfterVerifiedReplacementBootstrap(tx)
         BridgeReleaseTerminalPresentationAfterVerifiedReplacementBootstrap(tx)
     elseif tx.committedPhysicalLedger ~= nil
@@ -2474,6 +2488,14 @@ function BridgeNewMatchCleanupPhysicalReady()
                         break
                     end
                 end
+            end
+            if containedInLibrary and BridgeObjectIsUsable(object) then
+                -- A live top-level Card whose exact GUID is already in a
+                -- native library is a transitional alias, not a settled
+                -- inventory member. Do not certify cleanup/bootstrap while
+                -- it is still visible; the cleanup owner must retire it or
+                -- fail loudly as a genuine duplicate.
+                return false, "proven contained Card alias remains visible outside its library"
             end
             if libraryGuids[guid] ~= true and not containedInLibrary
                 and (advertised ~= nil or (trackedZone ~= nil and trackedZone ~= "library")) then
@@ -3171,9 +3193,17 @@ BridgeState = {
     selectedFormatProvenance = "tts-default-limited",
     allowDeckMinimumOverride = BRIDGE_ALLOW_DECK_MINIMUM_OVERRIDE,
     lastDecision = nil,
+    -- A physical source can participate in several simultaneous Forge
+    -- actions.  Keep the complete ordered collection for presentation and
+    -- retain actionByGuid only as a compatibility index for one unambiguous
+    -- direct gesture action.
+    actionsByGuid = {},
     actionByGuid = {},
+    gestureActionAmbiguousByGuid = {},
     highlightedGuids = {},
     targetButtonIndexByGuid = {},
+    contextualActionButtonIndexesByGuid = {},
+    contextualActionMenuByGuid = {},
     playerTargetControlGuids = {},
     endTurnObjectGuidBySeatId = {},
     passObjectGuidBySeatId = {},
@@ -3242,6 +3272,7 @@ BridgeState = {
     bootstrapCompletionInFlight = false,
     eventSessionId = nil,
     eventSessionGeneration = 0,
+    humanActionGeneration = 0,
     lastReceivedEventSequence = 0,
     lastAppliedEventSequence = 0,
     lastConsumedEventSequence = 0,
@@ -3306,6 +3337,21 @@ BridgeState = {
     currentPhysicalPresentationGeneration = 0,
     physicalTransactionGeneration = 0,
     physicalReadinessDependency = nil,
+    -- This is a cheap certificate, not a replacement for reconciliation. It
+    -- records the last verified physical state so every human input can be
+    -- rejected locally while bootstrap/resync/desync is unsafe.
+    physicalStateCertificate = nil,
+    humanActionReadiness = {
+        certified = false,
+        globalCertified = false,
+        decisionAccepted = false,
+        sessionId = nil,
+        decisionId = nil,
+        sessionGeneration = nil,
+        physicalTransactionGeneration = nil,
+        authoritativeCursor = nil,
+        reason = "not-certified"
+    },
     randomResultPresentationGeneration = 0,
     activeRandomResultPresentation = nil,
     randomResultPresentationDiagnostics = {},
@@ -3791,6 +3837,8 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
         return false
     end
 
+    if BridgeRetireHumanActionState ~= nil then BridgeRetireHumanActionState("session-boundary:" .. tostring(reason)) end
+    BridgeState.physicalStateCertificate = nil
     BridgeState.sessionCleanupApplied = true
     BridgeState.newMatchCleanupOwner = nil
     BridgeState.lastNewMatchCleanupFailure = nil
@@ -4413,6 +4461,7 @@ end
 
 function BridgeAdvancePhysicalTransactionGeneration(reason)
     BridgeState.physicalTransactionGeneration = (BridgeState.physicalTransactionGeneration or 0) + 1
+    BridgeInvalidateHumanActionReadiness("physical-transaction-generation-changed")
     -- Native aliases are only meaningful within the generation that proved
     -- their containment. Never carry a transition across a session/resync
     -- boundary.
@@ -4802,7 +4851,7 @@ function BridgeRecordContainedCardIdentity(cardInstanceId, containingDeckGuid, c
 end
 
 function BridgeFindContainedCardEntry(cardInstanceId, expectedZone)
-    local mapping = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+    local mapping = (BridgeState.physicalContainerByInstanceId or {})[cardInstanceId]
     if mapping == nil then return nil, nil, "no contained mapping for card instance" end
     if expectedZone ~= nil and mapping.zoneName ~= nil and mapping.zoneName ~= expectedZone then
         return nil, nil, "contained mapping is in " .. tostring(mapping.zoneName)
@@ -5867,7 +5916,24 @@ function BridgeStageSeatCardsForBootstrap(snapshot, callback)
             -- same-session recovery fails closed instead of moving them.
             local preserveTrackedPublicCard = trackedInstanceId ~= nil
                 and trackedZone ~= nil and trackedZone ~= "library"
-            if seatId ~= nil
+            local containedInLibrary = guid ~= nil
+                and BridgeFindLibraryDeckContainingGuid ~= nil
+                and BridgeFindLibraryDeckContainingGuid(seatId, guid) or nil
+            if containedInLibrary ~= nil then
+                -- getAllObjects can expose the old Card userdata after its
+                -- exact GUID is already in the native library Deck. It is a
+                -- proven contained alias, not a new source card. Do not stage
+                -- it (which can hit artless-card rejection); cleanup must
+                -- retire the alias and library binding will still verify the
+                -- native inventory count before gameplay is released.
+                BridgeRecordPhysicalMutationJournal({
+                    operation = "CardToLibrary", cardGuid = guid,
+                    destinationDeck = BridgeSafeObjectGuid(containedInLibrary),
+                    containmentProven = true, looseAliasStillVisible = true,
+                    classification = "bootstrap-contained-alias",
+                    finalDisposition = "excluded-from-staging"
+                })
+            elseif seatId ~= nil
                 and not isInHand
                 and not preserveTrackedPublicCard
                 and not sameSessionRecovery
@@ -7322,29 +7388,32 @@ function BridgeReturnPreviousGameCardsToLibraries(callback)
                                 deckClaims = deckClaims + 1
                             end
                         end
-                        if settleAttempt >= 3 and deckClaims == 1
-                            and BridgeState.physicalContainedInstanceIdByGuid[candidate.guid] ~= nil then
-                            BridgeState.physicalDurableContainedAliasesByGuid =
-                                BridgeState.physicalDurableContainedAliasesByGuid or {}
-                            local durable = BridgeState.physicalDurableContainedAliasesByGuid
-                            durable[candidate.guid] = {
-                                destinationDeck = BridgeSafeObjectGuid(alreadyContained),
-                                seatId = candidate.seatId, zoneName = "library",
-                                observations = settleAttempt,
-                                finalized = true,
-                                exactContainedGuid = candidate.guid
-                            }
-                            cleanupOwner.provenContainedGuids[candidate.guid] = true
+                        if settleAttempt >= 3 and deckClaims == 1 then
+                            -- A proven contained GUID plus a live top-level Card
+                            -- is not a durable duplicate whitelist. It is the
+                            -- stale Card userdata observed in the f8c0 reset.
+                            -- Retire only that proven alias, then reobserve the
+                            -- native Deck. If TTS cannot retire it, cleanup
+                            -- fails closed instead of accepting 41 as 40.
+                            cleanupOwner.aliasRetirementAttemptsByGuid = cleanupOwner.aliasRetirementAttemptsByGuid or {}
+                            local retirementAttempt = (cleanupOwner.aliasRetirementAttemptsByGuid[candidate.guid] or 0) + 1
+                            cleanupOwner.aliasRetirementAttemptsByGuid[candidate.guid] = retirementAttempt
+                            local retired, retireError = pcall(function() liveAlias.destruct() end)
                             BridgeRecordPhysicalMutationJournal({
                                 transitionToken = cleanupOwner.token,
                                 generation = BridgeState.physicalTransactionGeneration or 0,
                                 operation = "CardToLibrary", cardGuid = candidate.guid,
                                 destinationDeck = BridgeSafeObjectGuid(alreadyContained),
                                 containmentProven = true, looseAliasStillVisible = true,
-                                classification = "persistent_contained_alias",
-                                finalDisposition = "cleanup_done"
+                                classification = "transitional_alias_retirement",
+                                finalDisposition = retired and "retirement_requested" or "retirement_failed"
                             })
-                            insertCandidate(index + 1)
+                            if not retired then
+                                if callback then callback(false, "could not retire proven contained alias "
+                                    .. tostring(candidate.guid) .. ": " .. tostring(retireError)) end
+                                return
+                            end
+                            BridgeWaitFrames(function() insertCandidate(index) end, 2)
                             return
                         end
                         if settleAttempt <= 30 then
@@ -7930,6 +7999,553 @@ function BridgeUiActionLabel(action)
     return tostring(label)
 end
 
+-- Physical presentation is one-to-many: a permanent can be the source of
+-- several legal Forge actions.  actionByGuid is intentionally only a
+-- compatibility index for one unambiguous direct gesture; it is never used
+-- as the authoritative physical presentation model.
+function BridgeAppendOrderedValue(collection, value)
+    if type(collection) ~= "table" then return nil end
+    -- Assign the next positive integer explicitly.  This keeps the ordered
+    -- action model stable in both TTS Lua and MoonSharp probes, where the
+    -- length implementation may observe legacy zero-indexed entries.
+    local nextIndex = 1
+    for key, _ in pairs(collection) do
+        if type(key) == "number" and key >= nextIndex then nextIndex = key + 1 end
+    end
+    collection[nextIndex] = value
+    return nextIndex
+end
+
+function BridgeOrderedCollectionCount(collection)
+    local count = 0
+    for key, _ in pairs(collection or {}) do
+        if type(key) == "number" and key >= 0 then count = count + 1 end
+    end
+    return count
+end
+
+function BridgeGetOrderedValues(collection)
+    local keys = {}
+    local keyCount = 0
+    for key, value in pairs(collection or {}) do
+        if value ~= nil and type(key) == "number" and key >= 0 then
+            keyCount = keyCount + 1
+            keys[keyCount] = key
+        end
+    end
+    table.sort(keys)
+    local values = {}
+    for index = 1, keyCount do values[index] = collection[keys[index]] end
+    return values
+end
+
+function BridgeGetActionsForGuid(guid)
+    if guid == nil then return {} end
+    local actions = BridgeState.actionsByGuid and BridgeState.actionsByGuid[guid]
+    if type(actions) == "table" and BridgeOrderedCollectionCount(actions) > 0 then
+        return BridgeGetOrderedValues(actions)
+    end
+    local legacy = BridgeState.actionByGuid and BridgeState.actionByGuid[guid]
+    if legacy ~= nil then return {legacy} end
+    return {}
+end
+
+function BridgeActionSupportsDirectPhysicalGesture(action, decision)
+    if action == nil then return false end
+    if action.physicalGesture == "direct" or action.interactionMode == "direct" then return true end
+    if action.physicalGesture == "contextual" or action.interactionMode == "contextual" then return false end
+    local actionType = tostring(action.type or action.actionKind or "")
+    -- A battlefield ability is deliberately not a card pickup gesture.  The
+    -- explicit object-local affordance is the only source-bound submission
+    -- surface for it, even when it is the permanent's only ability.
+    if actionType == "activate_ability" or actionType == "activate_mana"
+        or actionType == "activated_ability" or actionType == "mana_ability" then
+        return false
+    end
+    if actionType == "play_land" or actionType == "cast_spell"
+        or actionType == "choose_attacker" or actionType == "choose_blocker"
+        or actionType == "choose_target" or actionType == "discard_card"
+        or actionType == "sacrifice" then
+        return true
+    end
+    return false
+end
+
+function BridgeActionNeedsContextualSourceMenu(action, decision)
+    if action == nil then return false end
+    if action.contextualSourceAction == true or action.physicalGesture == "contextual"
+        or action.interactionMode == "contextual" then return true end
+    local actionType = tostring(action.type or action.actionKind or "")
+    if actionType == "activate_ability" or actionType == "activate_mana"
+        or actionType == "activated_ability" or actionType == "mana_ability" then
+        return true
+    end
+    local expectedZone = action.sourceZone
+    if expectedZone == nil and BridgeActionExpectedPhysicalSourceZone ~= nil then
+        expectedZone = BridgeActionExpectedPhysicalSourceZone(action)
+    end
+    return tostring(expectedZone or "") == "battlefield"
+        and not BridgeActionSupportsDirectPhysicalGesture(action, decision)
+end
+
+function BridgeRegisterPhysicalAction(guid, action, decision)
+    if guid == nil or action == nil or action.actionId == nil then return end
+    BridgeState.actionsByGuid = BridgeState.actionsByGuid or {}
+    BridgeState.actionByGuid = BridgeState.actionByGuid or {}
+    BridgeState.gestureActionAmbiguousByGuid = BridgeState.gestureActionAmbiguousByGuid or {}
+    local actions = BridgeState.actionsByGuid[guid]
+    if actions == nil then actions = {}; BridgeState.actionsByGuid[guid] = actions end
+    local orderedActions = BridgeGetOrderedValues(actions)
+    for index = 1, BridgeOrderedCollectionCount(orderedActions) do
+        local existing = orderedActions[index]
+        if existing.actionId == action.actionId then
+            local count = BridgeOrderedCollectionCount(actions)
+            BridgeState.actionByGuid[guid] = (count == 1 and BridgeActionSupportsDirectPhysicalGesture(action, decision)) and action or nil
+            BridgeState.gestureActionAmbiguousByGuid[guid] = count > 1 or nil
+            return
+        end
+    end
+    BridgeAppendOrderedValue(actions, action)
+    -- This map can only expose one action when that one action has a known
+    -- direct gesture meaning. Any second legal action removes the shortcut;
+    -- insertion order can therefore never select the final rendered action.
+    local count = BridgeOrderedCollectionCount(actions)
+    if count == 1 and BridgeActionSupportsDirectPhysicalGesture(action, decision) then
+        BridgeState.actionByGuid[guid] = action
+        BridgeState.gestureActionAmbiguousByGuid[guid] = nil
+    else
+        BridgeState.actionByGuid[guid] = nil
+        BridgeState.gestureActionAmbiguousByGuid[guid] = count > 1 and true or nil
+    end
+end
+
+function BridgeHighlightPhysicalObjectOnce(object, guid, color)
+    if object == nil or guid == nil then return false end
+    local highlighted = BridgeState.highlightedGuids or {}
+    for index = 1, BridgeOrderedCollectionCount(highlighted) do
+        local highlightedGuid = highlighted[index]
+        if highlightedGuid == guid then return false end
+    end
+    object.highlightOn(color)
+    BridgeAppendOrderedValue(BridgeState.highlightedGuids, guid)
+    return true
+end
+
+function BridgeFindPhysicalActionForGuid(guid, actionId)
+    local actions = BridgeGetOrderedValues(BridgeGetActionsForGuid(guid))
+    for index = 1, BridgeOrderedCollectionCount(actions) do
+        local action = actions[index]
+        if actionId == nil or action.actionId == actionId then return action end
+    end
+    return nil
+end
+
+function BridgeContextualActionLabel(action, index)
+    local text = tostring(action and (action.shortLabel or action.displayName or action.description or "") or "")
+    local plus = string.match(text, "(%+%d+)")
+    if plus ~= nil then return plus end
+    if string.find(string.lower(text), "-x", 1, true) ~= nil then return "-X" end
+    local minus = string.match(text, "(-%d+)")
+    if minus ~= nil then return minus end
+    return "ABILITY " .. tostring(index or 1)
+end
+
+function BridgeContextualActionTooltip(action)
+    local description = action and (action.description or action.displayName or action.actionKind or action.type) or "Forge action"
+    return tostring(description) .. "\nAction ID: " .. tostring(action and action.actionId or "")
+end
+
+function BridgeContextualActionMenuIsCurrent(menu, guid)
+    local decision = BridgeState.lastDecision
+    if menu == nil or decision == nil then return false end
+    if menu.guid ~= guid or menu.sessionId ~= BridgeState.eventSessionId
+        or menu.sessionGeneration ~= BridgeState.eventSessionGeneration
+        or menu.interactionGeneration ~= BridgeState.humanActionGeneration
+        or menu.decisionId ~= decision.decisionId then return false end
+    local object = BridgeGetLiveObjectByGuid(guid)
+    if object == nil or BridgeSafeObjectTag(object) ~= "Card" then return false end
+    local actions = BridgeGetOrderedValues(menu.actions)
+    for index = 1, BridgeOrderedCollectionCount(actions) do
+        local action = actions[index]
+        local actionInstanceId = BridgeActionExactPhysicalInstanceId(action)
+        if menu.physicalInstanceId ~= nil and actionInstanceId ~= menu.physicalInstanceId then
+            return false
+        end
+        if not BridgeDecisionHasAction(decision, action.actionId)
+            or BridgeFindPhysicalActionForGuid(guid, action.actionId) == nil then return false end
+    end
+    return BridgeOrderedCollectionCount(menu.actions) > 0
+end
+
+function BridgeRemoveContextualActionMenu(guid)
+    local menu = BridgeState.contextualActionMenuByGuid
+        and BridgeState.contextualActionMenuByGuid[guid] or nil
+    local indexes = menu and menu.buttonIndexes or nil
+    local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
+    if object ~= nil and type(indexes) == "table" then
+        table.sort(indexes, function(left, right) return left > right end)
+        BridgeSafeObjectCall(object, function(o)
+            local buttons = o.getButtons and (o.getButtons() or {}) or {}
+            for item = 1, BridgeOrderedCollectionCount(indexes) do
+                local index = indexes[item]
+                for _, button in ipairs(buttons) do
+                    if button.index == index then
+                        o.removeButton(index)
+                        break
+                    end
+                end
+            end
+        end)
+    end
+    if BridgeState.contextualActionMenuByGuid ~= nil then BridgeState.contextualActionMenuByGuid[guid] = nil end
+    if BridgeState.contextualActionButtonIndexesByGuid ~= nil then
+        BridgeState.contextualActionButtonIndexesByGuid[guid] = nil
+    end
+end
+
+function BridgeClearContextualActionMenus(reason)
+    for guid, _ in pairs(BridgeState.contextualActionMenuByGuid or {}) do
+        BridgeRemoveContextualActionMenu(guid)
+    end
+    BridgeState.contextualActionMenuByGuid = {}
+    BridgeState.contextualActionButtonIndexesByGuid = {}
+    if reason ~= nil then BridgeState.lastContextualMenuInvalidationReason = tostring(reason) end
+end
+
+local function BridgeNextCardButtonIndex(object)
+    local nextIndex = 0
+    local buttons = object and object.getButtons and object.getButtons() or {}
+    for _, button in ipairs(buttons) do nextIndex = math.max(nextIndex, (button.index or -1) + 1) end
+    return nextIndex
+end
+
+function BridgeToggleContextualActionMenu(object, playerColor, altClick)
+    if object == nil or BridgeState.submitting then return end
+    local guid = BridgeSafeObjectGuid(object)
+    local menu = guid and BridgeState.contextualActionMenuByGuid[guid] or nil
+    if not BridgeContextualActionMenuIsCurrent(menu, guid) then
+        BridgeRemoveContextualActionMenu(guid)
+        BridgeShowHumanActionBlocked({ready = false, reason = "stale contextual action menu", classification = "STALE"})
+        return
+    end
+    if menu.open == true then
+        -- TTS compacts button indexes after removal. Remove highest indexes
+        -- first so closing a menu never leaves a lower action button behind.
+        local indexes = BridgeGetOrderedValues(menu.actionButtonIndexes)
+        table.sort(indexes, function(left, right) return left > right end)
+        for item = 1, BridgeOrderedCollectionCount(indexes) do
+            local index = indexes[item]
+            BridgeSafeObjectCall(object, function(o) o.removeButton(index) end)
+        end
+        menu.actionButtonIndexes = {}
+        menu.buttonIndexes = {menu.affordanceButtonIndex}
+        BridgeState.contextualActionButtonIndexesByGuid[guid] = menu.buttonIndexes
+        menu.open = false
+        return
+    end
+    menu.actionButtonIndexes = {}
+    local positions = {{0, 0.78, -1.05}, {0, 0.78, 1.05}, {-1.05, 0.78, 0}, {1.05, 0.78, 0}}
+    local orderedActions = BridgeGetOrderedValues(menu.actions)
+    for index = 1, BridgeOrderedCollectionCount(orderedActions) do
+        local action = orderedActions[index]
+        local position = positions[index]
+        if position == nil then
+            local angle = ((index - 1) / math.max(BridgeOrderedCollectionCount(orderedActions), 1)) * math.pi * 2
+            position = {math.sin(angle) * 1.1, 0.78, math.cos(angle) * 1.1}
+        end
+        local callbackName = "BridgeContextualActionButton_" .. tostring(guid) .. "_" .. tostring(index)
+        _G[callbackName] = function(buttonObject, buttonPlayerColor, buttonAltClick)
+            BridgeChooseContextualAction(buttonObject, buttonPlayerColor, buttonAltClick, guid, index)
+        end
+        local buttonIndex = BridgeNextCardButtonIndex(object)
+        object.createButton({
+            click_function = callbackName,
+            function_owner = Global,
+            label = BridgeContextualActionLabel(action, index),
+            position = position,
+            width = 620, height = 300, font_size = 115,
+            color = {0.12, 0.32, 0.52, 0.96},
+            font_color = {1, 1, 1, 1},
+            tooltip = BridgeContextualActionTooltip(action)
+        })
+        BridgeAppendOrderedValue(menu.actionButtonIndexes, buttonIndex)
+    end
+    menu.buttonIndexes = {menu.affordanceButtonIndex}
+    for item = 1, BridgeOrderedCollectionCount(menu.actionButtonIndexes) do
+        BridgeAppendOrderedValue(menu.buttonIndexes, menu.actionButtonIndexes[item])
+    end
+    BridgeState.contextualActionButtonIndexesByGuid[guid] = menu.buttonIndexes
+    menu.open = true
+end
+
+function BridgeInstallContextualActionMenu(object, decision, actions)
+    if object == nil or decision == nil or BridgeOrderedCollectionCount(actions) == 0 then return end
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then return end
+    local affordanceIndex = BridgeNextCardButtonIndex(object)
+    local menu = {
+        guid = guid, decisionId = decision.decisionId, sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
+        interactionGeneration = BridgeState.humanActionGeneration,
+        physicalInstanceId = BridgeActionExactPhysicalInstanceId(actions[1]),
+        actions = actions, open = false, affordanceButtonIndex = affordanceIndex,
+        actionButtonIndexes = {}, buttonIndexes = {affordanceIndex}
+    }
+    object.createButton({
+        click_function = "BridgeToggleContextualActionMenu",
+        function_owner = Global,
+        label = "ACT\n" .. tostring(BridgeOrderedCollectionCount(actions)),
+        position = {0, 0.78, 0},
+        width = 680, height = 320, font_size = 120,
+        color = {0.12, 0.32, 0.52, 0.94},
+        font_color = {1, 1, 1, 1},
+        tooltip = "Choose one of " .. tostring(BridgeOrderedCollectionCount(actions))
+            .. " Forge actions. Picking up this permanent never activates an ability."
+    })
+    BridgeState.contextualActionMenuByGuid[guid] = menu
+    BridgeState.contextualActionButtonIndexesByGuid[guid] = menu.buttonIndexes
+end
+
+function BridgeChooseContextualAction(object, playerColor, altClick, guid, index)
+    local actualGuid = BridgeSafeObjectGuid(object)
+    guid = guid or actualGuid
+    local menu = guid and BridgeState.contextualActionMenuByGuid[guid] or nil
+    if actualGuid ~= guid or not BridgeContextualActionMenuIsCurrent(menu, guid) then
+        BridgeRemoveContextualActionMenu(guid)
+        BridgeShowHumanActionBlocked({ready = false, reason = "stale contextual action menu", classification = "STALE"})
+        return
+    end
+    local orderedActions = BridgeGetOrderedValues(menu.actions)
+    local action = orderedActions[index]
+    local decision = BridgeState.lastDecision
+    local readiness = BridgeHumanActionReadiness(decision, action, "contextual_action_button", guid)
+    if not readiness.ready then
+        BridgeShowHumanActionBlocked(readiness)
+        return
+    end
+    BridgeClaimHumanTtsColor(decision.seatId, playerColor)
+    BridgeClearHighlights()
+    BridgeSubmitChoice(decision.decisionId, action.actionId, "contextual_action_button")
+end
+
+-- The certificate is deliberately cheap to query. Full snapshot rebuilding
+-- belongs to recovery/bootstrap; input callbacks only validate the current
+-- session/generation/cursor and the last certified physical state.
+function BridgeInvalidateHumanActionReadiness(reason)
+    local readiness = BridgeState.humanActionReadiness or {}
+    readiness.certified = false
+    readiness.globalCertified = false
+    readiness.decisionAccepted = false
+    readiness.decisionId = nil
+    readiness.sessionId = BridgeState.eventSessionId
+    readiness.sessionGeneration = BridgeState.eventSessionGeneration
+    readiness.physicalTransactionGeneration = BridgeState.physicalTransactionGeneration
+    readiness.authoritativeCursor = nil
+    readiness.compatibilityCertification = nil
+    readiness.reason = tostring(reason or "invalidated")
+    BridgeState.humanActionReadiness = readiness
+end
+
+local function BridgeReadinessGlobalBlock()
+    if BridgeState.eventSessionId == nil then return "no active Forge session", "NO_SESSION" end
+    if BridgeState.setupBusy == true or BridgeState.bootstrapping == true then return "physical bootstrap is pending", "BOOTSTRAP" end
+    if tostring(BridgeState.setupStage or "") == "FAILED"
+        or tostring(BridgeState.bootstrapStage or "") == "BOOTSTRAP_ABORTED" then
+        return "physical bootstrap failed; resync is required", "BOOTSTRAP"
+    end
+    if BridgeState.resyncInFlight == true or BridgeState.resyncStage ~= nil and BridgeState.resyncStage ~= "Idle"
+        and BridgeState.resyncStage ~= "Completed" then return "physical resync is in flight", "RESYNC" end
+    if BridgeState.desyncLatched == true then return "physical desynchronization is latched", "DESYNC" end
+    if BridgeState.snapshotReconcileInFlight == true then return "snapshot reconciliation is in flight", "RECONCILE" end
+    if BridgeState.embodimentTransaction ~= nil and BridgeState.embodimentTransaction.phase ~= "COMMITTED"
+        and BridgeState.embodimentTransaction.phase ~= "ABORTED" then return "physical mutation is in flight", "PHYSICAL_MUTATION" end
+    if BridgePhysicalMutationOperationsIdle ~= nil then
+        local idle, reason = BridgePhysicalMutationOperationsIdle()
+        if idle == false then return tostring(reason or "physical mutation queue is not settled"), "PHYSICAL_QUEUE" end
+    end
+    return nil, "GLOBAL"
+end
+
+function BridgeCertifyHumanActionReadiness(decision, reason)
+    local blocked, classification = BridgeReadinessGlobalBlock()
+    if blocked ~= nil then
+        BridgeInvalidateHumanActionReadiness(blocked)
+        return false, blocked
+    end
+    if decision == nil or (decision.sessionId ~= nil and decision.sessionId ~= BridgeState.eventSessionId) then
+        BridgeInvalidateHumanActionReadiness("decision does not belong to current session")
+        return false, "decision does not belong to current session"
+    end
+    if BridgeState.lastDecision ~= decision then
+        BridgeInvalidateHumanActionReadiness("decision has not been accepted by TTS")
+        return false, "decision has not been accepted by TTS"
+    end
+    if BridgeDecisionPhysicalMappingsReady ~= nil then
+        local mappingsReady, mappingReason = BridgeDecisionPhysicalMappingsReady(decision)
+        if not mappingsReady then
+            BridgeInvalidateHumanActionReadiness("physical mapping is not ready: " .. tostring(mappingReason))
+            return false, tostring(mappingReason)
+        end
+    end
+    local cursor = tonumber(decision.eventCursor or 0) or 0
+    local applied = math.max(tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
+        tonumber(BridgeState.lastStateProjectedEventSequence or 0) or 0,
+        tonumber(BridgeState.snapshotReconcileLastAppliedCursor or 0) or 0)
+    local physical = BridgeState.physicalStateCertificate
+    local physicalCursor = physical and tonumber(physical.authoritativeCursor or 0) or 0
+    if cursor > applied and cursor > physicalCursor then
+        BridgeInvalidateHumanActionReadiness("authoritative cursor is ahead of applied physical state")
+        return false, "authoritative cursor is ahead of applied physical state"
+    end
+    local readiness = BridgeState.humanActionReadiness or {}
+    readiness.certified = true
+    readiness.globalCertified = true
+    readiness.decisionAccepted = true
+    readiness.sessionId = BridgeState.eventSessionId
+    readiness.decisionId = decision.decisionId
+    readiness.sessionGeneration = BridgeState.eventSessionGeneration
+    readiness.physicalTransactionGeneration = BridgeState.physicalTransactionGeneration
+    readiness.authoritativeCursor = math.max(cursor, physicalCursor)
+    readiness.reason = tostring(reason or "certified")
+    readiness.compatibilityCertification = nil
+    BridgeState.humanActionReadiness = readiness
+    return true, nil
+end
+
+function BridgeHumanActionReadiness(decision, action, source, physicalGuid)
+    local blocked, classification = BridgeReadinessGlobalBlock()
+    if blocked ~= nil then
+        return {ready = false, reason = blocked, classification = classification, source = source}
+    end
+    if decision ~= nil and decision.sessionId ~= nil and decision.sessionId ~= BridgeState.eventSessionId then
+        return {ready = false, reason = "decision belongs to another Forge session", classification = "WRONG_SESSION", source = source}
+    end
+    local readiness = BridgeState.humanActionReadiness or {}
+    if readiness.certified == true
+        and readiness.physicalTransactionGeneration ~= nil
+        and readiness.physicalTransactionGeneration ~= BridgeState.physicalTransactionGeneration then
+        BridgeInvalidateHumanActionReadiness("physical transaction generation changed")
+        return {ready = false, reason = "physical transaction generation changed", classification = "PHYSICAL_MUTATION", source = source}
+    end
+    local compatibilityCertification = false
+    -- Small MoonSharp/unit harnesses often install lastDecision directly. Keep
+    -- them compatible without weakening the real lifecycle: a current,
+    -- cursor-converged decision can establish the same certificate lazily.
+    if decision ~= nil and not readiness.certified and BridgeState.lastDecision == decision
+        and readiness.sessionId == nil then
+        local cursor = tonumber(decision.eventCursor or 0) or 0
+        local applied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0
+        if cursor <= applied and BridgeState.setupStage == "IDLE"
+            and BridgeState.renderedDecisionPresentationKey == nil then
+            -- Direct-state MoonSharp probes predate the presentation lifecycle
+            -- and intentionally omit a complete physical inventory. They are
+            -- never a live TTS state (accepted decisions move setupStage out
+            -- of IDLE before rendering); retain their old contract while the
+            -- real path remains strict below.
+            readiness.certified = true
+            readiness.globalCertified = true
+            readiness.decisionAccepted = true
+            readiness.sessionId = BridgeState.eventSessionId
+            readiness.decisionId = decision.decisionId
+            readiness.sessionGeneration = BridgeState.eventSessionGeneration
+            readiness.physicalTransactionGeneration = BridgeState.physicalTransactionGeneration
+            readiness.authoritativeCursor = cursor
+            readiness.reason = "current-decision-compatible-certification"
+            readiness.compatibilityCertification = true
+            BridgeState.humanActionReadiness = readiness
+            compatibilityCertification = true
+        elseif cursor <= applied then
+            BridgeCertifyHumanActionReadiness(decision, "current-decision-compatible-certification")
+        end
+        readiness = BridgeState.humanActionReadiness or readiness
+    end
+    compatibilityCertification = compatibilityCertification or readiness.compatibilityCertification == true
+    if decision == nil then
+        if readiness.globalCertified ~= true or readiness.sessionId ~= BridgeState.eventSessionId
+            or readiness.sessionGeneration ~= BridgeState.eventSessionGeneration
+            or readiness.physicalTransactionGeneration ~= BridgeState.physicalTransactionGeneration then
+            return {ready = false, reason = readiness.reason or "physical state is not certified", classification = "NOT_CERTIFIED", source = source}
+        end
+    else
+        if readiness.certified ~= true or readiness.decisionAccepted ~= true
+            or readiness.sessionId ~= BridgeState.eventSessionId
+            or readiness.sessionGeneration ~= BridgeState.eventSessionGeneration
+            or readiness.physicalTransactionGeneration ~= BridgeState.physicalTransactionGeneration
+            or readiness.decisionId ~= decision.decisionId then
+            return {ready = false, reason = readiness.reason or "current decision is not physically certified", classification = "NOT_CERTIFIED", source = source}
+        end
+        local cursor = tonumber(decision.eventCursor or 0) or 0
+        if cursor > (tonumber(readiness.authoritativeCursor or 0) or 0) then
+            return {ready = false, reason = "authoritative cursor is ahead of applied physical state", classification = "CURSOR_LAG", source = source}
+        end
+    end
+    if action ~= nil and physicalGuid ~= nil then
+        local actions = BridgeGetActionsForGuid(physicalGuid)
+        local found = false
+        for index = 1, BridgeOrderedCollectionCount(actions) do
+            local candidate = actions[index]
+            if candidate.actionId == action.actionId then found = true; break end
+        end
+        if not found then return {ready = false, reason = "physical source action is no longer legal", classification = "STALE", source = source} end
+    end
+    if action ~= nil and BridgeActionExactPhysicalInstanceId ~= nil then
+        local instanceId = BridgeActionExactPhysicalInstanceId(action)
+        if instanceId ~= nil and BridgeActionRequiresPhysicalPresentation(action)
+            and BridgeResolveExactActionPhysical ~= nil then
+            if compatibilityCertification then
+                return {ready = true, reason = nil, classification = "READY", source = source,
+                    compatibilityCertification = true}
+            end
+            local resolved, resolveReason = BridgeResolveExactActionPhysical(decision, action)
+            if resolved == nil then
+                return {ready = false, reason = tostring(resolveReason or "exact physical source is not ready"), classification = "EXACT_PHYSICAL", source = source}
+            end
+            if physicalGuid ~= nil and resolved.guid ~= nil and tostring(resolved.guid) ~= tostring(physicalGuid) then
+                return {ready = false, reason = "physical source identity changed", classification = "EXACT_PHYSICAL", source = source}
+            end
+        end
+    end
+    return {ready = true, reason = nil, classification = "READY", source = source}
+end
+
+function BridgeShowHumanActionBlocked(readiness)
+    local reason = readiness and readiness.reason or "physical state is not ready"
+    local classification = readiness and readiness.classification or "NOT_CERTIFIED"
+    local headline = (classification == "RESYNC" or classification == "DESYNC" or classification == "BOOTSTRAP")
+        and "RESYNC REQUIRED" or "SYNCING TABLE"
+    BridgeState.lastHumanActionBlockReason = tostring(reason)
+    BridgeSetStatus(headline, "Actions unlock when physical state matches Forge.")
+    BridgeLog("[Bridge] HUMAN_ACTION_BLOCKED classification=" .. tostring(classification)
+        .. " reason=" .. tostring(reason))
+end
+
+function BridgeRetireHumanActionState(reason)
+    BridgeState.humanActionGeneration = (BridgeState.humanActionGeneration or 0) + 1
+    BridgeInvalidateHumanActionReadiness(reason or "interaction-state-retired")
+    BridgeState.lastDecision = nil
+    BridgeState.pendingDecision = nil
+    BridgeState.pendingIntent = nil
+    BridgeState.unboundPickupIntent = nil
+    BridgeState.actionsByGuid = {}
+    BridgeState.actionByGuid = {}
+    BridgeState.gestureActionAmbiguousByGuid = {}
+    if BridgeClearHighlights ~= nil then pcall(BridgeClearHighlights) end
+    if BridgeResetSelectionState ~= nil then pcall(BridgeResetSelectionState) end
+    if BridgeHideMainPriorityControls ~= nil then pcall(BridgeHideMainPriorityControls) end
+    if BridgeDestroyTransientControls ~= nil then pcall(BridgeDestroyTransientControls) end
+    if BridgeState.ui ~= nil then
+        BridgeState.ui.actionRows = {}
+        BridgeState.ui.contextInstanceId = nil
+        BridgeState.ui.dirty = true
+    end
+    if BridgeUiSet ~= nil and BridgeState.ui ~= nil and BridgeState.ui.mounted then
+        for _, id in ipairs({"BridgeHudPass", "BridgeHudYield", "BridgeHudConfirm", "BridgeHudCancel"}) do
+            BridgeUiSet(id, "active", "false")
+        end
+        for index = 1, 24 do BridgeUiSet("BridgeHudAction" .. tostring(index), "active", "false") end
+    end
+end
+
 function BridgeCreatureTypeClearDraft(reason)
     local ui = BridgeState.ui
     if ui == nil then return end
@@ -8078,6 +8694,8 @@ function BridgeUiFlush()
     local decision = BridgeState.lastDecision
     local terminal = BridgeCurrentAuthoritativeResult ~= nil and BridgeCurrentAuthoritativeResult() or nil
     local protocolStopped = BridgeCurrentTerminalRecoveryError() ~= nil
+    local interactionReadiness = BridgeHumanActionReadiness(decision, nil, "hud")
+    local interactionReady = interactionReadiness.ready == true
     local owner = BridgeState.currentTurnSeatId == "forge-player-1" and "YOUR TURN"
         or (BridgeState.currentTurnSeatId and "OPPONENT TURN" or "TURN OWNER UNKNOWN")
     local turn = BridgeTurnLabel() .. " — " .. owner .. " — " .. tostring(BridgeState.currentPhase or "WAITING")
@@ -8202,7 +8820,11 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudSelection", "text", selectionText)
     for i = 1, 24 do
         local action = actions[i]
-        BridgeUiSet("BridgeHudAction" .. tostring(i), "active", action ~= nil and "true" or "false")
+        local actionReady = action ~= nil and interactionReady
+        if actionReady and decision ~= nil then
+            actionReady = BridgeHumanActionReadiness(decision, action, "hud_action").ready == true
+        end
+        BridgeUiSet("BridgeHudAction" .. tostring(i), "active", actionReady and "true" or "false")
         if action ~= nil then
             if action.isGraveyardFolder == true then
                 BridgeUiSet("BridgeHudAction" .. tostring(i), "text", action.displayName)
@@ -8246,19 +8868,19 @@ function BridgeUiFlush()
         and BridgeCurrentTerminalRecoveryError() == nil
         and not BridgeDecisionNeedsConfirmation(decision)
         and BridgeState.pendingIntent == nil
-    BridgeUiSet("BridgeHudPass", "active", hasPass and "true" or "false")
+    BridgeUiSet("BridgeHudPass", "active", hasPass and interactionReady and "true" or "false")
     -- Keep YIELD visible during an AI/opponent turn even when Forge is not
     -- currently waiting on a human decision; clicking it arms the policy and
     -- does not fabricate a pass. When a human pass decision exists, it uses
     -- the exact Forge action as before.
-    BridgeUiSet("BridgeHudYield", "active", (hasYield or yieldPolicyAvailable) and "true" or "false")
-    BridgeUiSet("BridgeHudConfirm", "active", (decision and BridgeDecisionNeedsConfirmation(decision))
-        or castPreviewPending and "true" or "false")
+    BridgeUiSet("BridgeHudYield", "active", (hasYield or yieldPolicyAvailable) and interactionReady and "true" or "false")
+    BridgeUiSet("BridgeHudConfirm", "active", interactionReady and ((decision and BridgeDecisionNeedsConfirmation(decision))
+        or castPreviewPending) and "true" or "false")
     BridgeUiSet("BridgeHudConfirm", "text", castPreviewPending and "CAST / CONFIRM" or "CONFIRM")
     BridgeUiSet("BridgeHudConfirm", "tooltip", castPreviewPending
         and "Submit this Forge-approved spell after reviewing the cast preview."
         or "Submit the staged Forge selection when its required count is satisfied.")
-    BridgeUiSet("BridgeHudCancel", "active", (castPreviewPending or paymentCanCancel or (decision and
+    BridgeUiSet("BridgeHudCancel", "active", interactionReady and (castPreviewPending or paymentCanCancel or (decision and
         ((BridgeDecisionNeedsConfirmation(decision) and not BridgeIsStructuredForgeToggleChoice(decision))
             or targetCanCancel))) and "true" or "false")
     BridgeUiSet("BridgeHudCancel", "text", castPreviewPending and "CANCEL / RETURN"
@@ -8304,6 +8926,8 @@ function BridgeHudAction(player, value, id)
         or decision.decisionId ~= BridgeState.lastDecision.decisionId
         or BridgeState.retiredChoiceDecisionIds[decision.decisionId] == true
         or not BridgeDecisionHasAction(decision, action.actionId) then return end
+    local readiness = BridgeHumanActionReadiness(decision, action, "hud_action")
+    if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
     BridgeRecordInteractionProducer("hud_action", decision, action)
     BridgeClaimHumanTtsColor(decision.seatId, player)
     if BridgeDecisionNeedsConfirmation(decision) then
@@ -8354,6 +8978,8 @@ function BridgeHudGraveyardAction(player, value, id)
         or not ui.graveyardFolderOpen
         or BridgeState.retiredChoiceDecisionIds[decision.decisionId] == true
         or not BridgeDecisionHasAction(decision, action.actionId) then return end
+    local readiness = BridgeHumanActionReadiness(decision, action, "hud_graveyard_action")
+    if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
     BridgeClaimHumanTtsColor(decision.seatId, player)
     BridgeSubmitChoice(decision.decisionId, action.actionId, "hud_graveyard_action")
 end
@@ -8377,6 +9003,9 @@ function BridgeHudGraveyardClose(player, value, id)
 end
 
 function BridgeHudConfirm(player, value, id)
+    local decision = BridgeState.lastDecision
+    local readiness = BridgeHumanActionReadiness(decision, nil, "hud_confirm")
+    if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
     if BridgeState.pendingIntent ~= nil and BridgeState.pendingIntent.action ~= nil
         and BridgeState.pendingIntent.action.type == "cast_spell" then
         BridgeConfirmCastPreview(nil, player, false)
@@ -8387,6 +9016,9 @@ function BridgeHudConfirm(player, value, id)
 end
 
 function BridgeHudCancel(player, value, id)
+    local decision = BridgeState.lastDecision
+    local readiness = BridgeHumanActionReadiness(decision, nil, "hud_cancel")
+    if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
     if BridgeState.pendingIntent ~= nil and BridgeState.pendingIntent.action ~= nil
         and BridgeState.pendingIntent.action.type == "cast_spell" then
         BridgeCancelCastPreview(nil, player, false)
@@ -8408,6 +9040,8 @@ end
 function BridgeHudPass(player, value, id)
     local decision = BridgeState.lastDecision
     if decision == nil then return end
+    local readiness = BridgeHumanActionReadiness(decision, nil, "hud_pass")
+    if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
     for _, action in ipairs(decision.actions or {}) do
         if action.type == "pass_priority" then BridgeSubmitChoice(decision.decisionId, action.actionId, "hud_pass"); return end
     end
@@ -8445,6 +9079,8 @@ end
 function BridgeHudYield(player, value, id)
     local decision = BridgeState.lastDecision
     local activeSeat = BridgeState.currentTurnSeatId
+    local readiness = BridgeHumanActionReadiness(decision, nil, "yield_turn")
+    if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
     -- Yield is a turn-scoped policy. During the opponent's turn it must arm
     -- the policy even when Forge is between AI priority windows; if a real
     -- human response is already required, leave that decision untouched so
@@ -9802,6 +10438,19 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         BridgeLog("[Bridge] CHOICE_POST_BLOCKED reason=action-absent-from-current-decision decision="
             .. tostring(decisionId) .. " action=" .. tostring(actionId)
             .. " source=" .. tostring(source))
+        return
+    end
+    local exactSourceGuid = nil
+    if BridgeActionExactPhysicalInstanceId ~= nil then
+        local sourceInstanceId = BridgeActionExactPhysicalInstanceId(activeAction)
+        exactSourceGuid = sourceInstanceId ~= nil and BridgeState.physicalByInstanceId[sourceInstanceId] or nil
+    end
+    local readiness = BridgeHumanActionReadiness(activeDecision, activeAction, source, exactSourceGuid)
+    if not readiness.ready then
+        BridgeShowHumanActionBlocked(readiness)
+        BridgeLog("[Bridge] CHOICE_POST_BLOCKED reason=human-action-readiness decision="
+            .. tostring(decisionId) .. " action=" .. tostring(actionId)
+            .. " classification=" .. tostring(readiness.classification))
         return
     end
     -- A HUD/proxy surface can outlive a native Card/Deck mutation.  Re-check
@@ -11838,6 +12487,11 @@ end
 -- has produced a usable session (or failed).
 function BridgeSetSetupBusy(busy, message)
     BridgeState.setupBusy = busy
+    if busy then
+        BridgeInvalidateHumanActionReadiness("bootstrap-begun")
+        if BridgeClearHighlights ~= nil then pcall(BridgeClearHighlights) end
+        if BridgeHideMainPriorityControls ~= nil then pcall(BridgeHideMainPriorityControls) end
+    end
     -- Avoid mutating setup button state while TTS is processing click callbacks.
     -- Some table states surface a Unity-side object-reference fault during editButton.
     if busy and message ~= nil then broadcastToAll("[Bridge] " .. message, {1.0, 0.8, 0.2}) end
@@ -12366,8 +13020,7 @@ function BridgeRefreshDecision()
 end
 
 function BridgeStartSessionIfNone(done)
-    BridgeClearHighlights()
-    BridgeState.lastDecision = nil
+    BridgeRetireHumanActionState("new-session-start")
 
     BridgeSetupStage("READING_DECKS", "building Bridge deck inventory")
     BridgeTraceStart("START-07 TTS-library-deck-load")
@@ -12420,6 +13073,10 @@ function BridgeStartSessionIfNone(done)
 end
 
 function BridgeResetSession()
+    -- This is intentionally the first operation. New Match must retire old
+    -- gameplay controls before deck cleanup, HTTP reset, or bootstrap work.
+    BridgeRetireHumanActionState("new-match-begun")
+    BridgeState.physicalStateCertificate = nil
     local embodimentEpoch = BridgeAdvanceEmbodimentEpoch("new-match")
     local function ownsNewMatch()
         return embodimentEpoch == BridgeState.embodimentEpoch
@@ -12561,6 +13218,8 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
 
     if BridgeState.lastDecision == nil or BridgeState.lastDecision.decisionId ~= decision.decisionId then
         local previousDecision = BridgeState.lastDecision
+        BridgeState.humanActionGeneration = (BridgeState.humanActionGeneration or 0) + 1
+        BridgeInvalidateHumanActionReadiness("decision-changed")
         if previousDecision ~= nil and previousDecision.decisionId ~= decision.decisionId
             and previousDecision.kind == "main_priority"
             and previousDecision.seatId == "forge-player-1"
@@ -12651,6 +13310,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
             BridgeClearHighlights()
             BridgeResetSelectionState()
             BridgeHideMainPriorityControls()
+            BridgeInvalidateHumanActionReadiness("decision-deferred")
             BridgeUiMarkDirty("decision-deferred")
         end
         BridgeLog(string.format(
@@ -12750,6 +13410,7 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     BridgeState.staleDecisionRetryDeadlineAt = nil
 
     BridgeRenderDecision(decision)
+    BridgeCertifyHumanActionReadiness(decision, "decision-presentation-verified")
     BridgeRecordDecisionLifecycle(decision, origin, "RENDERED", "decision-accepted")
 
     BridgeLog("[Bridge] decision " .. tostring(decision.decisionId) .. " kind=" .. tostring(decision.kind))
@@ -12813,10 +13474,16 @@ function BridgeClearHighlights()
     -- currently rendered highlight set.
     BridgeAdvancePhysicalPresentationGeneration("highlights-cleared")
     local highlighted = BridgeState.highlightedGuids or {}
-    for _, guid in _ip(highlighted) do
+    for index = 1, BridgeOrderedCollectionCount(highlighted) do
+        local guid = highlighted[index]
         local object = BridgeGetLiveObjectByGuid(guid)
         if object ~= nil then BridgeSafeObjectCall(object, function(o) o.highlightOff() end) end
     end
+
+    -- Contextual buttons are presentation-only and must retire with the
+    -- highlight generation. Their callbacks remain harmlessly defined for a
+    -- moment, but the session/decision/generation fence rejects stale clicks.
+    BridgeClearContextualActionMenus("highlights-cleared")
 
     local targetButtons = BridgeState.targetButtonIndexByGuid or {}
     for guid, buttonIndex in _pairs(targetButtons) do
@@ -12837,7 +13504,9 @@ function BridgeClearHighlights()
     end
 
     BridgeState.highlightedGuids = {}
+    BridgeState.actionsByGuid = {}
     BridgeState.actionByGuid = {}
+    BridgeState.gestureActionAmbiguousByGuid = {}
     BridgeState.targetButtonIndexByGuid = {}
     for _, guid in ipairs(BridgeState.playerTargetControlGuids or {}) do
         local object = BridgeGetLiveObjectByGuid(guid)
@@ -14066,6 +14735,8 @@ function BridgeChooseDecisionOption(object, playerColor, altClick)
     if action ~= nil and action.type == "choose_none" and not BridgeCanSubmitStructuredDone(decision, "physical_option_done") then
         return
     end
+    local readiness = BridgeHumanActionReadiness(decision, action, "generic_option_control")
+    if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
     BridgeClearHighlights()
     BridgeResetSelectionState()
     BridgeSubmitChoice(decisionId, actionId, "generic_option_control")
@@ -14162,6 +14833,8 @@ function BridgeCompleteCombatSelection(object, playerColor, altClick)
         BridgeResetSelectionState()
         return
     end
+    local readiness = BridgeHumanActionReadiness(decision, currentAction, "contextual_done")
+    if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
     BridgeClearHighlights()
     BridgeResetSelectionState()
@@ -14261,6 +14934,8 @@ function BridgeSelectPlayerTargetControl(object, playerColor, altClick)
         BridgeShowError("this target decision belongs to TTS color " .. tostring(actorSeat.ttsColor))
         return
     end
+    local readiness = BridgeHumanActionReadiness(decision, BridgeFindPhysicalActionForGuid(object.getGUID(), actionId), "player_target_control")
+    if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
     BridgeClearHighlights()
     local source = BridgeIsStructuredForgeToggleChoice(decision)
@@ -14376,6 +15051,8 @@ function BridgePressPass(object, playerColor, altClick)
     BridgeClaimHumanTtsColor(decision.seatId, playerColor)
     for _, action in ipairs(decision.actions or {}) do
         if action.type == "pass_priority" then
+            local readiness = BridgeHumanActionReadiness(decision, action, "pass_button")
+            if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
             BridgeClearHighlights()
             BridgeSubmitChoice(decision.decisionId, action.actionId, "pass_button")
             return
@@ -14391,6 +15068,8 @@ function BridgePressEndTurn(object, playerColor, altClick)
         if not ok then return end
     end
     if BridgeState.submitting then return end
+    local readiness = BridgeHumanActionReadiness(BridgeState.lastDecision, nil, "yield_turn")
+    if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
     local decision = BridgeState.lastDecision
     if decision == nil and BridgeState.pendingDecision ~= nil then
         BridgeTryPresentPendingDecision("manual-yield")
@@ -14440,7 +15119,7 @@ function BridgeSelectPlayerTarget(object, playerColor, altClick)
         if not ok then return end
     end
     if object == nil or BridgeState.submitting then return end
-    local action = BridgeState.actionByGuid[object.getGUID()]
+    local action = BridgeFindPhysicalActionForGuid(object.getGUID())
     local decision = BridgeState.lastDecision
     if action == nil or action.targetKind ~= "player" or decision == nil then
         BridgeShowError("player target surface is stale")
@@ -14727,11 +15406,17 @@ function BridgeCancelSelection(object, playerColor, altClick)
     BridgeRecordCancelAction("CLICK_RECEIVED", decision, nil, nil)
     local cancelAction = BridgeFindCancelAction(decision)
     if cancelAction ~= nil then
+        local readiness = BridgeHumanActionReadiness(decision, cancelAction, "hud_cancel")
+        if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
         BridgeRecordCancelAction("SUBMIT_STARTED", decision, cancelAction, "hud-cancel")
         BridgeClaimHumanTtsColor(decision.seatId, playerColor)
         BridgeClearHighlights()
         BridgeResetSelectionState()
         BridgeSubmitChoice(decision.decisionId, cancelAction.actionId, "physical_cancel_cast")
+        return
+    end
+    if decision == nil then
+        BridgeRecordCancelAction("SUBMIT_REJECTED", nil, nil, "no-current-decision")
         return
     end
     if BridgeIsStructuredForgeToggleChoice(decision) then
@@ -14961,15 +15646,20 @@ end
 
 function BridgeRecordActionPhysicalResolution(decision, action, kind, reason, guid, containerGuid, observedZone)
     local exactInstanceId = BridgeActionExactPhysicalInstanceId(action)
+    local physicalByInstanceId = BridgeState.physicalByInstanceId or {}
+    local physicalInstanceIdByGuid = BridgeState.physicalInstanceIdByGuid or {}
+    local physicalContainerByInstanceId = BridgeState.physicalContainerByInstanceId or {}
+    local physicalSeatByGuid = BridgeState.physicalSeatByGuid or {}
+    local physicalZoneByGuid = BridgeState.physicalZoneByGuid or {}
+    local authoritativeObjectByInstanceId = BridgeState.authoritativeObjectByInstanceId or {}
     local mappedGuid = action ~= nil and exactInstanceId ~= nil
-        and BridgeState.physicalByInstanceId[exactInstanceId] or nil
+        and physicalByInstanceId[exactInstanceId] or nil
     local containerMapping = action ~= nil and exactInstanceId ~= nil
-        and BridgeState.physicalContainerByInstanceId
-        and BridgeState.physicalContainerByInstanceId[exactInstanceId] or nil
+        and physicalContainerByInstanceId[exactInstanceId] or nil
     local diagnosticGuid = guid or mappedGuid
     local liveObject = diagnosticGuid ~= nil and BridgeGetLiveObjectByGuid(diagnosticGuid) or nil
     local authoritativeDescriptor = exactInstanceId ~= nil
-        and BridgeState.authoritativeObjectByInstanceId[exactInstanceId] or nil
+        and authoritativeObjectByInstanceId[exactInstanceId] or nil
     BridgeState.lastActionPhysicalResolution = {
         decisionId = decision and decision.decisionId or nil,
         decisionKind = decision and decision.kind or nil,
@@ -14989,9 +15679,9 @@ function BridgeRecordActionPhysicalResolution(decision, action, kind, reason, gu
         physicalInstanceId = exactInstanceId,
         forwardMappedGuid = mappedGuid,
         inverseMappedInstanceId = diagnosticGuid ~= nil
-            and BridgeState.physicalInstanceIdByGuid[diagnosticGuid] or nil,
-        mappedSeat = diagnosticGuid ~= nil and BridgeState.physicalSeatByGuid[diagnosticGuid] or nil,
-        mappedZone = diagnosticGuid ~= nil and BridgeState.physicalZoneByGuid[diagnosticGuid] or nil,
+            and physicalInstanceIdByGuid[diagnosticGuid] or nil,
+        mappedSeat = diagnosticGuid ~= nil and physicalSeatByGuid[diagnosticGuid] or nil,
+        mappedZone = diagnosticGuid ~= nil and physicalZoneByGuid[diagnosticGuid] or nil,
         physicalContainerMapping = containerMapping and {
             deckGuid = containerMapping.deckGuid,
             cardGuid = containerMapping.cardGuid or containerMapping.containedGuid,
@@ -15059,11 +15749,16 @@ function BridgeResolveExactActionPhysical(decision, action)
             "prepared physical source belongs to a different seat", nil, nil, nil)
         return nil, "prepared physical source belongs to a different seat", instanceId
     end
-    local guid = BridgeState.physicalByInstanceId and BridgeState.physicalByInstanceId[instanceId] or nil
+    local physicalByInstanceId = BridgeState.physicalByInstanceId or {}
+    local physicalZoneByGuid = BridgeState.physicalZoneByGuid or {}
+    local physicalSeatByGuid = BridgeState.physicalSeatByGuid or {}
+    local physicalInstanceIdByGuid = BridgeState.physicalInstanceIdByGuid or {}
+    local physicalContainerByInstanceId = BridgeState.physicalContainerByInstanceId or {}
+    local guid = physicalByInstanceId[instanceId]
     local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
-    local observedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
-    local observedSeat = guid and BridgeState.physicalSeatByGuid[guid] or nil
-    local inverse = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+    local observedZone = guid and physicalZoneByGuid[guid] or nil
+    local observedSeat = guid and physicalSeatByGuid[guid] or nil
+    local inverse = guid and physicalInstanceIdByGuid[guid] or nil
     local isCardTarget = action ~= nil
         and action.type == "choose_target"
         and tostring(action.targetKind or "") == "card"
@@ -15080,8 +15775,7 @@ function BridgeResolveExactActionPhysical(decision, action)
     if BridgeFindContainedCardEntry ~= nil then
         containedDeck, containedEntry, containedError = BridgeFindContainedCardEntry(instanceId, expectedZone)
     end
-    local container = BridgeState.physicalContainerByInstanceId
-        and BridgeState.physicalContainerByInstanceId[instanceId] or nil
+    local container = physicalContainerByInstanceId[instanceId]
     if containedDeck ~= nil and containedEntry ~= nil and container ~= nil
         and (isCardTarget
             or decision == nil or decision.seatId == nil or container.seatId == decision.seatId)
@@ -15401,6 +16095,10 @@ function BridgeRenderDecision(decision, force)
     end
     BridgePresentationMetric("decisionRenderExecuted")
     BridgeClearHighlights()
+    -- Certify before the automatic-priority branches below. Automatic pass or
+    -- yield is still a human-action submission path and must share the same
+    -- current-session physical certificate.
+    BridgeCertifyHumanActionReadiness(decision, "decision-presentation-start")
     BridgeRenderPreparedSpellPresentations(decision)
 
     if decision == nil or decision.actions == nil then
@@ -15683,10 +16381,9 @@ function BridgeRenderDecision(decision, force)
                 local targetObject = targetSeat and getObjectFromGUID(targetSeat.targetSurfaceGuid) or nil
                 if targetObject ~= nil then
                     local guid = targetObject.getGUID()
-                    targetObject.highlightOn({1.0, 0.55, 0.0})
-                    BridgeState.actionByGuid[guid] = action
+                    BridgeHighlightPhysicalObjectOnce(targetObject, guid, {1.0, 0.55, 0.0})
+                    BridgeRegisterPhysicalAction(guid, action, decision)
                     representedActionIds[action.actionId] = true
-                    table.insert(BridgeState.highlightedGuids, guid)
                     BridgeInstallTargetButton(targetObject, action.targetSeatId)
                     BridgeSpawnPlayerTargetControl(targetObject, action.targetSeatId, decision, action)
                 else
@@ -15810,10 +16507,9 @@ function BridgeRenderDecision(decision, force)
                 local selected = BridgeState.selectedActionIds[action.actionId] == true
                     or BridgeState.combatSelectedByGuid[guid] == true
                     or action.isSelected == true
-                object.highlightOn(selected and selectedCombatColor or highlightColor)
-                BridgeState.actionByGuid[guid] = action
+                BridgeHighlightPhysicalObjectOnce(object, guid, selected and selectedCombatColor or highlightColor)
+                BridgeRegisterPhysicalAction(guid, action, decision)
                 representedActionIds[action.actionId] = true
-                table.insert(BridgeState.highlightedGuids, guid)
                 if action.type == "choose_target" and tostring(action.targetKind or "") == "card"
                     and BridgeActionPresentationAuthorized(action) then
                     BridgeInstallCardTargetButton(object)
@@ -15822,6 +16518,32 @@ function BridgeRenderDecision(decision, force)
         end
     end
 
+    -- Install one compact object-local affordance for each physical source
+    -- whose legal action is explicitly selected rather than inferred from a
+    -- pickup. The HUD action list remains intact as the reference/fallback.
+    for guid, actions in pairs(BridgeState.actionsByGuid or {}) do
+        local contextual = {}
+        local orderedActions = BridgeGetOrderedValues(actions)
+        local actionCount = BridgeOrderedCollectionCount(orderedActions)
+        for index = 1, actionCount do
+            local action = orderedActions[index]
+            -- More than one legal action from the same physical source is
+            -- inherently ambiguous, even when each action type has a direct
+            -- gesture elsewhere. Expose every action through the explicit
+            -- object-local affordance so insertion order can never select one.
+            if actionCount > 1 or BridgeActionNeedsContextualSourceMenu(action, decision) then
+                BridgeAppendOrderedValue(contextual, action)
+            end
+        end
+        if BridgeOrderedCollectionCount(contextual) > 0 then
+            local object = BridgeGetLiveObjectByGuid(guid)
+            if object ~= nil and BridgeSafeObjectTag(object) == "Card" then
+                BridgeInstallContextualActionMenu(object, decision, contextual)
+            end
+        end
+    end
+
+    BridgeCertifyHumanActionReadiness(decision, "decision-presentation-verified")
     BridgeEnsureDecisionOptionControls(decision, representedActionIds)
     BridgeApplyDiscardPresentation(decision)
     BridgeUiMarkDirty("decision-render")
@@ -15834,7 +16556,7 @@ function BridgeShowError(message)
     broadcastToAll(text, {1.0, 0.2, 0.2})
 end
 
-function BridgeCaptureUnboundPickupIntent(object)
+function BridgeCaptureUnboundPickupIntent(object, reason)
     if object == nil or object.tag ~= "Card" then return end
     local guid = BridgeSafeObjectGuid(object)
     if guid == nil then return end
@@ -15847,7 +16569,11 @@ function BridgeCaptureUnboundPickupIntent(object)
         zone = zone,
         position = object.getPosition(),
         rotation = object.getRotation(),
-        useHands = object.use_hands
+        useHands = object.use_hands,
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
+        interactionGeneration = BridgeState.humanActionGeneration,
+        reason = reason
     }
 end
 
@@ -15856,20 +16582,21 @@ function BridgeRejectUnboundDropIfIllegal(object)
     BridgeState.unboundPickupIntent = nil
     if intent == nil or object == nil then return end
     if BridgeSafeObjectGuid(object) ~= intent.guid then return end
-    if intent.zone ~= "hand" then return end
 
     local current = object.getPosition()
     local dx = current.x - intent.position.x
     local dz = current.z - intent.position.z
     local movedSq = dx * dx + dz * dz
     if movedSq < 1.0 then return end
-    if BridgeObjectNearSeatZone(object, intent.seatId, "hand") then return end
+    if intent.zone == "hand" and BridgeObjectNearSeatZone(object, intent.seatId, "hand") then return end
 
     object.use_hands = intent.useHands
     object.setPositionSmooth(intent.position, false, true)
     object.setRotationSmooth(intent.rotation, false, true)
     object.highlightOn({1.0, 0.1, 0.1}, 2)
-    BridgeShowError("illegal physical move rejected; use a highlighted Forge action")
+    BridgeShowError(intent.reason == "highlighted-source-no-direct-gesture"
+        and "physical inspection is not an action; choose the object's ACT menu"
+        or "illegal physical move rejected; use a highlighted Forge action")
 end
 
 function onObjectPickUp(playerColor, object)
@@ -15878,9 +16605,17 @@ function onObjectPickUp(playerColor, object)
     end
 
     BridgeState.unboundPickupIntent = nil
-    local action = BridgeState.actionByGuid[object.getGUID()]
+    local guid = BridgeSafeObjectGuid(object)
+    local actionsForSource = BridgeGetActionsForGuid(guid)
+    local action = BridgeState.actionByGuid[guid]
     if action == nil then
-        BridgeCaptureUnboundPickupIntent(object)
+        local sourceActionCount = BridgeOrderedCollectionCount(actionsForSource)
+        BridgeCaptureUnboundPickupIntent(object, sourceActionCount > 0 and "highlighted-source-no-direct-gesture" or nil)
+        if sourceActionCount > 0 then
+            BridgeShowHumanActionBlocked({ready = false,
+                reason = "choose an action from the object's ACT menu",
+                classification = "EXPLICIT_SELECTION"})
+        end
         return
     end
     BridgeRecordInteractionProducer("physical_card_pickup", BridgeState.lastDecision, action)
@@ -15897,6 +16632,12 @@ function onObjectPickUp(playerColor, object)
         -- physical pickup into a submission for a different Forge prompt.
         BridgeClearHighlights()
         BridgeShowError("card action is stale; waiting for the current Forge decision")
+        return
+    end
+    local readiness = BridgeHumanActionReadiness(decision, action, "physical_card_pickup", guid)
+    if not readiness.ready then
+        BridgeCaptureUnboundPickupIntent(object, "readiness-blocked")
+        BridgeShowHumanActionBlocked(readiness)
         return
     end
     if action._bridgePresentationDecisionId ~= nil
@@ -15965,7 +16706,11 @@ function onObjectPickUp(playerColor, object)
             physicalZone = BridgeState.physicalZoneByGuid[object.getGUID()],
             decisionId = decision.decisionId,
             action = action,
-            seatId = decision.seatId
+            seatId = decision.seatId,
+            sessionId = BridgeState.eventSessionId,
+            sessionGeneration = BridgeState.eventSessionGeneration,
+            interactionGeneration = BridgeState.humanActionGeneration,
+            physicalTransactionGeneration = BridgeState.physicalTransactionGeneration
         }
         BridgeClearHighlights()
         return
@@ -16000,7 +16745,11 @@ function onObjectPickUp(playerColor, object)
         physicalZone = BridgeState.physicalZoneByGuid[object.getGUID()],
         decisionId = decision.decisionId,
         action = action,
-        seatId = decision.seatId
+        seatId = decision.seatId,
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
+        interactionGeneration = BridgeState.humanActionGeneration,
+        physicalTransactionGeneration = BridgeState.physicalTransactionGeneration
     }
     BridgeClearHighlights()
 
@@ -16086,10 +16835,26 @@ function onObjectDrop(playerColor, object)
     end
     BridgeState.unboundPickupIntent = nil
 
+    if intent.sessionId ~= BridgeState.eventSessionId
+        or intent.sessionGeneration ~= BridgeState.eventSessionGeneration
+        or intent.interactionGeneration ~= BridgeState.humanActionGeneration
+        or (intent.physicalTransactionGeneration ~= nil
+            and intent.physicalTransactionGeneration ~= BridgeState.physicalTransactionGeneration) then
+        BridgeRollbackPendingIntent()
+        BridgeShowHumanActionBlocked({ready = false, reason = "physical interaction belongs to a retired session", classification = "STALE"})
+        return
+    end
+
     local decision = BridgeState.lastDecision
     if decision == nil or decision.decisionId ~= intent.decisionId then
         BridgeRollbackPendingIntent()
         BridgeShowError("staged intent became stale before drop")
+        return
+    end
+    local readiness = BridgeHumanActionReadiness(decision, intent.action, "physical_card_drop", intent.guid)
+    if not readiness.ready then
+        BridgeRollbackPendingIntent()
+        BridgeShowHumanActionBlocked(readiness)
         return
     end
 
@@ -16688,6 +17453,11 @@ end
 -- original callback only after VERIFY + COMMIT, never merely because a native
 -- Wait callback happened to return.
 function BridgeBootstrapCurrentSnapshot(sessionId, callback, resumeFromSnapshotCursor, resyncOrigin)
+    BridgeInvalidateHumanActionReadiness("bootstrap-begun")
+    if resumeFromSnapshotCursor == true then
+        BridgeClearContextualActionMenus("resync-begun")
+        BridgeClearHighlights()
+    end
     local tx, started = BridgeBeginEmbodimentTransaction(
         sessionId, resyncOrigin or (resumeFromSnapshotCursor == true and "recovery" or "initial-bootstrap"),
         resumeFromSnapshotCursor, callback)
@@ -16802,13 +17572,15 @@ end
 function BridgeSelectCardTarget(object, playerColor, altClick)
     if object == nil or object.tag ~= "Card" or BridgeState.submitting then return end
     local objectGuid = BridgeSafeObjectGuid(object)
-    local action = objectGuid and BridgeState.actionByGuid[objectGuid] or nil
+    local action = objectGuid and BridgeFindPhysicalActionForGuid(objectGuid) or nil
     local decision = BridgeState.lastDecision
     if action == nil or action.type ~= "choose_target" or tostring(action.targetKind or "") ~= "card"
         or decision == nil then
         BridgeShowError("card target control is stale")
         return
     end
+    local readiness = BridgeHumanActionReadiness(decision, action, "card_target_control", objectGuid)
+    if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
     BridgeRecordInteractionProducer("card_target_control", decision, action)
     if not BridgeDecisionHasAction(decision, action.actionId)
         or (action._bridgePresentationDecisionId ~= nil
@@ -17141,6 +17913,13 @@ function BridgeCommitSnapshotCheckpoint(snapshot, reason)
     BridgeState.lastStateProjectedEventSequence = cursor
     BridgeState.lastPhysicalPresentationEventSequence = cursor
     BridgeState.lastAppliedEventSequence = cursor
+    BridgeState.physicalStateCertificate = {
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
+        physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
+        authoritativeCursor = cursor,
+        reason = reason or "snapshot-checkpoint"
+    }
     BridgeSupersedeEventsThroughSnapshot(cursor, reason or "checkpoint-commit")
     BridgeState.skipExistingEventsOnAttach = false
     BridgeRecordResyncLifecycle("CHECKPOINT_COMMITTED", BridgeState.resyncOrigin,
@@ -19764,6 +20543,13 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     local checkpoint = BridgeState.resyncCheckpoint
     local preserveCheckpoint = checkpoint ~= nil and checkpoint.sessionId == sessionId and not replacingMatch
     local preservedLiveMappings = nil
+    if replacingMatch and BridgeRetireHumanActionState ~= nil then
+        -- Retire all old-session input before any physical cleanup/bootstrap
+        -- can yield or fail. The old PASS/YIELD and card callbacks are never
+        -- allowed to remain an interaction surface during replacement.
+        BridgeRetireHumanActionState("event-session-replacement")
+        BridgeState.physicalStateCertificate = nil
+    end
     -- Reveal projections and physical library-look sessions are session
     -- owned. Retire them before the new session can observe or render any
     -- surviving TTS objects. Preferences intentionally survive a match
@@ -20534,14 +21320,20 @@ end
 -- retired. That bookkeeping must not block the transaction that retires the
 -- queue: only outstanding physical workers are a readiness fence here.
 function BridgePhysicalMutationOperationsIdle()
+    local libraryActive = BridgeState.libraryExtractionActiveBySeatId or {}
+    local libraryQueue = BridgeState.libraryExtractionQueueBySeatId or {}
+    local graveyardActive = BridgeState.graveyardExtractionActiveBySeatId or {}
+    local graveyardQueue = BridgeState.graveyardExtractionQueueBySeatId or {}
+    local mulliganActive = BridgeState.mulliganBottomInsertionActiveBySeatId or {}
+    local mulliganQueue = BridgeState.mulliganBottomQueueBySeatId or {}
     for seatId, _ in pairs(BRIDGE_SEATS or {}) do
-        if BridgeState.libraryExtractionActiveBySeatId[seatId] == true
-            or #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}) > 0
-            or BridgeState.graveyardExtractionActiveBySeatId[seatId] == true
-            or #(BridgeState.graveyardExtractionQueueBySeatId[seatId] or {}) > 0
+        if libraryActive[seatId] == true
+            or #(libraryQueue[seatId] or {}) > 0
+            or graveyardActive[seatId] == true
+            or #(graveyardQueue[seatId] or {}) > 0
             or (BridgeState.graveyardExtractionTopologySettlingBySeatId or {})[seatId] ~= nil
-            or BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
-            or #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {}) > 0 then
+            or mulliganActive[seatId] == true
+            or #(mulliganQueue[seatId] or {}) > 0 then
             return false
         end
     end
@@ -28013,6 +28805,7 @@ end
 
 function BridgeStopOnDesync(message)
     local diagnostic = tostring(message or "")
+    BridgeInvalidateHumanActionReadiness("desync-latched")
     if string.find(diagnostic, "STALE_DECISION_DID_NOT_CONVERGE", 1, true) ~= nil
         or string.find(diagnostic, "decision_provenance_lag", 1, true) ~= nil then
         BridgeStopOnDecisionProvenanceLag(diagnostic, BridgeState.staleDecisionFault)
@@ -29338,6 +30131,8 @@ function BridgeTargetInteractionDiagnosticPayload()
     local decision = BridgeState.lastDecision
     local ui = BridgeState.ui or {}
     local associations = {}
+    local actionsByGuid = {}
+    local actionsByGuidCount = 0
     local actionByGuidCount = 0
     for guid, action in pairs(BridgeState.actionByGuid or {}) do
         if action ~= nil then
@@ -29347,6 +30142,20 @@ function BridgeTargetInteractionDiagnosticPayload()
                 actionId = action.actionId,
                 actionType = action.type or action.actionType or "unknown"
             })
+        end
+    end
+    for guid, actions in pairs(BridgeState.actionsByGuid or {}) do
+        local presented = {}
+        for _, action in ipairs(actions or {}) do
+            table.insert(presented, {
+                actionId = action.actionId,
+                actionType = action.type or action.actionType or "unknown",
+                label = BridgeContextualActionLabel ~= nil and BridgeContextualActionLabel(action, #presented + 1) or nil
+            })
+        end
+        if #presented > 0 then
+            actionsByGuidCount = actionsByGuidCount + 1
+            actionsByGuid[guid] = presented
         end
     end
     table.sort(associations, function(left, right)
@@ -29366,8 +30175,13 @@ function BridgeTargetInteractionDiagnosticPayload()
         pendingIntentType = BridgeState.pendingIntent and "physical-selection" or nil,
         actionByGuidCount = actionByGuidCount,
         actionByGuid = associations,
-        highlightedGuidCount = #(BridgeState.highlightedGuids or {}),
-        hudActionRowCount = #actionRows,
+        actionsByGuidCount = actionsByGuidCount,
+        actionsByGuid = actionsByGuid,
+        highlightedGuidCount = BridgeOrderedCollectionCount ~= nil
+            and BridgeOrderedCollectionCount(BridgeState.highlightedGuids or {})
+            or #(BridgeState.highlightedGuids or {}),
+        hudActionRowCount = BridgeOrderedCollectionCount ~= nil
+            and BridgeOrderedCollectionCount(actionRows) or #actionRows,
         targetControlCount = targetControlCount,
         lastInteractionProducer = lastProducer and {
             source = lastProducer.source,

@@ -3335,8 +3335,11 @@ function BridgeTargetInteractionDiagnosticPayload()
         actionByGuid = associations,
         actionsByGuidCount = actionsByGuidCount,
         actionsByGuid = actionsByGuid,
-        highlightedGuidCount = #(BridgeState.highlightedGuids or {}),
-        hudActionRowCount = #actionRows,
+        highlightedGuidCount = BridgeOrderedCollectionCount ~= nil
+            and BridgeOrderedCollectionCount(BridgeState.highlightedGuids or {})
+            or #(BridgeState.highlightedGuids or {}),
+        hudActionRowCount = BridgeOrderedCollectionCount ~= nil
+            and BridgeOrderedCollectionCount(actionRows) or #actionRows,
         targetControlCount = targetControlCount,
         lastInteractionProducer = lastProducer and {
             source = lastProducer.source,

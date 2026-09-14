@@ -48,6 +48,7 @@ public sealed class TtsCardTargetInteractionLuaTests
             BridgeState.choiceProtocolPaused = false
             BridgeState.desyncLatched = false
             BridgeState.gameEnded = nil
+            BridgeState.actionsByGuid = {}
             BridgeState.actionByGuid = {}
             BridgeState.highlightedGuids = {}
             BridgeState.targetButtonIndexByGuid = {}
@@ -67,6 +68,7 @@ public sealed class TtsCardTargetInteractionLuaTests
             BridgeState.ui = {mounted=true, actionRows={}, gameLogVisible=false, fastForwardActive=false,
                 autoAdvanceMode='NORMAL', autoPassEmpty=false}
             function BridgeClearHighlights()
+                BridgeState.actionsByGuid = {}
                 BridgeState.actionByGuid = {}
                 BridgeState.highlightedGuids = {}
                 BridgeState.targetButtonIndexByGuid = {}
@@ -125,12 +127,12 @@ public sealed class TtsCardTargetInteractionLuaTests
                 g79=cards.g79.buttons[1], g80=cards.g80.buttons[1], g78=cards.g78.buttons[1]
             }
             targetMappings = {
-                g79=BridgeState.actionByGuid.g79,
-                g80=BridgeState.actionByGuid.g80,
-                g78=BridgeState.actionByGuid.g78
+                g79=BridgeState.actionsByGuid.g79[1],
+                g80=BridgeState.actionsByGuid.g80[1],
+                g78=BridgeState.actionsByGuid.g78[1]
             }
             submitted = 0
-            BridgeState.actionByGuid.g80 = targetMappings.g80
+            BridgeState.actionsByGuid.g80 = {targetMappings.g80}
             onObjectPickUp('White', cards.g80)
             pickupSubmission = lastSubmission
             pickupSubmitCount = submitted or 0
@@ -166,23 +168,23 @@ public sealed class TtsCardTargetInteractionLuaTests
 
         lua.DoString(@"
             submitted = 0
-            BridgeState.actionByGuid.g79 = targetMappings.g79
-            BridgeState.actionByGuid.g80 = targetMappings.g80
-            BridgeState.actionByGuid.g78 = targetMappings.g78
+            BridgeState.actionsByGuid.g79 = {targetMappings.g79}
+            BridgeState.actionsByGuid.g80 = {targetMappings.g80}
+            BridgeState.actionsByGuid.g78 = {targetMappings.g78}
             BridgeSelectCardTarget(cards.g79, 'White', false)
             selectedSubmission = lastSubmission
             selectedMoveCount = cards.g79.moveCount + cards.g80.moveCount + cards.g78.moveCount
             -- A HUD action row is a second explicit producer for the same exact action.
             BridgeState.lastDecision = targetDecision
             BridgeState.ui.actionRows = targetDecision.actions
-            BridgeState.actionByGuid.g79 = targetMappings.g79
-            BridgeState.actionByGuid.g80 = targetMappings.g80
-            BridgeState.actionByGuid.g78 = targetMappings.g78
+            BridgeState.actionsByGuid.g79 = {targetMappings.g79}
+            BridgeState.actionsByGuid.g80 = {targetMappings.g80}
+            BridgeState.actionsByGuid.g78 = {targetMappings.g78}
             BridgeHudAction('White', '', 'BridgeHudAction1')
             hudSubmission = lastSubmission
             -- Replaying the old card callback after a decision replacement is inert.
             BridgeState.lastDecision = {decisionId='forge-tui-11', kind='main_priority', seatId='forge-player-1', actions={}}
-            BridgeState.actionByGuid.g79 = targetMappings.g79
+            BridgeState.actionsByGuid.g79 = {targetMappings.g79}
             BridgeSelectCardTarget(cards.g79, 'White', false)
             staleSubmissionCount = submitted
         ");

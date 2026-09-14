@@ -318,6 +318,9 @@ public sealed class DelveAndMulliganLuaContractTests
                     submittedSource = source
                 end
             end
+            -- This probe isolates cancel transport. The physical graveyard
+            -- mapping itself is covered by the reconciliation suites.
+            BridgeDecisionPhysicalMappingsReady = function() return true end
         ");
         lua.DoString(@"
             runOk, runError = pcall(function()

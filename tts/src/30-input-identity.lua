@@ -736,6 +736,8 @@ function BridgeCancelSelection(object, playerColor, altClick)
     BridgeRecordCancelAction("CLICK_RECEIVED", decision, nil, nil)
     local cancelAction = BridgeFindCancelAction(decision)
     if cancelAction ~= nil then
+        local readiness = BridgeHumanActionReadiness(decision, cancelAction, "hud_cancel")
+        if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
         BridgeRecordCancelAction("SUBMIT_STARTED", decision, cancelAction, "hud-cancel")
         BridgeClaimHumanTtsColor(decision.seatId, playerColor)
         BridgeClearHighlights()
@@ -743,8 +745,10 @@ function BridgeCancelSelection(object, playerColor, altClick)
         BridgeSubmitChoice(decision.decisionId, cancelAction.actionId, "physical_cancel_cast")
         return
     end
-    local readiness = BridgeHumanActionReadiness(decision, action, "player_target", object.getGUID())
-    if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
+    if decision == nil then
+        BridgeRecordCancelAction("SUBMIT_REJECTED", nil, nil, "no-current-decision")
+        return
+    end
     if BridgeIsStructuredForgeToggleChoice(decision) then
         -- Forge owns the selected set for a structured collection. There is
         -- no generic cancel action in this protocol, so never visually clear
@@ -972,15 +976,20 @@ end
 
 function BridgeRecordActionPhysicalResolution(decision, action, kind, reason, guid, containerGuid, observedZone)
     local exactInstanceId = BridgeActionExactPhysicalInstanceId(action)
+    local physicalByInstanceId = BridgeState.physicalByInstanceId or {}
+    local physicalInstanceIdByGuid = BridgeState.physicalInstanceIdByGuid or {}
+    local physicalContainerByInstanceId = BridgeState.physicalContainerByInstanceId or {}
+    local physicalSeatByGuid = BridgeState.physicalSeatByGuid or {}
+    local physicalZoneByGuid = BridgeState.physicalZoneByGuid or {}
+    local authoritativeObjectByInstanceId = BridgeState.authoritativeObjectByInstanceId or {}
     local mappedGuid = action ~= nil and exactInstanceId ~= nil
-        and BridgeState.physicalByInstanceId[exactInstanceId] or nil
+        and physicalByInstanceId[exactInstanceId] or nil
     local containerMapping = action ~= nil and exactInstanceId ~= nil
-        and BridgeState.physicalContainerByInstanceId
-        and BridgeState.physicalContainerByInstanceId[exactInstanceId] or nil
+        and physicalContainerByInstanceId[exactInstanceId] or nil
     local diagnosticGuid = guid or mappedGuid
     local liveObject = diagnosticGuid ~= nil and BridgeGetLiveObjectByGuid(diagnosticGuid) or nil
     local authoritativeDescriptor = exactInstanceId ~= nil
-        and BridgeState.authoritativeObjectByInstanceId[exactInstanceId] or nil
+        and authoritativeObjectByInstanceId[exactInstanceId] or nil
     BridgeState.lastActionPhysicalResolution = {
         decisionId = decision and decision.decisionId or nil,
         decisionKind = decision and decision.kind or nil,
@@ -1000,9 +1009,9 @@ function BridgeRecordActionPhysicalResolution(decision, action, kind, reason, gu
         physicalInstanceId = exactInstanceId,
         forwardMappedGuid = mappedGuid,
         inverseMappedInstanceId = diagnosticGuid ~= nil
-            and BridgeState.physicalInstanceIdByGuid[diagnosticGuid] or nil,
-        mappedSeat = diagnosticGuid ~= nil and BridgeState.physicalSeatByGuid[diagnosticGuid] or nil,
-        mappedZone = diagnosticGuid ~= nil and BridgeState.physicalZoneByGuid[diagnosticGuid] or nil,
+            and physicalInstanceIdByGuid[diagnosticGuid] or nil,
+        mappedSeat = diagnosticGuid ~= nil and physicalSeatByGuid[diagnosticGuid] or nil,
+        mappedZone = diagnosticGuid ~= nil and physicalZoneByGuid[diagnosticGuid] or nil,
         physicalContainerMapping = containerMapping and {
             deckGuid = containerMapping.deckGuid,
             cardGuid = containerMapping.cardGuid or containerMapping.containedGuid,
@@ -1070,11 +1079,16 @@ function BridgeResolveExactActionPhysical(decision, action)
             "prepared physical source belongs to a different seat", nil, nil, nil)
         return nil, "prepared physical source belongs to a different seat", instanceId
     end
-    local guid = BridgeState.physicalByInstanceId and BridgeState.physicalByInstanceId[instanceId] or nil
+    local physicalByInstanceId = BridgeState.physicalByInstanceId or {}
+    local physicalZoneByGuid = BridgeState.physicalZoneByGuid or {}
+    local physicalSeatByGuid = BridgeState.physicalSeatByGuid or {}
+    local physicalInstanceIdByGuid = BridgeState.physicalInstanceIdByGuid or {}
+    local physicalContainerByInstanceId = BridgeState.physicalContainerByInstanceId or {}
+    local guid = physicalByInstanceId[instanceId]
     local object = guid and BridgeGetLiveObjectByGuid(guid) or nil
-    local observedZone = guid and BridgeState.physicalZoneByGuid[guid] or nil
-    local observedSeat = guid and BridgeState.physicalSeatByGuid[guid] or nil
-    local inverse = guid and BridgeState.physicalInstanceIdByGuid[guid] or nil
+    local observedZone = guid and physicalZoneByGuid[guid] or nil
+    local observedSeat = guid and physicalSeatByGuid[guid] or nil
+    local inverse = guid and physicalInstanceIdByGuid[guid] or nil
     local isCardTarget = action ~= nil
         and action.type == "choose_target"
         and tostring(action.targetKind or "") == "card"
@@ -1091,8 +1105,7 @@ function BridgeResolveExactActionPhysical(decision, action)
     if BridgeFindContainedCardEntry ~= nil then
         containedDeck, containedEntry, containedError = BridgeFindContainedCardEntry(instanceId, expectedZone)
     end
-    local container = BridgeState.physicalContainerByInstanceId
-        and BridgeState.physicalContainerByInstanceId[instanceId] or nil
+    local container = physicalContainerByInstanceId[instanceId]
     if containedDeck ~= nil and containedEntry ~= nil and container ~= nil
         and (isCardTarget
             or decision == nil or decision.seatId == nil or container.seatId == decision.seatId)
@@ -1840,12 +1853,19 @@ function BridgeRenderDecision(decision, force)
     -- pickup. The HUD action list remains intact as the reference/fallback.
     for guid, actions in pairs(BridgeState.actionsByGuid or {}) do
         local contextual = {}
-        for _, action in ipairs(actions or {}) do
-            if BridgeActionNeedsContextualSourceMenu(action, decision) then
-                table.insert(contextual, action)
+        local orderedActions = BridgeGetOrderedValues(actions)
+        local actionCount = BridgeOrderedCollectionCount(orderedActions)
+        for index = 1, actionCount do
+            local action = orderedActions[index]
+            -- More than one legal action from the same physical source is
+            -- inherently ambiguous, even when each action type has a direct
+            -- gesture elsewhere. Expose every action through the explicit
+            -- object-local affordance so insertion order can never select one.
+            if actionCount > 1 or BridgeActionNeedsContextualSourceMenu(action, decision) then
+                BridgeAppendOrderedValue(contextual, action)
             end
         end
-        if #contextual > 0 then
+        if BridgeOrderedCollectionCount(contextual) > 0 then
             local object = BridgeGetLiveObjectByGuid(guid)
             if object ~= nil and BridgeSafeObjectTag(object) == "Card" then
                 BridgeInstallContextualActionMenu(object, decision, contextual)
@@ -1919,8 +1939,9 @@ function onObjectPickUp(playerColor, object)
     local actionsForSource = BridgeGetActionsForGuid(guid)
     local action = BridgeState.actionByGuid[guid]
     if action == nil then
-        BridgeCaptureUnboundPickupIntent(object, #actionsForSource > 0 and "highlighted-source-no-direct-gesture" or nil)
-        if #actionsForSource > 0 then
+        local sourceActionCount = BridgeOrderedCollectionCount(actionsForSource)
+        BridgeCaptureUnboundPickupIntent(object, sourceActionCount > 0 and "highlighted-source-no-direct-gesture" or nil)
+        if sourceActionCount > 0 then
             BridgeShowHumanActionBlocked({ready = false,
                 reason = "choose an action from the object's ACT menu",
                 classification = "EXPLICIT_SELECTION"})

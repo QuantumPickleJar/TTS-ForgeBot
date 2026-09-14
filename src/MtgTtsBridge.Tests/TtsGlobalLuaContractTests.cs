@@ -1693,7 +1693,7 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("combatSelectedByGuid", Script);
         Assert.Contains("or action.isSelected == true", Script);
-        Assert.Contains("object.highlightOn(selected and selectedCombatColor or highlightColor)", Script);
+        Assert.Contains("BridgeHighlightPhysicalObjectOnce(object, guid, selected and selectedCombatColor or highlightColor)", Script);
         Assert.Contains("BridgeState.combatSelectedByGuid[intent.guid] = true", Script);
         Assert.Contains("BridgeState.combatSelectedByGuid[guid] = nil", Script);
     }
@@ -1701,7 +1701,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void SelectedCombatCandidate_RemainsSelectableToUndoItsForgeStaging()
     {
-        Assert.Contains("BridgeState.actionByGuid[guid] = action", Script);
+        Assert.Contains("BridgeRegisterPhysicalAction(guid, action, decision)", Script);
         Assert.Contains("if intent.action.isSelected == true then", Script);
         Assert.Contains("BridgeReturnCombatPreviewCard(intent.seatId, object)", Script);
         Assert.Contains("function BridgeReturnCombatPreviewCard", Script);
@@ -2140,9 +2140,10 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgeCaptureUnboundPickupIntent", Script);
         Assert.Contains("function BridgeRejectUnboundDropIfIllegal", Script);
-        Assert.Contains("if intent.zone ~= \"hand\" then return end", Script);
-        Assert.Contains("if BridgeObjectNearSeatZone(object, intent.seatId, \"hand\") then return end", Script);
+        Assert.Contains("if intent.zone == \"hand\" and BridgeObjectNearSeatZone", Script);
+        Assert.Contains("BridgeObjectNearSeatZone(object, intent.seatId, \"hand\") then return end", Script);
         Assert.Contains("illegal physical move rejected; use a highlighted Forge action", Script);
+        Assert.Contains("physical inspection is not an action; choose the object's ACT menu", Script);
     }
 
     [Fact]
@@ -2499,7 +2500,8 @@ public sealed class TtsGlobalLuaContractTests
         var renderer = Script[renderStart..renderEnd];
         Assert.Contains("BridgeClearHighlights()", renderer);
         Assert.Contains("presentationInstanceId and BridgeState.physicalByInstanceId[presentationInstanceId]", renderer);
-        Assert.Contains("BridgeState.actionByGuid[guid] = action", renderer);
+        Assert.Contains("BridgeRegisterPhysicalAction(guid, action, decision)", renderer);
+        Assert.DoesNotContain("BridgeState.actionByGuid[guid] = action", renderer);
         Assert.Contains("action.sourceZone", Script);
         Assert.DoesNotContain("currentTypes contains Creature", renderer);
     }
