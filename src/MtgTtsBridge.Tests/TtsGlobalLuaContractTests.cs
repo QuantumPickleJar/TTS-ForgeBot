@@ -2646,6 +2646,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("BridgeHudRollingCapture", xml);
         Assert.Contains("BridgeHudRecoverPumps", xml);
         Assert.Contains("BridgeHudResyncFromForge", xml);
+        Assert.Contains("<HorizontalLayout minHeight=\"34\" preferredHeight=\"34\" flexibleHeight=\"0\" spacing=\"10\" childAlignment=\"MiddleCenter\" childForceExpandWidth=\"false\" childForceExpandHeight=\"true\" raycastTarget=\"false\">", xml);
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(xml, "id=\"BridgeHudResyncFromForge\""));
         var gamePanelStart = xml.IndexOf("id=\"BridgeHudGamePanel\"", StringComparison.Ordinal);
         var choiceTrayStart = xml.IndexOf("id=\"BridgeHudChoiceTray\"", StringComparison.Ordinal);
         Assert.True(gamePanelStart >= 0 && choiceTrayStart > gamePanelStart);
@@ -2664,6 +2666,7 @@ public sealed class TtsGlobalLuaContractTests
         var rollingEnd = Script.IndexOf("function BridgeHudResyncFromForge", rollingStart, StringComparison.Ordinal);
         Assert.Contains("diagnosticsVisible = true", Script[rollingStart..rollingEnd]);
         Assert.Contains("function BridgeHudResyncFromForge", Script);
+        Assert.Contains("RESYNC_LUA_INGRESS", Script);
         Assert.Contains("Rolling freeze capture", Script);
         Assert.Contains("function BridgeHudReportCapture", Script);
         Assert.Contains("/api/v1/diagnostics/report", Script);

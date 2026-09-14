@@ -496,8 +496,9 @@ public sealed class ForgeProducerContractTests
         var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
         var body = ExtractMethodBody(controller, "private List<SpellAbility> getCastableSpellAbilities()");
 
-        Assert.Contains("addCastableSpellAbilities(c, true, spells, seenAbilities)", body);
+        Assert.Contains("addCastableSpellAbilities(c, true, spells, seenAbilities, seenAbilitySemantics)", body);
         Assert.Contains("seenAbilities.add(sa)", body);
+        Assert.Contains("seenAbilitySemantics.add(spellAbilitySemanticKey(sa))", body);
         Assert.Contains("source.isCreature()", controller);
         Assert.Contains("source.isArtifact()", controller);
         Assert.Contains("source.isEnchantment()", controller);

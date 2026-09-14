@@ -2058,6 +2058,7 @@ index 0d731bb6..0171ea39 100644
 +    private List<SpellAbility> getCastableSpellAbilities() {
          List<SpellAbility> spells = new ArrayList<>();
 +        Set<SpellAbility> seenAbilities = Collections.newSetFromMap(new IdentityHashMap<>());
++        Set<String> seenAbilitySemantics = new java.util.HashSet<>();
 +        Set<Integer> preparedSpellIds = new java.util.HashSet<>();
 +        for (ZoneType zone : ZoneType.values()) {
 +            for (Card c : player.getCardsIn(zone)) {
@@ -2068,7 +2069,7 @@ index 0d731bb6..0171ea39 100644
 +                // this player explicit look permission for its identity.
 +                if (zone.isHidden() && !isBridgeIdentityPresentationAuthorized(c, zone)) continue;
 +                if (c.getCurrentStateName() == CardStateName.PreparedSpell) preparedSpellIds.add(c.getId());
-+                addCastableSpellAbilities(c, true, spells, seenAbilities);
++                addCastableSpellAbilities(c, true, spells, seenAbilities, seenAbilitySemantics);
 +            }
 +        }
  
@@ -2106,7 +2107,8 @@ index 0d731bb6..0171ea39 100644
 +                if (!sa.canPlay()) continue;
 +                if (!ComputerUtilMana.canPayManaCost(sa, player, 0, false)) continue;
 +                if (!hasValidTargets(sa)) continue;
-+                if (seenAbilities.add(sa)) {
++                if (seenAbilities.add(sa)
++                        && seenAbilitySemantics.add(spellAbilitySemanticKey(sa))) {
 +                    legalPreparedAbilityCount++;
 +                    spells.add(sa);
                  }
@@ -2147,18 +2149,31 @@ index 0d731bb6..0171ea39 100644
 -                }
 -            }
 +    private void addCastableSpellAbilities(Card card, boolean includeRemovedUnplayable,
-+            List<SpellAbility> spells, Set<SpellAbility> seenAbilities) {
++            List<SpellAbility> spells, Set<SpellAbility> seenAbilities,
++            Set<String> seenAbilitySemantics) {
 +        for (SpellAbility sa : card.getAllPossibleAbilities(player, includeRemovedUnplayable)) {
 +            if (!sa.isSpell()) continue;
 +            sa.setActivatingPlayer(player);
 +            if (!sa.canPlay()) continue;
 +            if (!ComputerUtilMana.canPayManaCost(sa, player, 0, false)) continue;
 +            if (!hasValidTargets(sa)) continue;
-+            if (seenAbilities.add(sa)) spells.add(sa);
++            if (seenAbilities.add(sa)
++                    && seenAbilitySemantics.add(spellAbilitySemanticKey(sa))) spells.add(sa);
          }
 +    }
  
 -        return spells;
++    private String spellAbilitySemanticKey(SpellAbility sa) {
++        Card source = sa.getHostCard();
++        return String.join("\u001f",
++            String.valueOf(source == null ? -1 : source.getId()),
++            String.valueOf(sa.getCardStateName()), String.valueOf(sa.getApi()),
++            String.valueOf(sa.getCostDescription()), String.valueOf(sa.getPayCosts()),
++            String.valueOf(sa.getAlternativeCost()), String.valueOf(sa.toUnsuppressedString()),
++            new java.util.TreeMap<>(sa.getMapParams()).toString(),
++            new java.util.TreeMap<>(sa.getOriginalMapParams()).toString());
++    }
++
 +    private String formatCastAction(SpellAbility sa) {
 +        Card source = sa.getHostCard();
 +        String category;

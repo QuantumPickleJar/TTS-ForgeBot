@@ -276,6 +276,79 @@ public sealed class EmbodimentReconciliationEngineTests
     }
 
     [Fact]
+    public void SnapshotReconcileTreatsExactContainedDestinationAsAlreadySatisfied()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local entries = {{guid='island-contained', nickname='Island', index=0}}
+            local graveyard = {tag='Deck', getGUID=function() return 'graveyard-deck' end,
+                getObjects=function() return entries end}
+            function getObjectFromGUID(guid)
+                return guid == 'graveyard-deck' and graveyard or nil
+            end
+            BridgeState.physicalByInstanceId = {}
+            BridgeState.physicalInstanceIdByGuid = {}
+            BridgeState.physicalContainerByInstanceId = {
+                ['forge:session:15']={deckGuid='graveyard-deck', cardGuid='island-contained',
+                    locatorType='GUID_LOCATOR', seatId='forge-player-1', zoneName='graveyard'}
+            }
+            BridgeState.physicalContainedInstanceIdByGuid = {['island-contained']='forge:session:15'}
+            BridgeState.physicalSeatByGuid = {['island-contained']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['island-contained']='graveyard'}
+            BridgeState.pendingStructuredZoneTransitionByInstanceId = {
+                ['forge:session:15']={sourceZone='library', destinationZone='graveyard'}
+            }
+            BridgeState.eventQueue = {}
+            moveCalls = 0
+            BridgeApplyStructuredCardMove = function(_) moveCalls = moveCalls + 1; return false, 'unexpected replay' end
+            BridgeApplyCombatSnapshot = function(_) end
+            BridgeApplySeatSnapshotVisualState = function(_) end
+            BridgeSetMonarchSeat = function(_) end
+            BridgeUiMarkDirty = function(_) end
+            local satisfied, representation = BridgePhysicalIdentitySatisfiesSnapshot(
+                'forge:session:15', 'forge-player-1', 'graveyard')
+            snapshotSatisfied = satisfied
+            snapshotRepresentation = representation and representation.kind or nil
+            BridgeApplySafeSnapshotReconcile({sessionId='session', eventCursor=239, forgeSequence=58,
+                seats={{seatId='forge-player-1', zones={{name='graveyard', cards={{
+                    cardInstanceId='forge:session:15', cardName='Island'
+                }}}}}}, stack={}, stackObjects={}}, 'automatic-recovery')
+        ");
+
+        Assert.True(lua.Globals.Get("snapshotSatisfied").Boolean);
+        Assert.Equal("contained", lua.Globals.Get("snapshotRepresentation").String);
+        Assert.Equal(0, lua.Globals.Get("moveCalls").Number);
+    }
+
+    [Fact]
+    public void SameSessionRecoveryDoesNotStageUnidentifiedLivePublicCards()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local battlefieldCard = {tag='Card', getGUID=function() return 'healthy-battlefield' end,
+                getPosition=function() return {x=0, y=1, z=-5} end,
+                getName=function() return 'Swamp' end}
+            function getAllObjects() return {battlefieldCard} end
+            function BridgeTryGetSeatHandObjects(_) return {}, nil end
+            function BridgeStagePhysicalCardForBootstrap(_, _, callback)
+                stageCalls = (stageCalls or 0) + 1
+                callback(true, nil)
+            end
+            BRIDGE_SEATS = {['forge-player-1']={tableSideZ=-1}, ['forge-player-2']={tableSideZ=1}}
+            BridgeState.resyncInFlight = true
+            BridgeState.physicalByInstanceId = {}
+            BridgeState.physicalInstanceIdByGuid = {}
+            BridgeState.physicalSeatByGuid = {}
+            BridgeState.physicalZoneByGuid = {}
+            BridgeStageSeatCardsForBootstrap({seats={{seatId='forge-player-1'}, {seatId='forge-player-2'}}},
+                function(ok, err) stageOk, stageError = ok, err end)
+        ");
+
+        Assert.True(lua.Globals.Get("stageOk").Boolean, lua.Globals.Get("stageError").ToPrintString());
+        Assert.Equal(0, lua.Globals.Get("stageCalls").Number);
+    }
+
+    [Fact]
     public void SnapshotCheckpointRebuildsGraveyardLedgerAfterPartialRecovery()
     {
         var lua = NewProbe();

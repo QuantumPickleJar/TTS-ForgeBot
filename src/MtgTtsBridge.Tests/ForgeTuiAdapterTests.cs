@@ -30,11 +30,16 @@ public sealed class ForgeTuiAdapterTests
         var action1 = new LegalActionDto("forge-tui-27-choice-1", "cast_spell", "Brainstorm", false, "Brainstorm", null,
             CardInstanceId: "forge-object:81", SourceCardInstanceId: "forge-object:81", SourceZone: "exile",
             CastMode: "prepare", CostKind: "prepare", PreparedSourceCardInstanceId: "forge-object:31");
-        var action2 = action1 with { ActionId = "forge-tui-27-choice-2" };
+        var action2 = action1 with
+        {
+            ActionId = "forge-tui-27-choice-2",
+            DisplayManaCost = "{U}{U}"
+        };
+        var action3 = action1 with { ActionId = "forge-tui-27-choice-3" };
         var candidate = new ForgeTuiDecision(
-            new DecisionDto("forge-tui-27", "main_priority", [action1, action2], SeatId: "forge-player-1"),
+            new DecisionDto("forge-tui-27", "main_priority", [action1, action2, action3], SeatId: "forge-player-1"),
             new Dictionary<string, string> {
-                [action1.ActionId] = "1", [action2.ActionId] = "2" });
+                [action1.ActionId] = "1", [action2.ActionId] = "2", [action3.ActionId] = "3" });
         PrivateMethod("StageDecisionCandidate").Invoke(adapter, [candidate, false]);
         PrivateMethod("ApplyDecisionReadyMarker").Invoke(adapter,
             [new ForgeDecisionReadyMarker("session-prepared", "forge-tui-27", 27, 193, 1)]);
@@ -42,10 +47,12 @@ public sealed class ForgeTuiAdapterTests
 
         var state = await adapter.GetStateAsync(CancellationToken.None);
         var decision = Assert.IsType<DecisionDto>(state.CurrentDecision);
-        var prepared = Assert.Single(decision.Actions);
-        Assert.Equal("forge-tui-27-choice-1", prepared.ActionId);
+        Assert.Equal(2, decision.Actions.Count);
+        var prepared = Assert.Single(decision.Actions, action => action.ActionId == action1.ActionId);
+        var alternate = Assert.Single(decision.Actions, action => action.ActionId == action2.ActionId);
         Assert.Equal("prepare", prepared.CastMode);
         Assert.Equal("forge:session-prepared:31", prepared.PreparedSourceCardInstanceId);
+        Assert.Equal("{U}{U}", alternate.DisplayManaCost);
     }
 
     [Fact]
