@@ -923,6 +923,59 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void DelveDecision_ExposesCancelCastAsSeparateNonCardAction()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "DELVE - Choose cards from your graveyard to exile\n" +
+            "[bridge paymentContextId=P7]\n" +
+            "[kind=cost_selection costKind=delve sourceZone=graveyard min=0 max=2 selected=0 ordered=false]\n" +
+            "  0. Done\n" +
+            "  1. Card A [id=41] [bridge entityKind=card cardInstanceId=41 sourceZone=graveyard]\n" +
+            "  2. Card B [id=42] [bridge entityKind=card cardInstanceId=42 sourceZone=graveyard]\n" +
+            "  3. CANCEL CAST [bridge sourceZone=unknown actionKind=cancel_payment cancelScope=cast paymentContextId=P7]\n" +
+            "Enter choice (0-3): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        var cancel = Assert.Single(decision.Actions, action => action.Type == "cancel_payment");
+        Assert.Equal("cancel_payment", cancel.ActionKind);
+        Assert.Equal("cast", cancel.CancelScope);
+        Assert.Equal("P7", cancel.Provenance?.PaymentContextId);
+        Assert.Null(cancel.CardIdentity);
+        Assert.Null(cancel.CardInstanceId);
+        Assert.Null(cancel.EntityCardInstanceId);
+        Assert.Equal("3", Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Inputs[cancel.ActionId]);
+        Assert.Equal("forge-object:41", decision.Actions[1].CardInstanceId);
+        Assert.Equal("forge-object:42", decision.Actions[2].CardInstanceId);
+    }
+
+    [Fact]
+    public void PlaneswalkerAndBattleCastLabelsRemainCastSpellActionsWithExactSources()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "What would you like to do?\n" +
+            "  0. Pass priority (do nothing)\n" +
+            "  1. Cast planeswalker: Ashiok, Nightmare Weaver [id=98] - {3}{U}{B} [bridge sourceZone=hand actionKind=cast_spell abilityKind=spell castMode=normal costKind=printed]\n" +
+            "  2. Cast battle: Invasion of Zendikar [id=99] - {3}{G} [bridge sourceZone=hand actionKind=cast_spell abilityKind=spell castMode=normal costKind=printed]\n" +
+            "Enter choice (0-2): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        var planeswalker = decision.Actions[1];
+        var battle = decision.Actions[2];
+        Assert.Equal("cast_spell", planeswalker.Type);
+        Assert.Equal("Ashiok, Nightmare Weaver", planeswalker.CardIdentity);
+        Assert.Equal("hand", planeswalker.SourceZone);
+        Assert.Equal("forge-object:98", planeswalker.CardInstanceId);
+        Assert.Equal("cast_spell", planeswalker.ActionKind);
+        Assert.Equal("cast_spell", battle.Type);
+        Assert.Equal("Invasion of Zendikar", battle.CardIdentity);
+        Assert.Equal("forge-object:99", battle.CardInstanceId);
+        Assert.NotEqual(planeswalker.ActionId, battle.ActionId);
+    }
+
+    [Fact]
     public void ProductionDelveMetadata_WithAdditiveMinDelve_RemainsStructuredAndReusesCollectionIdentity()
     {
         var parser = new ForgeTuiParser();

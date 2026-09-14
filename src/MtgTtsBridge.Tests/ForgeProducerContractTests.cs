@@ -277,7 +277,7 @@ public sealed class ForgeProducerContractTests
     {
         Assert.Contains("bridgeChoiceMetadata", Patch);
         Assert.Contains("sourceZone=", Patch);
-        Assert.Contains("getCastableSpellsFromAllZones", Patch);
+        Assert.Contains("getCastableSpellAbilities", Patch);
         Assert.Contains("for (ZoneType zone : ZoneType.values())", Patch);
         Assert.Contains("getZone().getZoneType()", Patch);
         Assert.Contains("getKeyword().getKeyword()", Patch);
@@ -391,7 +391,14 @@ public sealed class ForgeProducerContractTests
     public void HumanPriorityUsesForgeLegalityWithoutSilentlySkippingItsWindow()
     {
         Assert.Contains("List<SpellAbility> landAbilities = getPlayableLands();", Patch);
-        Assert.Contains("getCastableCreaturesAndArtifacts(true)", Patch);
+        Assert.Contains("List<SpellAbility> castableSpellAbilities = getCastableSpellAbilities();", Patch);
+        Assert.Contains("availableActions.addAll(castableSpellAbilities);", Patch);
+        Assert.Contains("private List<SpellAbility> getCastableSpellAbilities()", Patch);
+        Assert.Contains("Set<SpellAbility> seenAbilities", Patch);
+        Assert.Contains("if (!sa.isSpell()) continue;", Patch);
+        Assert.Contains("else if (source.isPlaneswalker()) category = \"planeswalker\"", Patch);
+        Assert.Contains("if (source.isBattle()) category = \"battle\"", Patch);
+        Assert.Contains("category = \"spell\"", Patch);
         Assert.Contains("sa.setActivatingPlayer(player);", Patch);
         Assert.Contains("boolean isActivePlayersTurn = ph.isPlayerTurn(player);", Patch);
         Assert.Contains("boolean hasPriority = player.equals(ph.getPriorityPlayer());", Patch);
@@ -453,7 +460,7 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("prototypeToughness=", Patch);
         Assert.Contains("bridgeDisplayedManaCost", Patch);
         Assert.Contains("sa.getPayCosts().toString()", Patch);
-        Assert.Contains("Keep every legal ability", Patch);
+        Assert.Contains("each legal spell ability once", Patch);
     }
 
     [Fact]
@@ -471,7 +478,7 @@ public sealed class ForgeProducerContractTests
     public void PreparedSpellEnumerationWalksTheExactPreparedSourceRelation()
     {
         var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
-        var body = ExtractMethodBody(controller, "private List<SpellAbility> getCastableSpellsFromAllZones(String category)");
+        var body = ExtractMethodBody(controller, "private List<SpellAbility> getCastableSpellAbilities()");
 
         Assert.Contains("permanent.getPreparedSpell()", body);
         Assert.Contains("prepared.isInZone(ZoneType.Exile)", body);
@@ -480,6 +487,40 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("[TUI-DIAG prepared]", controller);
         Assert.Contains("source permanent is never used as the cast object", controller);
         Assert.Contains("castMode = preparedSpell ? \"prepare\"", controller);
+    }
+
+    [Fact]
+    public void HumanPriorityCoversEveryNormalCastableCardTypeWithoutTypeBucketDuplicates()
+    {
+        var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
+        var body = ExtractMethodBody(controller, "private List<SpellAbility> getCastableSpellAbilities()");
+
+        Assert.Contains("addCastableSpellAbilities(c, true, spells, seenAbilities)", body);
+        Assert.Contains("seenAbilities.add(sa)", body);
+        Assert.Contains("source.isCreature()", controller);
+        Assert.Contains("source.isArtifact()", controller);
+        Assert.Contains("source.isEnchantment()", controller);
+        Assert.Contains("source.isPlaneswalker()", controller);
+        Assert.Contains("source.isBattle()", controller);
+        Assert.Contains("source.isInstant()", controller);
+        Assert.Contains("source.isSorcery()", controller);
+        Assert.DoesNotContain("getCastableCreaturesAndArtifacts", controller);
+        Assert.DoesNotContain("getCastableSorceries", controller);
+        Assert.DoesNotContain("getCastableInstants", controller);
+    }
+
+    [Fact]
+    public void DelvePaymentCancellationUsesForgeAbortAndExposesASeparateStructuredAction()
+    {
+        Assert.Contains("if (toExile == null)", Patch);
+        Assert.Contains("if (!CostAdjustment.adjust(toPay, ability, activator, cardsToDelve, false, effect))", Patch);
+        Assert.Contains("return false;", Patch[Patch.IndexOf("if (toExile == null)", StringComparison.Ordinal)..]);
+        Assert.Contains("CANCEL CAST", Patch);
+        Assert.Contains("actionKind=cancel_payment", Patch);
+        Assert.Contains("cancelScope=cast", Patch);
+        Assert.Contains("paymentContextId=", Patch);
+        Assert.Contains("if (canCancelPayment && choice == cancelChoice)", Patch);
+        Assert.Contains("if (selected == null) return null;", Patch);
     }
 
     [Fact]

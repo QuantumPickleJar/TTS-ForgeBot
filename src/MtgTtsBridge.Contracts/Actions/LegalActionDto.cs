@@ -38,7 +38,11 @@ public sealed record LegalActionDto(
     // Some Forge controller paths expose the selected entity separately from
     // the display/source fields. Keep it exact and session-scoped at the
     // adapter boundary just like the other CardInstanceId fields.
-    string? EntityCardInstanceId = null)
+    string? EntityCardInstanceId = null,
+    // Structured cancellation metadata. Cancellation remains an ordinary
+    // Forge action with its own ActionId; this scope tells presenters what it
+    // cancels without parsing the display label.
+    string? CancelScope = null)
 {
     /// <summary>
     /// Whether Forge explicitly authorized revealing this action's card identity
