@@ -1675,6 +1675,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     if (replacingMatch or forceReset) and BridgeResetRevealSessionState ~= nil then
         BridgeResetRevealSessionState("event-session-prepare")
     end
+    if (replacingMatch or forceReset) and BridgeEndNativeSearchSelectionSession ~= nil then
+        BridgeEndNativeSearchSelectionSession("event-session-prepare")
+    end
     if preserveLiveMappings == true and BridgeState.eventSessionId == sessionId
         and BridgeState.physicalOwnershipSessionId == sessionId then
         preservedLiveMappings = {}
@@ -1879,6 +1882,9 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.discardPresentation = nil
     BridgeState.mulliganBottomInstanceIds = {}
     BridgeState.mulliganReturningInstanceIds = {}
+    BridgeState.nativeSearchSelectionSession = nil
+    BridgeState.nativeSearchSessionGeneration = (BridgeState.nativeSearchSessionGeneration or 0) + 1
+    BridgeState.hudMainPanelAutoCollapseOwner = nil
     BridgeState.mulliganBottomQueueBySeatId = {}
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
     BridgeState.libraryExtractionQueueBySeatId = {}

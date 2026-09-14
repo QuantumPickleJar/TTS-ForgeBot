@@ -260,6 +260,86 @@ public sealed class DelveAndMulliganLuaContractTests
     }
 
     [Fact]
+    public void DelveCancel_SubmitsForgeCancelOnceAndDoesNotStartPhysicalExtraction()
+    {
+        Assert.Contains("BridgeFindCancelAction(decision)", Script);
+        Assert.Contains("physical_cancel_cast", Script);
+        Assert.Contains("action.type == \"cancel_payment\"", Script);
+
+        var lua = new Script(CoreModules.Preset_Complete);
+        lua.DoString(@"
+            function log() end
+            function broadcastToAll() end
+            function printToAll() end
+            function getObjectFromGUID() return nil end
+            function getAllObjects() return {} end
+            function Wait() end
+            Time = { waitForSeconds = function(_, callback) if callback then callback() end end }
+            JSON = { encode = function() return '{}' end, decode = function() return {} end }
+        ");
+        lua.DoString(Script);
+        lua.DoString(@"
+            submissionCount = 0
+            submittedActionId = nil
+            submittedSource = nil
+            BridgeState = {}
+            BridgeState.eventSessionId = 'session-delve'
+            BridgeState.decisionPresentationGeneration = 4
+            BridgeState.desyncLatched = false
+            BridgeState.physicalByInstanceId = { ['forge:session-delve:41'] = 'grave-41' }
+            BridgeState.physicalSeatByGuid = { ['grave-41'] = 'forge-player-1' }
+            BridgeState.physicalZoneByGuid = { ['grave-41'] = 'graveyard' }
+            BridgeState.graveyardExtractionActiveBySeatId = {}
+            physicalMappingFingerprint = 'grave-41'
+            extractionStarted = false
+            BridgeState.lastDecision = {
+                decisionId = 'forge-tui-delve', kind = 'cost_selection', costKind = 'delve',
+                seatId = 'forge-player-1', confirmRequired = true, requiresConfirmation = true,
+                actions = {
+                    { actionId = 'card-41', type = 'choose_option', cardInstanceId = 'forge:session-delve:41', sourceZone = 'graveyard' },
+                    { actionId = 'cancel', type = 'cancel_payment', cancelScope = 'cast' }
+                }
+            }
+            BridgeState.selectedActionIds = { ['card-41'] = true }
+            BridgeState.choiceTransactions = {}
+            BridgeRecordCancelAction = function() end
+            BridgeClaimHumanTtsColor = function() end
+            BridgeClearHighlights = function() end
+            BridgeResetSelectionState = function()
+                BridgeState.selectedActionIds = {}
+                BridgeState.selectedGuidByActionId = {}
+                BridgeState.selectionDecisionId = nil
+            end
+            BridgeSubmitChoice = function(decisionId, actionId, source)
+                if BridgeState.choiceTransactions[decisionId] == nil then
+                    BridgeState.choiceTransactions[decisionId] = { actionId = actionId, source = source }
+                    submissionCount = submissionCount + 1
+                    submittedActionId = actionId
+                    submittedSource = source
+                end
+            end
+        ");
+        lua.DoString(@"
+            runOk, runError = pcall(function()
+                assert(BridgeState ~= nil, 'BridgeState missing')
+                local foundCancel = BridgeFindCancelAction(BridgeState.lastDecision)
+                assert(foundCancel ~= nil, 'cancel action missing')
+                BridgeHudCancel(nil, 'White', nil)
+                BridgeHudCancel(nil, 'White', nil)
+                assert(submissionCount == 1, 'cancel was submitted more than once or not submitted')
+                assert(submittedActionId == 'cancel' and submittedSource == 'physical_cancel_cast',
+                    'wrong cancel action id=' .. tostring(submittedActionId) .. ' source=' .. tostring(submittedSource))
+                assert(BridgeState.selectedActionIds == nil or next(BridgeState.selectedActionIds) == nil, 'local Delve selection survived cancel')
+                assert(physicalMappingFingerprint == 'grave-41', 'physical mapping changed')
+                assert(extractionStarted == false, 'graveyard extraction started')
+                assert(BridgeState.desyncLatched ~= true, 'cancel latched desync')
+            end)
+        ");
+        var runError = lua.Globals.Get("runError");
+        Assert.True(lua.Globals.Get("runOk").Boolean, runError.ToString());
+    }
+
+    [Fact]
     public void MulliganBottomSelection_UsesForgeSelectedCountAndBottomInsertionOnlyAfterDone()
     {
         Assert.Contains("BridgeIsStructuredForgeToggleChoice(decision)", Script);
@@ -450,5 +530,166 @@ public sealed class DelveAndMulliganLuaContractTests
         Assert.Contains("BridgeScheduleSnapshotReconcile(\"hand-readiness-timeout\")", recovery);
         Assert.Contains("BridgeResyncFromAuthoritativeSnapshot(\"hand-readiness-timeout\")", recovery);
         Assert.DoesNotContain("cardName", recovery);
+    }
+
+    [Fact]
+    public void NativeDeckSearchSelection_UsesContainedCallbacksWithStructuredToggleTransport()
+    {
+        var lua = new Script(CoreModules.Preset_Complete);
+        lua.DoString(@"
+            function log() end
+            function broadcastToAll() end
+            function printToAll() end
+            function getObjectFromGUID() return nil end
+            function getAllObjects() return {} end
+            function Wait() end
+            Time = { waitForSeconds = function(_, callback) if callback then callback() end end }
+            JSON = { encode = function() return '{}' end, decode = function() return {} end }
+        ");
+        lua.DoString(Script);
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'search-session'
+            BridgeState.eventSessionGeneration = 5
+            BridgeState.decisionPresentationGeneration = 12
+            BridgeState.submitting = false
+            BridgeState.choiceTransactions = {}
+            BridgeState.selectedActionIds = {}
+            BridgeState.ui = { mounted = true, dirty = false }
+            BridgeState.nativeSearchSelectionSession = nil
+            BridgeState.nativeSearchSessionGeneration = 0
+            BridgeState.physicalContainedInstanceIdByGuid = { ['card-1'] = 'forge-object:9' }
+            BridgeState.physicalInstanceIdByGuid = {}
+
+            function BridgeUiMarkDirty() end
+            function BridgeRecordInteractionProducer() end
+            function BridgeWaitFrames(callback) if callback then callback() end end
+            submissions = {}
+            submissionsArePhysical = true
+            function BridgeSubmitChoice(decisionId, actionId, source)
+                table.insert(submissions, { decisionId = decisionId, actionId = actionId, source = source })
+                if source ~= 'physical_structured_toggle' then submissionsArePhysical = false end
+                for _, action in pairs(BridgeState.lastDecision.actions or {}) do
+                    if action.actionId == actionId then
+                        action.isSelected = BridgeState.selectedActionIds[actionId] == true
+                    end
+                end
+            end
+
+            local deck = { tag = 'Deck', guid = 'deck-1' }
+            function deck.getGUID() return deck.guid end
+            local card = { tag = 'Card', guid = 'card-1' }
+            function card.getGUID() return card.guid end
+            card.bridgeInstanceId = 'forge-object:9'
+
+            function BridgeSafeObjectGuid(object)
+                return object ~= nil and object.guid or nil
+            end
+            function BridgeReadPhysicalIdentity(object)
+                return object ~= nil and object.bridgeInstanceId or nil
+            end
+            function BridgeResolveExactActionPhysical(decision, action)
+                if action ~= nil and action.actionId == 'toggle-9' then
+                    return { kind = 'exact-contained', deckGuid = 'deck-1', zone = 'graveyard' }, nil, action.cardInstanceId
+                end
+                return nil, 'not-contained', action and action.cardInstanceId or nil
+            end
+
+            local decision = {
+                decisionId = 'forge-tui-delve-search',
+                kind = 'cost_selection',
+                costKind = 'delve',
+                confirmRequired = true,
+                requiresConfirmation = true,
+                seatId = 'forge-player-1',
+                actions = {
+                    { actionId = 'done', type = 'choose_none' },
+                    { actionId = 'toggle-9', type = 'choose_option', cardInstanceId = 'forge-object:9', sourceZone = 'graveyard', isSelected = false }
+                }
+            }
+
+            runOk, runError = pcall(function()
+                testStep = 'first-sync'
+                BridgeState.lastDecision = decision
+                BridgeSyncNativeSearchSelectionSession(decision)
+                testStep = 'leave'
+                leaveHandled = BridgeNativeSearchHandleContainerTransition(deck, card, 'leave')
+                leaveSubmitCount = #submissions
+                leaveSelection = BridgeState.selectedActionIds['toggle-9'] == true
+
+                testStep = 'second-sync'
+                for _, action in pairs(decision.actions or {}) do
+                    if action.actionId == 'toggle-9' then action.isSelected = true end
+                end
+                BridgeSyncNativeSearchSelectionSession(decision)
+                testStep = 'enter'
+                enterHandled = BridgeNativeSearchHandleContainerTransition(deck, card, 'enter')
+                enterSubmitCount = #submissions
+                enterSelectionCleared = BridgeState.selectedActionIds['toggle-9'] == nil
+
+                testStep = 'stale'
+                BridgeState.lastDecision = { decisionId = 'next-decision', kind = 'main_priority', actions = {} }
+                staleHandled = BridgeNativeSearchHandleContainerTransition(deck, card, 'leave')
+                sessionRetired = BridgeState.nativeSearchSelectionSession == nil
+            end)
+        ");
+
+        Assert.True(lua.Globals.Get("runOk").Boolean,
+            "native search failed at " + lua.Globals.Get("testStep").String + ": "
+            + lua.Globals.Get("runError").ToString());
+        Assert.True(lua.Globals.Get("leaveHandled").Boolean);
+        Assert.Equal(1, lua.Globals.Get("leaveSubmitCount").Number);
+        Assert.True(lua.Globals.Get("leaveSelection").Boolean);
+        Assert.True(lua.Globals.Get("enterHandled").Boolean);
+        Assert.Equal(2, lua.Globals.Get("enterSubmitCount").Number);
+        Assert.True(lua.Globals.Get("enterSelectionCleared").Boolean);
+        Assert.False(lua.Globals.Get("staleHandled").Boolean);
+        Assert.True(lua.Globals.Get("sessionRetired").Boolean);
+
+        Assert.True(lua.Globals.Get("submissionsArePhysical").Boolean);
+    }
+
+    [Fact]
+    public void MainHudCollapse_UsesManualToggleAndAutoCollapseOwnershipFences()
+    {
+        var lua = new Script(CoreModules.Preset_Complete);
+        lua.DoString(@"
+            function log() end
+            function broadcastToAll() end
+            function printToAll() end
+            function getObjectFromGUID() return nil end
+            function getAllObjects() return {} end
+            function Wait() end
+            Time = { waitForSeconds = function(_, callback) if callback then callback() end end }
+            JSON = { encode = function() return '{}' end, decode = function() return {} end }
+        ");
+        lua.DoString(Script);
+        lua.DoString(@"
+            dirtyCount = 0
+            function BridgeUiMarkDirty() dirtyCount = dirtyCount + 1 end
+
+            BridgeState.hudMainPanelCollapsedManual = false
+            BridgeState.hudMainPanelAutoCollapseOwner = nil
+
+            collapsedInitially = BridgeHudMainPanelCollapsed()
+            autoAcquired = BridgeHudAcquireMainPanelAutoCollapse('owner-1')
+            collapsedAfterAuto = BridgeHudMainPanelCollapsed()
+            staleRelease = BridgeHudReleaseMainPanelAutoCollapse('owner-stale')
+            collapsedAfterStaleRelease = BridgeHudMainPanelCollapsed()
+            ownerRelease = BridgeHudReleaseMainPanelAutoCollapse('owner-1')
+            collapsedAfterOwnerRelease = BridgeHudMainPanelCollapsed()
+
+            BridgeHudMainPanelToggle('White', '', 'BridgeHudMainPanelToggle')
+            collapsedAfterManualToggle = BridgeHudMainPanelCollapsed()
+        ");
+
+        Assert.False(lua.Globals.Get("collapsedInitially").Boolean);
+        Assert.True(lua.Globals.Get("autoAcquired").Boolean);
+        Assert.True(lua.Globals.Get("collapsedAfterAuto").Boolean);
+        Assert.False(lua.Globals.Get("staleRelease").Boolean);
+        Assert.True(lua.Globals.Get("collapsedAfterStaleRelease").Boolean);
+        Assert.True(lua.Globals.Get("ownerRelease").Boolean);
+        Assert.False(lua.Globals.Get("collapsedAfterOwnerRelease").Boolean);
+        Assert.True(lua.Globals.Get("collapsedAfterManualToggle").Boolean);
+        Assert.True(lua.Globals.Get("dirtyCount").Number >= 3);
     }
 }

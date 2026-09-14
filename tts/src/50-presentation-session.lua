@@ -1973,6 +1973,9 @@ function BridgeStopOnDesync(message)
     BridgeState.pendingDecisionDeferredAt = nil
     BridgeState.pendingDecisionDeferredCursor = 0
     BridgeState.pendingDecisionDeferredApplied = 0
+    if BridgeEndNativeSearchSelectionSession ~= nil then
+        BridgeEndNativeSearchSelectionSession("desync")
+    end
     BridgeClearHighlights()
     BridgeResetSelectionState()
     BridgeHideMainPriorityControls()
@@ -2896,6 +2899,34 @@ function BridgeHudConnectionPresentation()
     return "○ SETUP", BRIDGE_HUD_COLORS.warning
 end
 
+function BridgeHudMainPanelCollapsed()
+    return BridgeState.hudMainPanelCollapsedManual == true
+        or BridgeState.hudMainPanelAutoCollapseOwner ~= nil
+end
+
+function BridgeHudAcquireMainPanelAutoCollapse(owner)
+    if owner == nil or tostring(owner) == "" then return false end
+    if BridgeState.hudMainPanelAutoCollapseOwner == owner then return true end
+    BridgeState.hudMainPanelAutoCollapseOwner = owner
+    BridgeUiMarkDirty("hud-main-auto-collapse")
+    return true
+end
+
+function BridgeHudReleaseMainPanelAutoCollapse(owner)
+    if owner ~= nil and BridgeState.hudMainPanelAutoCollapseOwner ~= owner then
+        return false
+    end
+    if BridgeState.hudMainPanelAutoCollapseOwner == nil then return true end
+    BridgeState.hudMainPanelAutoCollapseOwner = nil
+    BridgeUiMarkDirty("hud-main-auto-release")
+    return true
+end
+
+function BridgeHudMainPanelToggle(player, value, id)
+    BridgeState.hudMainPanelCollapsedManual = not (BridgeState.hudMainPanelCollapsedManual == true)
+    BridgeUiMarkDirty("hud-main-manual-toggle")
+end
+
 -- Preserve the existing HUD renderer and layer game-HUD presentation over it.
 -- Existing IDs, action rows, exact Forge choices, FAST/MANA/LOG behavior, and
 -- footer semantics remain owned by the original renderer above.
@@ -2904,6 +2935,18 @@ function BridgeUiFlush()
     BridgeUiFlushBase()
     local ui = BridgeState.ui
     if ui == nil or not ui.mounted then return end
+
+    local mainPanelCollapsed = BridgeHudMainPanelCollapsed()
+    local autoCollapsed = BridgeState.hudMainPanelAutoCollapseOwner ~= nil
+    local collapseLabel = mainPanelCollapsed and "EXPAND HUD" or "COLLAPSE HUD"
+    local collapseState = autoCollapsed and "AUTO-COLLAPSED FOR NATIVE SEARCH"
+        or (BridgeState.hudMainPanelCollapsedManual == true and "MANUALLY COLLAPSED" or "")
+    BridgeUiSet("BridgeHudMainPanelToggle", "text", collapseLabel)
+    BridgeUiSet("BridgeHudMainPanelToggle", "tooltip", mainPanelCollapsed
+        and "Expand the main ForgeBot panel."
+        or "Collapse the main ForgeBot panel.")
+    BridgeUiSet("BridgeHudMainPanelState", "text", collapseState)
+    BridgeUiSet("BridgeHudGamePanel", "active", mainPanelCollapsed and "false" or "true")
 
     local devEnabled = BRIDGE_DEV_UI_ENABLED == true
     local devExpanded = devEnabled and ui.diagnosticsVisible == true
