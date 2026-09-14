@@ -2403,6 +2403,10 @@ function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
                 authoritativeCursor = tonumber(tx.targetCursor or 0) or 0,
                 reason = "embodiment-transaction-committed"
             }
+            if BridgeFinalizeSuccessfulSnapshotReconcileReadiness ~= nil then
+                BridgeFinalizeSuccessfulSnapshotReconcileReadiness(tx.snapshot,
+                    "embodiment-transaction-committed")
+            end
         end
         BridgeRetireTerminalRecoveryErrorAfterVerifiedReplacementBootstrap(tx)
         BridgeReleaseTerminalPresentationAfterVerifiedReplacementBootstrap(tx)
@@ -2979,6 +2983,17 @@ function BridgePerformanceDiagnosticPayload()
     summary.snapshotVisualDesignations = tonumber(metrics.snapshotVisualDesignations or 0) or 0
     summary.snapshotReconcileLastAppliedCursor = BridgeState.snapshotReconcileLastAppliedCursor
     summary.snapshotReconcileLastAppliedGeneration = BridgeState.snapshotReconcileLastAppliedGeneration
+    local readinessDiagnostic = BridgeHumanActionReadinessDiagnosticPayload ~= nil
+        and BridgeHumanActionReadinessDiagnosticPayload() or nil
+    local actionRowCount = #(ui.actionRows or {})
+    local activeActionButtonCount = 0
+    for index = 1, 24 do
+        if BridgeDiagnosticUiAttribute("BridgeHudAction" .. tostring(index), "active") == "true" then
+            activeActionButtonCount = activeActionButtonCount + 1
+        end
+    end
+    summary.actionRowCount = actionRowCount
+    summary.activeActionButtonCount = activeActionButtonCount
     canary.turnNumber = tonumber(BridgeState.tableTurnCount or 0) or nil
     canary.phase = BridgeState.currentPhase
     canary.activeSeatId = BridgeState.currentTurnSeatId
@@ -3026,8 +3041,13 @@ function BridgePerformanceDiagnosticPayload()
             renderedDecisionId = BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
             receivedCursor = BridgeState.lastReceivedEventSequence,
             appliedCursor = BridgeState.lastAppliedEventSequence,
-            status = BridgeState.statusText
+            status = BridgeState.statusText,
+            choiceTrayActive = BridgeDiagnosticUiAttribute("BridgeHudChoiceTray", "active"),
+            actionRowCount = actionRowCount,
+            activeActionButtonCount = activeActionButtonCount,
+            humanActionReadiness = readinessDiagnostic
         },
+        humanActionReadiness = readinessDiagnostic,
         targetInteraction = BridgeTargetInteractionDiagnosticPayload ~= nil
             and BridgeTargetInteractionDiagnosticPayload() or nil,
         resyncLifecycle = BridgeDiagnosticSnapshot(BridgeState.resyncLifecycle or {}),
@@ -3425,8 +3445,14 @@ BridgeState = {
         sessionGeneration = nil,
         physicalTransactionGeneration = nil,
         authoritativeCursor = nil,
-        reason = "not-certified"
+        reason = "not-certified",
+        lastInvalidationReason = nil,
+        lastInvalidationAt = nil,
+        lastCertificationReason = nil,
+        lastCertificationAt = nil
     },
+    lastHumanActionReadinessInvalidationReason = nil,
+    lastHumanActionReadinessCertificationReason = nil,
     randomResultPresentationGeneration = 0,
     activeRandomResultPresentation = nil,
     randomResultPresentationDiagnostics = {},

@@ -357,6 +357,9 @@ function BridgeInvalidateHumanActionReadiness(reason)
     readiness.authoritativeCursor = nil
     readiness.compatibilityCertification = nil
     readiness.reason = tostring(reason or "invalidated")
+    readiness.lastInvalidationReason = readiness.reason
+    readiness.lastInvalidationAt = os.clock()
+    BridgeState.lastHumanActionReadinessInvalidationReason = readiness.reason
     BridgeState.humanActionReadiness = readiness
 end
 
@@ -422,11 +425,15 @@ function BridgeCertifyHumanActionReadiness(decision, reason)
     readiness.authoritativeCursor = math.max(cursor, physicalCursor)
     readiness.reason = tostring(reason or "certified")
     readiness.compatibilityCertification = nil
+    readiness.lastCertificationReason = readiness.reason
+    readiness.lastCertificationAt = os.clock()
+    BridgeState.lastHumanActionReadinessCertificationReason = readiness.reason
     BridgeState.humanActionReadiness = readiness
     return true, nil
 end
 
 function BridgeHumanActionReadiness(decision, action, source, physicalGuid)
+    local diagnosticProbe = source == "diagnostic"
     local blocked, classification = BridgeReadinessGlobalBlock()
     if blocked ~= nil then
         return {ready = false, reason = blocked, classification = classification, source = source}
@@ -438,7 +445,9 @@ function BridgeHumanActionReadiness(decision, action, source, physicalGuid)
     if readiness.certified == true
         and readiness.physicalTransactionGeneration ~= nil
         and readiness.physicalTransactionGeneration ~= BridgeState.physicalTransactionGeneration then
-        BridgeInvalidateHumanActionReadiness("physical transaction generation changed")
+        if not diagnosticProbe then
+            BridgeInvalidateHumanActionReadiness("physical transaction generation changed")
+        end
         return {ready = false, reason = "physical transaction generation changed", classification = "PHYSICAL_MUTATION", source = source}
     end
     local compatibilityCertification = false
@@ -456,20 +465,27 @@ function BridgeHumanActionReadiness(decision, action, source, physicalGuid)
             -- never a live TTS state (accepted decisions move setupStage out
             -- of IDLE before rendering); retain their old contract while the
             -- real path remains strict below.
-            readiness.certified = true
-            readiness.globalCertified = true
-            readiness.decisionAccepted = true
-            readiness.sessionId = BridgeState.eventSessionId
-            readiness.decisionId = decision.decisionId
-            readiness.sessionGeneration = BridgeState.eventSessionGeneration
-            readiness.physicalTransactionGeneration = BridgeState.physicalTransactionGeneration
-            readiness.authoritativeCursor = cursor
-            readiness.reason = "current-decision-compatible-certification"
-            readiness.compatibilityCertification = true
-            BridgeState.humanActionReadiness = readiness
-            compatibilityCertification = true
+            if not diagnosticProbe then
+                readiness.certified = true
+                readiness.globalCertified = true
+                readiness.decisionAccepted = true
+                readiness.sessionId = BridgeState.eventSessionId
+                readiness.decisionId = decision.decisionId
+                readiness.sessionGeneration = BridgeState.eventSessionGeneration
+                readiness.physicalTransactionGeneration = BridgeState.physicalTransactionGeneration
+                readiness.authoritativeCursor = cursor
+                readiness.reason = "current-decision-compatible-certification"
+                readiness.compatibilityCertification = true
+                readiness.lastCertificationReason = readiness.reason
+                readiness.lastCertificationAt = os.clock()
+                BridgeState.lastHumanActionReadinessCertificationReason = readiness.reason
+                BridgeState.humanActionReadiness = readiness
+                compatibilityCertification = true
+            end
         elseif cursor <= applied then
-            BridgeCertifyHumanActionReadiness(decision, "current-decision-compatible-certification")
+            if not diagnosticProbe then
+                BridgeCertifyHumanActionReadiness(decision, "current-decision-compatible-certification")
+            end
         end
         readiness = BridgeState.humanActionReadiness or readiness
     end
@@ -520,6 +536,126 @@ function BridgeHumanActionReadiness(decision, action, source, physicalGuid)
         end
     end
     return {ready = true, reason = nil, classification = "READY", source = source}
+end
+
+-- A safe snapshot is a physical verification boundary.  It may legitimately
+-- follow decision presentation and may also follow a physical generation
+-- change, so the current decision must be certified again against the new
+-- verified generation.  This is deliberately separate from presentation:
+-- no Forge decision is fabricated and no readiness is granted while a
+-- reconcile or physical queue is still active.
+function BridgeFinalizeSuccessfulSnapshotReconcileReadiness(snapshot, reason)
+    local decision = BridgeState.lastDecision
+    local function fail(detail)
+        local currentSession = BridgeState.eventSessionId
+        local snapshotSession = snapshot and snapshot.sessionId or nil
+        if decision ~= nil and decision.sessionId ~= nil
+            and tostring(decision.sessionId) == tostring(currentSession)
+            and (snapshotSession == nil or tostring(snapshotSession) == tostring(currentSession)) then
+            BridgeInvalidateHumanActionReadiness("snapshot reconcile verification failed: " .. tostring(detail))
+        end
+        return false, detail
+    end
+    if snapshot == nil or decision == nil then return fail("no current decision") end
+    if snapshot.sessionId ~= nil and tostring(snapshot.sessionId) ~= tostring(BridgeState.eventSessionId) then
+        return fail("snapshot session does not match current session")
+    end
+    local snapshotCursor = tonumber(snapshot.eventCursor or 0) or 0
+    local decisionCursor = tonumber(decision.eventCursor or 0) or 0
+    if decision.sessionId ~= nil and tostring(decision.sessionId) ~= tostring(BridgeState.eventSessionId) then
+        return fail("current decision belongs to another session")
+    end
+    if snapshotCursor < decisionCursor then
+        return fail("verified snapshot cursor is behind current decision")
+    end
+    local blocked, classification = BridgeReadinessGlobalBlock()
+    if blocked ~= nil then
+        return fail(tostring(classification) .. ": " .. tostring(blocked))
+    end
+    if BridgeState.snapshotReconcileInFlight == true then
+        return fail("snapshot reconciliation is still in flight")
+    end
+    if BridgeDecisionPhysicalMappingsReady ~= nil then
+        local mappingsReady, mappingReason = BridgeDecisionPhysicalMappingsReady(decision)
+        if not mappingsReady then
+            return fail("physical mapping is not ready: " .. tostring(mappingReason))
+        end
+    end
+    if decision.kind == "mulligan"
+        and tostring(decision.mulliganStage or "") == "keep_or_mulligan"
+        and BridgeCheckOpeningHandReadiness ~= nil then
+        local ready, readyCount, expectedCount, handReason = BridgeCheckOpeningHandReadiness(decision.seatId)
+        if not ready then
+            return fail(string.format("opening hand is not physically ready: ready=%s expected=%s %s",
+                tostring(readyCount), tostring(expectedCount), tostring(handReason))
+            )
+        end
+    end
+    local priorPhysicalCertificate = BridgeState.physicalStateCertificate
+    BridgeState.physicalStateCertificate = {
+        sessionId = BridgeState.eventSessionId,
+        sessionGeneration = BridgeState.eventSessionGeneration,
+        physicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
+        authoritativeCursor = snapshotCursor,
+        reason = reason or "snapshot-reconcile-verified"
+    }
+    local certified, certifyReason = BridgeCertifyHumanActionReadiness(decision,
+        reason or "snapshot-reconcile-verified")
+    if not certified then
+        BridgeState.physicalStateCertificate = priorPhysicalCertificate
+        return fail(tostring(certifyReason or "current decision could not be certified"))
+    end
+    BridgeUiMarkDirty("snapshot-reconcile-readiness-recertified")
+    BridgeLog(string.format("[Bridge] snapshot reconcile re-certified current decision=%s cursor=%s physicalGeneration=%s reason=%s",
+        tostring(decision.decisionId), tostring(snapshotCursor), tostring(BridgeState.physicalTransactionGeneration),
+        tostring(reason or "snapshot-reconcile-verified")))
+    return true, nil
+end
+
+function BridgeHumanActionReadinessDiagnosticPayload()
+    local readiness = BridgeState.humanActionReadiness or {}
+    local decision = BridgeState.lastDecision
+    local probe = BridgeHumanActionReadiness(decision, nil, "diagnostic")
+    local physical = BridgeState.physicalStateCertificate
+    return {
+        certified = readiness.certified == true,
+        globalCertified = readiness.globalCertified == true,
+        decisionAccepted = readiness.decisionAccepted == true,
+        sessionId = readiness.sessionId,
+        decisionId = readiness.decisionId,
+        sessionGeneration = readiness.sessionGeneration,
+        physicalTransactionGeneration = readiness.physicalTransactionGeneration,
+        authoritativeCursor = readiness.authoritativeCursor,
+        reason = readiness.reason,
+        compatibilityCertification = readiness.compatibilityCertification == true,
+        lastInvalidationReason = readiness.lastInvalidationReason,
+        lastInvalidationAt = readiness.lastInvalidationAt,
+        lastCertificationReason = readiness.lastCertificationReason,
+        lastCertificationAt = readiness.lastCertificationAt,
+        probe = {
+            ready = probe.ready == true,
+            classification = probe.classification,
+            reason = probe.reason,
+            source = probe.source
+        },
+        currentPhysicalTransactionGeneration = BridgeState.physicalTransactionGeneration,
+        eventSessionGeneration = BridgeState.eventSessionGeneration,
+        setupStage = BridgeState.setupStage,
+        bootstrapStage = BridgeState.bootstrapStage,
+        resyncStage = BridgeState.resyncStage,
+        snapshotReconcileInFlight = BridgeState.snapshotReconcileInFlight == true,
+        physicalStateCertificate = physical and {
+            sessionId = physical.sessionId,
+            sessionGeneration = physical.sessionGeneration,
+            physicalTransactionGeneration = physical.physicalTransactionGeneration,
+            authoritativeCursor = physical.authoritativeCursor,
+            reason = physical.reason
+        } or nil,
+        lastDecisionId = decision and decision.decisionId or nil,
+        lastDecisionCursor = decision and decision.eventCursor or nil,
+        lastInvalidation = BridgeState.lastHumanActionReadinessInvalidationReason,
+        lastCertification = BridgeState.lastHumanActionReadinessCertificationReason
+    }
 end
 
 function BridgeShowHumanActionBlocked(readiness)
@@ -726,9 +862,16 @@ function BridgeUiFlush()
     -- in the large status lane.  The phase ribbon is supplemental; this text
     -- remains readable when color updates are unavailable in a TTS client.
     local phaseStatus = tostring(BridgeState.currentPhase or "WAITING")
+    local statusText = priority .. " - " .. phaseStatus
+    if decision ~= nil and decision.kind == "mulligan"
+        and tostring(decision.mulliganStage or "") == "keep_or_mulligan" then
+        statusText = interactionReady and "OPENING HAND - KEEP OR MULLIGAN"
+            or "OPENING HAND - SYNCING TABLE"
+    end
     BridgeUiSet("BridgeHudStatus", "text", terminal and "GAME OVER"
         or (protocolStopped and "SYNC ERROR" or (priority .. " • " .. phaseStatus)))
     BridgeUiSet("BridgeHudStatus", "color", (terminal or protocolStopped) and "#F8FAFC" or BridgeHudPhaseColor(BridgeState.currentPhase))
+    if not terminal and not protocolStopped then BridgeUiSet("BridgeHudStatus", "text", statusText) end
     local castPreviewPending = BridgeState.pendingIntent ~= nil
         and BridgeState.pendingIntent.action ~= nil
         and BridgeState.pendingIntent.action.type == "cast_spell"
@@ -760,6 +903,10 @@ function BridgeUiFlush()
     elseif decision ~= nil and decision.kind == "mulligan"
         and tostring(decision.mulliganStage or "") == "bottom_selection" then
         prompt = "MULLIGAN - PUT CARD ON BOTTOM, THEN CONFIRM"
+    elseif decision ~= nil and decision.kind == "mulligan"
+        and tostring(decision.mulliganStage or "") == "keep_or_mulligan" then
+        prompt = interactionReady and "OPENING HAND - KEEP OR MULLIGAN"
+            or "OPENING HAND - KEEP / MULLIGAN WILL UNLOCK AFTER PHYSICAL VERIFICATION"
     end
     BridgeUiSet("BridgeHudPrompt", "text", terminal and BridgeUiTerminalLabel(terminal)
         or (protocolStopped and "PROTOCOL RECOVERY ERROR" or prompt))
@@ -838,7 +985,11 @@ function BridgeUiFlush()
         if actionReady and decision ~= nil then
             actionReady = BridgeHumanActionReadiness(decision, action, "hud_action").ready == true
         end
-        BridgeUiSet("BridgeHudAction" .. tostring(i), "active", actionReady and "true" or "false")
+        -- Keep authoritative choices visible while physical verification is
+        -- temporarily blocked. Visibility communicates the decision;
+        -- interactability communicates whether submission is safe.
+        BridgeUiSet("BridgeHudAction" .. tostring(i), "active", action ~= nil and "true" or "false")
+        BridgeUiSet("BridgeHudAction" .. tostring(i), "interactable", actionReady and "true" or "false")
         if action ~= nil then
             if action.isGraveyardFolder == true then
                 BridgeUiSet("BridgeHudAction" .. tostring(i), "text", action.displayName)
@@ -3905,6 +4056,10 @@ function BridgeTryApplyDeferredSnapshotReconcile(reason)
     BridgeState.pendingStructuredZoneTransitionByInstanceId = {}
     BridgeState.pendingSemanticResolutionByInstanceId = {}
     BridgeApplySafeSnapshotReconcile(pending.snapshot, pending.reason or reason or "deferred")
+    if BridgeFinalizeSuccessfulSnapshotReconcileReadiness ~= nil then
+        BridgeFinalizeSuccessfulSnapshotReconcileReadiness(pending.snapshot,
+            pending.reason or reason or "deferred-snapshot-reconcile")
+    end
     return true
 end
 
@@ -3977,6 +4132,10 @@ function BridgeScheduleSnapshotReconcile(reason, category)
                 and (category ~= "ROUTINE_VERIFY" or not BridgeRoutineSnapshotBlocked())
             if canApply then
                 BridgeApplySafeSnapshotReconcile(snapshot, reason)
+                if BridgeFinalizeSuccessfulSnapshotReconcileReadiness ~= nil then
+                    BridgeFinalizeSuccessfulSnapshotReconcileReadiness(snapshot,
+                        reason or "snapshot-reconcile-verified")
+                end
             elseif alreadyCovered then
                 BridgeLogSnapshotOrdering("skipped-superseded", snapshot, reason)
             else

@@ -2600,6 +2600,8 @@ function BridgeHudSubmitReport(category, summary)
         retiredTerminalRecovery = BridgeDiagnosticSnapshot(BridgeState.terminalRecoveryErrorRetired or {}),
         presentedResult = BridgeDiagnosticPresentedResult ~= nil and BridgeDiagnosticPresentedResult() or nil,
         performanceSummary = performance.performanceSummary,
+        humanActionReadiness = performance.humanActionReadiness,
+        ttsPresentation = performance.ttsPresentation,
         recentTtsTrace = performance.recentTtsTrace,
         diagnosticCaptureLifecycle = performance.diagnosticCaptureLifecycle,
         eventDrainDiagnostics = performance.eventDrainDiagnostics
