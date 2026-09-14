@@ -1696,6 +1696,13 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     local checkpoint = BridgeState.resyncCheckpoint
     local preserveCheckpoint = checkpoint ~= nil and checkpoint.sessionId == sessionId and not replacingMatch
     local preservedLiveMappings = nil
+    if replacingMatch and BridgeRetireHumanActionState ~= nil then
+        -- Retire all old-session input before any physical cleanup/bootstrap
+        -- can yield or fail. The old PASS/YIELD and card callbacks are never
+        -- allowed to remain an interaction surface during replacement.
+        BridgeRetireHumanActionState("event-session-replacement")
+        BridgeState.physicalStateCertificate = nil
+    end
     -- Reveal projections and physical library-look sessions are session
     -- owned. Retire them before the new session can observe or render any
     -- surviving TTS objects. Preferences intentionally survive a match

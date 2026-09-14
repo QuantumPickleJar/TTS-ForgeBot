@@ -1963,6 +1963,7 @@ end
 
 function BridgeStopOnDesync(message)
     local diagnostic = tostring(message or "")
+    BridgeInvalidateHumanActionReadiness("desync-latched")
     if string.find(diagnostic, "STALE_DECISION_DID_NOT_CONVERGE", 1, true) ~= nil
         or string.find(diagnostic, "decision_provenance_lag", 1, true) ~= nil then
         BridgeStopOnDecisionProvenanceLag(diagnostic, BridgeState.staleDecisionFault)
@@ -3288,6 +3289,8 @@ function BridgeTargetInteractionDiagnosticPayload()
     local decision = BridgeState.lastDecision
     local ui = BridgeState.ui or {}
     local associations = {}
+    local actionsByGuid = {}
+    local actionsByGuidCount = 0
     local actionByGuidCount = 0
     for guid, action in pairs(BridgeState.actionByGuid or {}) do
         if action ~= nil then
@@ -3297,6 +3300,20 @@ function BridgeTargetInteractionDiagnosticPayload()
                 actionId = action.actionId,
                 actionType = action.type or action.actionType or "unknown"
             })
+        end
+    end
+    for guid, actions in pairs(BridgeState.actionsByGuid or {}) do
+        local presented = {}
+        for _, action in ipairs(actions or {}) do
+            table.insert(presented, {
+                actionId = action.actionId,
+                actionType = action.type or action.actionType or "unknown",
+                label = BridgeContextualActionLabel ~= nil and BridgeContextualActionLabel(action, #presented + 1) or nil
+            })
+        end
+        if #presented > 0 then
+            actionsByGuidCount = actionsByGuidCount + 1
+            actionsByGuid[guid] = presented
         end
     end
     table.sort(associations, function(left, right)
@@ -3316,6 +3333,8 @@ function BridgeTargetInteractionDiagnosticPayload()
         pendingIntentType = BridgeState.pendingIntent and "physical-selection" or nil,
         actionByGuidCount = actionByGuidCount,
         actionByGuid = associations,
+        actionsByGuidCount = actionsByGuidCount,
+        actionsByGuid = actionsByGuid,
         highlightedGuidCount = #(BridgeState.highlightedGuids or {}),
         hudActionRowCount = #actionRows,
         targetControlCount = targetControlCount,
