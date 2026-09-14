@@ -981,10 +981,12 @@ function BridgeEventDrainQueueState()
         local extractionLength = #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {})
         local graveyardExtractionActive = BridgeState.graveyardExtractionActiveBySeatId[seatId] == true
         local graveyardExtractionLength = #(BridgeState.graveyardExtractionQueueBySeatId[seatId] or {})
+        local graveyardTopologySettling = (BridgeState.graveyardExtractionTopologySettlingBySeatId or {})[seatId] ~= nil
         local mulliganActive = BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
         local mulliganLength = #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {})
         if extractionActive or extractionLength > 0 or graveyardExtractionActive
-            or graveyardExtractionLength > 0 or mulliganActive or mulliganLength > 0 then
+            or graveyardExtractionLength > 0 or graveyardTopologySettling
+            or mulliganActive or mulliganLength > 0 then
             physicalIdle = false
         end
         physical[seatId] = {
@@ -992,6 +994,7 @@ function BridgeEventDrainQueueState()
             libraryExtractionLength = extractionLength,
             graveyardExtractionActive = graveyardExtractionActive,
             graveyardExtractionLength = graveyardExtractionLength,
+            graveyardTopologySettling = graveyardTopologySettling,
             mulliganInsertionActive = mulliganActive,
             mulliganInsertionLength = mulliganLength,
             generation = BridgeState.physicalTransactionGeneration
@@ -3440,6 +3443,7 @@ BridgeState = {
     lastNewMatchCleanupFailure = nil,
     graveyardExtractionActiveBySeatId = {},
     graveyardExtractionTransactionBySeatId = {},
+    graveyardExtractionTopologySettlingBySeatId = {},
     -- Consecutive library transitions emitted by one Forge mutation are one
     -- physical transaction.  The queue still serializes Deck operations, but
     -- this owner prevents verification/recovery from observing its middle.
@@ -3909,6 +3913,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.graveyardExtractionQueueBySeatId = {}
     BridgeState.graveyardExtractionActiveBySeatId = {}
     BridgeState.graveyardExtractionTransactionBySeatId = {}
+    BridgeState.graveyardExtractionTopologySettlingBySeatId = {}
     BridgeState.libraryBatchBySeatId = {}
     BridgeState.mulliganBottomQueueBySeatId = {}
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}

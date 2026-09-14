@@ -1592,11 +1592,251 @@ function BridgeLogGraveyardExtraction(seatId, stage, generation, item, deckGuid,
     end
 end
 
+-- A native graveyard Deck is not stable across its 2 -> 1 transition.  TTS
+-- can retire the Deck and expose its final member as a top-level Card on a
+-- later frame, after the takeObject callback has already fired.  The queue
+-- owns this settlement boundary: no following exact extraction may resolve
+-- against the previous contained representation until the current topology
+-- has been observed and published.
+local function BridgeTopLevelGraveyardCardByGuid(seatId, expectedGuid)
+    if expectedGuid == nil or type(getAllObjects) ~= "function" then return nil end
+    local objects = {}
+    local ok = pcall(function() objects = getAllObjects() or {} end)
+    if not ok then return nil end
+    for _, object in ipairs(objects) do
+        if BridgeObjectIsUsable(object) and BridgeSafeObjectTag(object) == "Card"
+            and not BridgeIsPresentationOnlyObject(object) then
+            local guid = BridgeSafeObjectGuid(object)
+            if tostring(guid or "") == tostring(expectedGuid)
+                and tostring(BridgeState.physicalSeatByGuid[guid] or "") == tostring(seatId)
+                and tostring(BridgeState.physicalZoneByGuid[guid] or "") == "graveyard" then
+                return object
+            end
+        end
+    end
+    return nil
+end
+
+local function BridgePromoteExactCollapsedGraveyardCards(seatId)
+    local promoted = 0
+    for instanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+        if mapping ~= nil and mapping.zoneName == "graveyard"
+            and mapping.seatId == seatId and mapping.cardGuid ~= nil then
+            local containingDeck = mapping.deckGuid ~= nil
+                and BridgeGetLiveObjectByGuid(mapping.deckGuid) or nil
+            local deckStillOwnsCard = BridgeSafeObjectTag(containingDeck) == "Deck"
+                and BridgeLibraryContainsGuid(containingDeck, mapping.cardGuid)
+            if not deckStillOwnsCard and BridgeSafeObjectTag(containingDeck) ~= "Deck" then
+                -- The old Deck is no longer a live native representation. The
+                -- previous contained GUID is the only acceptable transition
+                -- provenance for the replacement loose Card.
+                local loose = BridgeTopLevelGraveyardCardByGuid(seatId, mapping.cardGuid)
+                if loose ~= nil then
+                    local looseGuid = BridgeSafeObjectGuid(loose)
+                    if looseGuid ~= mapping.cardGuid then
+                        return false, "collapsed graveyard Card GUID changed without exact provenance"
+                    end
+                    local inverse = BridgeState.physicalContainedInstanceIdByGuid[mapping.cardGuid]
+                    if inverse ~= instanceId then
+                        return false, "collapsed graveyard Card lost its contained inverse before promotion"
+                    end
+                    if not BridgeRecordLooseCardIdentity(instanceId, looseGuid, seatId, "graveyard", true) then
+                        return false, "collapsed graveyard Card could not be published as loose"
+                    end
+                    promoted = promoted + 1
+                    BridgeRecordPhysicalMutationJournal({
+                        operation = "GRAVEYARD_EXTRACTION", stage = "TOPOLOGY_REBOUND",
+                        cardInstanceId = instanceId, cardGuid = looseGuid,
+                        previousDeckGuid = mapping.deckGuid,
+                        locatorType = "LOOSE_LOCATOR", expectedZone = "graveyard"
+                    })
+                end
+            end
+        end
+    end
+    return true, promoted
+end
+
+function BridgeExactLooseGraveyardSourceReady(instanceId, seatId)
+    local mapping = BridgeState.physicalContainerByInstanceId[instanceId]
+    if mapping ~= nil then return false end
+    local guid = BridgeState.physicalByInstanceId[instanceId]
+    local object = guid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
+    return guid ~= nil and BridgeObjectIsUsable(object)
+        and BridgeSafeObjectTag(object) == "Card"
+        and BridgeState.physicalInstanceIdByGuid[guid] == instanceId
+        and BridgeState.physicalSeatByGuid[guid] == seatId
+        and BridgeState.physicalZoneByGuid[guid] == "graveyard"
+end
+
+function BridgeReobserveGraveyardExtractionTopology(seatId, generation, callback)
+    BridgeState.graveyardExtractionTopologySettlingBySeatId =
+        BridgeState.graveyardExtractionTopologySettlingBySeatId or {}
+    local sessionId = BridgeState.eventSessionId
+    local ownerToken = tostring(sessionId or "") .. ":" .. tostring(generation)
+    local maxAttempts = 8
+    local attempt = 0
+    local finished = false
+
+    local function current()
+        return sessionId == BridgeState.eventSessionId
+            and generation == (BridgeState.physicalTransactionGeneration or 0)
+    end
+    local function finish(ok, reason)
+        if finished then return end
+        finished = true
+        if BridgeState.graveyardExtractionTopologySettlingBySeatId[seatId] == ownerToken then
+            BridgeState.graveyardExtractionTopologySettlingBySeatId[seatId] = nil
+        end
+        if callback ~= nil then callback(ok, reason) end
+    end
+
+    BridgeState.graveyardExtractionTopologySettlingBySeatId[seatId] =
+        ownerToken
+
+    local function check()
+        if finished then return end
+        if not current() then
+            finish(false, "stale-graveyard-topology-settlement")
+            return
+        end
+        attempt = attempt + 1
+        local promotionOk, promotionResult = pcall(BridgePromoteExactCollapsedGraveyardCards, seatId)
+        if not promotionOk or promotionResult == false then
+            if attempt >= maxAttempts then
+                finish(false, promotionOk and "exact graveyard topology promotion failed"
+                    or "graveyard topology observation failed: " .. tostring(promotionResult))
+                return
+            end
+            BridgeWaitFrames(check, 1)
+            return
+        end
+
+        local deck = nil
+        local deckOk = pcall(function()
+            deck = BridgeResolveCurrentNativeGraveyardDeck(seatId)
+        end)
+        if not deckOk then deck = nil end
+        local entries = deck ~= nil and BridgeLibraryEntries(deck) or nil
+        local looseCount = 0
+        local looseGuid = nil
+        local looseMappingsCoherent = true
+        if type(getAllObjects) == "function" then
+            local objects = {}
+            local objectsOk = pcall(function() objects = getAllObjects() or {} end)
+            if objectsOk then
+                for _, object in ipairs(objects) do
+                    local guid = BridgeSafeObjectGuid(object)
+                    if BridgeObjectIsUsable(object) and BridgeSafeObjectTag(object) == "Card"
+                        and guid ~= nil and not BridgeIsPresentationOnlyObject(object)
+                        and BridgeState.physicalSeatByGuid[guid] == seatId
+                        and BridgeState.physicalZoneByGuid[guid] == "graveyard" then
+                        looseCount = looseCount + 1
+                        looseGuid = guid
+                        local looseInstanceId = BridgeState.physicalInstanceIdByGuid[guid]
+                        if looseInstanceId == nil
+                            or BridgeState.physicalByInstanceId[looseInstanceId] ~= guid
+                            or BridgeState.physicalContainerByInstanceId[looseInstanceId] ~= nil then
+                            looseMappingsCoherent = false
+                        end
+                    end
+                end
+            end
+        end
+
+        local containedCount = 0
+        for _, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+            if mapping ~= nil and mapping.zoneName == "graveyard" and mapping.seatId == seatId then
+                containedCount = containedCount + 1
+            end
+        end
+
+        local queue = BridgeState.graveyardExtractionQueueBySeatId[seatId] or {}
+        local nextItem = queue[1]
+        local nextInstanceId = nextItem and nextItem.cardInstanceId or nil
+        local sourceReady = nextInstanceId == nil
+        if nextInstanceId ~= nil then
+            sourceReady = BridgeExactLooseGraveyardSourceReady(nextInstanceId, seatId)
+            if not sourceReady then
+                local nextMapping = BridgeState.physicalContainerByInstanceId[nextInstanceId]
+                if nextMapping ~= nil and nextMapping.zoneName == "graveyard" then
+                    local nextDeck = BridgeGetLiveObjectByGuid(nextMapping.deckGuid)
+                    local nextEntries = nextDeck ~= nil and BridgeLibraryEntries(nextDeck) or nil
+                    sourceReady = BridgeSafeObjectTag(nextDeck) == "Deck"
+                        and nextEntries ~= nil and #nextEntries >= 2
+                        and BridgeLibraryContainsGuid(nextDeck, nextMapping.cardGuid)
+                end
+            end
+        end
+
+        local representation = "zero"
+        local ready = sourceReady and looseCount <= 1 and looseMappingsCoherent
+        if deck ~= nil and BridgeSafeObjectTag(deck) == "Deck" then
+            local count = entries and #entries or -1
+            representation = "deck:" .. tostring(BridgeSafeObjectGuid(deck)) .. ":" .. tostring(count)
+            -- A one-entry Deck is a transition, not an extractable source.
+            ready = ready and count >= 2 and looseCount == 0
+        elseif looseCount == 1 then
+            representation = "loose:" .. tostring(looseGuid)
+            ready = ready and true
+        elseif looseCount > 1 then
+            representation = "ambiguous-loose:" .. tostring(looseCount)
+            ready = false
+        end
+        if representation == "zero" and containedCount > 0 then
+            representation = "zero-with-stale-containment:" .. tostring(containedCount)
+            ready = false
+        end
+
+        BridgeRecordPhysicalMutationJournal({
+            operation = "GRAVEYARD_EXTRACTION", stage = "TOPOLOGY_OBSERVED",
+            seatId = seatId, generation = generation, attempt = attempt,
+            representation = representation, nextCardInstanceId = nextInstanceId,
+            sourceReady = sourceReady, looseMappingsCoherent = looseMappingsCoherent
+        })
+
+        if ready then
+            finish(true, nil)
+            return
+        end
+        if attempt >= maxAttempts then
+            finish(false, "graveyard topology did not settle: " .. tostring(representation))
+            return
+        end
+        BridgeWaitFrames(check, 1)
+    end
+    check()
+end
+
+local function BridgeFailQueuedGraveyardExtractionHead(seatId, reason)
+    local queue = BridgeState.graveyardExtractionQueueBySeatId[seatId] or {}
+    local item = queue[1]
+    if item == nil then return end
+    local index = 1
+    while queue[index + 1] ~= nil do
+        queue[index] = queue[index + 1]
+        index = index + 1
+    end
+    queue[index] = nil
+    if item.event ~= nil then item.event._bridgePhysicalCompletionPending = false end
+    BridgeLogGraveyardExtraction(seatId, "FAILED", BridgeState.physicalTransactionGeneration or 0,
+        item, nil, reason)
+    if item.physicalCompletion ~= nil then
+        local completion = item.physicalCompletion
+        item.physicalCompletion = nil
+        pcall(completion, false, reason)
+    else
+        BridgeStopOnDesync("graveyard topology settlement failed: " .. tostring(reason))
+    end
+end
+
 function BridgeProcessGraveyardExtractionQueue(seatId)
     BridgeState.graveyardExtractionQueueBySeatId = BridgeState.graveyardExtractionQueueBySeatId or {}
     BridgeState.graveyardExtractionActiveBySeatId = BridgeState.graveyardExtractionActiveBySeatId or {}
     BridgeState.graveyardExtractionTransactionBySeatId = BridgeState.graveyardExtractionTransactionBySeatId or {}
+    BridgeState.graveyardExtractionTopologySettlingBySeatId = BridgeState.graveyardExtractionTopologySettlingBySeatId or {}
     if BridgeState.graveyardExtractionActiveBySeatId[seatId] == true then return end
+    if BridgeState.graveyardExtractionTopologySettlingBySeatId[seatId] ~= nil then return end
     local queue = BridgeState.graveyardExtractionQueueBySeatId[seatId]
     local item = queue and queue[1] or nil
     if item == nil then return end
@@ -1673,13 +1913,25 @@ function BridgeProcessGraveyardExtractionQueue(seatId)
             -- queued event is allowed to mutate the same native Deck.
             return
         end
-        BridgeProcessGraveyardExtractionQueue(seatId)
-        BridgeWakePhysicalReadinessDependency(transactionGeneration, "graveyard-extraction-terminal")
-        BridgeTryPresentPendingDecision("graveyard-extraction-complete")
-        if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
-            BridgeRenderDecision(BridgeState.lastDecision)
+        local function afterTopologySettled(topologyOk, topologyReason)
+            if not current() then return end
+            if not topologyOk then
+                BridgeFailQueuedGraveyardExtractionHead(seatId, topologyReason)
+                return
+            end
+            BridgeProcessGraveyardExtractionQueue(seatId)
+            if (BridgeState.graveyardExtractionQueueBySeatId[seatId] or {})[1] ~= nil then return end
+            BridgeWakePhysicalReadinessDependency(transactionGeneration, "graveyard-extraction-terminal")
+            BridgeTryPresentPendingDecision("graveyard-extraction-complete")
+            if BridgeState.lastDecision ~= nil and not BridgeState.submitting then
+                BridgeRenderDecision(BridgeState.lastDecision)
+            end
+            BridgeTryApplyDeferredSnapshotReconcile("graveyard-extraction-complete")
         end
-        BridgeTryApplyDeferredSnapshotReconcile("graveyard-extraction-complete")
+        -- Reobserve even when this was the last queued item.  That is what
+        -- publishes the intentional zero-card state and the 2 -> 1 loose
+        -- Card state before the physical transaction can become idle.
+        BridgeReobserveGraveyardExtractionTopology(seatId, transactionGeneration, afterTopologySettled)
     end
 
     local started, startError = pcall(function()

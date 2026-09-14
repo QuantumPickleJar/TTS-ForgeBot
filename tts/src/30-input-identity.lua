@@ -3048,6 +3048,7 @@ function BridgeRetireLocalPhysicalTransactions(reason)
     BridgeState.libraryExtractionActiveBySeatId = {}
     BridgeState.libraryExtractionTransactionBySeatId = {}
     BridgeState.graveyardExtractionActiveBySeatId = {}
+    BridgeState.graveyardExtractionTopologySettlingBySeatId = {}
     BridgeState.mulliganBottomQueueBySeatId = {}
     BridgeState.mulliganBottomInsertionActiveBySeatId = {}
     BridgeState.mulliganReturningInstanceIds = {}

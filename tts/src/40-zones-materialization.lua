@@ -1893,6 +1893,7 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.graveyardExtractionQueueBySeatId = {}
     BridgeState.graveyardExtractionActiveBySeatId = {}
     BridgeState.graveyardExtractionTransactionBySeatId = {}
+    BridgeState.graveyardExtractionTopologySettlingBySeatId = {}
     BridgeState.libraryBatchBySeatId = {}
     BridgeState.battlefieldCounts = {}
     BridgeState.graveyardCounts = {}
@@ -2439,6 +2440,7 @@ function BridgePhysicalMutationOperationsIdle()
             or #(BridgeState.libraryExtractionQueueBySeatId[seatId] or {}) > 0
             or BridgeState.graveyardExtractionActiveBySeatId[seatId] == true
             or #(BridgeState.graveyardExtractionQueueBySeatId[seatId] or {}) > 0
+            or (BridgeState.graveyardExtractionTopologySettlingBySeatId or {})[seatId] ~= nil
             or BridgeState.mulliganBottomInsertionActiveBySeatId[seatId] == true
             or #(BridgeState.mulliganBottomQueueBySeatId[seatId] or {}) > 0 then
             return false
@@ -5539,6 +5541,27 @@ local function BridgeApplyStructuredCardMoveCore(event)
                 and extractionGeneration == (BridgeState.physicalTransactionGeneration or 0)
             if not current then
                 complete(false, "stale-graveyard-extraction-generation")
+                return
+            end
+            -- The queue was entered because this event originally had a
+            -- contained source. Its serialized settlement may have collapsed
+            -- that native Deck to one loose Card before this item reaches the
+            -- head. At dispatch time accept either exact representation, but
+            -- never manufacture a Deck or select by name/proximity.
+            local currentContainer = BridgeState.physicalContainerByInstanceId[event.cardInstanceId]
+            if currentContainer == nil then
+                if not BridgeExactLooseGraveyardSourceReady(event.cardInstanceId, event.seatId) then
+                    complete(false, "exact loose graveyard Card mapping is unavailable")
+                    return
+                end
+                BridgeRecordPhysicalMutationJournal({
+                    operation = "GRAVEYARD_EXTRACTION", stage = "LOOSE_LOCATOR_RESOLVED",
+                    cardInstanceId = event.cardInstanceId,
+                    cardGuid = BridgeState.physicalByInstanceId[event.cardInstanceId],
+                    locatorType = "LOOSE_LOCATOR", expectedZone = "graveyard"
+                })
+                local moved, moveError = BridgeApplyStructuredCardMove(event)
+                complete(moved, moveError)
                 return
             end
             BridgeTakeContainedCardByIdentity(event.cardInstanceId,
