@@ -2729,6 +2729,10 @@ function BridgeRecordResyncClickIngress(player, value, id)
     BridgeState.resyncClickIngressCount = count
     while #journal > 16 do table.remove(journal, 1) end
     BridgeState.resyncClickIngress = record
+    BridgeLog(string.format("[Bridge] RESYNC_LUA_INGRESS count=%s id=%s active=%s interactable=%s raycastTarget=%s",
+        tostring(count), tostring(id), tostring(record.uiMounted),
+        tostring(record.effectiveParentExpectedActive),
+        tostring(BridgeDiagnosticUiAttribute("BridgeHudResyncFromForge", "raycastTarget"))))
     return record
 end
 

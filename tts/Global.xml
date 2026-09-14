@@ -52,7 +52,9 @@
         <Button id="BridgeHudConfirm" active="false" onClick="BridgeHudConfirm" text="CONFIRM" tooltip="Submit the staged Forge selection when its required count is satisfied." minWidth="160" preferredWidth="160" flexibleWidth="0" fontSize="13" color="#285078EE" textColor="#FFFFFF" />
       </HorizontalLayout>
 
-      <HorizontalLayout minHeight="34" preferredHeight="34" flexibleHeight="0" spacing="10" childAlignment="MiddleCenter" childForceExpandWidth="false" childForceExpandHeight="true">
+      <!-- Layout background is non-interactive; keep the child buttons' own
+           raycast targets available for TTS pointer dispatch. -->
+      <HorizontalLayout minHeight="34" preferredHeight="34" flexibleHeight="0" spacing="10" childAlignment="MiddleCenter" childForceExpandWidth="false" childForceExpandHeight="true" raycastTarget="false">
         <Button id="BridgeHudNewMatch" active="false" onClick="BridgeHudNewMatch" text="NEW MATCH" tooltip="Replace the completed Forge match. A second click confirms the destructive reset." minWidth="190" preferredWidth="190" flexibleWidth="0" fontSize="13" color="#7F1D1DEE" textColor="#FFFFFF" />
         <Button id="BridgeHudResyncFromForge" visibility="Host|Admin" active="true" interactable="true" raycastTarget="true" onClick="BridgeHudResyncFromForge" text="RESYNC FORGE" tooltip="Rebuild physical cards from Forge's authoritative snapshot, then resume after its event cursor. Forge rules state is never changed." minWidth="112" preferredWidth="112" flexibleWidth="0" fontSize="10" color="#854D0EDD" textColor="#FFFFFF" />
       </HorizontalLayout>

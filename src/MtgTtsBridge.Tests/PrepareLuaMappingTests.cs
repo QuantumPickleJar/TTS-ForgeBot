@@ -146,6 +146,22 @@ public sealed class PrepareLuaMappingTests
                 seatId='forge-player-1', actions={{actionId='helper', cardInstanceId='forge:prepare-session:82'}}})
             assert(helperReady)
 
+            -- A virtual prepared copy is still a valid Forge action when its
+            -- source presentation context is absent. The source-bearing
+            -- PreparedSpell action above is the case that must validate :31;
+            -- the virtual :81 itself must never require a TTS Card.
+            BridgeState.authoritativeObjectByInstanceId['forge:prepare-session:81'] = {
+                objectId='forge:prepare-session:81', objectKind='prepared-spell',
+                isVirtual=true, materializationPolicy='virtual', zone='exile',
+                seatId='forge-player-1'
+            }
+            virtualOnlyReady = BridgeDecisionPhysicalMappingsReady({
+                seatId='forge-player-1', actions={{actionId='virtual-only',
+                    type='cast_spell', cardInstanceId='forge:prepare-session:81',
+                    sourceCardInstanceId='forge:prepare-session:81', sourceZone='exile',
+                    castMode='prepare'}}})
+            assert(virtualOnlyReady, 'virtual prepared copy was made physical-only')
+
             preparedCard.controllerSeatId = 'forge-player-2'
             preparedCard.ownerSeatId = 'forge-player-2'
             BridgeRebuildAuthoritativeObjectRegistryFromSnapshot(authoritativeSnapshot)
