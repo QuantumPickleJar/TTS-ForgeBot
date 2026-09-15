@@ -1959,6 +1959,7 @@ function BridgeReturnAttackPresentation(seatId)
             BridgeState.combatSelectedByGuid[guid] = nil
         end
     end
+    if seatId == nil and BridgeClearCombatTargetPresentation ~= nil then BridgeClearCombatTargetPresentation() end
 end
 
 function BridgeStopOnDesync(message)
@@ -2687,6 +2688,56 @@ function BridgeHudReportCapture(player, value, id)
         tostring(callbackDetails.callbackId), tostring(callbackDetails.callbackValue)))
     BridgeDiagnosticCaptureLogUiHierarchy("xml-callback-ingress")
     BridgeHudSubmitReport(nil, nil)
+end
+
+-- Combat target relations are informational presentation owned by ForgeBot.
+-- They are rebuilt from the authoritative combat snapshot, never inferred
+-- from card positions or names. Player defenders intentionally have no card
+-- target line; card defenders use the exact CardInstanceId mapping.
+function BridgeClearCombatTargetPresentation()
+    BridgeState.combatTargetVectorLines = {}
+    BridgeState.combatTargetPresentationNeedsRetry = false
+    if Global ~= nil and Global.setVectorLines ~= nil then
+        Global.setVectorLines({})
+    end
+end
+
+function BridgeApplyCombatTargetPresentation(combat)
+    local lines = {}
+    local needsRetry = false
+    for _, attack in ipairs((combat and combat.attacks) or {}) do
+        local defenderId = attack.defenderCardInstanceId
+        if defenderId ~= nil and attack.defenderSeatId == nil then
+            local attackerGuid = BridgeState.physicalByInstanceId[attack.attackerCardInstanceId]
+            local defenderGuid = BridgeState.physicalByInstanceId[defenderId]
+            local attacker = attackerGuid and BridgeGetLiveObjectByGuid(attackerGuid) or nil
+            local defender = defenderGuid and BridgeGetLiveObjectByGuid(defenderGuid) or nil
+            if attacker ~= nil and defender ~= nil then
+                local from = attacker.getPosition()
+                local to = defender.getPosition()
+                local dx, dz = to.x - from.x, to.z - from.z
+                local length = math.sqrt(dx * dx + dz * dz)
+                if length > 0.01 then
+                    local ux, uz = dx / length, dz / length
+                    local endPoint = {x = to.x - ux * 0.8, y = math.max(from.y, to.y) + 0.35, z = to.z - uz * 0.8}
+                    local startPoint = {x = from.x + ux * 0.8, y = math.max(from.y, to.y) + 0.35, z = from.z + uz * 0.8}
+                    table.insert(lines, {points = {startPoint, endPoint}, color = {1.0, 0.55, 0.0}, thickness = 0.12})
+                    local head = 0.55
+                    local px, pz = -uz, ux
+                    table.insert(lines, {points = {endPoint, {x = endPoint.x - ux * head + px * head * 0.45, y = endPoint.y, z = endPoint.z - uz * head + pz * head * 0.45}}, color = {1.0, 0.55, 0.0}, thickness = 0.12})
+                    table.insert(lines, {points = {endPoint, {x = endPoint.x - ux * head - px * head * 0.45, y = endPoint.y, z = endPoint.z - uz * head - pz * head * 0.45}}, color = {1.0, 0.55, 0.0}, thickness = 0.12})
+                end
+            else
+                needsRetry = true
+                if BridgeLog ~= nil then
+                    BridgeLog("[Bridge] combat target presentation deferred: exact card mapping unavailable")
+                end
+            end
+        end
+    end
+    BridgeState.combatTargetVectorLines = lines
+    BridgeState.combatTargetPresentationNeedsRetry = needsRetry
+    if Global ~= nil and Global.setVectorLines ~= nil then Global.setVectorLines(lines) end
 end
 
 function BridgeHudRollingCapture(player, value, id)

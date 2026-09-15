@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 318e27ec4149b3dbb191831feeb4c75032d464d898727b39275331984e239d36
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "318e27ec4149b3dbb191831feeb4c75032d464d898727b39275331984e239d36"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 458e5ada98fb6c982b4674370a6e21ad820b8bf0035d1bc75aa8b19eb5676a3f
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "458e5ada98fb6c982b4674370a6e21ad820b8bf0035d1bc75aa8b19eb5676a3f"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -3764,6 +3764,8 @@ BridgeState = {
     -- CardInstanceId event still owns physical identity and movement.
     battlefieldKindByInstanceId = {},
     presentedCombatSignature = nil,
+    combatTargetVectorLines = {},
+    combatTargetPresentationNeedsRetry = false,
     zoneAnchorGuidBySeatAndZone = {},
     resourceCounterIndexHydrated = false,
     monarchHelperIndexHydrated = false,
@@ -12090,12 +12092,24 @@ end
 
 function BridgeApplyCombatSnapshot(combat)
     local parts = {}
-    for _, attack in ipairs((combat and combat.attacks) or {}) do table.insert(parts, tostring(attack.attackerCardInstanceId) .. "|" .. table.concat(attack.blockerCardInstanceIds or {}, ",")) end
-    table.sort(parts)
+    for _, attack in ipairs((combat and combat.attacks) or {}) do
+        local blockers = ""
+        for index, blockerId in ipairs(attack.blockerCardInstanceIds or {}) do
+            if index > 1 then blockers = blockers .. "," end
+            blockers = blockers .. tostring(blockerId)
+        end
+        parts[#parts + 1] = tostring(attack.attackerCardInstanceId) .. "|" .. tostring(attack.defenderSeatId or "") .. "|" .. tostring(attack.defenderCardInstanceId or "") .. "|" .. blockers
+    end
     local signature = table.concat(parts, ";")
-    if BridgeState.presentedCombatSignature == signature then return end
+    if BridgeState.presentedCombatSignature == signature then
+        if BridgeState.combatTargetPresentationNeedsRetry == true then
+            BridgeApplyCombatTargetPresentation(combat)
+        end
+        return
+    end
     BridgeState.presentedCombatSignature = signature
     BridgeReturnAttackPresentation(nil)
+    BridgeApplyCombatTargetPresentation(combat)
     for _, attack in ipairs((combat and combat.attacks) or {}) do
         local attackerGuid = BridgeState.physicalByInstanceId[attack.attackerCardInstanceId]
         local attacker = attackerGuid and BridgeGetLiveObjectByGuid(attackerGuid) or nil
@@ -29343,6 +29357,7 @@ function BridgeReturnAttackPresentation(seatId)
             BridgeState.combatSelectedByGuid[guid] = nil
         end
     end
+    if seatId == nil and BridgeClearCombatTargetPresentation ~= nil then BridgeClearCombatTargetPresentation() end
 end
 
 function BridgeStopOnDesync(message)
@@ -30071,6 +30086,56 @@ function BridgeHudReportCapture(player, value, id)
         tostring(callbackDetails.callbackId), tostring(callbackDetails.callbackValue)))
     BridgeDiagnosticCaptureLogUiHierarchy("xml-callback-ingress")
     BridgeHudSubmitReport(nil, nil)
+end
+
+-- Combat target relations are informational presentation owned by ForgeBot.
+-- They are rebuilt from the authoritative combat snapshot, never inferred
+-- from card positions or names. Player defenders intentionally have no card
+-- target line; card defenders use the exact CardInstanceId mapping.
+function BridgeClearCombatTargetPresentation()
+    BridgeState.combatTargetVectorLines = {}
+    BridgeState.combatTargetPresentationNeedsRetry = false
+    if Global ~= nil and Global.setVectorLines ~= nil then
+        Global.setVectorLines({})
+    end
+end
+
+function BridgeApplyCombatTargetPresentation(combat)
+    local lines = {}
+    local needsRetry = false
+    for _, attack in ipairs((combat and combat.attacks) or {}) do
+        local defenderId = attack.defenderCardInstanceId
+        if defenderId ~= nil and attack.defenderSeatId == nil then
+            local attackerGuid = BridgeState.physicalByInstanceId[attack.attackerCardInstanceId]
+            local defenderGuid = BridgeState.physicalByInstanceId[defenderId]
+            local attacker = attackerGuid and BridgeGetLiveObjectByGuid(attackerGuid) or nil
+            local defender = defenderGuid and BridgeGetLiveObjectByGuid(defenderGuid) or nil
+            if attacker ~= nil and defender ~= nil then
+                local from = attacker.getPosition()
+                local to = defender.getPosition()
+                local dx, dz = to.x - from.x, to.z - from.z
+                local length = math.sqrt(dx * dx + dz * dz)
+                if length > 0.01 then
+                    local ux, uz = dx / length, dz / length
+                    local endPoint = {x = to.x - ux * 0.8, y = math.max(from.y, to.y) + 0.35, z = to.z - uz * 0.8}
+                    local startPoint = {x = from.x + ux * 0.8, y = math.max(from.y, to.y) + 0.35, z = from.z + uz * 0.8}
+                    table.insert(lines, {points = {startPoint, endPoint}, color = {1.0, 0.55, 0.0}, thickness = 0.12})
+                    local head = 0.55
+                    local px, pz = -uz, ux
+                    table.insert(lines, {points = {endPoint, {x = endPoint.x - ux * head + px * head * 0.45, y = endPoint.y, z = endPoint.z - uz * head + pz * head * 0.45}}, color = {1.0, 0.55, 0.0}, thickness = 0.12})
+                    table.insert(lines, {points = {endPoint, {x = endPoint.x - ux * head - px * head * 0.45, y = endPoint.y, z = endPoint.z - uz * head - pz * head * 0.45}}, color = {1.0, 0.55, 0.0}, thickness = 0.12})
+                end
+            else
+                needsRetry = true
+                if BridgeLog ~= nil then
+                    BridgeLog("[Bridge] combat target presentation deferred: exact card mapping unavailable")
+                end
+            end
+        end
+    end
+    BridgeState.combatTargetVectorLines = lines
+    BridgeState.combatTargetPresentationNeedsRetry = needsRetry
+    if Global ~= nil and Global.setVectorLines ~= nil then Global.setVectorLines(lines) end
 end
 
 function BridgeHudRollingCapture(player, value, id)
