@@ -2450,6 +2450,14 @@ function BridgeLegacyBootstrapCurrentSnapshot(sessionId, callback, resumeFromSna
     BridgeState.lastSnapshotReconcileFailureStage = nil
     BridgeState.lastSnapshotReconcileFailureReason = nil
     BridgeState.bootstrapStageTrace = {}
+    BridgeState.finalBootstrapOutcome = "IN_PROGRESS"
+    BridgeState.finalBootstrapOutcomeOwnerToken = embodimentTx and embodimentTx.token or nil
+    BridgeState.finalBootstrapOutcomeOwnerGeneration = embodimentTx
+        and (embodimentTx.physicalTransactionGeneration or embodimentTx.eventSessionGeneration) or nil
+    BridgeState.bootstrapStageOwnerToken = embodimentTx and embodimentTx.token or nil
+    BridgeState.bootstrapStageOwnerGeneration = embodimentTx
+        and (embodimentTx.physicalTransactionGeneration or embodimentTx.eventSessionGeneration) or nil
+    BridgeState.lastFinalBootstrapFailure = nil
     BridgeRecordBootstrapStage("snapshot-http", "EXPECTED", "generation=" .. tostring(bootstrapGeneration))
     BridgeSetResyncStage("FetchingSnapshot", "bootstrap", nil)
     BridgeRecordResyncLifecycle("SNAPSHOT_REQUESTED", resyncOrigin, bootstrapGeneration)
@@ -2464,6 +2472,27 @@ function BridgeLegacyBootstrapCurrentSnapshot(sessionId, callback, resumeFromSna
             ok and "COMPLETED" or "FAILED", errorMessage)
         BridgeState.bootstrapCompletionInFlight = true
         BridgeState.bootstrapStage = ok and "BOOTSTRAP_COMPLETE" or "BOOTSTRAP_ABORTED"
+        -- When an outer embodiment transaction owns this bootstrap, a
+        -- failure here is intermediate operation history. The outer
+        -- transaction decides whether the final physical postcondition
+        -- failed or was recovered by reobserve/replan.
+        if embodimentTx == nil then
+            BridgeState.finalBootstrapOutcome = ok and "SUCCESS" or "FAILED"
+            BridgeState.finalBootstrapOutcomeOwnerToken = nil
+            BridgeState.finalBootstrapOutcomeOwnerGeneration = nil
+            BridgeState.bootstrapStageOwnerToken = nil
+            BridgeState.bootstrapStageOwnerGeneration = nil
+            BridgeState.lastFinalBootstrapFailure = ok and nil or (errorMessage and tostring(errorMessage) or nil)
+        else
+            BridgeState.finalBootstrapOutcome = "IN_PROGRESS"
+            BridgeState.finalBootstrapOutcomeOwnerToken = embodimentTx.token
+            BridgeState.finalBootstrapOutcomeOwnerGeneration = embodimentTx.physicalTransactionGeneration
+                or embodimentTx.eventSessionGeneration
+            BridgeState.bootstrapStageOwnerToken = embodimentTx.token
+            BridgeState.bootstrapStageOwnerGeneration = embodimentTx.physicalTransactionGeneration
+                or embodimentTx.eventSessionGeneration
+            BridgeState.lastFinalBootstrapFailure = ok and nil or (errorMessage and tostring(errorMessage) or nil)
+        end
         local success, callbackError = xpcall(function()
             BridgeState.bootstrapping = false
             if BridgeTryCertifyCurrentDecisionAfterReadinessTransition ~= nil then

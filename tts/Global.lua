@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: a556e149243a5d6d71ed97757a83f8212afb82230cdbfdd05b081e9a8be7159f
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "a556e149243a5d6d71ed97757a83f8212afb82230cdbfdd05b081e9a8be7159f"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 318e27ec4149b3dbb191831feeb4c75032d464d898727b39275331984e239d36
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "318e27ec4149b3dbb191831feeb4c75032d464d898727b39275331984e239d36"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -633,10 +633,38 @@ function BridgeSetResyncStage(stage, reason, snapshot)
     BridgeState.resyncStage = stage
     BridgeState.resyncStageChangedAt = BridgeResyncClockNow ~= nil and BridgeResyncClockNow() or os.clock()
     BridgeState.resyncLastProgressAt = BridgeState.resyncStageChangedAt
+    if stage == "Completed" and BridgeTryCertifyCurrentDecisionAfterReadinessTransition ~= nil then
+        -- Completed is the lifecycle edge at which resync no longer owns the
+        -- table.  Re-evaluate the current decision here, after publishing the
+        -- terminal stage, so acceptance ordering cannot strand a valid choice.
+        BridgeTryCertifyCurrentDecisionAfterReadinessTransition("resync-completed")
+    end
     BridgeLog(string.format("[Bridge] RESYNC_STAGE %s -> %s session=%s generation=%s token=%s cursor=%s reason=%s",
         tostring(prior), tostring(stage), tostring(BridgeState.eventSessionId),
         tostring(BridgeState.eventSessionGeneration), tostring(BridgeState.resyncToken),
         tostring(snapshot and snapshot.eventCursor or nil), tostring(reason)))
+end
+
+-- Bootstrap stages are useful history, but the active failure outcome belongs
+-- to the outer embodiment transaction. An adapter operation can fail and be
+-- successfully replanned by that transaction; it must not leave an unowned
+-- BOOTSTRAP_ABORTED latch behind after the outer postcondition is verified.
+function BridgeSetFinalBootstrapOutcome(outcome, tx, detail)
+    local normalized = tostring(outcome or "UNKNOWN")
+    BridgeState.finalBootstrapOutcome = normalized
+    BridgeState.finalBootstrapOutcomeOwnerToken = tx and tx.token or nil
+    BridgeState.finalBootstrapOutcomeOwnerGeneration = tx
+        and (tx.physicalTransactionGeneration or tx.eventSessionGeneration) or nil
+    BridgeState.bootstrapStageOwnerToken = tx and tx.token or nil
+    BridgeState.bootstrapStageOwnerGeneration = tx
+        and (tx.physicalTransactionGeneration or tx.eventSessionGeneration) or nil
+    if normalized == "SUCCESS" then
+        BridgeState.bootstrapStage = "BOOTSTRAP_COMPLETE"
+        BridgeState.lastFinalBootstrapFailure = nil
+    elseif normalized == "FAILED" then
+        BridgeState.bootstrapStage = "BOOTSTRAP_ABORTED"
+        BridgeState.lastFinalBootstrapFailure = detail and tostring(detail) or nil
+    end
 end
 
 function BridgeSetSchedulerOwner(owner, reason)
@@ -1291,6 +1319,12 @@ function BridgeEventDrainQueueState()
         embodimentLastBlockingPredicate = BridgeState.embodimentTransaction and BridgeState.embodimentTransaction.lastBlockingPredicate or nil,
         embodimentJournal = BridgeDiagnosticSnapshot(BridgeState.embodimentJournal or {}),
         bootstrapStage = BridgeState.bootstrapStage,
+        bootstrapStageOwnerToken = BridgeState.bootstrapStageOwnerToken,
+        bootstrapStageOwnerGeneration = BridgeState.bootstrapStageOwnerGeneration,
+        finalBootstrapOutcome = BridgeState.finalBootstrapOutcome,
+        finalBootstrapOutcomeOwnerToken = BridgeState.finalBootstrapOutcomeOwnerToken,
+        finalBootstrapOutcomeOwnerGeneration = BridgeState.finalBootstrapOutcomeOwnerGeneration,
+        lastFinalBootstrapFailure = BridgeState.lastFinalBootstrapFailure,
         bootstrapStageChangedAt = BridgeState.bootstrapStageChangedAt,
         bootstrapLastProgressAt = BridgeState.bootstrapLastProgressAt,
         bootstrapStageTrace = BridgeDiagnosticSnapshot(BridgeState.bootstrapStageTrace or {}),
@@ -2396,6 +2430,7 @@ function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
     tx.lastBlockingPredicate = errorMessage or tx.lastBlockingPredicate
     BridgeEmbodimentJournal(tx, tx.phase, ok and "COMMIT" or "ABORT", errorMessage)
     if ok then
+        BridgeSetFinalBootstrapOutcome("SUCCESS", tx, nil)
         tx.candidatePhysicalLedger = BridgeCapturePhysicalLedger()
         BridgeState.committedPhysicalLedger = tx.candidatePhysicalLedger
         if tx.snapshot ~= nil and tx.targetSessionId == BridgeState.eventSessionId then
@@ -2410,6 +2445,15 @@ function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
                 BridgeFinalizeSuccessfulSnapshotReconcileReadiness(tx.snapshot,
                     "embodiment-transaction-committed")
             end
+        end
+        -- Initial/bootstrap transactions also use resync-stage ownership for
+        -- checkpoint work. If no resync owner remains, retire a stale
+        -- intermediate stage before the readiness edge below.
+        if BridgeState.resyncInFlight ~= true
+            and BridgeState.resyncStage ~= nil
+            and BridgeState.resyncStage ~= "Idle"
+            and BridgeState.resyncStage ~= "Completed" then
+            BridgeSetResyncStage("Completed", "embodiment-transaction-committed", tx.snapshot)
         end
         BridgeRetireTerminalRecoveryErrorAfterVerifiedReplacementBootstrap(tx)
         BridgeReleaseTerminalPresentationAfterVerifiedReplacementBootstrap(tx)
@@ -2434,6 +2478,7 @@ function BridgeFinishEmbodimentTransaction(tx, ok, errorMessage)
     BridgeState.lastEmbodimentTransaction = BridgeDiagnosticSnapshot(tx)
     BridgeState.embodimentTransaction = nil
     if not ok then
+        BridgeSetFinalBootstrapOutcome("FAILED", tx, errorMessage or tx.lastBlockingPredicate)
         -- Retire the physical writer before any liveness scheduler can own a
         -- recovery.  The next scheduler pass carries a concrete cause rather
         -- than treating its own trigger (usually onUpdate) as the cause.
@@ -3371,6 +3416,12 @@ BridgeState = {
     handReadinessRecoverySessionId = nil,
     handReadinessRecoveryAttempts = 0,
     bootstrapStage = "BOOTSTRAP_IDLE",
+    bootstrapStageOwnerToken = nil,
+    bootstrapStageOwnerGeneration = nil,
+    finalBootstrapOutcome = "NONE",
+    finalBootstrapOutcomeOwnerToken = nil,
+    finalBootstrapOutcomeOwnerGeneration = nil,
+    lastFinalBootstrapFailure = nil,
     bootstrapCompletionInFlight = false,
     eventSessionId = nil,
     eventSessionGeneration = 0,
@@ -3460,6 +3511,7 @@ BridgeState = {
     },
     lastHumanActionReadinessInvalidationReason = nil,
     lastHumanActionReadinessCertificationReason = nil,
+    lastHumanActionReadinessRecertificationTrigger = nil,
     randomResultPresentationGeneration = 0,
     activeRandomResultPresentation = nil,
     randomResultPresentationDiagnostics = {},
@@ -3993,6 +4045,13 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.lastPhysicalPresentationEventSequence = 0
     BridgeState.lastAppliedForgeSequence = 0
     BridgeState.lastAppliedForgeSequenceSessionId = nil
+    BridgeState.bootstrapStage = "BOOTSTRAP_IDLE"
+    BridgeState.bootstrapStageOwnerToken = nil
+    BridgeState.bootstrapStageOwnerGeneration = nil
+    BridgeState.finalBootstrapOutcome = "NONE"
+    BridgeState.finalBootstrapOutcomeOwnerToken = nil
+    BridgeState.finalBootstrapOutcomeOwnerGeneration = nil
+    BridgeState.lastFinalBootstrapFailure = nil
     BridgeState.currentTurnSeatId = nil
     BridgeState.prioritySeatId = nil
     BridgeState.tableTurnCount = 0
@@ -8475,6 +8534,12 @@ function BridgeRecordHumanActionReadinessLifecycle(stage, decision, reason, clas
         bootstrapping = BridgeState.bootstrapping == true,
         setupStage = BridgeState.setupStage,
         bootstrapStage = BridgeState.bootstrapStage,
+        bootstrapStageOwnerToken = BridgeState.bootstrapStageOwnerToken,
+        bootstrapStageOwnerGeneration = BridgeState.bootstrapStageOwnerGeneration,
+        finalBootstrapOutcome = BridgeState.finalBootstrapOutcome,
+        finalBootstrapOutcomeOwnerToken = BridgeState.finalBootstrapOutcomeOwnerToken,
+        finalBootstrapOutcomeOwnerGeneration = BridgeState.finalBootstrapOutcomeOwnerGeneration,
+        lastFinalBootstrapFailure = BridgeState.lastFinalBootstrapFailure,
         resyncStage = BridgeState.resyncStage,
         resyncInFlight = BridgeState.resyncInFlight == true,
         desyncLatched = BridgeState.desyncLatched == true,
@@ -8509,7 +8574,16 @@ local function BridgeReadinessGlobalBlock()
     if BridgeState.eventSessionId == nil then return "no active Forge session", "NO_SESSION" end
     if BridgeState.setupBusy == true or BridgeState.bootstrapping == true then return "physical bootstrap is pending", "BOOTSTRAP" end
     if tostring(BridgeState.setupStage or "") == "FAILED"
-        or tostring(BridgeState.bootstrapStage or "") == "BOOTSTRAP_ABORTED" then
+        or tostring(BridgeState.finalBootstrapOutcome or "") == "FAILED" then
+        return "physical bootstrap failed; resync is required", "BOOTSTRAP"
+    end
+    -- BOOTSTRAP_ABORTED is also used for an adapter operation that is being
+    -- reobserved/replanned by an active outer embodiment transaction. Keep
+    -- that history visible, but do not treat it as the final outcome owned by
+    -- the session while the outer transaction is still active.
+    if tostring(BridgeState.bootstrapStage or "") == "BOOTSTRAP_ABORTED"
+        and not (tostring(BridgeState.finalBootstrapOutcome or "") == "IN_PROGRESS"
+            and BridgeState.embodimentTransaction ~= nil) then
         return "physical bootstrap failed; resync is required", "BOOTSTRAP"
     end
     if BridgeState.resyncInFlight == true or BridgeState.resyncStage ~= nil and BridgeState.resyncStage ~= "Idle"
@@ -8758,7 +8832,18 @@ function BridgeFinalizeSuccessfulSnapshotReconcileReadiness(snapshot, reason)
     local certified, certifyReason = BridgeCertifyHumanActionReadiness(decision,
         reason or "snapshot-reconcile-verified")
     if not certified then
-        BridgeState.physicalStateCertificate = priorPhysicalCertificate
+        -- A verified physical postcondition is independent from the human
+        -- input certificate.  A lifecycle owner can become visible between
+        -- the preflight checks and certification; retain the newly proven
+        -- physical certificate in that transient case so the owner-release
+        -- edge can certify the unchanged decision later.
+        local activeBlock = BridgeReadinessGlobalBlock()
+        if activeBlock == nil then
+            BridgeState.physicalStateCertificate = priorPhysicalCertificate
+        else
+            BridgeLog("[Bridge] retained verified physical certificate while readiness is blocked: "
+                .. tostring(activeBlock))
+        end
         return fail(tostring(certifyReason or "current decision could not be certified"))
     end
     BridgeUiMarkDirty("snapshot-reconcile-readiness-recertified")
@@ -8807,10 +8892,19 @@ function BridgeHumanActionReadinessDiagnosticPayload()
             authoritativeCursor = physical.authoritativeCursor,
             reason = physical.reason
         } or nil,
+        physicalCertificateValid = physical ~= nil
+            and tostring(physical.sessionId or "") == tostring(BridgeState.eventSessionId or "")
+            and (tonumber(physical.authoritativeCursor or 0) or 0)
+                >= (tonumber(decision and decision.eventCursor or 0) or 0),
+        transientLifecycleBlocker = (function()
+            local blocked, classification = BridgeReadinessGlobalBlock()
+            return blocked ~= nil and {classification = classification, reason = blocked} or nil
+        end)(),
         lastDecisionId = decision and decision.decisionId or nil,
         lastDecisionCursor = decision and decision.eventCursor or nil,
         lastInvalidation = BridgeState.lastHumanActionReadinessInvalidationReason,
-        lastCertification = BridgeState.lastHumanActionReadinessCertificationReason
+        lastCertification = BridgeState.lastHumanActionReadinessCertificationReason,
+        readinessRecertificationTrigger = BridgeState.lastHumanActionReadinessRecertificationTrigger
     }
 end
 
@@ -8819,6 +8913,7 @@ end
 -- bypasses the physical certificate or mapping checks.
 function BridgeTryCertifyCurrentDecisionAfterReadinessTransition(reason)
     local decision = BridgeState.lastDecision
+    BridgeState.lastHumanActionReadinessRecertificationTrigger = reason
     BridgeRecordHumanActionReadinessLifecycle("READINESS_RECERTIFY_REQUESTED", decision, reason,
         nil, "readiness transition")
     if decision == nil then return false, "no current decision" end
@@ -17532,6 +17627,14 @@ function BridgeLegacyBootstrapCurrentSnapshot(sessionId, callback, resumeFromSna
     BridgeState.lastSnapshotReconcileFailureStage = nil
     BridgeState.lastSnapshotReconcileFailureReason = nil
     BridgeState.bootstrapStageTrace = {}
+    BridgeState.finalBootstrapOutcome = "IN_PROGRESS"
+    BridgeState.finalBootstrapOutcomeOwnerToken = embodimentTx and embodimentTx.token or nil
+    BridgeState.finalBootstrapOutcomeOwnerGeneration = embodimentTx
+        and (embodimentTx.physicalTransactionGeneration or embodimentTx.eventSessionGeneration) or nil
+    BridgeState.bootstrapStageOwnerToken = embodimentTx and embodimentTx.token or nil
+    BridgeState.bootstrapStageOwnerGeneration = embodimentTx
+        and (embodimentTx.physicalTransactionGeneration or embodimentTx.eventSessionGeneration) or nil
+    BridgeState.lastFinalBootstrapFailure = nil
     BridgeRecordBootstrapStage("snapshot-http", "EXPECTED", "generation=" .. tostring(bootstrapGeneration))
     BridgeSetResyncStage("FetchingSnapshot", "bootstrap", nil)
     BridgeRecordResyncLifecycle("SNAPSHOT_REQUESTED", resyncOrigin, bootstrapGeneration)
@@ -17546,6 +17649,27 @@ function BridgeLegacyBootstrapCurrentSnapshot(sessionId, callback, resumeFromSna
             ok and "COMPLETED" or "FAILED", errorMessage)
         BridgeState.bootstrapCompletionInFlight = true
         BridgeState.bootstrapStage = ok and "BOOTSTRAP_COMPLETE" or "BOOTSTRAP_ABORTED"
+        -- When an outer embodiment transaction owns this bootstrap, a
+        -- failure here is intermediate operation history. The outer
+        -- transaction decides whether the final physical postcondition
+        -- failed or was recovered by reobserve/replan.
+        if embodimentTx == nil then
+            BridgeState.finalBootstrapOutcome = ok and "SUCCESS" or "FAILED"
+            BridgeState.finalBootstrapOutcomeOwnerToken = nil
+            BridgeState.finalBootstrapOutcomeOwnerGeneration = nil
+            BridgeState.bootstrapStageOwnerToken = nil
+            BridgeState.bootstrapStageOwnerGeneration = nil
+            BridgeState.lastFinalBootstrapFailure = ok and nil or (errorMessage and tostring(errorMessage) or nil)
+        else
+            BridgeState.finalBootstrapOutcome = "IN_PROGRESS"
+            BridgeState.finalBootstrapOutcomeOwnerToken = embodimentTx.token
+            BridgeState.finalBootstrapOutcomeOwnerGeneration = embodimentTx.physicalTransactionGeneration
+                or embodimentTx.eventSessionGeneration
+            BridgeState.bootstrapStageOwnerToken = embodimentTx.token
+            BridgeState.bootstrapStageOwnerGeneration = embodimentTx.physicalTransactionGeneration
+                or embodimentTx.eventSessionGeneration
+            BridgeState.lastFinalBootstrapFailure = ok and nil or (errorMessage and tostring(errorMessage) or nil)
+        end
         local success, callbackError = xpcall(function()
             BridgeState.bootstrapping = false
             if BridgeTryCertifyCurrentDecisionAfterReadinessTransition ~= nil then

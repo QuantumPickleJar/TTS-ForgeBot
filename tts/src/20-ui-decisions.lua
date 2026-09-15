@@ -381,6 +381,12 @@ function BridgeRecordHumanActionReadinessLifecycle(stage, decision, reason, clas
         bootstrapping = BridgeState.bootstrapping == true,
         setupStage = BridgeState.setupStage,
         bootstrapStage = BridgeState.bootstrapStage,
+        bootstrapStageOwnerToken = BridgeState.bootstrapStageOwnerToken,
+        bootstrapStageOwnerGeneration = BridgeState.bootstrapStageOwnerGeneration,
+        finalBootstrapOutcome = BridgeState.finalBootstrapOutcome,
+        finalBootstrapOutcomeOwnerToken = BridgeState.finalBootstrapOutcomeOwnerToken,
+        finalBootstrapOutcomeOwnerGeneration = BridgeState.finalBootstrapOutcomeOwnerGeneration,
+        lastFinalBootstrapFailure = BridgeState.lastFinalBootstrapFailure,
         resyncStage = BridgeState.resyncStage,
         resyncInFlight = BridgeState.resyncInFlight == true,
         desyncLatched = BridgeState.desyncLatched == true,
@@ -415,7 +421,16 @@ local function BridgeReadinessGlobalBlock()
     if BridgeState.eventSessionId == nil then return "no active Forge session", "NO_SESSION" end
     if BridgeState.setupBusy == true or BridgeState.bootstrapping == true then return "physical bootstrap is pending", "BOOTSTRAP" end
     if tostring(BridgeState.setupStage or "") == "FAILED"
-        or tostring(BridgeState.bootstrapStage or "") == "BOOTSTRAP_ABORTED" then
+        or tostring(BridgeState.finalBootstrapOutcome or "") == "FAILED" then
+        return "physical bootstrap failed; resync is required", "BOOTSTRAP"
+    end
+    -- BOOTSTRAP_ABORTED is also used for an adapter operation that is being
+    -- reobserved/replanned by an active outer embodiment transaction. Keep
+    -- that history visible, but do not treat it as the final outcome owned by
+    -- the session while the outer transaction is still active.
+    if tostring(BridgeState.bootstrapStage or "") == "BOOTSTRAP_ABORTED"
+        and not (tostring(BridgeState.finalBootstrapOutcome or "") == "IN_PROGRESS"
+            and BridgeState.embodimentTransaction ~= nil) then
         return "physical bootstrap failed; resync is required", "BOOTSTRAP"
     end
     if BridgeState.resyncInFlight == true or BridgeState.resyncStage ~= nil and BridgeState.resyncStage ~= "Idle"
@@ -664,7 +679,18 @@ function BridgeFinalizeSuccessfulSnapshotReconcileReadiness(snapshot, reason)
     local certified, certifyReason = BridgeCertifyHumanActionReadiness(decision,
         reason or "snapshot-reconcile-verified")
     if not certified then
-        BridgeState.physicalStateCertificate = priorPhysicalCertificate
+        -- A verified physical postcondition is independent from the human
+        -- input certificate.  A lifecycle owner can become visible between
+        -- the preflight checks and certification; retain the newly proven
+        -- physical certificate in that transient case so the owner-release
+        -- edge can certify the unchanged decision later.
+        local activeBlock = BridgeReadinessGlobalBlock()
+        if activeBlock == nil then
+            BridgeState.physicalStateCertificate = priorPhysicalCertificate
+        else
+            BridgeLog("[Bridge] retained verified physical certificate while readiness is blocked: "
+                .. tostring(activeBlock))
+        end
         return fail(tostring(certifyReason or "current decision could not be certified"))
     end
     BridgeUiMarkDirty("snapshot-reconcile-readiness-recertified")
@@ -713,10 +739,19 @@ function BridgeHumanActionReadinessDiagnosticPayload()
             authoritativeCursor = physical.authoritativeCursor,
             reason = physical.reason
         } or nil,
+        physicalCertificateValid = physical ~= nil
+            and tostring(physical.sessionId or "") == tostring(BridgeState.eventSessionId or "")
+            and (tonumber(physical.authoritativeCursor or 0) or 0)
+                >= (tonumber(decision and decision.eventCursor or 0) or 0),
+        transientLifecycleBlocker = (function()
+            local blocked, classification = BridgeReadinessGlobalBlock()
+            return blocked ~= nil and {classification = classification, reason = blocked} or nil
+        end)(),
         lastDecisionId = decision and decision.decisionId or nil,
         lastDecisionCursor = decision and decision.eventCursor or nil,
         lastInvalidation = BridgeState.lastHumanActionReadinessInvalidationReason,
-        lastCertification = BridgeState.lastHumanActionReadinessCertificationReason
+        lastCertification = BridgeState.lastHumanActionReadinessCertificationReason,
+        readinessRecertificationTrigger = BridgeState.lastHumanActionReadinessRecertificationTrigger
     }
 end
 
@@ -725,6 +760,7 @@ end
 -- bypasses the physical certificate or mapping checks.
 function BridgeTryCertifyCurrentDecisionAfterReadinessTransition(reason)
     local decision = BridgeState.lastDecision
+    BridgeState.lastHumanActionReadinessRecertificationTrigger = reason
     BridgeRecordHumanActionReadinessLifecycle("READINESS_RECERTIFY_REQUESTED", decision, reason,
         nil, "readiness transition")
     if decision == nil then return false, "no current decision" end
