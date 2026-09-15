@@ -531,6 +531,45 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void CancelledCastStackToHandMoveUsesTheSameExactPhysicalCard()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'cancel-session'
+            BridgeState.eventSessionGeneration = 4
+            local card = BridgeTestCreateCard(':6', 'Murderous Cut', 'murderous-cut-guid')
+            card._inLibrary = false
+            card._inHand = false
+            card._lastPosition = {x=-5.5, y=1.6, z=0}
+            BridgeRecordLooseCardIdentity(':6', 'murderous-cut-guid', 'forge-player-1', 'stack')
+            BridgeState.pendingCastBySeatId['forge-player-1'] = {
+                cardInstanceId=':6', guid='murderous-cut-guid', seatId='forge-player-1'
+            }
+            moved, moveError = BridgeApplyStructuredCardMove({
+                sequence=99, kind='card_moved', seatId='forge-player-1',
+                sourceZone='stack', destinationZone='hand',
+                cardInstanceId=':6', cardName='Murderous Cut', forgeSequence=95
+            })
+            mappedGuid = BridgeState.physicalByInstanceId[':6']
+            inverseInstance = BridgeState.physicalInstanceIdByGuid['murderous-cut-guid']
+            physicalZone = BridgeState.physicalZoneByGuid['murderous-cut-guid']
+            pendingCast = BridgeState.pendingCastBySeatId['forge-player-1']
+            handPositionX = card._lastPosition and card._lastPosition.x or nil
+            desyncState = tostring(desyncReason)
+        ");
+
+        Assert.True(lua.Globals.Get("moved").Boolean,
+            lua.Globals.Get("moveError").ToPrintString());
+        Assert.Equal("murderous-cut-guid", lua.Globals.Get("mappedGuid").String);
+        Assert.Equal(":6", lua.Globals.Get("inverseInstance").String);
+        Assert.Equal("hand", lua.Globals.Get("physicalZone").String);
+        Assert.True(lua.Globals.Get("pendingCast").IsNil());
+        Assert.Equal(8d, lua.Globals.Get("handPositionX").Number);
+        Assert.Equal("nil", lua.Globals.Get("desyncState").String);
+    }
+
+    [Fact]
     public void MentalNoteTwoCardMillCommitsNativeGraveyardAtomically()
     {
         var lua = NewProbe();

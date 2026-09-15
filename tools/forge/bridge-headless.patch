@@ -213,69 +213,6 @@ index 6b0e01fa..7b8667d4 100644
                  e.printStackTrace();
              }
  
-diff --git a/forge-game/src/main/java/forge/game/ability/effects/RollDiceEffect.java b/forge-game/src/main/java/forge/game/ability/effects/RollDiceEffect.java
-index 1a539118..baea8919 100644
---- a/forge-game/src/main/java/forge/game/ability/effects/RollDiceEffect.java
-+++ b/forge-game/src/main/java/forge/game/ability/effects/RollDiceEffect.java
-@@ -24,6 +24,12 @@ import java.util.*;
- 
- public class RollDiceEffect extends SpellAbilityEffect {
- 
-+    private static long bridgeRollGroupCounter;
-+
-+    private static synchronized String nextBridgeRollGroupId() {
-+        return "forge-roll-" + (++bridgeRollGroupCounter);
-+    }
-+
-     public static String makeFormatedDescription(SpellAbility sa) {
-         StringBuilder sb = new StringBuilder();
-         final String key = "ResultSubAbilities";
-@@ -137,6 +143,8 @@ public class RollDiceEffect extends SpellAbilityEffect {
- 
-         Map<Player, Integer> ignoreChosenMap = Maps.newHashMap();
-         Set<Card> dicePTExchanges = new HashSet<>();
-+        final String rollGroupId = nextBridgeRollGroupId();
-+        boolean rerolled = false;
- 
-         final Map<AbilityKey, Object> repParams = AbilityKey.mapFromAffected(player);
-         List<Integer> ignored = new ArrayList<>();
-@@ -162,6 +170,7 @@ public class RollDiceEffect extends SpellAbilityEffect {
-             Cost cost = new Cost(c.getSVar("RollRerollCost"), false);
-             boolean paid = player.getController().payCostDuringRoll(cost, modifierSA);
-             if (paid) {
-+                rerolled = true;
-                 for (Integer roll : diceToReroll) {
-                     naturalRolls.remove(roll);
-                 }
-@@ -315,6 +324,19 @@ public class RollDiceEffect extends SpellAbilityEffect {
-             }
-         }
- 
-+        // This is the generic Forge dice seam. It is emitted only after all
-+        // natural rolls, rerolls, and result modifiers are authoritative, so
-+        // consumers never need to infer rules from human-readable text.
-+        final Card source = sa == null ? null : sa.getHostCard();
-+        player.getGame().fireEvent(new GameEventRollDie(
-+                rollGroupId,
-+                player,
-+                sides,
-+                List.copyOf(getNaturalResults(resultsList)),
-+                List.copyOf(getFinalResults(resultsList)),
-+                rerolled,
-+                source));
-+
-         int rollNum = 1;
-         for (DieRollResult roll : resultsList) {
-             final Map<AbilityKey, Object> runParams = AbilityKey.mapFromPlayer(player);
-@@ -424,8 +446,6 @@ public class RollDiceEffect extends SpellAbilityEffect {
- 
-         for (int i = 0; i < amount; i++) {
-             int roll = MyRandom.getRandom().nextInt(sides) + 1;
--            // Play the die roll sound
--            player.getGame().fireEvent(new GameEventRollDie());
-             player.roll();
-             naturalRolls.add(roll);
-         }
 diff --git a/forge-game/src/main/java/forge/game/card/Card.java b/forge-game/src/main/java/forge/game/card/Card.java
 index 5249b18c..2c73fe2f 100644
 --- a/forge-game/src/main/java/forge/game/card/Card.java
@@ -3054,7 +2991,9 @@ diff --git a/forge-headless/src/main/java/forge/headless/TUICommand.java b/forge
 index 3626ea89..b0e8729c 100644
 --- a/forge-headless/src/main/java/forge/headless/TUICommand.java
 +++ b/forge-headless/src/main/java/forge/headless/TUICommand.java
-@@ -53,6 +53,14 @@ public class TUICommand implements Runnable {
+@@ -51,10 +51,18 @@ public class TUICommand implements Runnable {
+ 
+     @Option(names = "--start-state",
              description = "Load game state from .pzl file")
      String startStatePath;
  
@@ -3069,11 +3008,15 @@ index 3626ea89..b0e8729c 100644
      // Legacy support
      @Option(names = "--player2-tui",
              hidden = true,
+             description = "Deprecated: use --p2=tui instead")
+     boolean player2Tui = false;
 diff --git a/forge-headless/src/main/java/forge/headless/TextUIGame.java b/forge-headless/src/main/java/forge/headless/TextUIGame.java
 index 15b7a60f..0381e5b1 100644
 --- a/forge-headless/src/main/java/forge/headless/TextUIGame.java
 +++ b/forge-headless/src/main/java/forge/headless/TextUIGame.java
-@@ -11,6 +11,7 @@ import forge.game.player.RegisteredPlayer;
+@@ -9,10 +9,11 @@ import forge.game.phase.PhaseType;
+ import forge.game.player.Player;
+ import forge.game.player.RegisteredPlayer;
  import forge.game.zone.ZoneType;
  import forge.item.PaperCard;
  import forge.localinstance.properties.ForgeConstants;
@@ -3081,7 +3024,11 @@ index 15b7a60f..0381e5b1 100644
  import forge.model.FModel;
  import forge.player.GamePlayerUtil;
  import forge.util.FileUtil;
-@@ -70,11 +71,21 @@ public class TextUIGame {
+ import forge.util.FileSection;
+ import forge.util.MyRandom;
+@@ -68,15 +69,25 @@ public class TextUIGame {
+         if (seed != null) {
+             System.out.println("Setting random seed: " + seed);
              MyRandom.setRandom(new Random(seed));
          }
  
@@ -3107,7 +3054,11 @@ index 15b7a60f..0381e5b1 100644
          }, "CardLoadingThread");
          cardLoadingThread.start();
  
-@@ -185,32 +196,35 @@ public class TextUIGame {
+         // Install TUI GUI base which intercepts game log messages
+         TUIGuiBase.install();
+@@ -183,36 +194,39 @@ public class TextUIGame {
+         }
+ 
          // Set the current game for log monitoring
          TUIGuiBase.setCurrentGame(game);
  
@@ -3157,11 +3108,15 @@ index 15b7a60f..0381e5b1 100644
          // Game is over
          System.out.println();
          System.out.println("=".repeat(60));
+         System.out.println("GAME OVER");
+ 
 diff --git a/forge-headless/src/test/java/forge/headless/TUIInteractiveTest.java b/forge-headless/src/test/java/forge/headless/TUIInteractiveTest.java
-index 5d371355..2d4ea5b5 100644
+index 5d371355..45414663 100644
 --- a/forge-headless/src/test/java/forge/headless/TUIInteractiveTest.java
 +++ b/forge-headless/src/test/java/forge/headless/TUIInteractiveTest.java
-@@ -4,9 +4,12 @@ import forge.LobbyPlayer;
+@@ -2,13 +2,17 @@ package forge.headless;
+ 
+ import forge.LobbyPlayer;
  import forge.deck.Deck;
  import forge.deck.io.DeckSerializer;
  import forge.game.*;
@@ -3169,12 +3124,17 @@ index 5d371355..2d4ea5b5 100644
 +import forge.game.phase.PhaseType;
  import forge.game.player.Player;
  import forge.game.player.RegisteredPlayer;
++import forge.game.spellability.SpellAbility;
  import forge.gui.GuiBase;
 +import forge.item.PaperCard;
  import forge.model.FModel;
  import forge.player.GamePlayerUtil;
  import org.junit.BeforeClass;
-@@ -26,6 +29,8 @@ import static org.junit.Assert.*;
+ import org.junit.Test;
+ 
+@@ -24,10 +28,12 @@ import static org.junit.Assert.*;
+  * Interactive TUI tests that simulate user input to test gameplay features.
+  * These tests use a scripted input stream to programmatically interact with the TUI.
   */
  public class TUIInteractiveTest {
  
@@ -3183,7 +3143,11 @@ index 5d371355..2d4ea5b5 100644
      @BeforeClass
      public static void setup() {
          // Setup headless GUI interface FIRST (before FModel.initialize)
-@@ -71,6 +76,113 @@ public class TUIInteractiveTest {
+         // because ForgeConstants needs GuiBase to be set during initialization
+         GuiBase.setInterface(new HeadlessGuiBase());
+@@ -69,10 +75,193 @@ public class TUIInteractiveTest {
+         } else {
+             System.out.println("  ✓ Game completed, winner: " + outcome.getWinningLobbyPlayer().getName());
          }
      }
  
@@ -3284,6 +3248,82 @@ index 5d371355..2d4ea5b5 100644
 +            countOccurrences(noManaOutputCapture.toString(), planeswalkerLabel));
 +    }
 +
++    @Test
++    public void testCancelledDelveCastRestoresExactCardToHand() {
++        assertCancelledSpellRestoresHand("Murderous Cut");
++    }
++
++    private void assertCancelledSpellRestoresHand(String spellName) {
++        Deck deck = loadTestDeck("monored.dck");
++        assertNotNull("Failed to load test deck", deck);
++
++        List<RegisteredPlayer> players = new ArrayList<>();
++        RegisteredPlayer player1 = new RegisteredPlayer(deck);
++        LobbyPlayer player1Lobby = GamePlayerUtil.getGuiPlayer("Player 1", 0, 0, false);
++        player1.setPlayer(player1Lobby);
++        players.add(player1);
++        RegisteredPlayer player2 = new RegisteredPlayer(deck);
++        LobbyPlayer player2Lobby = GamePlayerUtil.createAiPlayer("AI-TestDeck", 0);
++        player2.setPlayer(player2Lobby);
++        players.add(player2);
++
++        Match match = new Match(new GameRules(GameType.Constructed), players,
++            "Cancelled Cast Rollback Test");
++        Game game = match.createGame();
++        Player human = null;
++        for (Player candidate : game.getPlayers()) {
++            if (candidate.getLobbyPlayer() == player1Lobby) {
++                human = candidate;
++                break;
++            }
++        }
++        assertNotNull("Human player should exist", human);
++
++        var cardDb = FModel.getMagicDb().getCommonCards();
++        PaperCard spellPaper = cardDb.getCard(spellName);
++        assertNotNull(spellName + " should be present in the Forge card pool", spellPaper);
++        Card source = Card.fromPaperCard(spellPaper, human);
++        game.getAction().moveToHand(source, null);
++        Card manaSource = Card.fromPaperCard(cardDb.getCard("Swamp"), human);
++        game.getAction().moveToPlay(manaSource, human, null, null);
++
++        for (int i = 0; i < 4; i++) {
++            Card graveCard = Card.fromPaperCard(cardDb.getCard("Island"), human);
++            game.getAction().moveToGraveyard(graveCard, null);
++        }
++
++        SpellAbility cast = null;
++        for (SpellAbility candidate : source.getAllPossibleAbilities(human, false)) {
++            if (candidate.isSpell()) {
++                cast = candidate;
++                break;
++            }
++        }
++        assertNotNull("Expected a castable " + spellName + " ability", cast);
++        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, human, true, 1);
++
++        // Four graveyard candidates make Delve's CANCEL CAST option 5.
++        String cancelChoice = "5\n";
++        PlayerControllerTUI tui = new PlayerControllerTUI(game, human, player1Lobby,
++            new BufferedReader(new StringReader(cancelChoice)));
++        human.dangerouslySetController(tui);
++        boolean accepted = tui.playChosenSpellAbility(cast);
++
++        assertFalse("CANCEL CAST must abort the cast", accepted);
++        Card restored = null;
++        for (Card card : human.getCardsIn(forge.game.zone.ZoneType.Hand)) {
++            if (card.getId() == source.getId()) {
++                restored = card;
++                break;
++            }
++        }
++        assertNotNull("Exact cancelled source card must return to hand", restored);
++        assertEquals("Cancelled source must retain its Forge identity", source.getId(), restored.getId());
++        for (Card card : human.getCardsIn(forge.game.zone.ZoneType.Stack)) {
++            assertNotEquals("Cancelled source must not remain on stack", source.getId(), card.getId());
++        }
++    }
++
 +    private static int countOccurrences(String text, String value) {
 +        int count = 0;
 +        int index = 0;
@@ -3297,7 +3337,11 @@ index 5d371355..2d4ea5b5 100644
      /**
       * Build a script that simulates realistic gameplay.
       * Strategy: Try to play lands and creatures, but mostly pass.
-@@ -187,6 +299,7 @@ public class TUIInteractiveTest {
+      */
+     private String buildGameScript() {
+@@ -185,10 +374,11 @@ public class TUIInteractiveTest {
+             // Restore stdout
+             System.setOut(originalOut);
  
              // Analyze the captured output
              String output = outputCapture.toString();
@@ -3305,3 +3349,273 @@ index 5d371355..2d4ea5b5 100644
              System.out.println("  Game produced " + output.length() + " bytes of output");
  
              // Check for common issues in output
+             if (output.contains("Error") || output.contains("Exception")) {
+                 System.out.println("  WARNING: Output contains error messages");
+diff --git a/forge-game/src/main/java/forge/game/GameActionUtil.java b/forge-game/src/main/java/forge/game/GameActionUtil.java
+index 2f8e6552..2707cc21 100644
+--- a/forge-game/src/main/java/forge/game/GameActionUtil.java
++++ b/forge-game/src/main/java/forge/game/GameActionUtil.java
+@@ -1005,6 +1005,84 @@ public final class GameActionUtil {
+         payment.refundPayment();
+         game.getStack().clearFrozen();
+         game.getTriggerHandler().clearWaitingTriggers();
+     }
+ 
++    /**
++     * Roll back a cast whose source card has already entered the stack and
++     * publish the restoration as a normal Forge zone change.  The older
++     * rollbackAbility helper intentionally edits the zone directly because it
++     * is used for pre-commit targeting cancellation.  An interactive payment
++     * cancellation is a committed hand-to-stack attempt, so consumers must
++     * observe the corresponding stack-to-source-zone event.
++     */
++    public static Card rollbackAbilityAndEmitZoneChange(SpellAbility ability,
++            final Zone fromZone, final int zonePosition, CostPayment payment, Card oldCard) {
++        final Game game = ability.getActivatingPlayer().getGame();
++
++        if (game.restoreGameState()) {
++            System.out.println("Restored state from snapshot! Rolled back: "
++                    + ability.getHostCard().getName() + " - " + ability.getActivatingPlayer());
++            return game.getCardState(oldCard);
++        }
++
++        Card restored = oldCard;
++        if (fromZone != null && !fromZone.is(ZoneType.None)) {
++            // moveToStack replaces the source object with a same-ID stack
++            // object.  Move that authoritative object back so GameAction emits
++            // GameEventCardChangeZone(stack, sourceZone) and the snapshot/event
++            // producers see the same transition.
++            Card current = ability.getHostCard();
++            if (current == null || !current.isInZone(ZoneType.Stack)) {
++                current = oldCard;
++            }
++            restored = game.getAction().moveTo(fromZone.getZoneType(), current,
++                    zonePosition, null, null);
++            if (restored == null) {
++                return null;
++            }
++
++            restored.setCastSA(null);
++            restored.setCastFrom(null);
++            ability.setHostCard(restored);
++            ability.setXManaCostPaid(null);
++            ability.setSpendPhyrexianMana(false);
++            ability.clearPipsToReduce();
++            ability.setPaidLife(0);
++            if (ability.hasParam("Announce")) {
++                for (final String aVar : ability.getParam("Announce").split(",")) {
++                    final String varName = aVar.trim();
++                    if (!varName.equals("X")) {
++                        ability.setSVar(varName, "0");
++                    }
++                }
++            }
++            for (SpellAbility sa : restored.getSpells()) {
++                sa.setHostCard(restored);
++            }
++            ability.rollback();
++            restored.setBackSide(false);
++            restored.setState(restored.getFaceupCardStateName(), true);
++            restored.unanimateBestow();
++            if (ability.hasParam("Prototype")) {
++                restored.removeCloneState(restored.getPrototypeTimestamp());
++            }
++            for (Card c : ability.getTappedForConvoke()) {
++                c.setTapped(false);
++            }
++        }
++
++        if (ability.getApi() == ApiType.Charm) {
++            ability.setSubAbility(null);
++            ability.setChosenList(null);
++        }
++        ability.clearTargets();
++        ability.resetOnceResolved();
++        if (payment != null) {
++            payment.refundPayment();
++        }
++        game.getStack().clearFrozen();
++        game.getTriggerHandler().clearWaitingTriggers();
++        return restored;
++    }
++
+ }
+diff --git a/forge-ai/src/main/java/forge/ai/ComputerUtil.java b/forge-ai/src/main/java/forge/ai/ComputerUtil.java
+index 2646a545..f73e1ca4 100644
+--- a/forge-ai/src/main/java/forge/ai/ComputerUtil.java
++++ b/forge-ai/src/main/java/forge/ai/ComputerUtil.java
+@@ -80,10 +80,12 @@ public class ComputerUtil {
+     public static boolean handlePlayingSpellAbility(final Player ai, SpellAbility sa, Consumer<SpellAbility> chooseTargets) {
+         final Card source = sa.getHostCard();
+         final Game game = source.getGame();
+         final Card host = sa.getHostCard();
+         final Zone hz = host.isCopiedSpell() ? null : host.getZone();
++        final int sourceZonePosition = hz == null ? -1 : hz.getCards().indexOf(source);
++        boolean movedSourceToStack = false;
+         source.setSplitStateToPlayAbility(sa);
+ 
+         if (sa.isSpell() && !source.isCopiedSpell()) {
+             sa = AbilityUtils.addSpliceEffects(sa);
+             if (sa.getSplicedCards() != null && !sa.getSplicedCards().isEmpty() && ai.getController().isAI()) {
+@@ -96,54 +98,66 @@ public class ComputerUtil {
+                     return false;
+                 }
+             }
+ 
+             sa.setHostCard(game.getAction().moveToStack(source, sa));
++            movedSourceToStack = true;
+         }
+ 
+         if (!sa.isCopied()) {
+             sa.resetPaidHash();
+             sa.setPaidLife(0);
+         }
+ 
+         sa = GameActionUtil.addExtraKeywordCost(sa);
++        final CostPayment pay = new CostPayment(sa.getPayCosts(), sa);
+ 
+         if (sa.getApi() == ApiType.Charm && !CharmEffect.makeChoices(sa)) {
+             // 603.3c If no mode is chosen, the ability is removed from the stack.
++            rollbackAbortedSpellCast(sa, movedSourceToStack, hz, sourceZonePosition, pay, source);
+             return false;
+         }
+         if (chooseTargets != null) {
+             chooseTargets.accept(sa);
+             if (!sa.isTargetNumberValid()) {
++                rollbackAbortedSpellCast(sa, movedSourceToStack, hz, sourceZonePosition, pay, source);
+                 return false;
+             }
+         }
+         // Spell Permanents inherit their cost from Mana Cost
+-        final Cost cost = sa.getPayCosts();
+-
+         game.getStack().freezeStack(sa);
+ 
+-        final CostPayment pay = new CostPayment(cost, sa);
+         if (pay.payComputerCosts(new AiCostDecision(ai, sa, false))) {
+             game.getStack().addAndUnfreeze(sa);
+             if (sa.getSplicedCards() != null && !sa.getSplicedCards().isEmpty()) {
+                 game.getAction().reveal(sa.getSplicedCards(), ai, true, "Computer reveals spliced cards from ");
+             }
+             return true;
+         }
+-        // FIXME: Should not arrive here, though the card seems to be stuck on stack zone and invalidated and nowhere to be found, try to put back to original zone and maybe try to cast again if possible at later time?
+-        System.out.println("[" + sa.getActivatingPlayer() + "] AI failed to play " + sa.getHostCard() + " [" + sa.getHostCard().getZone() + "]");
+-        sa.setSkip(true);
+-        if (host != null && hz != null && hz.is(ZoneType.Stack)) {
+-            Card c = game.getAction().moveTo(hz.getZoneType(), host, null, null);
+-            for (SpellAbility csa : c.getSpellAbilities()) {
+-                csa.setSkip(true);
+-            }
+-        }
++        rollbackAbortedSpellCast(sa, movedSourceToStack, hz, sourceZonePosition, pay, source);
+         return false;
+     }
+ 
++    private static void rollbackAbortedSpellCast(final SpellAbility ability,
++            final boolean movedSourceToStack, final Zone fromZone, final int zonePosition,
++            final CostPayment payment, final Card source) {
++        if (!movedSourceToStack) {
++            return;
++        }
++
++        final Zone currentZone = ability.getHostCard() == null ? null : ability.getHostCard().getZone();
++        System.out.println("[CAST_ROLLBACK] sourceCardId=" + source.getId()
++                + " preCastZone=" + (fromZone == null ? "none" : fromZone.getZoneType())
++                + " currentZone=" + (currentZone == null ? "none" : currentZone.getZoneType())
++                + " rollbackAttempted=true");
++        final Card restored = GameActionUtil.rollbackAbilityAndEmitZoneChange(
++                ability, fromZone, zonePosition, payment, source);
++        System.out.println("[CAST_ROLLBACK] sourceCardId=" + source.getId()
++                + " rollbackSucceeded=" + (restored != null
++                    && fromZone != null && restored.isInZone(fromZone.getZoneType())));
++    }
++
+     private static boolean hasDiscardHandCost(final Cost cost) {
+         if (cost == null) {
+             return false;
+         }
+         for (final CostPart part : cost.getCostParts()) {
+diff --git a/forge-game/src/main/java/forge/game/ability/effects/RollDiceEffect.java b/forge-game/src/main/java/forge/game/ability/effects/RollDiceEffect.java
+index 1a539118..baea8919 100644
+--- a/forge-game/src/main/java/forge/game/ability/effects/RollDiceEffect.java
++++ b/forge-game/src/main/java/forge/game/ability/effects/RollDiceEffect.java
+@@ -22,10 +22,16 @@ import org.apache.commons.lang3.StringUtils;
+ 
+ import java.util.*;
+ 
+ public class RollDiceEffect extends SpellAbilityEffect {
+ 
++    private static long bridgeRollGroupCounter;
++
++    private static synchronized String nextBridgeRollGroupId() {
++        return "forge-roll-" + (++bridgeRollGroupCounter);
++    }
++
+     public static String makeFormatedDescription(SpellAbility sa) {
+         StringBuilder sb = new StringBuilder();
+         final String key = "ResultSubAbilities";
+         if (sa.hasParam(key)) {
+             String [] diceAbilities = sa.getParam(key).split(",");
+@@ -135,10 +141,12 @@ public class RollDiceEffect extends SpellAbilityEffect {
+             return 0;
+         }
+ 
+         Map<Player, Integer> ignoreChosenMap = Maps.newHashMap();
+         Set<Card> dicePTExchanges = new HashSet<>();
++        final String rollGroupId = nextBridgeRollGroupId();
++        boolean rerolled = false;
+ 
+         final Map<AbilityKey, Object> repParams = AbilityKey.mapFromAffected(player);
+         List<Integer> ignored = new ArrayList<>();
+         List<Integer> naturalRolls = rollAction(amount, sides, ignore, rollsResult, ignored, ignoreChosenMap, dicePTExchanges, player, repParams);
+ 
+@@ -160,10 +168,11 @@ public class RollDiceEffect extends SpellAbilityEffect {
+             int activationsThisTurn = Integer.parseInt(parts[1]);
+             SpellAbility modifierSA = c.getFirstSpellAbility();
+             Cost cost = new Cost(c.getSVar("RollRerollCost"), false);
+             boolean paid = player.getController().payCostDuringRoll(cost, modifierSA);
+             if (paid) {
++                rerolled = true;
+                 for (Integer roll : diceToReroll) {
+                     naturalRolls.remove(roll);
+                 }
+                 int amountToReroll = diceToReroll.size();
+                 List<Integer> rerolls = rollAction(amountToReroll, sides, 0, null, ignored, Maps.newHashMap(), dicePTExchanges, player, repParams);
+@@ -313,10 +322,23 @@ public class RollDiceEffect extends SpellAbilityEffect {
+             if (sa.hasParam("MaxRollsResults")) {
+                 sa.setSVar("MaxRolls", Integer.toString(countMaxRolls));
+             }
+         }
+ 
++        // This is the generic Forge dice seam. It is emitted only after all
++        // natural rolls, rerolls, and result modifiers are authoritative, so
++        // consumers never need to infer rules from human-readable text.
++        final Card source = sa == null ? null : sa.getHostCard();
++        player.getGame().fireEvent(new GameEventRollDie(
++                rollGroupId,
++                player,
++                sides,
++                List.copyOf(getNaturalResults(resultsList)),
++                List.copyOf(getFinalResults(resultsList)),
++                rerolled,
++                source));
++
+         int rollNum = 1;
+         for (DieRollResult roll : resultsList) {
+             final Map<AbilityKey, Object> runParams = AbilityKey.mapFromPlayer(player);
+             runParams.put(AbilityKey.Sides, sides);
+             runParams.put(AbilityKey.Result, roll.getModifiedValue());
+@@ -422,12 +444,10 @@ public class RollDiceEffect extends SpellAbilityEffect {
+ 
+         List<Integer> naturalRolls = (rollsResult == null ? new ArrayList<>() : rollsResult);
+ 
+         for (int i = 0; i < amount; i++) {
+             int roll = MyRandom.getRandom().nextInt(sides) + 1;
+-            // Play the die roll sound
+-            player.getGame().fireEvent(new GameEventRollDie());
+             player.roll();
+             naturalRolls.add(roll);
+         }
+ 
+         naturalRolls.sort(null);

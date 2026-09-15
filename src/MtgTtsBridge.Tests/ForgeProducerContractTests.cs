@@ -476,6 +476,33 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void CancelledInteractivePaymentRollsBackTheGenericCastTransaction()
+    {
+        var computerUtil = ExtractPatchedFile("forge-ai/src/main/java/forge/ai/ComputerUtil.java");
+        var gameActionUtil = ExtractPatchedFile("forge-game/src/main/java/forge/game/GameActionUtil.java");
+
+        var moveToStack = computerUtil.IndexOf("moveToStack(source, sa)", StringComparison.Ordinal);
+        var rollbackAfterPayment = computerUtil.IndexOf(
+            "rollbackAbortedSpellCast(sa, movedSourceToStack, hz, sourceZonePosition, pay, source)",
+            moveToStack, StringComparison.Ordinal);
+        Assert.True(moveToStack >= 0);
+        Assert.True(rollbackAfterPayment > moveToStack);
+        Assert.Contains("movedSourceToStack = true", computerUtil);
+        Assert.Contains("if (!movedSourceToStack)", computerUtil);
+        Assert.DoesNotContain("hz.is(ZoneType.Stack)", computerUtil);
+
+        Assert.Contains("rollbackAbilityAndEmitZoneChange", gameActionUtil);
+        Assert.Contains("game.getAction().moveTo(fromZone.getZoneType(), current", gameActionUtil);
+        Assert.Contains("payment.refundPayment()", gameActionUtil);
+        Assert.Contains("GameEventCardChangeZone", Patch);
+
+        // The success branch still commits the spell; rollback is only reached
+        // after payment/choice failure, so a completed cast remains on stack.
+        Assert.Contains("game.getStack().addAndUnfreeze(sa)", computerUtil);
+        Assert.Contains("return true;", computerUtil);
+    }
+
+    [Fact]
     public void PreparedSpellEnumerationWalksTheExactPreparedSourceRelation()
     {
         var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");

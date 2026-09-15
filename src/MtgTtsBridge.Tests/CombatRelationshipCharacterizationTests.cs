@@ -172,6 +172,7 @@ public sealed class CombatRelationshipCharacterizationTests
         
         Assert.Null(attack.DefenderSeatId);
         Assert.Equal(50, attack.DefenderForgeObjectId);
+        Assert.Equal($"forge:{sessionId}:50", attack.DefenderCardInstanceId);
     }
 
     // TEST SCENARIO 5: Multiple blockers assigned to one attacker survive parsing
@@ -502,7 +503,7 @@ public sealed class CombatRelationshipCharacterizationTests
     // This test characterizes the CURRENT behavior and serves as documentation that U4
     // implementation must change BridgeApplyCombatSnapshot to include defender in signature.
     [Fact]
-    public void TtsPresentationSignature_IgnoresDefender_CharacterizesU4Deficiency()
+    public void TtsPresentationSignature_IncludesAuthoritativeDefender()
     {
         // This test verifies the known deficiency: two combat snapshots that differ only
         // in which permanent/player an attacker is attacking will have identical presentation
@@ -515,7 +516,8 @@ public sealed class CombatRelationshipCharacterizationTests
                 AttackerCardInstanceId: $"forge:{sessionId}:10",
                 DefenderSeatId: "forge-player-2",
                 DefenderForgeObjectId: null,
-                BlockerCardInstanceIds: new[] { $"forge:{sessionId}:20" })
+                BlockerCardInstanceIds: new[] { $"forge:{sessionId}:20" },
+                DefenderCardInstanceId: null)
         }));
 
         var signature2 = ComputePresentationSignature(new GameCombatSnapshotDto(new[]
@@ -524,13 +526,14 @@ public sealed class CombatRelationshipCharacterizationTests
                 AttackerCardInstanceId: $"forge:{sessionId}:10",
                 DefenderSeatId: null,
                 DefenderForgeObjectId: 30,
-                BlockerCardInstanceIds: new[] { $"forge:{sessionId}:20" })
+                BlockerCardInstanceIds: new[] { $"forge:{sessionId}:20" },
+                DefenderCardInstanceId: $"forge:{sessionId}:30")
         }));
 
         // DEFICIENCY: These are different authoritative combat states but have identical
         // presentation signatures because BridgeApplyCombatSnapshot only includes
         // (attackerCardInstanceId + blockerCardInstanceIds) in its signature.
-        Assert.Equal(signature1, signature2);
+        Assert.NotEqual(signature1, signature2);
         // This test documents that U4 must change the signature to include defender identity.
     }
 
@@ -540,7 +543,7 @@ public sealed class CombatRelationshipCharacterizationTests
         var parts = new List<string>();
         foreach (var attack in combat.Attacks)
         {
-            var part = $"{attack.AttackerCardInstanceId}|{string.Join(",", attack.BlockerCardInstanceIds)}";
+            var part = $"{attack.AttackerCardInstanceId}|{attack.DefenderSeatId ?? ""}|{attack.DefenderCardInstanceId ?? ""}|{string.Join(",", attack.BlockerCardInstanceIds)}";
             parts.Add(part);
         }
         parts.Sort();

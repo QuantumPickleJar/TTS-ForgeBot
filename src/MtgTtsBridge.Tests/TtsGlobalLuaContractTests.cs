@@ -175,13 +175,15 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
-    public void CombatPresentationSignature_UsesOnlyAttackerAndBlockerIdentityNotDefenderFields()
+    public void CombatPresentationSignature_UsesAuthoritativeDefenderIdentity()
     {
         Assert.Contains("local parts = {}", Script.IndexOf("function BridgeApplyCombatSnapshot", StringComparison.Ordinal) >= 0 ? Script.Substring(Script.IndexOf("function BridgeApplyCombatSnapshot", StringComparison.Ordinal)) : Script);
         Assert.Contains("tostring(attack.attackerCardInstanceId)", Script);
         Assert.Contains("attack.blockerCardInstanceIds or {}", Script);
-        Assert.DoesNotContain("attack.defenderSeatId", Script, StringComparison.Ordinal);
-        Assert.DoesNotContain("attack.defenderForgeObjectId", Script, StringComparison.Ordinal);
+        Assert.Contains("attack.defenderSeatId", Script, StringComparison.Ordinal);
+        Assert.Contains("attack.defenderCardInstanceId", Script, StringComparison.Ordinal);
+        Assert.Contains("BridgeApplyCombatTargetPresentation(combat)", Script, StringComparison.Ordinal);
+        Assert.Contains("Global.setVectorLines", Script, StringComparison.Ordinal);
         Assert.Contains("BridgeState.presentedCombatSignature = signature", Script);
     }
 
