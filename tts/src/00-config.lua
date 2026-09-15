@@ -3761,6 +3761,8 @@ BridgeState = {
     -- CardInstanceId event still owns physical identity and movement.
     battlefieldKindByInstanceId = {},
     presentedCombatSignature = nil,
+    combatTargetVectorLines = {},
+    combatTargetPresentationNeedsRetry = false,
     zoneAnchorGuidBySeatAndZone = {},
     resourceCounterIndexHydrated = false,
     monarchHelperIndexHydrated = false,

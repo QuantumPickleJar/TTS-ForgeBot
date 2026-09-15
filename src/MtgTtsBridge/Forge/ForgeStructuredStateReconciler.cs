@@ -201,7 +201,8 @@ public sealed class ForgeStructuredStateReconciler
 
         var combat = source.Combat is null ? null : new GameCombatSnapshotDto(source.Combat.Attacks.Select(attack => new GameCombatAttackSnapshotDto(
             $"forge:{sessionId}:{attack.AttackerForgeObjectId}", attack.DefenderSeatId, attack.DefenderForgeObjectId,
-            attack.BlockerForgeObjectIds.Select(id => $"forge:{sessionId}:{id}").ToArray())).ToArray());
+            attack.BlockerForgeObjectIds.Select(id => $"forge:{sessionId}:{id}").ToArray(),
+            attack.DefenderForgeObjectId is int defenderId ? $"forge:{sessionId}:{defenderId}" : null)).ToArray());
         return new GameSnapshotDto(
             sessionId,
             source.Sequence,
@@ -551,8 +552,8 @@ public sealed class ForgeStructuredStateReconciler
             .SetEquals(second ?? []);
 
     private static bool CombatEqual(GameCombatSnapshotDto? first, GameCombatSnapshotDto? second) =>
-        string.Join(";", first?.Attacks.Select(a => $"{a.AttackerCardInstanceId}|{a.DefenderSeatId}|{a.DefenderForgeObjectId}|{string.Join(',', a.BlockerCardInstanceIds)}") ?? []) ==
-        string.Join(";", second?.Attacks.Select(a => $"{a.AttackerCardInstanceId}|{a.DefenderSeatId}|{a.DefenderForgeObjectId}|{string.Join(',', a.BlockerCardInstanceIds)}") ?? []);
+        string.Join(";", first?.Attacks.Select(a => $"{a.AttackerCardInstanceId}|{a.DefenderSeatId}|{a.DefenderForgeObjectId}|{a.DefenderCardInstanceId}|{string.Join(',', a.BlockerCardInstanceIds)}") ?? []) ==
+        string.Join(";", second?.Attacks.Select(a => $"{a.AttackerCardInstanceId}|{a.DefenderSeatId}|{a.DefenderForgeObjectId}|{a.DefenderCardInstanceId}|{string.Join(',', a.BlockerCardInstanceIds)}") ?? []);
 
     private static IEnumerable<string> UnionKeys(
         IReadOnlyDictionary<string, int>? first,
