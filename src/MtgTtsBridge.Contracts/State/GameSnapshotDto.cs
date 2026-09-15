@@ -45,7 +45,12 @@ public sealed record GameStackObjectSnapshotDto(
     IReadOnlyList<string> Targets);
 
 public sealed record GameCombatSnapshotDto(IReadOnlyList<GameCombatAttackSnapshotDto> Attacks);
-public sealed record GameCombatAttackSnapshotDto(string AttackerCardInstanceId, string? DefenderSeatId, int? DefenderForgeObjectId, IReadOnlyList<string> BlockerCardInstanceIds);
+public sealed record GameCombatAttackSnapshotDto(
+    string AttackerCardInstanceId,
+    string? DefenderSeatId,
+    int? DefenderForgeObjectId,
+    IReadOnlyList<string> BlockerCardInstanceIds,
+    string? DefenderCardInstanceId = null);
 
 public sealed record GameResultDto(
     IReadOnlyList<string> WinnerSeatIds,

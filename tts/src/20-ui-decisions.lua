@@ -3937,12 +3937,24 @@ end
 
 function BridgeApplyCombatSnapshot(combat)
     local parts = {}
-    for _, attack in ipairs((combat and combat.attacks) or {}) do table.insert(parts, tostring(attack.attackerCardInstanceId) .. "|" .. table.concat(attack.blockerCardInstanceIds or {}, ",")) end
-    table.sort(parts)
+    for _, attack in ipairs((combat and combat.attacks) or {}) do
+        local blockers = ""
+        for index, blockerId in ipairs(attack.blockerCardInstanceIds or {}) do
+            if index > 1 then blockers = blockers .. "," end
+            blockers = blockers .. tostring(blockerId)
+        end
+        parts[#parts + 1] = tostring(attack.attackerCardInstanceId) .. "|" .. tostring(attack.defenderSeatId or "") .. "|" .. tostring(attack.defenderCardInstanceId or "") .. "|" .. blockers
+    end
     local signature = table.concat(parts, ";")
-    if BridgeState.presentedCombatSignature == signature then return end
+    if BridgeState.presentedCombatSignature == signature then
+        if BridgeState.combatTargetPresentationNeedsRetry == true then
+            BridgeApplyCombatTargetPresentation(combat)
+        end
+        return
+    end
     BridgeState.presentedCombatSignature = signature
     BridgeReturnAttackPresentation(nil)
+    BridgeApplyCombatTargetPresentation(combat)
     for _, attack in ipairs((combat and combat.attacks) or {}) do
         local attackerGuid = BridgeState.physicalByInstanceId[attack.attackerCardInstanceId]
         local attacker = attackerGuid and BridgeGetLiveObjectByGuid(attackerGuid) or nil
