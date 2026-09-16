@@ -398,6 +398,25 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void Reconciliation_MapsTokenSourceObjectToSessionScopedProvenance()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        Assert.Empty(reconciler.Apply("session-token-source", Parse(parser, Frame(1, Player()))));
+
+        var token = Card(84, "Rabbit Token", "battlefield", 0,
+            currentTypes: "[\"creature\",\"rabbit\"]", isToken: true)
+            .TrimEnd('}') + ",\"tokenSourceObjectId\":\"forge-object:31\"}";
+        var events = reconciler.Apply("session-token-source", Parse(parser, Frame(2, Player(
+            battlefield: [token]))));
+
+        var moved = Assert.Single(events, item => item.Kind == "card_moved");
+        Assert.Equal("forge:session-token-source:31", moved.TokenSourceObjectId);
+        Assert.Equal("forge:session-token-source:31", Assert.Single(reconciler.Current!
+            .Seats[0].Zones.Single(zone => zone.Name == "battlefield").Cards).TokenSourceObjectId);
+    }
+
+    [Fact]
     public void Reconciliation_DiffsLiveGameEventReasonsWithoutRequiringGameStartedReason()
     {
         var parser = new ForgeStructuredOutputParser();

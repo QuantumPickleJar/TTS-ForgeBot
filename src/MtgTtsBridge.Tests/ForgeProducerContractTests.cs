@@ -59,6 +59,15 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void TrackedBridgeStateFeed_ExportsTokenCreationSourceProvenance()
+    {
+        Assert.Contains("getTokenSpawningAbility()", Patch);
+        Assert.Contains("tokenSourceObjectId", Patch);
+        Assert.Contains("TokenSourceObjectId", File.ReadAllText(
+            Path.Combine(RepositoryRoot, "src", "MtgTtsBridge.Contracts", "State", "GameSnapshotDto.cs")));
+    }
+
+    [Fact]
     public void RollDiceEffect_ProducesOneStructuredGroupWithNaturalAndFinalValues()
     {
         var rollStart = Patch.IndexOf(

@@ -1326,6 +1326,234 @@ public sealed class EmbodimentReconciliationEngineTests
         Assert.Contains("generation is stale", lua.Globals.Get("resolveError").String);
     }
 
+    [Fact]
+    public void DuplicateNameSourceAssignmentKeepsHandAndLibraryCopiesIndependent()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local handCard = {tag='Card', guid='raise-hand', name='Raise the Alarm', vars={}}
+            handCard.getGUID = function() return handCard.guid end
+            handCard.getName = function() return handCard.name end
+            handCard.getVar = function(key) return handCard.vars[key] end
+            handCard.setVar = function(key, value) handCard.vars[key] = value end
+            local deck = {tag='Deck', guid='raise-library', entries={
+                {index=0, guid='raise-library-copy', nickname='Raise the Alarm'}}}
+            deck.getGUID = function() return deck.guid end
+            deck.getObjects = function() return deck.entries end
+            function BridgeResolveSeatLibraryDeck(_) return deck end
+            function BridgeTryGetSeatHandObjects(_) return {handCard} end
+            BridgeState.physicalInstanceIdByGuid = {
+                ['raise-hand']='forge:session:hand-copy'}
+            -- Simulate a resync-time inverse publication gap.  The exact
+            -- per-instance container locator remains authoritative.
+            BridgeState.physicalContainedInstanceIdByGuid = {}
+            BridgeState.physicalContainerByInstanceId = {
+                ['forge:session:library-copy']={cardGuid='raise-library-copy', deckGuid='raise-library',
+                    seatId='forge-player-1', zoneName='library', slotIndex=0}}
+            local seat = {seatId='forge-player-1', zones={
+                {name='library', cards={{cardInstanceId='forge:session:library-copy', cardName='Raise the Alarm', zonePosition=0}}},
+                {name='hand', cards={{cardInstanceId='forge:session:hand-copy', cardName='Raise the Alarm', zonePosition=0}}}}}
+            sourcePlan, sourceError = BridgeBuildSeatSourceAssignment(seat, {})
+            handSource = sourcePlan and sourcePlan.assignments['forge:session:hand-copy'].source
+            librarySource = sourcePlan and sourcePlan.assignments['forge:session:library-copy'].source
+        ");
+
+        Assert.False(lua.Globals.Get("sourcePlan").IsNil(), lua.Globals.Get("sourceError").ToPrintString());
+        Assert.Equal("raise-hand", lua.Globals.Get("handSource").Table.Get("guid").String);
+        Assert.Equal("raise-library-copy", lua.Globals.Get("librarySource").Table.Get("guid").String);
+    }
+
+    [Fact]
+    public void SingletonGraveyardIsValidWithoutNativeDeck()
+    {
+        var lua = NewProbe();
+        Assert.False(lua.Globals.Get("BridgeState").IsNil());
+        lua.DoString(@"
+            setupOk, setupError = pcall(function()
+            BridgeState.eventSessionId = 'session'
+            BridgeState.physicalByInstanceId = {['forge:session:25']='hare-guid'}
+            BridgeState.physicalInstanceIdByGuid = {['hare-guid']='forge:session:25'}
+            BridgeState.physicalSeatByGuid = {['hare-guid']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['hare-guid']='graveyard'}
+            BridgeState.physicalContainerByInstanceId = {}
+            BridgeState.physicalContainedInstanceIdByGuid = {}
+            BridgeState.physicalSlotByInstanceId = {}
+            BridgeState.physicalTappedByGuid = {}
+            function BridgeVerifyFinalPhysicalRepresentation(instanceId, seatId, zone)
+                return instanceId == 'forge:session:25' and seatId == 'forge-player-1' and zone == 'graveyard', nil
+            end
+            function BridgeAssertGraveyardObjectShape(_, _) return true, nil end
+            snapshot = {sessionId='session', eventCursor=260, seats={{seatId='forge-player-1', zones={
+                {name='graveyard', cards={{cardInstanceId='forge:session:25', cardName='Hare Apparent'}}}}}}}
+            end)
+        ");
+        Assert.False(lua.Globals.Get("BridgeState").IsNil());
+        Assert.True(lua.Globals.Get("setupOk").Boolean, lua.Globals.Get("setupError").ToPrintString());
+        lua.DoString(@"
+            validationCallOk, validationResult, validationReason = pcall(function()
+                return BridgeValidateAuthoritativeSnapshotPhysicalState(snapshot)
+            end)
+            valid = false
+            validationError = validationResult
+            if validationCallOk then
+                valid = validationResult
+                validationError = validationReason
+            end
+        ");
+
+        Assert.True(lua.Globals.Get("validationCallOk").Boolean, lua.Globals.Get("validationError").ToPrintString());
+        Assert.True(lua.Globals.Get("valid").Boolean, lua.Globals.Get("validationError").ToPrintString());
+        Assert.True(lua.Globals.Get("validationError").IsNil());
+    }
+
+    [Fact]
+    public void SingletonGraveyardPlannerUsesLooseCardPostcondition()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local snapshot = {sessionId='session', eventCursor=260, seats={{seatId='forge-player-1', zones={
+                {name='graveyard', cards={{cardInstanceId='forge:session:25', cardName='Hare Apparent'}}}}}}}
+            local desired = BridgeBuildDesiredPhysicalState(snapshot)
+            local observed = {byInstanceId={['forge:session:25']={guid='hare-guid', tag='Card',
+                seatId='forge-player-1', zone='battlefield'}}, duplicateInstanceIds={}}
+            plan = BridgePlanEmbodimentReconciliation(desired, observed)
+            operation = nil
+            for _, candidate in ipairs(plan.operations or {}) do
+                if candidate.type == 'MOVE_EXACT_CARD_TO_GRAVEYARD' then operation = candidate end
+            end
+        ");
+
+        Assert.False(lua.Globals.Get("operation").IsNil());
+        Assert.Equal("MOVE_EXACT_CARD_TO_GRAVEYARD", lua.Globals.Get("operation").Table.Get("type").String);
+        Assert.False(lua.Globals.Get("operation").Table.Get("requiresNativeDeck").Boolean);
+        Assert.Contains("loose graveyard Card", lua.Globals.Get("operation").Table.Get("postcondition").String);
+    }
+
+    [Fact]
+    public void FailedResyncMappingCandidateRestoresLastCommittedLedger()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.physicalByInstanceId = {['forge:session:1']='live-guid'}
+            BridgeState.physicalInstanceIdByGuid = {['live-guid']='forge:session:1'}
+            BridgeState.physicalSeatByGuid = {['live-guid']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['live-guid']='battlefield'}
+            BridgeState.physicalContainerByInstanceId = {}
+            BridgeState.physicalContainedInstanceIdByGuid = {}
+            BridgeBeginResyncMappingTransaction()
+            BridgeState.physicalByInstanceId = {['forge:session:1']='wrong-guid'}
+            BridgeState.physicalInstanceIdByGuid = {['wrong-guid']='forge:session:1'}
+            BridgeState.physicalSeatByGuid = {}
+            BridgeState.physicalZoneByGuid = {}
+            BridgeRestoreResyncMappingTransaction('synthetic-seat-bootstrap-failure')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.Equal("live-guid", state.Get("physicalByInstanceId").Table.Get("forge:session:1").String);
+        Assert.Equal("forge-player-1", state.Get("physicalSeatByGuid").Table.Get("live-guid").String);
+        Assert.Equal("battlefield", state.Get("physicalZoneByGuid").Table.Get("live-guid").String);
+        Assert.Equal("rolled-back", state.Get("resyncMappingTransactionStatus").String);
+    }
+
+    [Fact]
+    public void ManualResyncFailureRestoresCursorAndCommittedPhysicalOwnership()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.lastReceivedEventSequence = 260
+            BridgeState.lastAppliedEventSequence = 260
+            BridgeState.eventQueue = {}
+            BridgeState.physicalByInstanceId = {['forge:session:1']='live-guid'}
+            BridgeState.physicalInstanceIdByGuid = {['live-guid']='forge:session:1'}
+            BridgeState.physicalSeatByGuid = {['live-guid']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['live-guid']='battlefield'}
+            BridgeState.physicalContainerByInstanceId = {}
+            BridgeState.physicalContainedInstanceIdByGuid = {}
+            BridgeState.physicalSlotByInstanceId = {}
+            BridgeState.ui = {resyncInFlight=false, fastForwardActive=false, autoAdvanceMode='NORMAL'}
+            function BridgePhysicalLibraryQueuesIdle() return true end
+            function BridgeStopEventPolling(_) end
+            function BridgeStopDecisionPolling() end
+            function BridgeResumeChoiceProtocol(_) end
+            function BridgeClearHighlights() end
+            function BridgeResetSelectionState() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeSetSchedulerOwner(_, _) end
+            function BridgeSetStatus(headline, detail) statusHeadline=headline; statusDetail=detail end
+            function BridgeUiMarkDirty(_) end
+            function BridgeRecordResyncLifecycle(_, _, _, _, _, _, _, _) end
+            function BridgeSetResyncStage(_, _, _) end
+            function BridgeStopOnDesync(_) end
+            function BridgeBootstrapCurrentSnapshot(_, callback, _, _)
+                BridgeState.physicalSeatByGuid = {}
+                BridgeState.physicalZoneByGuid = {}
+                callback(false, 'synthetic seat-bootstrap failure')
+            end
+            started = BridgeResyncFromAuthoritativeSnapshot('hud')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(lua.Globals.Get("started").Boolean);
+        Assert.Equal(260, state.Get("lastAppliedEventSequence").Number);
+        Assert.Equal("live-guid", state.Get("physicalByInstanceId").Table.Get("forge:session:1").String);
+        Assert.Equal("forge-player-1", state.Get("physicalSeatByGuid").Table.Get("live-guid").String);
+        Assert.Equal("battlefield", state.Get("physicalZoneByGuid").Table.Get("live-guid").String);
+        Assert.Equal("RESYNC FAILED", lua.Globals.Get("statusHeadline").String);
+    }
+
+    [Fact]
+    public void HealthyManualResyncKeepsCursorAndPhysicalLedgerIdempotent()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            BridgeState.lastReceivedEventSequence = 260
+            BridgeState.lastAppliedEventSequence = 260
+            BridgeState.eventQueue = {}
+            BridgeState.physicalByInstanceId = {['forge:session:25']='hare-guid'}
+            BridgeState.physicalInstanceIdByGuid = {['hare-guid']='forge:session:25'}
+            BridgeState.physicalSeatByGuid = {['hare-guid']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['hare-guid']='graveyard'}
+            BridgeState.physicalContainerByInstanceId = {}
+            BridgeState.physicalContainedInstanceIdByGuid = {}
+            BridgeState.physicalSlotByInstanceId = {}
+            BridgeState.ui = {resyncInFlight=false, fastForwardActive=false, autoAdvanceMode='NORMAL'}
+            function BridgePhysicalLibraryQueuesIdle() return true end
+            function BridgeStopEventPolling(_) end
+            function BridgeStartEventPolling(_, _) eventPollingRestarted = true end
+            function BridgeStopDecisionPolling() end
+            function BridgeResumeChoiceProtocol(_) end
+            function BridgeClearHighlights() end
+            function BridgeResetSelectionState() end
+            function BridgeHideMainPriorityControls() end
+            function BridgeSetSchedulerOwner(_, _) end
+            function BridgeSetStatus(headline, detail) statusHeadline=headline; statusDetail=detail end
+            function BridgeUiMarkDirty(_) end
+            function BridgeRecordResyncLifecycle(_, _, _, _, _, _, _, _) end
+            function BridgeSetResyncStage(_, _, _) end
+            function BridgeStopOnDesync(_) end
+            function BridgeGetDecision(callback)
+                callback(true, {decisionId='forge-tui-29', sessionId='session', eventCursor=260,
+                    kind='main_priority', actions={{actionId='pass', type='pass_priority'}}}, nil)
+            end
+            function BridgeAcceptDecision(_, _, _, _) decisionReattached = true end
+            function BridgeBootstrapCurrentSnapshot(_, callback, _, _) callback(true, nil) end
+            started = BridgeResyncFromAuthoritativeSnapshot('hud')
+        ");
+
+        var state = lua.Globals.Get("BridgeState").Table;
+        Assert.True(lua.Globals.Get("started").Boolean);
+        Assert.True(lua.Globals.Get("eventPollingRestarted").Boolean);
+        Assert.True(lua.Globals.Get("decisionReattached").Boolean);
+        Assert.Equal(260, state.Get("lastAppliedEventSequence").Number);
+        Assert.False(state.Get("desyncLatched").Boolean);
+        Assert.Equal("committed", state.Get("resyncMappingTransactionStatus").String);
+        Assert.Equal("hare-guid", state.Get("physicalByInstanceId").Table.Get("forge:session:25").String);
+        Assert.Equal("graveyard", state.Get("physicalZoneByGuid").Table.Get("hare-guid").String);
+    }
+
     private static Script NewProbe(bool ttsArraySemantics = false)
     {
         var lua = new Script();

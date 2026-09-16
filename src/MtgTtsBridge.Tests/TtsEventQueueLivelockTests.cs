@@ -1191,7 +1191,9 @@ public sealed class TtsEventQueueLivelockTests
         Assert.False(state.Get("resyncInFlight").Boolean);
         Assert.False(state.Get("resyncScheduled").Boolean);
         Assert.False(state.Get("hudResyncPending").Boolean);
-        Assert.Equal("RESYNC AVAILABLE", lua.Globals.Get("lastStatusHeadline").String);
+        Assert.Equal("RESYNC FAILED", lua.Globals.Get("lastStatusHeadline").String);
+        Assert.Equal("Authoritative resync could not verify the physical table.",
+            lua.Globals.Get("lastStatusDetail").String);
         Assert.True(lua.Globals.Get("explicitStarted").Boolean);
         Assert.Equal(2, lua.Globals.Get("attemptsAfterExplicit").Number);
     }

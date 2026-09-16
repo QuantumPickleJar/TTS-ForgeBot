@@ -61,7 +61,7 @@ public sealed class HareApparentPresentationLuaTests
     {
         var lua = NewLua();
         lua.DoString(@"
-            BridgeRecordTokenMaterializationDiagnostic = function(_) end
+            BridgeRecordTokenMaterializationDiagnostic = function(record) lastDiagnostic = record end
             importCandidate = {
                 Name = 'Card', CardID = 366100,
                 Nickname = 'Rabbit\nToken Creature — Rabbit 0CMC',
@@ -116,6 +116,47 @@ public sealed class HareApparentPresentationLuaTests
             local ordinary, ordinaryError = BridgeValidateExactTokenImportCandidate(
                 good, 'Rabbit Token', { isToken = true })
             assert(ordinary == nil and ordinaryError ~= nil, 'ordinary Rabbit card was accepted as token art')
+        ");
+    }
+
+    [Fact]
+    public void SourceCardBundleValidatesOnlyTheAuthoritativeTokenCandidate()
+    {
+        var lua = NewLua();
+        lua.DoString(@"
+            local hare = {
+                Name = 'Card', CardID = 1,
+                Nickname = 'Hare Apparent\nCreature — Hare 2/2',
+                CustomDeck = { ['1'] = { FaceURL = 'https://example.invalid/hare.png' } }
+            }
+            local rabbit = {
+                Name = 'Card', CardID = 366100,
+                Nickname = 'Rabbit\nToken Creature — Rabbit 0CMC', Description = '1/1',
+                CustomDeck = { ['3661'] = { FaceURL = 'https://example.invalid/rabbit.png' } }
+            }
+            local rejected, rejectedError = BridgeValidateExactTokenImportCandidate(
+                hare, 'Rabbit Token', { isToken = true, characteristics = {
+                    currentCardTypes = { 'Creature' }, currentSubtypes = { 'Rabbit' }
+                } })
+            assert(rejected == nil and rejectedError ~= nil, 'source card was accepted as token art')
+            local accepted, acceptedError = BridgeValidateExactTokenImportCandidate(
+                rabbit, 'Rabbit Token', { isToken = true, characteristics = {
+                    currentCardTypes = { 'Creature' }, currentSubtypes = { 'Rabbit' }
+                } })
+            assert(accepted ~= nil, acceptedError or 'authoritative token candidate was rejected')
+            assert(accepted.CardID == 366100)
+        ");
+    }
+
+    [Fact]
+    public void EmptySuccessfulImporterResponseIsNotAVisualCandidate()
+    {
+        var lua = NewLua();
+        lua.DoString(@"
+            BridgeRecordTokenMaterializationDiagnostic = function(record) lastDiagnostic = record end
+            assert(BridgeTokenImportResponseIsEmpty(''))
+            assert(BridgeTokenImportResponseIsEmpty('  \n\t'))
+            assert(not BridgeTokenImportResponseIsEmpty('{json}'))
         ");
     }
 

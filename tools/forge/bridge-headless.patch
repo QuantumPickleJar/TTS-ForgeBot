@@ -1062,6 +1062,9 @@ index 00000000..f3a53020
 +        final String objectKind = virtualCommandEffect ? "virtual-effect"
 +                : card.isRealToken() || card.isTokenCard()
 +                ? "forge-token" : (copied ? ("stack".equals(zone) ? "copy-spell" : "copy-permanent") : "physical-original");
++        final SpellAbility tokenSpawningAbility = card.isRealToken() || card.isTokenCard()
++                ? card.getTokenSpawningAbility() : null;
++        final Card tokenSource = tokenSpawningAbility == null ? null : tokenSpawningAbility.getHostCard();
 +        json.append('{');
 +        property(json, "forgeCardId", card.getId()).append(',');
 +        property(json, "cardName", canonicalName).append(',');
@@ -1086,6 +1089,7 @@ index 00000000..f3a53020
 +        property(json, "authoritativeObjectId", "forge-object:" + card.getId()).append(',');
 +        property(json, "originObjectId", cloneOrigin == null ? null : "forge-object:" + cloneOrigin.getId()).append(',');
 +        property(json, "copySourceObjectId", copySource == null ? null : "forge-object:" + copySource.getId()).append(',');
++        property(json, "tokenSourceObjectId", tokenSource == null ? null : "forge-object:" + tokenSource.getId()).append(',');
 +        property(json, "objectKind", objectKind).append(',');
 +        property(json, "isCopy", copied).append(',');
 +        property(json, "isVirtual", virtualCommandEffect || ("stack".equals(zone) && copied)).append(',');

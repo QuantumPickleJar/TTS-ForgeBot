@@ -2341,7 +2341,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.True(fetcher.IndexOf("BridgeImportExactTokenVisual", StringComparison.Ordinal)
             < fetcher.IndexOf("BridgeSpawnGenericTokenProxy", StringComparison.Ordinal));
         Assert.Contains("exact token visual import requested", fetcher);
-        Assert.Contains("Source-card buttons such as EmblemsAndTokens", fetcher);
+        Assert.Contains("BridgeImportTokenVisualBundle", fetcher);
         Assert.DoesNotContain("BridgeTrySpawnTokenViaEncodeButton(expectedName, seatId", fetcher);
         Assert.Contains("DEGRADED token presentation: exact art importer failed", fetcher);
         Assert.Contains("local finished = false", fetcher);
@@ -2386,7 +2386,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("exact token importer returned a non-art-bearing card JSON", Script);
         Assert.Contains("BRIDGE_TOKEN_IMPORT_PRIMARY_URL", Script);
         Assert.Contains("BRIDGE_TOKEN_IMPORT_FALLBACK_URL", Script);
-        Assert.Contains("/build/", Script);
+        Assert.Contains("importer.rikrassen.xyz/build\"", Script);
+        Assert.Contains("importer-m7vpzqazfa-uc.a.run.app/build\"", Script);
+        Assert.Contains("emptyResponse", Script);
         Assert.Contains("function BridgeTokenVisualLookupCandidates(expectedName)", Script);
         Assert.Contains("function BridgeTokenVisualLookupCandidateCount(candidates)", Script);
         Assert.Contains("tokenTypeLineEvidence", Script);
@@ -2449,12 +2451,13 @@ public sealed class TtsGlobalLuaContractTests
         var importer = Script[importerStart..importerEnd];
         Assert.Contains("data = \"1 \" .. tostring(lookupName or expectedName)", Script);
         Assert.Contains("function BridgeTokenVisualLookupCandidates(expectedName)", Script);
-        Assert.Contains("importer.rikrassen.xyz/build/", Script);
-        Assert.Contains("importer-m7vpzqazfa-uc.a.run.app/build/", Script);
+        Assert.Contains("importer.rikrassen.xyz/build\"", Script);
+        Assert.Contains("importer-m7vpzqazfa-uc.a.run.app/build\"", Script);
         Assert.Contains("BridgeNormalizeCardName(cardJson.Nickname or \"\")", Script);
         Assert.Contains("#candidates ~= 1", Script);
         Assert.Contains("token_type_line_evidence_missing", Script);
-        Assert.DoesNotContain("sourceCard", importer);
+        Assert.Contains("function BridgeImportTokenVisualBundle", Script);
+        Assert.Contains("tokenSourceObjectId", Script);
     }
 
     [Fact]
