@@ -5242,18 +5242,22 @@ function BridgeRefreshContainedMappingsAfterDeckMutation(deckGuid)
     end
 end
 
-function BridgeBeginTokenMaterialization(cardInstanceId)
+function BridgeBeginTokenMaterialization(cardInstanceId, eventSequence, expectedTokenName)
     if cardInstanceId == nil then return false, "token has no Forge CardInstanceId" end
     local current = BridgeState.tokenMaterializationByInstanceId[cardInstanceId]
     if current ~= nil and (current.state == "SPAWNING" or current.state == "BOUND") then
         return false, current.state
     end
     BridgeState.tokenMaterializationByInstanceId[cardInstanceId] = {
-        state = "SPAWNING", sessionId = BridgeState.eventSessionId, epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+        state = "SPAWNING", sessionId = BridgeState.eventSessionId, epoch = BRIDGE_RUNTIME_EPOCH_LOCAL,
+        eventSequence = eventSequence, expectedTokenName = expectedTokenName
     }
     BridgeRecordTokenMaterializationDiagnostic({
         sessionId = BridgeState.eventSessionId, stage = "BEGIN",
-        cardInstanceId = cardInstanceId, attemptGeneration = BRIDGE_RUNTIME_EPOCH_LOCAL
+        cardInstanceId = cardInstanceId, eventSequence = eventSequence,
+        expectedTokenName = expectedTokenName,
+        tokenVisualKey = expectedTokenName ~= nil and BridgeTokenNameKey(expectedTokenName) or nil,
+        attemptGeneration = BRIDGE_RUNTIME_EPOCH_LOCAL
     })
     return true, "SPAWNING"
 end
@@ -5269,6 +5273,7 @@ function BridgeRecordTokenMaterializationDiagnostic(entry)
         sessionId = entry.sessionId,
         eventSequence = entry.eventSequence,
         cardInstanceId = entry.cardInstanceId,
+        transactionToken = entry.transactionToken,
         expectedTokenName = entry.expectedTokenName,
         tokenVisualKey = entry.tokenVisualKey,
         attemptGeneration = entry.attemptGeneration,
@@ -5279,10 +5284,13 @@ function BridgeRecordTokenMaterializationDiagnostic(entry)
         accepted = entry.accepted,
         rejectedReason = entry.rejectedReason,
         endpoint = entry.endpoint,
+        endpointId = entry.endpointId,
         started = entry.started,
         completed = entry.completed,
         responseCode = entry.responseCode,
         responseBytes = entry.responseBytes,
+        error = entry.error,
+        detail = entry.detail,
         rawNickname = entry.rawNickname ~= nil and string.sub(tostring(entry.rawNickname), 1, 120) or nil,
         normalizedOrdinaryName = entry.normalizedOrdinaryName,
         customDeckPresent = entry.customDeckPresent,

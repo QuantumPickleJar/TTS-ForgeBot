@@ -5966,40 +5966,94 @@ local function BridgeApplyStructuredCardMoveCore(event)
         local row = BridgeBattlefieldRowForEvent(event, "creature")
         local sessionId = BridgeState.eventSessionId
         local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
-        local started, state = BridgeBeginTokenMaterialization(event.cardInstanceId)
+        local ownsTransactionCompletion = type(event._bridgePhysicalCompletion) == "function"
+        local tx = BridgeState.eventDrainTransaction
+        local function tokenPhysicalProgress(stage, detail)
+            if tx ~= nil and BridgeEventMutationIsCurrent(tx) then
+                BridgeRecordPhysicalMutationProgress(tx, stage, detail)
+                BridgeRecordPhysicalMutationJournal({
+                    token = tx.token, forgeSequence = tx.forgeSequence, stage = stage,
+                    eventSequence = event.sequence, cardInstanceId = event.cardInstanceId,
+                    seatId = event.seatId, detail = detail
+                })
+            end
+            BridgeRecordTokenMaterializationDiagnostic({
+                sessionId = sessionId, eventSequence = event.sequence,
+                cardInstanceId = event.cardInstanceId, expectedTokenName = expectedName,
+                tokenVisualKey = BridgeTokenNameKey(expectedName),
+                attemptGeneration = epoch, transactionToken = tx and tx.token or nil,
+                stage = stage, detail = detail
+            })
+        end
+        local function completeTransaction(ok, reason)
+            if ownsTransactionCompletion then
+                event._bridgePhysicalCompletion(ok, reason)
+            elseif not ok then
+                BridgeStopOnDesync(BridgePhysicalMappingError(
+                    event, event.sourceZone or "token", 0, tostring(reason), nil))
+            end
+        end
+        local started, state = BridgeBeginTokenMaterialization(event.cardInstanceId, event.sequence, expectedName)
         if not started then
             BridgeLog("[Bridge] token materialization suppressed instance=" .. tostring(event.cardInstanceId)
                 .. " state=" .. tostring(state))
-            return true, nil
+            -- BOUND is an idempotent replay only when its exact live mapping
+            -- still verifies. SPAWNING/FAILED must never be reported as a
+            -- synchronous physical success for a transaction-owned event.
+            if state == "BOUND" then
+                local verified, verifyError = BridgeVerifyFinalPhysicalRepresentation(
+                    event.cardInstanceId, event.seatId, "battlefield")
+                if verified then return true, nil end
+                return false, verifyError or "bound token has no verified battlefield representation"
+            end
+            return false, "token materialization is already pending: " .. tostring(state)
         end
+        if ownsTransactionCompletion then event._bridgePhysicalCompletionPending = true end
+        tokenPhysicalProgress("TOKEN_MATERIALIZATION_BEGIN", "async token materialization started")
+        tokenPhysicalProgress("TOKEN_VISUAL_PENDING", "awaiting importer or generic proxy callback")
         BridgeTakeCardFromTokenFetcher(expectedName, event.seatId, function(taken, takeError)
             if not BridgeTokenMaterializationIsCurrent(event.cardInstanceId, sessionId, epoch) then
                 -- A NEW MATCH/reload or a successful concurrent exact bind made
                 -- this callback obsolete. Never cross-bind its returned object.
-                if taken ~= nil then BridgeSafeObjectCall(taken, function(card) card.destruct() end) end
+                local staleGuid = taken ~= nil and BridgeSafeObjectGuid(taken) or nil
+                local staleOwner = staleGuid ~= nil
+                    and BridgeState.physicalInstanceIdByGuid[staleGuid] or nil
+                if taken ~= nil and staleOwner == nil then
+                    BridgeSafeObjectCall(taken, function(card) card.destruct() end)
+                end
+                if ownsTransactionCompletion then
+                    completeTransaction(false, "stale token materialization callback")
+                end
                 return
             end
             if taken == nil then
-                BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId] = nil
-                BridgeStopOnDesync(BridgePhysicalMappingError(
-                    event,
-                    event.sourceZone or "token",
-                    0,
-                    "token fetcher failed for battlefield materialization: " .. tostring(takeError),
-                    {mappedGuid = staleMappedGuid}
-                ))
+                BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "FAILED"
+                tokenPhysicalProgress("TOKEN_MATERIALIZATION_FAILED", tostring(takeError))
+                completeTransaction(false, "token fetcher failed for battlefield materialization: " .. tostring(takeError))
                 return
             end
+            tokenPhysicalProgress("TOKEN_VISUAL_READY", "usable token Card callback received")
+            tokenPhysicalProgress("TOKEN_BIND_BEGIN", "publishing exact Forge identity")
             local moved, moveError = BridgeBindTokenMaterialization(event, taken, row, sessionId, epoch)
             if not moved then
-                -- A rejected asynchronous importer object must never turn into
-                -- a fake card_moved failure for an unrelated physical card.
-                -- Keep Forge authoritative and let the next snapshot retry.
                 BridgeLog("[Bridge] token materialization deferred instance="
                     .. tostring(event.cardInstanceId) .. " reason=" .. tostring(moveError))
-                BridgeScheduleSnapshotReconcile("token materialization deferred")
+                tokenPhysicalProgress("TOKEN_MATERIALIZATION_FAILED", tostring(moveError))
+                completeTransaction(false, moveError or "token identity binding failed")
+                return
             end
-        end)
+            local verified, verifyError = BridgeVerifyFinalPhysicalRepresentation(
+                event.cardInstanceId, event.seatId, "battlefield")
+            if not verified then
+                BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "FAILED"
+                tokenPhysicalProgress("TOKEN_MATERIALIZATION_FAILED", tostring(verifyError))
+                completeTransaction(false, verifyError or "token battlefield representation failed verification")
+                return
+            end
+            tokenPhysicalProgress("TOKEN_BIND_COMMITTED", "exact battlefield representation verified")
+            completeTransaction(true, "exact token materialization committed")
+        end, {cardInstanceId = event.cardInstanceId, eventSequence = event.sequence,
+            attemptGeneration = epoch, transactionToken = tx and tx.token or nil})
         return true, nil
     end
 
