@@ -125,6 +125,12 @@ public sealed class MockForgeAdapter : IForgeAdapter
         return Task.FromResult<GameSnapshotDto?>(null);
     }
 
+    public Task<GameStackProjectionDto?> GetStackProjectionAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<GameStackProjectionDto?>(null);
+    }
+
     private void ResetState()
     {
         _sessionId = Guid.NewGuid().ToString("N");

@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 0d9c8795f3cb46edb06e97eee434d9a674a3eca9775d1fa4e9cb04bfef654c78
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "0d9c8795f3cb46edb06e97eee434d9a674a3eca9775d1fa4e9cb04bfef654c78"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 5acf34eff48fda4d93ab11f8040b898a23ac208036f66f6cd5e593197e85fa70
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "5acf34eff48fda4d93ab11f8040b898a23ac208036f66f6cd5e593197e85fa70"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -3636,6 +3636,7 @@ BridgeState = {
     -- Token imports are asynchronous. A Forge identity is allowed one and
     -- only one in-flight embodiment, independent of token name.
     tokenMaterializationByInstanceId = {},
+    tokenMaterializationJournal = {},
     -- Authoritative Forge-object metadata is independent of physical GUIDs.
     -- Virtual/copy objects can exist without an original deck card.
     authoritativeObjectByInstanceId = {},
@@ -3670,6 +3671,15 @@ BridgeState = {
     prioritySeatId = nil,
     stackSummary = {},
     stackObjects = {},
+    -- Virtual stack presentation is refreshed from a narrow authoritative
+    -- projection. These watermarks fence delayed callbacks without coupling
+    -- stack HUD convergence to a physical snapshot rebuild.
+    stackPresentationSessionId = nil,
+    stackPresentationEventCursor = 0,
+    stackPresentationGeneration = 0,
+    stackProjectionRefreshInFlight = false,
+    stackProjectionRefreshRequestedSequence = 0,
+    stackProjectionRefreshGeneration = 0,
     -- HUD YIELD can be armed while the AI is acting and no human decision is
     -- currently visible.  Keep that policy scoped to the authoritative turn
     -- and active seat so it cannot leak into a later turn.
@@ -4178,6 +4188,12 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.hudMainPanelAutoCollapseOwner = nil
     BridgeState.stackSummary = {}
     BridgeState.stackObjects = {}
+    BridgeState.stackPresentationSessionId = nil
+    BridgeState.stackPresentationEventCursor = 0
+    BridgeState.stackPresentationGeneration = (BridgeState.stackPresentationGeneration or 0) + 1
+    BridgeState.stackProjectionRefreshInFlight = false
+    BridgeState.stackProjectionRefreshRequestedSequence = 0
+    BridgeState.stackProjectionRefreshGeneration = (BridgeState.stackProjectionRefreshGeneration or 0) + 1
     BridgeState.combatSelectedByGuid = {}
     BridgeState.attackOriginByGuid = {}
     BridgeState.pendingCastBySeatId = {}
@@ -5238,7 +5254,51 @@ function BridgeBeginTokenMaterialization(cardInstanceId)
     BridgeState.tokenMaterializationByInstanceId[cardInstanceId] = {
         state = "SPAWNING", sessionId = BridgeState.eventSessionId, epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
     }
+    BridgeRecordTokenMaterializationDiagnostic({
+        sessionId = BridgeState.eventSessionId, stage = "BEGIN",
+        cardInstanceId = cardInstanceId, attemptGeneration = BRIDGE_RUNTIME_EPOCH_LOCAL
+    })
     return true, "SPAWNING"
+end
+
+function BridgeRecordTokenMaterializationDiagnostic(entry)
+    if type(entry) ~= "table" then return end
+    local journal = BridgeState.tokenMaterializationJournal
+    if type(journal) ~= "table" then
+        journal = {}
+        BridgeState.tokenMaterializationJournal = journal
+    end
+    local bounded = {
+        sessionId = entry.sessionId,
+        eventSequence = entry.eventSequence,
+        cardInstanceId = entry.cardInstanceId,
+        expectedTokenName = entry.expectedTokenName,
+        tokenVisualKey = entry.tokenVisualKey,
+        attemptGeneration = entry.attemptGeneration,
+        stage = entry.stage,
+        candidateCount = entry.candidateCount,
+        candidateFound = entry.candidateFound,
+        artBearing = entry.artBearing,
+        accepted = entry.accepted,
+        rejectedReason = entry.rejectedReason,
+        endpoint = entry.endpoint,
+        started = entry.started,
+        completed = entry.completed,
+        responseCode = entry.responseCode,
+        responseBytes = entry.responseBytes,
+        rawNickname = entry.rawNickname ~= nil and string.sub(tostring(entry.rawNickname), 1, 120) or nil,
+        normalizedOrdinaryName = entry.normalizedOrdinaryName,
+        customDeckPresent = entry.customDeckPresent,
+        faceUrlPresent = entry.faceUrlPresent,
+        spawnAttempted = entry.spawnAttempted,
+        callbackReceived = entry.callbackReceived,
+        liveCard = entry.liveCard,
+        guid = entry.guid,
+        final = entry.final,
+        fallbackReason = entry.fallbackReason
+    }
+    table.insert(journal, bounded)
+    while #journal > 80 do table.remove(journal, 1) end
 end
 
 function BridgeTokenMaterializationIsCurrent(cardInstanceId, sessionId, epoch)
@@ -5274,6 +5334,11 @@ function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)
         return false, recordError or "token identity registration failed"
     end
     BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "BOUND"
+    BridgeRecordTokenMaterializationDiagnostic({
+        sessionId = sessionId, eventSequence = event.sequence, cardInstanceId = event.cardInstanceId,
+        stage = "FINAL", attemptGeneration = epoch, final = "EXACT_IMPORTED", guid = guid,
+        accepted = true
+    })
     local moved, moveError = BridgeMoveToBattlefield(event, object, row)
     if not moved then
         -- Binding is provisional until the art-bearing object reaches the
@@ -11323,6 +11388,129 @@ function BridgeGetEmbodimentSnapshot(callback)
     BridgeHttp.requestJson("GET", "/api/v1/embodiment/snapshot", nil, callback)
 end
 
+function BridgeGetStackProjection(callback)
+    if BridgeHttp == nil or type(BridgeHttp.requestJson) ~= "function"
+        or WebRequest == nil then
+        callback(false, nil, "stack projection transport unavailable")
+        return
+    end
+    BridgeHttp.requestJson("GET", "/api/v1/embodiment/stack", nil, callback)
+end
+
+local function BridgeOrderedStackObjects(stackObjects)
+    local ordered = {}
+    local count = 0
+    for key, stackObject in pairs(stackObjects or {}) do
+        if type(stackObject) == "table" then
+            count = count + 1
+            ordered[count] = {object = stackObject, key = key}
+        end
+    end
+    table.sort(ordered, function(left, right)
+        local leftIndex = tonumber(left.object.stackIndex or left.key or 0) or 0
+        local rightIndex = tonumber(right.object.stackIndex or right.key or 0) or 0
+        return leftIndex < rightIndex
+    end)
+    local result = {}
+    for key, entry in pairs(ordered) do result[key] = entry.object end
+    return result, count
+end
+
+local function BridgeBuildStackPresentationSummary(stackObjects, stackCards)
+    local summary = {}
+    local summaryCount = 0
+    local orderedStackObjects, objectCount = BridgeOrderedStackObjects(stackObjects)
+    for index = 1, objectCount do
+        local stackObject = orderedStackObjects[index]
+        local source = tostring(stackObject.sourceName or "Forge source")
+        local kind = tostring(stackObject.stackKind or "stack object")
+        local text = tostring(stackObject.abilityText or stackObject.abilityName or "")
+        summaryCount = summaryCount + 1
+        summary[summaryCount] = source .. " — " .. kind .. (text ~= "" and (": " .. text) or "")
+    end
+    if objectCount == 0 then
+        for _, card in ipairs(stackCards or {}) do
+            summaryCount = summaryCount + 1
+            summary[summaryCount] = tostring(card.currentCardName or card.cardName or "Forge stack object")
+        end
+    end
+    return summary
+end
+
+-- Stack presentation is a deliberately narrow projection. It may converge
+-- ahead of the physical event cursor because it contains no physical-zone
+-- mutations; cursor/session/generation fences prevent an old callback from
+-- resurrecting a retired virtual stack item.
+function BridgeApplyAuthoritativeStackProjection(projection, reason, expectedSessionId, expectedSessionGeneration)
+    if projection == nil then return false, "missing stack projection" end
+    local currentSessionId = BridgeState.eventSessionId
+    if expectedSessionId ~= nil and expectedSessionId ~= currentSessionId then
+        return false, "stack projection session changed"
+    end
+    if projection.sessionId == nil or projection.sessionId ~= currentSessionId then
+        return false, "stack projection belongs to another session"
+    end
+    if expectedSessionGeneration ~= nil
+        and expectedSessionGeneration ~= BridgeState.eventSessionGeneration then
+        return false, "stack projection generation changed"
+    end
+
+    local cursor = tonumber(projection.eventCursor or 0) or 0
+    local previousCursor = tonumber(BridgeState.stackPresentationEventCursor or 0) or 0
+    if cursor < previousCursor then
+        BridgeLog(string.format("[Bridge] ignored stale stack projection cursor=%s previous=%s reason=%s",
+            tostring(cursor), tostring(previousCursor), tostring(reason)))
+        return false, "stale stack projection"
+    end
+
+    local stackObjects = projection.stackObjects or {}
+    local stackCards = projection.stack or {}
+    BridgeState.stackObjects = stackObjects
+    BridgeState.stackSummary = BridgeBuildStackPresentationSummary(stackObjects, stackCards)
+    BridgeState.stackPresentationSessionId = projection.sessionId
+    BridgeState.stackPresentationEventCursor = cursor
+    BridgeState.stackPresentationGeneration = (BridgeState.stackPresentationGeneration or 0) + 1
+    BridgeUiMarkDirty("authoritative-stack-projection")
+    BridgeLog(string.format("[Bridge] authoritative stack projection applied cursor=%s objects=%s cards=%s reason=%s",
+        tostring(cursor), tostring(#stackObjects), tostring(#stackCards), tostring(reason)))
+    return true, nil
+end
+
+function BridgeRefreshAuthoritativeStackProjection(requiredEventSequence, reason)
+    if BridgeState.eventSessionId == nil or BridgeState.gameEnded ~= nil then return end
+    local requested = tonumber(requiredEventSequence or 0) or 0
+    BridgeState.stackProjectionRefreshRequestedSequence = math.max(
+        tonumber(BridgeState.stackProjectionRefreshRequestedSequence or 0) or 0, requested)
+    if BridgeState.stackProjectionRefreshInFlight then return end
+
+    local expectedSessionId = BridgeState.eventSessionId
+    local expectedSessionGeneration = BridgeState.eventSessionGeneration
+    BridgeState.stackProjectionRefreshInFlight = true
+    BridgeState.stackProjectionRefreshGeneration = (BridgeState.stackProjectionRefreshGeneration or 0) + 1
+    BridgeGetStackProjection(function(ok, projection, err)
+        if expectedSessionId ~= BridgeState.eventSessionId
+            or expectedSessionGeneration ~= BridgeState.eventSessionGeneration then
+            BridgeState.stackProjectionRefreshInFlight = false
+            return
+        end
+        BridgeState.stackProjectionRefreshInFlight = false
+        if not ok or projection == nil then
+            BridgeLog("[Bridge] authoritative stack projection refresh failed: " .. tostring(err))
+            return
+        end
+
+        local requestedSequence = tonumber(BridgeState.stackProjectionRefreshRequestedSequence or 0) or 0
+        local projectionCursor = tonumber(projection.eventCursor or 0) or 0
+        if projectionCursor < requestedSequence then
+            BridgeLog(string.format("[Bridge] authoritative stack projection lagging cursor=%s required=%s",
+                tostring(projectionCursor), tostring(requestedSequence)))
+            return
+        end
+        BridgeApplyAuthoritativeStackProjection(projection, reason,
+            expectedSessionId, expectedSessionGeneration)
+    end)
+end
+
 function BridgeDecisionOffersActionType(decision, actionType)
     for _, action in ipairs(decision.actions or {}) do
         if action.type == actionType then return true end
@@ -12225,20 +12413,13 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     BridgeSetMonarchSeat(snapshot and snapshot.monarchSeatId or nil)
     BridgePerformanceEnd(monarchToken, "snapshot_reconcile.monarch.end", "snapshotReconcileMonarch")
     local stackToken = BridgePerformanceBegin("snapshot_reconcile.stack")
-    BridgeState.stackSummary = {}
-    BridgeState.stackObjects = snapshot and snapshot.stackObjects or {}
-    for _, stackObject in ipairs(snapshot and snapshot.stackObjects or {}) do
-        local source = tostring(stackObject.sourceName or "Forge source")
-        local kind = tostring(stackObject.stackKind or "stack object")
-        local text = tostring(stackObject.abilityText or stackObject.abilityName or "")
-        table.insert(BridgeState.stackSummary, source .. " — " .. kind .. (text ~= "" and (": " .. text) or ""))
-    end
-    for _, card in ipairs(snapshot and snapshot.stack or {}) do
-        if #(snapshot and snapshot.stackObjects or {}) == 0 then
-            table.insert(BridgeState.stackSummary, tostring(card.currentCardName or card.cardName or "Forge stack object"))
-        end
-    end
-    BridgeUiMarkDirty("stack")
+    BridgeApplyAuthoritativeStackProjection({
+        sessionId = snapshot and snapshot.sessionId or BridgeState.eventSessionId,
+        forgeSequence = snapshot and snapshot.forgeSequence,
+        eventCursor = snapshot and snapshot.eventCursor or 0,
+        stack = snapshot and snapshot.stack or {},
+        stackObjects = snapshot and snapshot.stackObjects or {}
+    }, reason or "snapshot", BridgeState.eventSessionId, BridgeState.eventSessionGeneration)
     BridgePerformanceEnd(stackToken, "snapshot_reconcile.stack.end", "snapshotReconcileStack")
     local publicZoneToken = BridgePerformanceBegin("snapshot_reconcile.public_zone_diff")
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
@@ -23965,6 +24146,12 @@ function BridgeRecordSemanticSpellResolution(event)
         "[Bridge] semantic spell resolution retained pending physical transition event=%s instance=%s destination=%s structuredApplied=%s",
         tostring(event.sequence), tostring(instanceId), tostring(event.destinationZone),
         tostring(structured ~= nil and structured.applied == true)))
+    -- Forge's current stack projection is the authority for retiring virtual
+    -- ability entries. The request is presentation-only and does not mutate
+    -- any physical card or event cursor.
+    if BridgeRefreshAuthoritativeStackProjection ~= nil then
+        BridgeRefreshAuthoritativeStackProjection(event.sequence, "spell_resolved")
+    end
     -- If a particular Forge transport omits the structured transition, the
     -- cursor-ordered snapshot remains the explicit fallback. Snapshot mutation
     -- is fenced behind the event-drain owner and cannot preempt a later
@@ -24007,6 +24194,9 @@ function BridgeApplyAuthoritativeEvent(event)
         -- by the structured hand->stack transition below when the transport
         -- does not include it on the semantic event.
         if BridgeOpponentSpellObserveCast ~= nil then BridgeOpponentSpellObserveCast(event) end
+        if BridgeRefreshAuthoritativeStackProjection ~= nil then
+            BridgeRefreshAuthoritativeStackProjection(event.sequence, "spell_cast")
+        end
         return true, 0
     end
 
@@ -27800,6 +27990,10 @@ function BridgeTokenNameMatches(ttsName, forgeName)
     return left == right
 end
 
+function BridgeTokenVisualNameMatches(importedName, expectedName)
+    return BridgeTokenNameMatches(importedName, expectedName)
+end
+
 function BridgeMarkTokenPhysicalObject(object)
     local guid = BridgeSafeObjectGuid(object)
     if guid ~= nil then BridgeState.tokenPhysicalGuids[guid] = true end
@@ -27896,6 +28090,11 @@ function BridgeSpawnGenericTokenProxy(expectedName, seatId, callback)
     end
     local anchor = seat.battlefieldAnchors and seat.battlefieldAnchors.creature or seat.commandAnchor
     local position = anchor and {anchor.x, (anchor.y or 2.0) + 1.5, anchor.z} or {0, 3.0, 0}
+    BridgeRecordTokenMaterializationDiagnostic({
+        sessionId = BridgeState.eventSessionId, stage = "FINAL",
+        expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+        final = "DEGRADED_GENERIC_PROXY", fallbackReason = "exact_visual_unavailable"
+    })
     _spawn({
         type = "Card",
         position = position,
@@ -27957,6 +28156,49 @@ function BridgeExactTokenImportPayload(expectedName)
     }
 end
 
+function BridgeValidateExactTokenImportCandidate(cardJson, expectedName)
+    if type(cardJson) ~= "table" or cardJson.error ~= nil then
+        return nil, "exact token importer returned malformed visual JSON"
+    end
+    local importedName = BridgeNormalizeCardName(cardJson.Nickname or "")
+    local tokenVisualKey = BridgeTokenNameKey(expectedName)
+    if not BridgeTokenVisualNameMatches(cardJson.Nickname or "", expectedName) then
+        BridgeRecordTokenMaterializationDiagnostic({
+            sessionId = BridgeState.eventSessionId, stage = "PARSE",
+            expectedTokenName = expectedName, tokenVisualKey = tokenVisualKey,
+            candidateCount = 1, rawNickname = cardJson.Nickname,
+            normalizedOrdinaryName = importedName, accepted = false,
+            rejectedReason = "token_visual_name_mismatch"
+        })
+        return nil, "exact token importer returned " .. tostring(cardJson.Nickname) .. " instead of " .. tostring(expectedName)
+    end
+    local customDeck = cardJson.CustomDeck
+    local hasFace = false
+    for _, deck in pairs(customDeck or {}) do
+        if type(deck) == "table" and tostring(deck.FaceURL or "") ~= "" then hasFace = true; break end
+    end
+    if cardJson.Name ~= "Card" or tonumber(cardJson.CardID or -1) < 0 or not hasFace then
+        BridgeRecordTokenMaterializationDiagnostic({
+            sessionId = BridgeState.eventSessionId, stage = "PARSE",
+            expectedTokenName = expectedName, tokenVisualKey = tokenVisualKey,
+            candidateCount = 1, rawNickname = cardJson.Nickname,
+            normalizedOrdinaryName = importedName, accepted = false,
+            customDeckPresent = type(customDeck) == "table" and next(customDeck) ~= nil,
+            faceUrlPresent = hasFace, rejectedReason = "not_art_bearing"
+        })
+        return nil, "exact token importer returned a non-art-bearing card JSON"
+    end
+    BridgeRecordTokenMaterializationDiagnostic({
+        sessionId = BridgeState.eventSessionId, stage = "PARSE",
+        expectedTokenName = expectedName, tokenVisualKey = tokenVisualKey,
+        candidateCount = 1, rawNickname = cardJson.Nickname,
+        normalizedOrdinaryName = importedName, accepted = true,
+        customDeckPresent = type(customDeck) == "table" and next(customDeck) ~= nil,
+        faceUrlPresent = hasFace
+    })
+    return cardJson, nil
+end
+
 function BridgeParseExactTokenImportJson(text, expectedName)
     local candidates = {}
     for line in tostring(text or ""):gmatch("[^\r\n]+") do
@@ -27966,22 +28208,15 @@ function BridgeParseExactTokenImportJson(text, expectedName)
         end
     end
     if #candidates ~= 1 then
+        BridgeRecordTokenMaterializationDiagnostic({
+            sessionId = BridgeState.eventSessionId, stage = "PARSE",
+            expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+            candidateCount = #candidates, accepted = false,
+            rejectedReason = "candidate_count"
+        })
         return nil, "exact token importer returned " .. tostring(#candidates) .. " visual results"
     end
-    local cardJson = candidates[1]
-    local importedName = BridgeNormalizeCardName(cardJson.Nickname or "")
-    if importedName ~= BridgeNormalizeCardName(expectedName) then
-        return nil, "exact token importer returned " .. tostring(cardJson.Nickname) .. " instead of " .. tostring(expectedName)
-    end
-    local customDeck = cardJson.CustomDeck
-    local hasFace = false
-    for _, deck in pairs(customDeck or {}) do
-        if type(deck) == "table" and tostring(deck.FaceURL or "") ~= "" then hasFace = true; break end
-    end
-    if cardJson.Name ~= "Card" or tonumber(cardJson.CardID or -1) < 0 or not hasFace then
-        return nil, "exact token importer returned a non-art-bearing card JSON"
-    end
-    return cardJson, nil
+    return BridgeValidateExactTokenImportCandidate(candidates[1], expectedName)
 end
 
 function BridgeImportExactTokenVisual(expectedName, seatId, callback)
@@ -28000,13 +28235,29 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback)
     local rotation = seat.faceUpRotation or {x = 0, y = 0, z = 0}
     local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
     local completed = false
+    BridgeRecordTokenMaterializationDiagnostic({
+        sessionId = BridgeState.eventSessionId, stage = "IMPORT_REQUEST",
+        expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+        attemptGeneration = epoch, endpoint = BRIDGE_TOKEN_IMPORT_PRIMARY_URL, started = true
+    })
     local function finish(object, err)
         if completed then return end
         completed = true
         if object ~= nil and not BridgeIsArtBearingCard(object) then
+            BridgeRecordTokenMaterializationDiagnostic({
+                sessionId = BridgeState.eventSessionId, stage = "FINAL",
+                expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+                attemptGeneration = epoch, final = "FAILED", fallbackReason = tostring(err or "non_art_bearing_spawn")
+            })
             callback(nil, "exact token visual importer returned a non-art-bearing card")
             return
         end
+        BridgeRecordTokenMaterializationDiagnostic({
+            sessionId = BridgeState.eventSessionId, stage = "FINAL",
+            expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+            attemptGeneration = epoch, final = object ~= nil and "EXACT_IMPORTED" or "FAILED",
+            fallbackReason = object == nil and tostring(err) or nil
+        })
         callback(object, err)
     end
 
@@ -28025,6 +28276,13 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback)
                 end
                 return
             end
+            BridgeRecordTokenMaterializationDiagnostic({
+                sessionId = BridgeState.eventSessionId, stage = "IMPORT_RESPONSE",
+                expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+                attemptGeneration = epoch, endpoint = endpoint, completed = true,
+                responseCode = tonumber(request.response_code or 0),
+                responseBytes = string.len(tostring(request.text or ""))
+            })
             local cardJson, parseError = BridgeParseExactTokenImportJson(request.text, expectedName)
             if cardJson == nil then
                 finish(nil, parseError)
@@ -28034,6 +28292,13 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback)
             local function handleSpawned(object)
                 if spawnHandled then return end
                 spawnHandled = true
+                BridgeRecordTokenMaterializationDiagnostic({
+                    sessionId = BridgeState.eventSessionId, stage = "SPAWN",
+                    expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+                    attemptGeneration = epoch, callbackReceived = true,
+                    liveCard = BridgeObjectIsUsable(object),
+                    artBearing = object ~= nil and BridgeIsArtBearingCard(object) or false
+                })
                 if not BridgeObjectIsUsable(object) then
                     finish(nil, "exact token visual spawn returned an unusable object")
                     return
@@ -30179,6 +30444,14 @@ function BridgeHudSubmitReport(category, summary)
         priorityPlayer = BridgeState.prioritySeatId,
         mappedCardInstanceIds = BridgeHudReportMappedCardInstanceIds(),
         physicalMappings = BridgeHudReportPhysicalMappings(),
+        stackPresentation = {
+            sessionId = BridgeState.stackPresentationSessionId,
+            eventCursor = BridgeState.stackPresentationEventCursor,
+            generation = BridgeState.stackPresentationGeneration,
+            objectCount = #(BridgeState.stackObjects or {}),
+            summaryCount = #(BridgeState.stackSummary or {})
+        },
+        tokenMaterializationJournal = BridgeState.tokenMaterializationJournal,
         status = BridgeState.statusHeadline,
         terminalRecovery = BridgeDiagnosticSnapshot(BridgeCurrentTerminalRecoveryError ~= nil
             and BridgeCurrentTerminalRecoveryError() or {}),
@@ -30651,6 +30924,51 @@ end
 -- Existing IDs, action rows, exact Forge choices, FAST/MANA/LOG behavior, and
 -- footer semantics remain owned by the original renderer above.
 local BridgeUiFlushBase = BridgeUiFlush
+function BridgeRenderStackHud()
+    local stack = BridgeState.stackSummary or {}
+    BridgeUiSet("BridgeHudStack", "text", #stack > 0 and ("STACK " .. tostring(#stack)) or "")
+    local stackDetails = ""
+    for key, value in pairs(stack) do
+        if type(value) == "string" then
+            stackDetails = stackDetails == "" and value or (stackDetails .. " | " .. value)
+        end
+    end
+    BridgeUiSet("BridgeHudStackDetails", "text", stackDetails)
+    local stackObjects = BridgeState.stackObjects or {}
+    local fallback = {}
+    local orderedStackObjects = {}
+    local orderedStackCount = 0
+    for key, stackObject in pairs(stackObjects) do
+        if type(stackObject) == "table" then
+            orderedStackCount = orderedStackCount + 1
+            orderedStackObjects[orderedStackCount] = {object = stackObject, key = key}
+        end
+    end
+    table.sort(orderedStackObjects, function(left, right)
+        return (tonumber(left.object.stackIndex or left.key or 0) or 0)
+            < (tonumber(right.object.stackIndex or right.key or 0) or 0)
+    end)
+    for i = 1, 6 do
+        local entry = orderedStackObjects[i]
+        local stackObject = entry and entry.object or nil
+        local image = stackObject ~= nil and BridgeRevealCardArt ~= nil
+            and BridgeRevealCardArt({cardName = stackObject.sourceName}) or nil
+        BridgeUiSet("BridgeHudStackImage" .. tostring(i), "active", image ~= nil and "true" or "false")
+        BridgeUiSet("BridgeHudStackImage" .. tostring(i), "image", image or "")
+        if stackObject ~= nil and image == nil then
+            table.insert(fallback, tostring(stackObject.sourceName or "Stack object") .. ": "
+                .. tostring(stackObject.abilityText or stackObject.abilityName or "Triggered ability"))
+        end
+    end
+    local fallbackText = ""
+    for _, value in pairs(fallback) do
+        if type(value) == "string" then
+            fallbackText = fallbackText == "" and value or (fallbackText .. " | " .. value)
+        end
+    end
+    BridgeUiSet("BridgeHudStackFallback", "text", fallbackText)
+end
+
 function BridgeUiFlush()
     BridgeUiFlushBase()
     local ui = BridgeState.ui
@@ -30794,23 +31112,7 @@ function BridgeUiFlush()
     BridgeUiSet("BridgeHudConnection", "text", connectionText)
     BridgeUiSet("BridgeHudConnection", "color", connectionColor)
 
-    local stack = BridgeState.stackSummary or {}
-    BridgeUiSet("BridgeHudStack", "text", #stack > 0 and ("STACK " .. tostring(#stack)) or "")
-    BridgeUiSet("BridgeHudStackDetails", "text", #stack > 0 and table.concat(stack, " | ") or "")
-    local stackObjects = BridgeState.stackObjects or {}
-    local fallback = {}
-    for i = 1, 6 do
-        local stackObject = stackObjects[i]
-        local image = stackObject ~= nil and BridgeRevealCardArt ~= nil
-            and BridgeRevealCardArt({cardName = stackObject.sourceName}) or nil
-        BridgeUiSet("BridgeHudStackImage" .. tostring(i), "active", image ~= nil and "true" or "false")
-        BridgeUiSet("BridgeHudStackImage" .. tostring(i), "image", image or "")
-        if stackObject ~= nil and image == nil then
-            table.insert(fallback, tostring(stackObject.sourceName or "Stack object") .. ": "
-                .. tostring(stackObject.abilityText or stackObject.abilityName or "Triggered ability"))
-        end
-    end
-    BridgeUiSet("BridgeHudStackFallback", "text", table.concat(fallback, " | "))
+    BridgeRenderStackHud()
     BridgeHudRefreshPhaseRibbon()
 
     if BRIDGE_DEV_ANNOTATIONS_ENABLED == true then
