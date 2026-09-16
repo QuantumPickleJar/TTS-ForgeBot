@@ -6053,7 +6053,8 @@ local function BridgeApplyStructuredCardMoveCore(event)
             tokenPhysicalProgress("TOKEN_BIND_COMMITTED", "exact battlefield representation verified")
             completeTransaction(true, "exact token materialization committed")
         end, {cardInstanceId = event.cardInstanceId, eventSequence = event.sequence,
-            attemptGeneration = epoch, transactionToken = tx and tx.token or nil})
+            attemptGeneration = epoch, transactionToken = tx and tx.token or nil,
+            isToken = event.isToken == true, characteristics = event.characteristics})
         return true, nil
     end
 

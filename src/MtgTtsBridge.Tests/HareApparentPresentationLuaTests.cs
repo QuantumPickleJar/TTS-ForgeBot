@@ -67,17 +67,55 @@ public sealed class HareApparentPresentationLuaTests
                 Nickname = 'Rabbit\nToken Creature — Rabbit 0CMC',
                 CustomDeck = { ['3661'] = { FaceURL = 'https://example.invalid/rabbit.png' } }
             }
-            local accepted, acceptedError = BridgeValidateExactTokenImportCandidate(importCandidate, 'Rabbit Token')
+            local accepted, acceptedError = BridgeValidateExactTokenImportCandidate(importCandidate, 'Rabbit Token', { isToken = true })
             assert(accepted ~= nil, acceptedError or 'known-good Rabbit visual was rejected')
 
             importCandidate.Nickname = 'Goblin\nToken Creature — Goblin'
-            local wrong, wrongError = BridgeValidateExactTokenImportCandidate(importCandidate, 'Rabbit Token')
+            local wrong, wrongError = BridgeValidateExactTokenImportCandidate(importCandidate, 'Rabbit Token', { isToken = true })
             assert(wrong == nil and wrongError ~= nil, 'wrong token visual was accepted')
 
             importCandidate.Nickname = 'Rabbit\nToken Creature — Rabbit 0CMC'
             importCandidate.CustomDeck = nil
-            local bare, bareError = BridgeValidateExactTokenImportCandidate(importCandidate, 'Rabbit Token')
+            local bare, bareError = BridgeValidateExactTokenImportCandidate(importCandidate, 'Rabbit Token', { isToken = true })
             assert(bare == nil and bareError ~= nil, 'bare token card was accepted')
+        ");
+    }
+
+    [Fact]
+    public void RabbitUsesImporterLookupAliasAndRejectsSameNameOrdinaryCard()
+    {
+        var lua = NewLua();
+        lua.DoString(@"
+            BridgeRecordTokenMaterializationDiagnostic = function(_) end
+            local candidates = BridgeTokenVisualLookupCandidates('Rabbit Token')
+            assert(BridgeTokenVisualLookupCandidateCount(candidates) == 2, 'candidate count=' .. tostring(BridgeTokenVisualLookupCandidateCount(candidates)))
+            assert(candidates[1] == 'Rabbit', 'candidate1=' .. tostring(candidates[1]))
+            assert(candidates[2] == 'Rabbit Token', 'candidate2=' .. tostring(candidates[2]))
+            local soldier = BridgeTokenVisualLookupCandidates('Human Soldier Token')
+            assert(BridgeTokenVisualLookupCandidateCount(soldier) == 2 and soldier[1] == 'Human Soldier')
+            local nonTerminal = BridgeTokenVisualLookupCandidates('Rabbit Token Helper')
+            assert(BridgeTokenVisualLookupCandidateCount(nonTerminal) == 1 and nonTerminal[1] == 'Rabbit Token Helper')
+            assert(BridgeTokenImporterDisplayName('Rabbit Token', {
+                characteristics = { currentCardTypes = { 'Creature' }, currentSubtypes = { 'Rabbit' }, currentManaValue = 0 }
+            }) == 'Rabbit\nToken Creature — Rabbit 0CMC')
+            assert(BridgeButtonLooksLikeCardReimport({ label = 'RE-IMPORT', tooltip = 'Import card', click_function = 'ImportCard', function_owner = 'Global' }))
+            assert(not BridgeButtonLooksLikeCardReimport({ label = 'Encoder', tooltip = 'Encode', click_function = 'Encode' }))
+            assert(BridgeExactTokenImportPayload('Rabbit Token', candidates[1]).data == '1 Rabbit', 'payload1')
+            assert(BridgeExactTokenImportPayload('Rabbit Token', candidates[2]).data == '1 Rabbit Token', 'payload2')
+
+            local good = {
+                Name = 'Card', CardID = 366100,
+                Nickname = 'Rabbit\nToken Creature — Rabbit 0CMC',
+                CustomDeck = { ['3661'] = { FaceURL = 'https://example.invalid/rabbit.png' } }
+            }
+            local accepted, acceptedError = BridgeValidateExactTokenImportCandidate(
+                good, 'Rabbit Token', { isToken = true, currentCardTypes = { 'Creature' }, currentSubtypes = { 'Rabbit' } })
+            assert(accepted ~= nil, acceptedError or 'known-good aliased Rabbit visual was rejected')
+
+            good.Nickname = 'Rabbit\nCreature — Rabbit 0CMC'
+            local ordinary, ordinaryError = BridgeValidateExactTokenImportCandidate(
+                good, 'Rabbit Token', { isToken = true })
+            assert(ordinary == nil and ordinaryError ~= nil, 'ordinary Rabbit card was accepted as token art')
         ");
     }
 

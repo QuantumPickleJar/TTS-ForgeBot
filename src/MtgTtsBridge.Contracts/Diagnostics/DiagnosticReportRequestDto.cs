@@ -37,7 +37,9 @@ public sealed record DiagnosticReportRequestDto(
     IReadOnlyList<DiagnosticCaptureLifecycleRecordDto>? DiagnosticCaptureLifecycle = null,
     DiagnosticEventDrainDiagnosticsDto? EventDrainDiagnostics = null,
     JsonElement? TerminalRecovery = null,
-    JsonElement? RetiredTerminalRecovery = null);
+    JsonElement? RetiredTerminalRecovery = null,
+    /// <summary>Bounded opaque token-art materialization journal from TTS.</summary>
+    JsonElement? TokenMaterializationJournal = null);
 
 public sealed record DiagnosticPresentedResultDto(
     bool Presented = false,

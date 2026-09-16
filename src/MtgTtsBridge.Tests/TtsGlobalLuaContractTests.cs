@@ -2382,11 +2382,14 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("not BridgeIsArtBearingCard(object)", importer);
         Assert.Contains("spawnObjectJSON({", importer);
         Assert.Contains("json = JSON.encode(cardJson)", importer);
-        Assert.Contains("function BridgeParseExactTokenImportJson(text, expectedName)", Script);
+        Assert.Contains("function BridgeParseExactTokenImportJson(text, expectedName, metadata)", Script);
         Assert.Contains("exact token importer returned a non-art-bearing card JSON", Script);
         Assert.Contains("BRIDGE_TOKEN_IMPORT_PRIMARY_URL", Script);
         Assert.Contains("BRIDGE_TOKEN_IMPORT_FALLBACK_URL", Script);
         Assert.Contains("/build/", Script);
+        Assert.Contains("function BridgeTokenVisualLookupCandidates(expectedName)", Script);
+        Assert.Contains("function BridgeTokenVisualLookupCandidateCount(candidates)", Script);
+        Assert.Contains("tokenTypeLineEvidence", Script);
     }
 
     [Fact]
@@ -2444,11 +2447,13 @@ public sealed class TtsGlobalLuaContractTests
         var importerStart = Script.IndexOf("function BridgeImportExactTokenVisual", StringComparison.Ordinal);
         var importerEnd = Script.IndexOf("function BridgeFindDeckWithContainedCardName", importerStart, StringComparison.Ordinal);
         var importer = Script[importerStart..importerEnd];
-        Assert.Contains("data = \"1 \" .. tostring(expectedName)", Script);
+        Assert.Contains("data = \"1 \" .. tostring(lookupName or expectedName)", Script);
+        Assert.Contains("function BridgeTokenVisualLookupCandidates(expectedName)", Script);
         Assert.Contains("importer.rikrassen.xyz/build/", Script);
         Assert.Contains("importer-m7vpzqazfa-uc.a.run.app/build/", Script);
         Assert.Contains("BridgeNormalizeCardName(cardJson.Nickname or \"\")", Script);
         Assert.Contains("#candidates ~= 1", Script);
+        Assert.Contains("token_type_line_evidence_missing", Script);
         Assert.DoesNotContain("sourceCard", importer);
     }
 
@@ -2469,6 +2474,9 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("local expectedTokenKey = BridgeTokenNameKey(expectedName)", lookup);
         Assert.Contains("BridgeTokenNameKey(containedName) == expectedTokenKey", lookup);
         Assert.DoesNotContain("BridgeCardNameMatches(containedName, expectedName)", lookup);
+        Assert.Contains("function BridgeFindLooseTokenVisualTemplate(expectedName)", Script);
+        Assert.Contains("authoritative_gameplay_card_not_reusable", lookup);
+        Assert.Contains("function BridgeButtonLooksLikeCardReimport(button)", Script);
     }
 
     [Fact]

@@ -156,6 +156,7 @@ public sealed class DiagnosticsTests
                 LastAppliedEventSequence: 0,
                 Turn: 6,
                 Phase: "Combat",
+                TokenMaterializationJournal: JsonDocument.Parse("[{\"stage\":\"IMPORT_RESPONSE\",\"responseCode\":200,\"cardInstanceId\":\"forge:session:84\"}]").RootElement.Clone(),
                 EventDrainDiagnostics: new DiagnosticEventDrainDiagnosticsDto(
                     EmbodimentEpoch: 7,
                     EmbodimentTransactionToken: 12,
@@ -234,6 +235,10 @@ public sealed class DiagnosticsTests
             var ttsRoot = ttsState.RootElement;
             Assert.Equal("expected-sha", ttsRoot.GetProperty("expectedGeneratedGlobalLuaSha256").GetString());
             Assert.Equal("MATCH", ttsRoot.GetProperty("runtimeCompatibilityState").GetString());
+            var tokenJournal = ttsRoot.GetProperty("tokenMaterializationJournal");
+            Assert.Equal(JsonValueKind.Array, tokenJournal.ValueKind);
+            Assert.Equal("IMPORT_RESPONSE", tokenJournal[0].GetProperty("stage").GetString());
+            Assert.Equal(200, tokenJournal[0].GetProperty("responseCode").GetInt32());
         }
         finally { TryDelete(root); }
     }
