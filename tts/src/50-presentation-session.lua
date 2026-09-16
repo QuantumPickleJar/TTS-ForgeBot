@@ -3028,6 +3028,8 @@ function BridgeHudConnectionPresentation()
 end
 
 function BridgeHudMainPanelCollapsed()
+    if BridgeState.hudMainPanelManualOverride == "expanded" then return false end
+    if BridgeState.hudMainPanelManualOverride == "collapsed" then return true end
     return BridgeState.hudMainPanelCollapsedManual == true
         or BridgeState.hudMainPanelAutoCollapseOwner ~= nil
 end
@@ -3051,7 +3053,13 @@ function BridgeHudReleaseMainPanelAutoCollapse(owner)
 end
 
 function BridgeHudMainPanelToggle(player, value, id)
-    BridgeState.hudMainPanelCollapsedManual = not (BridgeState.hudMainPanelCollapsedManual == true)
+    if BridgeHudMainPanelCollapsed() then
+        BridgeState.hudMainPanelManualOverride = "expanded"
+        BridgeState.hudMainPanelCollapsedManual = false
+    else
+        BridgeState.hudMainPanelManualOverride = "collapsed"
+        BridgeState.hudMainPanelCollapsedManual = true
+    end
     BridgeUiMarkDirty("hud-main-manual-toggle")
 end
 
@@ -3065,7 +3073,7 @@ function BridgeUiFlush()
     if ui == nil or not ui.mounted then return end
 
     local mainPanelCollapsed = BridgeHudMainPanelCollapsed()
-    local autoCollapsed = BridgeState.hudMainPanelAutoCollapseOwner ~= nil
+    local autoCollapsed = BridgeState.hudMainPanelAutoCollapseOwner ~= nil and mainPanelCollapsed
     local collapseLabel = mainPanelCollapsed and "EXPAND HUD" or "COLLAPSE HUD"
     local collapseState = autoCollapsed and "AUTO-COLLAPSED FOR NATIVE SEARCH"
         or (BridgeState.hudMainPanelCollapsedManual == true and "MANUALLY COLLAPSED" or "")

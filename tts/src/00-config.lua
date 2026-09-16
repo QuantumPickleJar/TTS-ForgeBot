@@ -1252,6 +1252,13 @@ function BridgeEventDrainQueueState()
         retiredTerminalRecovery = BridgeDiagnosticSnapshot(BridgeState.terminalRecoveryErrorRetired or {}),
         eventSessionId = BridgeState.eventSessionId,
         eventSessionGeneration = BridgeState.eventSessionGeneration,
+        nativeSearchSelection = BridgeDiagnosticSnapshot(BridgeState.nativeSearchSelectionSession or {}),
+        nativeSearchEventHistory = BridgeDiagnosticSnapshot(BridgeState.nativeSearchEventHistory or {}),
+        hudMainPanel = {
+            autoCollapseRequested = BridgeState.hudMainPanelAutoCollapseOwner ~= nil,
+            manualOverride = BridgeState.hudMainPanelManualOverride,
+            effectiveCollapsed = BridgeHudMainPanelCollapsed ~= nil and BridgeHudMainPanelCollapsed() or false
+        },
         decisionAcceptanceRejections = BridgeDiagnosticSnapshot(BridgeState.decisionAcceptanceRejections or {}),
         cancelActionJournal = BridgeDiagnosticSnapshot(BridgeState.cancelActionJournal or {}),
         lastActionPhysicalResolution = BridgeDiagnosticSnapshot(BridgeState.lastActionPhysicalResolution or {}),
@@ -3694,7 +3701,9 @@ BridgeState = {
     libraryLookLastFailure = nil,
     nativeSearchSelectionSession = nil,
     nativeSearchSessionGeneration = 0,
+    nativeSearchEventHistory = {},
     hudMainPanelCollapsedManual = false,
+    hudMainPanelManualOverride = nil,
     hudMainPanelAutoCollapseOwner = nil,
     diagnosticCaptureFollowupToken = nil,
     diagnosticCaptureFollowupUntil = 0,
