@@ -4379,6 +4379,12 @@ function BridgeRecordSemanticSpellResolution(event)
         "[Bridge] semantic spell resolution retained pending physical transition event=%s instance=%s destination=%s structuredApplied=%s",
         tostring(event.sequence), tostring(instanceId), tostring(event.destinationZone),
         tostring(structured ~= nil and structured.applied == true)))
+    -- Forge's current stack projection is the authority for retiring virtual
+    -- ability entries. The request is presentation-only and does not mutate
+    -- any physical card or event cursor.
+    if BridgeRefreshAuthoritativeStackProjection ~= nil then
+        BridgeRefreshAuthoritativeStackProjection(event.sequence, "spell_resolved")
+    end
     -- If a particular Forge transport omits the structured transition, the
     -- cursor-ordered snapshot remains the explicit fallback. Snapshot mutation
     -- is fenced behind the event-drain owner and cannot preempt a later
@@ -4421,6 +4427,9 @@ function BridgeApplyAuthoritativeEvent(event)
         -- by the structured hand->stack transition below when the transport
         -- does not include it on the semantic event.
         if BridgeOpponentSpellObserveCast ~= nil then BridgeOpponentSpellObserveCast(event) end
+        if BridgeRefreshAuthoritativeStackProjection ~= nil then
+            BridgeRefreshAuthoritativeStackProjection(event.sequence, "spell_cast")
+        end
         return true, 0
     end
 

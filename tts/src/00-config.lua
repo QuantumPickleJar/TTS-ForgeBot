@@ -3633,6 +3633,7 @@ BridgeState = {
     -- Token imports are asynchronous. A Forge identity is allowed one and
     -- only one in-flight embodiment, independent of token name.
     tokenMaterializationByInstanceId = {},
+    tokenMaterializationJournal = {},
     -- Authoritative Forge-object metadata is independent of physical GUIDs.
     -- Virtual/copy objects can exist without an original deck card.
     authoritativeObjectByInstanceId = {},
@@ -3667,6 +3668,15 @@ BridgeState = {
     prioritySeatId = nil,
     stackSummary = {},
     stackObjects = {},
+    -- Virtual stack presentation is refreshed from a narrow authoritative
+    -- projection. These watermarks fence delayed callbacks without coupling
+    -- stack HUD convergence to a physical snapshot rebuild.
+    stackPresentationSessionId = nil,
+    stackPresentationEventCursor = 0,
+    stackPresentationGeneration = 0,
+    stackProjectionRefreshInFlight = false,
+    stackProjectionRefreshRequestedSequence = 0,
+    stackProjectionRefreshGeneration = 0,
     -- HUD YIELD can be armed while the AI is acting and no human decision is
     -- currently visible.  Keep that policy scoped to the authoritative turn
     -- and active seat so it cannot leak into a later turn.
@@ -4175,6 +4185,12 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.hudMainPanelAutoCollapseOwner = nil
     BridgeState.stackSummary = {}
     BridgeState.stackObjects = {}
+    BridgeState.stackPresentationSessionId = nil
+    BridgeState.stackPresentationEventCursor = 0
+    BridgeState.stackPresentationGeneration = (BridgeState.stackPresentationGeneration or 0) + 1
+    BridgeState.stackProjectionRefreshInFlight = false
+    BridgeState.stackProjectionRefreshRequestedSequence = 0
+    BridgeState.stackProjectionRefreshGeneration = (BridgeState.stackProjectionRefreshGeneration or 0) + 1
     BridgeState.combatSelectedByGuid = {}
     BridgeState.attackOriginByGuid = {}
     BridgeState.pendingCastBySeatId = {}
@@ -5235,7 +5251,51 @@ function BridgeBeginTokenMaterialization(cardInstanceId)
     BridgeState.tokenMaterializationByInstanceId[cardInstanceId] = {
         state = "SPAWNING", sessionId = BridgeState.eventSessionId, epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
     }
+    BridgeRecordTokenMaterializationDiagnostic({
+        sessionId = BridgeState.eventSessionId, stage = "BEGIN",
+        cardInstanceId = cardInstanceId, attemptGeneration = BRIDGE_RUNTIME_EPOCH_LOCAL
+    })
     return true, "SPAWNING"
+end
+
+function BridgeRecordTokenMaterializationDiagnostic(entry)
+    if type(entry) ~= "table" then return end
+    local journal = BridgeState.tokenMaterializationJournal
+    if type(journal) ~= "table" then
+        journal = {}
+        BridgeState.tokenMaterializationJournal = journal
+    end
+    local bounded = {
+        sessionId = entry.sessionId,
+        eventSequence = entry.eventSequence,
+        cardInstanceId = entry.cardInstanceId,
+        expectedTokenName = entry.expectedTokenName,
+        tokenVisualKey = entry.tokenVisualKey,
+        attemptGeneration = entry.attemptGeneration,
+        stage = entry.stage,
+        candidateCount = entry.candidateCount,
+        candidateFound = entry.candidateFound,
+        artBearing = entry.artBearing,
+        accepted = entry.accepted,
+        rejectedReason = entry.rejectedReason,
+        endpoint = entry.endpoint,
+        started = entry.started,
+        completed = entry.completed,
+        responseCode = entry.responseCode,
+        responseBytes = entry.responseBytes,
+        rawNickname = entry.rawNickname ~= nil and string.sub(tostring(entry.rawNickname), 1, 120) or nil,
+        normalizedOrdinaryName = entry.normalizedOrdinaryName,
+        customDeckPresent = entry.customDeckPresent,
+        faceUrlPresent = entry.faceUrlPresent,
+        spawnAttempted = entry.spawnAttempted,
+        callbackReceived = entry.callbackReceived,
+        liveCard = entry.liveCard,
+        guid = entry.guid,
+        final = entry.final,
+        fallbackReason = entry.fallbackReason
+    }
+    table.insert(journal, bounded)
+    while #journal > 80 do table.remove(journal, 1) end
 end
 
 function BridgeTokenMaterializationIsCurrent(cardInstanceId, sessionId, epoch)
@@ -5271,6 +5331,11 @@ function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)
         return false, recordError or "token identity registration failed"
     end
     BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "BOUND"
+    BridgeRecordTokenMaterializationDiagnostic({
+        sessionId = sessionId, eventSequence = event.sequence, cardInstanceId = event.cardInstanceId,
+        stage = "FINAL", attemptGeneration = epoch, final = "EXACT_IMPORTED", guid = guid,
+        accepted = true
+    })
     local moved, moveError = BridgeMoveToBattlefield(event, object, row)
     if not moved then
         -- Binding is provisional until the art-bearing object reaches the

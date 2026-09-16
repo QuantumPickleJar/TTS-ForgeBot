@@ -451,6 +451,33 @@ app.MapGet("/api/v1/embodiment/snapshot", async (IForgeAdapter adapter, Diagnost
 		: Results.Ok(snapshot);
 });
 
+app.MapGet("/api/v1/embodiment/stack", async (IForgeAdapter adapter, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
+{
+	telemetry.RecordProtocol("tts_to_bridge", "/api/v1/embodiment/stack");
+	var state = await adapter.GetStateAsync(cancellationToken);
+	if (state.State == "not_started" || string.IsNullOrWhiteSpace(state.SessionId)
+		|| state.SessionId == "session-not-started")
+	{
+		telemetry.RecordProtocol("bridge_to_tts", "/api/v1/embodiment/stack", 404,
+			sessionId: "session-not-started", payload: "no active session");
+		return Results.NotFound(new ErrorResponseDto(
+			ErrorCode: "session_not_started",
+			Message: "The Bridge has no active Forge session.",
+			DecisionId: null));
+	}
+
+	var projection = await adapter.GetStackProjectionAsync(cancellationToken);
+	telemetry.RecordProtocol("bridge_to_tts", "/api/v1/embodiment/stack", projection is null ? 404 : 200,
+		sessionId: projection?.SessionId,
+		payload: projection is null ? "unavailable" : new { projection.EventCursor, projection.ForgeSequence });
+	return projection is null
+		? Results.NotFound(new ErrorResponseDto(
+			ErrorCode: "stack_projection_unavailable",
+			Message: "The active adapter has not produced an authoritative stack projection.",
+			DecisionId: null))
+		: Results.Ok(projection);
+});
+
 app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter adapter, HttpContext httpContext, ILogger<Program> logger, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
 {
 	telemetry.RecordProtocol("tts_to_bridge", "/api/v1/choice", sessionId: request.SessionId, decisionId: request.DecisionId, requestId: request.RequestId, clientRuntimeId: request.ClientRuntimeId, clientRevision: request.ClientRevision, payload: request);
