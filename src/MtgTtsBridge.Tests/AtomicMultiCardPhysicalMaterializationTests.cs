@@ -3300,6 +3300,204 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Assert.Equal("nil", lua.Globals.Get("desyncState").String);
     }
 
+    [Fact]
+    public void AsyncTokenEventsDoNotCommitUntilEveryExactMaterializationCallbackBinds()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'session-rabbit'
+            BridgeState.eventSessionGeneration = 3
+            BridgeState.lastAppliedEventSequence = 196
+            BridgeState.cardNameByInstanceId['forge:session-rabbit:85'] = 'Rabbit Token'
+            BridgeState.cardNameByInstanceId['forge:session-rabbit:88'] = 'Rabbit Token'
+            BridgeState.cardNameByInstanceId['forge:session-rabbit:89'] = 'Rabbit Token'
+            local existing = BridgeTestCreateCard('forge:session-rabbit:85', 'Rabbit Token', 'rabbit-guid-a')
+            existing._inLibrary = false
+            BridgeRecordLooseCardIdentity('forge:session-rabbit:85', 'rabbit-guid-a', 'forge-player-1', 'battlefield')
+            local callbacks = {}
+            BridgeTakeCardFromTokenFetcher = function(name, seatId, callback, metadata)
+                callbacks[metadata.cardInstanceId] = callback
+            end
+            BridgeMoveToBattlefield = function(event, object, row) return true, nil end
+            BridgeVerifyFinalPhysicalRepresentation = function(instanceId, seatId, zone)
+                local guid = BridgeState.physicalByInstanceId[instanceId]
+                return guid ~= nil and BridgeState.physicalInstanceIdByGuid[guid] == instanceId
+                    and BridgeState.physicalSeatByGuid[guid] == seatId
+                    and BridgeState.physicalZoneByGuid[guid] == zone, 'missing exact test representation'
+            end
+            local waiters = {}
+            BridgeWaitFrames = function(callback) table.insert(waiters, callback) end
+            BridgeWaitTime = function(callback) table.insert(waiters, callback) end
+            BridgeTestSetEventQueue(
+                {sequence=197, kind='card_moved', seatId='forge-player-1', sourceZone='token', destinationZone='battlefield', cardInstanceId='forge:session-rabbit:88', cardName='Rabbit Token', isToken=true, objectKind='forge-token', forgeSequence=56},
+                {sequence=198, kind='card_moved', seatId='forge-player-1', sourceZone='token', destinationZone='battlefield', cardInstanceId='forge:session-rabbit:89', cardName='Rabbit Token', isToken=true, objectKind='forge-token', forgeSequence=56}
+            )
+            BridgeProcessEventQueue()
+            local function journalStageCount(stage)
+                local count = 0
+                for _, entry in pairs(BridgeState.physicalMutationJournal or {}) do
+                    if entry.stage == stage then count = count + 1 end
+                end
+                return count
+            end
+            beforeApplied = BridgeState.lastAppliedEventSequence
+            beforeCommit = BridgeTestCountLogToken('MUTATION_COMMIT')
+            beforeComplete = journalStageCount('EVENT_PHYSICAL_COMPLETE')
+            local rabbitB = BridgeTestCreateCard('forge:session-rabbit:88', 'Rabbit Token', 'rabbit-guid-b')
+            local rabbitC = BridgeTestCreateCard('forge:session-rabbit:89', 'Rabbit Token', 'rabbit-guid-c')
+            callbacks['forge:session-rabbit:88'](rabbitB, nil)
+            afterOneApplied = BridgeState.lastAppliedEventSequence
+            afterOnePending = BridgeState.eventDrainTransaction ~= nil
+            afterOneC = BridgeState.physicalByInstanceId['forge:session-rabbit:89']
+            afterOneComplete = journalStageCount('EVENT_PHYSICAL_COMPLETE')
+            callbacks['forge:session-rabbit:89'](rabbitC, nil)
+            afterTwoApplied = BridgeState.lastAppliedEventSequence
+            afterTwoPending = BridgeState.eventDrainTransaction ~= nil
+            if waiters[1] ~= nil then waiters[1]() end
+            finalApplied = BridgeState.lastAppliedEventSequence
+            finalCommit = BridgeTestCountLogToken('MUTATION_COMMIT')
+            finalComplete = journalStageCount('EVENT_PHYSICAL_COMPLETE')
+            guidA = BridgeState.physicalByInstanceId['forge:session-rabbit:85']
+            guidB = BridgeState.physicalByInstanceId['forge:session-rabbit:88']
+            guidC = BridgeState.physicalByInstanceId['forge:session-rabbit:89']
+            inverseA = BridgeState.physicalInstanceIdByGuid[guidA]
+            inverseB = BridgeState.physicalInstanceIdByGuid[guidB]
+            inverseC = BridgeState.physicalInstanceIdByGuid[guidC]
+        ");
+
+        Assert.Equal(196, lua.Globals.Get("beforeApplied").Number);
+        Assert.Equal(0, lua.Globals.Get("beforeCommit").Number);
+        Assert.Equal(0, lua.Globals.Get("beforeComplete").Number);
+        Assert.Equal(196, lua.Globals.Get("afterOneApplied").Number);
+        Assert.True(lua.Globals.Get("afterOnePending").Boolean);
+        Assert.True(lua.Globals.Get("afterOneC").IsNil());
+        Assert.Equal(1, lua.Globals.Get("afterOneComplete").Number);
+        Assert.Equal(196, lua.Globals.Get("afterTwoApplied").Number);
+        Assert.True(lua.Globals.Get("afterTwoPending").Boolean);
+        Assert.True(lua.Globals.Get("finalApplied").Number == 198, CapturedLogsTail(lua));
+        Assert.True(lua.Globals.Get("finalCommit").Number == 1,
+            $"finalCommit={lua.Globals.Get("finalCommit").Number} finalApplied={lua.Globals.Get("finalApplied").Number} desync={lua.Globals.Get("desyncReason").ToPrintString()} logs={CapturedLogsTail(lua)}");
+        Assert.Equal(2, lua.Globals.Get("finalComplete").Number);
+        Assert.Equal("rabbit-guid-a", lua.Globals.Get("guidA").String);
+        Assert.Equal("rabbit-guid-b", lua.Globals.Get("guidB").String);
+        Assert.Equal("rabbit-guid-c", lua.Globals.Get("guidC").String);
+        Assert.Equal("forge:session-rabbit:85", lua.Globals.Get("inverseA").String);
+        Assert.Equal("forge:session-rabbit:88", lua.Globals.Get("inverseB").String);
+        Assert.Equal("forge:session-rabbit:89", lua.Globals.Get("inverseC").String);
+    }
+
+    [Fact]
+    public void FailedSecondAsyncTokenAbortsTransactionWithoutAliasingFirstToken()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'session-rabbit'
+            BridgeState.eventSessionGeneration = 3
+            BridgeState.lastAppliedEventSequence = 196
+            BridgeState.cardNameByInstanceId['forge:session-rabbit:88'] = 'Rabbit Token'
+            BridgeState.cardNameByInstanceId['forge:session-rabbit:89'] = 'Rabbit Token'
+            local callbacks = {}
+            BridgeTakeCardFromTokenFetcher = function(name, seatId, callback, metadata)
+                callbacks[metadata.cardInstanceId] = callback
+            end
+            BridgeMoveToBattlefield = function(event, object, row) return true, nil end
+            BridgeVerifyFinalPhysicalRepresentation = function() return true, nil end
+            local waiters = {}
+            BridgeWaitFrames = function(callback) table.insert(waiters, callback) end
+            BridgeWaitTime = function(callback) table.insert(waiters, callback) end
+            BridgeTestSetEventQueue(
+                {sequence=197, kind='card_moved', seatId='forge-player-1', sourceZone='token', destinationZone='battlefield', cardInstanceId='forge:session-rabbit:88', cardName='Rabbit Token', isToken=true, objectKind='forge-token', forgeSequence=57},
+                {sequence=198, kind='card_moved', seatId='forge-player-1', sourceZone='token', destinationZone='battlefield', cardInstanceId='forge:session-rabbit:89', cardName='Rabbit Token', isToken=true, objectKind='forge-token', forgeSequence=57}
+            )
+            BridgeProcessEventQueue()
+            local rabbitB = BridgeTestCreateCard('forge:session-rabbit:88', 'Rabbit Token', 'blank-guid-b')
+            callbacks['forge:session-rabbit:88'](rabbitB, nil)
+            callbacks['forge:session-rabbit:89'](nil, 'exact import and generic fallback failed')
+            failedApplied = BridgeState.lastAppliedEventSequence
+            firstStillBound = BridgeState.physicalByInstanceId['forge:session-rabbit:88'] == 'blank-guid-b'
+            secondUnbound = BridgeState.physicalByInstanceId['forge:session-rabbit:89'] == nil
+            commitCount = BridgeTestCountLogToken('EVENT_COMMIT')
+            failedState = tostring(desyncReason)
+        ");
+
+        Assert.Equal(196, lua.Globals.Get("failedApplied").Number);
+        Assert.True(lua.Globals.Get("firstStillBound").Boolean);
+        Assert.True(lua.Globals.Get("secondUnbound").Boolean);
+        Assert.Equal(0, lua.Globals.Get("commitCount").Number);
+        Assert.Contains("event mutation 197-198 aborted", lua.Globals.Get("failedState").String);
+    }
+
+    [Fact]
+    public void StaleAndDuplicateTokenCallbacksCannotBindOrStealPhysicalIdentity()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'old-session'
+            BridgeState.eventSessionGeneration = 1
+            BridgeState.lastAppliedEventSequence = 196
+            BridgeState.cardNameByInstanceId['forge:old-session:88'] = 'Rabbit Token'
+            local callbacks = {}
+            BridgeTakeCardFromTokenFetcher = function(name, seatId, callback, metadata)
+                callbacks[metadata.cardInstanceId] = callback
+            end
+            BridgeMoveToBattlefield = function(event, object, row) return true, nil end
+            BridgeVerifyFinalPhysicalRepresentation = function() return true, nil end
+            BridgeWaitFrames = function(callback) end
+            BridgeWaitTime = function(callback) end
+            BridgeTestSetEventQueue({sequence=197, kind='card_moved', seatId='forge-player-1', sourceZone='token', destinationZone='battlefield', cardInstanceId='forge:old-session:88', cardName='Rabbit Token', isToken=true, objectKind='forge-token', forgeSequence=58})
+            BridgeProcessEventQueue()
+            local stale = BridgeTestCreateCard('forge:old-session:88', 'Rabbit Token', 'stale-guid')
+            stale.wasDestroyed = false
+            local rawDestruct = stale.destruct
+            stale.destruct = function() stale.wasDestroyed = true; rawDestruct() end
+            BridgeState.eventSessionId = 'new-session'
+            BridgeState.eventSessionGeneration = 2
+            callbacks['forge:old-session:88'](stale, nil)
+            staleApplied = BridgeState.lastAppliedEventSequence
+            staleMapping = BridgeState.physicalByInstanceId['forge:old-session:88']
+            staleWasDestroyed = stale.wasDestroyed
+
+            BridgeState.eventSessionId = 'new-session'
+            BridgeState.eventSessionGeneration = 2
+            BridgeState.lastAppliedEventSequence = 196
+            BridgeState.eventQueue = {}
+            BridgeState.eventDrainTransaction = nil
+            BridgeState.desyncLatched = false
+            BridgeState.physicalByInstanceId = {}
+            BridgeState.physicalInstanceIdByGuid = {}
+            BridgeState.physicalSeatByGuid = {}
+            BridgeState.physicalZoneByGuid = {}
+            BridgeState.tokenMaterializationByInstanceId = {}
+            callbacks = {}
+            BridgeState.cardNameByInstanceId['forge:new-session:88'] = 'Rabbit Token'
+            BridgeState.cardNameByInstanceId['forge:new-session:89'] = 'Rabbit Token'
+            BridgeTestSetEventQueue(
+                {sequence=197, kind='card_moved', seatId='forge-player-1', sourceZone='token', destinationZone='battlefield', cardInstanceId='forge:new-session:88', cardName='Rabbit Token', isToken=true, objectKind='forge-token', forgeSequence=59},
+                {sequence=198, kind='card_moved', seatId='forge-player-1', sourceZone='token', destinationZone='battlefield', cardInstanceId='forge:new-session:89', cardName='Rabbit Token', isToken=true, objectKind='forge-token', forgeSequence=59}
+            )
+            BridgeProcessEventQueue()
+            local first = BridgeTestCreateCard('forge:new-session:88', 'Rabbit Token', 'same-guid')
+            local second = BridgeTestCreateCard('forge:new-session:89', 'Rabbit Token', 'same-guid')
+            callbacks['forge:new-session:88'](first, nil)
+            callbacks['forge:new-session:89'](second, nil)
+            duplicateApplied = BridgeState.lastAppliedEventSequence
+            duplicateOwner = BridgeState.physicalInstanceIdByGuid['same-guid']
+            duplicateOther = BridgeState.physicalByInstanceId['forge:new-session:89']
+            duplicateState = tostring(desyncReason)
+        ");
+
+        Assert.Equal(196, lua.Globals.Get("staleApplied").Number);
+        Assert.True(lua.Globals.Get("staleMapping").IsNil());
+        Assert.True(lua.Globals.Get("staleWasDestroyed").Boolean);
+        Assert.Equal(196, lua.Globals.Get("duplicateApplied").Number);
+        Assert.Equal("forge:new-session:88", lua.Globals.Get("duplicateOwner").String);
+        Assert.True(lua.Globals.Get("duplicateOther").IsNil());
+        Assert.Contains("event mutation 197-198 aborted", lua.Globals.Get("duplicateState").String);
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script();

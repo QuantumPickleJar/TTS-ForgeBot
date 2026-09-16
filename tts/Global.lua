@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 5acf34eff48fda4d93ab11f8040b898a23ac208036f66f6cd5e593197e85fa70
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "5acf34eff48fda4d93ab11f8040b898a23ac208036f66f6cd5e593197e85fa70"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 329b4c949673c26d55fc0674d39febe83621ac870dcd1b1b200b66cc4e15878e
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "329b4c949673c26d55fc0674d39febe83621ac870dcd1b1b200b66cc4e15878e"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -5245,18 +5245,22 @@ function BridgeRefreshContainedMappingsAfterDeckMutation(deckGuid)
     end
 end
 
-function BridgeBeginTokenMaterialization(cardInstanceId)
+function BridgeBeginTokenMaterialization(cardInstanceId, eventSequence, expectedTokenName)
     if cardInstanceId == nil then return false, "token has no Forge CardInstanceId" end
     local current = BridgeState.tokenMaterializationByInstanceId[cardInstanceId]
     if current ~= nil and (current.state == "SPAWNING" or current.state == "BOUND") then
         return false, current.state
     end
     BridgeState.tokenMaterializationByInstanceId[cardInstanceId] = {
-        state = "SPAWNING", sessionId = BridgeState.eventSessionId, epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+        state = "SPAWNING", sessionId = BridgeState.eventSessionId, epoch = BRIDGE_RUNTIME_EPOCH_LOCAL,
+        eventSequence = eventSequence, expectedTokenName = expectedTokenName
     }
     BridgeRecordTokenMaterializationDiagnostic({
         sessionId = BridgeState.eventSessionId, stage = "BEGIN",
-        cardInstanceId = cardInstanceId, attemptGeneration = BRIDGE_RUNTIME_EPOCH_LOCAL
+        cardInstanceId = cardInstanceId, eventSequence = eventSequence,
+        expectedTokenName = expectedTokenName,
+        tokenVisualKey = expectedTokenName ~= nil and BridgeTokenNameKey(expectedTokenName) or nil,
+        attemptGeneration = BRIDGE_RUNTIME_EPOCH_LOCAL
     })
     return true, "SPAWNING"
 end
@@ -5272,6 +5276,7 @@ function BridgeRecordTokenMaterializationDiagnostic(entry)
         sessionId = entry.sessionId,
         eventSequence = entry.eventSequence,
         cardInstanceId = entry.cardInstanceId,
+        transactionToken = entry.transactionToken,
         expectedTokenName = entry.expectedTokenName,
         tokenVisualKey = entry.tokenVisualKey,
         attemptGeneration = entry.attemptGeneration,
@@ -5282,10 +5287,13 @@ function BridgeRecordTokenMaterializationDiagnostic(entry)
         accepted = entry.accepted,
         rejectedReason = entry.rejectedReason,
         endpoint = entry.endpoint,
+        endpointId = entry.endpointId,
         started = entry.started,
         completed = entry.completed,
         responseCode = entry.responseCode,
         responseBytes = entry.responseBytes,
+        error = entry.error,
+        detail = entry.detail,
         rawNickname = entry.rawNickname ~= nil and string.sub(tostring(entry.rawNickname), 1, 120) or nil,
         normalizedOrdinaryName = entry.normalizedOrdinaryName,
         customDeckPresent = entry.customDeckPresent,
@@ -25733,40 +25741,94 @@ local function BridgeApplyStructuredCardMoveCore(event)
         local row = BridgeBattlefieldRowForEvent(event, "creature")
         local sessionId = BridgeState.eventSessionId
         local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
-        local started, state = BridgeBeginTokenMaterialization(event.cardInstanceId)
+        local ownsTransactionCompletion = type(event._bridgePhysicalCompletion) == "function"
+        local tx = BridgeState.eventDrainTransaction
+        local function tokenPhysicalProgress(stage, detail)
+            if tx ~= nil and BridgeEventMutationIsCurrent(tx) then
+                BridgeRecordPhysicalMutationProgress(tx, stage, detail)
+                BridgeRecordPhysicalMutationJournal({
+                    token = tx.token, forgeSequence = tx.forgeSequence, stage = stage,
+                    eventSequence = event.sequence, cardInstanceId = event.cardInstanceId,
+                    seatId = event.seatId, detail = detail
+                })
+            end
+            BridgeRecordTokenMaterializationDiagnostic({
+                sessionId = sessionId, eventSequence = event.sequence,
+                cardInstanceId = event.cardInstanceId, expectedTokenName = expectedName,
+                tokenVisualKey = BridgeTokenNameKey(expectedName),
+                attemptGeneration = epoch, transactionToken = tx and tx.token or nil,
+                stage = stage, detail = detail
+            })
+        end
+        local function completeTransaction(ok, reason)
+            if ownsTransactionCompletion then
+                event._bridgePhysicalCompletion(ok, reason)
+            elseif not ok then
+                BridgeStopOnDesync(BridgePhysicalMappingError(
+                    event, event.sourceZone or "token", 0, tostring(reason), nil))
+            end
+        end
+        local started, state = BridgeBeginTokenMaterialization(event.cardInstanceId, event.sequence, expectedName)
         if not started then
             BridgeLog("[Bridge] token materialization suppressed instance=" .. tostring(event.cardInstanceId)
                 .. " state=" .. tostring(state))
-            return true, nil
+            -- BOUND is an idempotent replay only when its exact live mapping
+            -- still verifies. SPAWNING/FAILED must never be reported as a
+            -- synchronous physical success for a transaction-owned event.
+            if state == "BOUND" then
+                local verified, verifyError = BridgeVerifyFinalPhysicalRepresentation(
+                    event.cardInstanceId, event.seatId, "battlefield")
+                if verified then return true, nil end
+                return false, verifyError or "bound token has no verified battlefield representation"
+            end
+            return false, "token materialization is already pending: " .. tostring(state)
         end
+        if ownsTransactionCompletion then event._bridgePhysicalCompletionPending = true end
+        tokenPhysicalProgress("TOKEN_MATERIALIZATION_BEGIN", "async token materialization started")
+        tokenPhysicalProgress("TOKEN_VISUAL_PENDING", "awaiting importer or generic proxy callback")
         BridgeTakeCardFromTokenFetcher(expectedName, event.seatId, function(taken, takeError)
             if not BridgeTokenMaterializationIsCurrent(event.cardInstanceId, sessionId, epoch) then
                 -- A NEW MATCH/reload or a successful concurrent exact bind made
                 -- this callback obsolete. Never cross-bind its returned object.
-                if taken ~= nil then BridgeSafeObjectCall(taken, function(card) card.destruct() end) end
+                local staleGuid = taken ~= nil and BridgeSafeObjectGuid(taken) or nil
+                local staleOwner = staleGuid ~= nil
+                    and BridgeState.physicalInstanceIdByGuid[staleGuid] or nil
+                if taken ~= nil and staleOwner == nil then
+                    BridgeSafeObjectCall(taken, function(card) card.destruct() end)
+                end
+                if ownsTransactionCompletion then
+                    completeTransaction(false, "stale token materialization callback")
+                end
                 return
             end
             if taken == nil then
-                BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId] = nil
-                BridgeStopOnDesync(BridgePhysicalMappingError(
-                    event,
-                    event.sourceZone or "token",
-                    0,
-                    "token fetcher failed for battlefield materialization: " .. tostring(takeError),
-                    {mappedGuid = staleMappedGuid}
-                ))
+                BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "FAILED"
+                tokenPhysicalProgress("TOKEN_MATERIALIZATION_FAILED", tostring(takeError))
+                completeTransaction(false, "token fetcher failed for battlefield materialization: " .. tostring(takeError))
                 return
             end
+            tokenPhysicalProgress("TOKEN_VISUAL_READY", "usable token Card callback received")
+            tokenPhysicalProgress("TOKEN_BIND_BEGIN", "publishing exact Forge identity")
             local moved, moveError = BridgeBindTokenMaterialization(event, taken, row, sessionId, epoch)
             if not moved then
-                -- A rejected asynchronous importer object must never turn into
-                -- a fake card_moved failure for an unrelated physical card.
-                -- Keep Forge authoritative and let the next snapshot retry.
                 BridgeLog("[Bridge] token materialization deferred instance="
                     .. tostring(event.cardInstanceId) .. " reason=" .. tostring(moveError))
-                BridgeScheduleSnapshotReconcile("token materialization deferred")
+                tokenPhysicalProgress("TOKEN_MATERIALIZATION_FAILED", tostring(moveError))
+                completeTransaction(false, moveError or "token identity binding failed")
+                return
             end
-        end)
+            local verified, verifyError = BridgeVerifyFinalPhysicalRepresentation(
+                event.cardInstanceId, event.seatId, "battlefield")
+            if not verified then
+                BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "FAILED"
+                tokenPhysicalProgress("TOKEN_MATERIALIZATION_FAILED", tostring(verifyError))
+                completeTransaction(false, verifyError or "token battlefield representation failed verification")
+                return
+            end
+            tokenPhysicalProgress("TOKEN_BIND_COMMITTED", "exact battlefield representation verified")
+            completeTransaction(true, "exact token materialization committed")
+        end, {cardInstanceId = event.cardInstanceId, eventSequence = event.sequence,
+            attemptGeneration = epoch, transactionToken = tx and tx.token or nil})
         return true, nil
     end
 
@@ -28078,7 +28140,7 @@ function BridgeTrySpawnTokenViaEncodeButton(expectedName, seatId, callback)
     callback(nil, "legacy source-card token button path disabled")
 end
 
-function BridgeSpawnGenericTokenProxy(expectedName, seatId, callback)
+function BridgeSpawnGenericTokenProxy(expectedName, seatId, callback, metadata)
     if expectedName == nil or tostring(expectedName) == "" then
         callback(nil, "generic token proxy requires an authoritative card name")
         return
@@ -28092,7 +28154,11 @@ function BridgeSpawnGenericTokenProxy(expectedName, seatId, callback)
     local position = anchor and {anchor.x, (anchor.y or 2.0) + 1.5, anchor.z} or {0, 3.0, 0}
     BridgeRecordTokenMaterializationDiagnostic({
         sessionId = BridgeState.eventSessionId, stage = "FINAL",
+        cardInstanceId = metadata and metadata.cardInstanceId or nil,
+        eventSequence = metadata and metadata.eventSequence or nil,
+        transactionToken = metadata and metadata.transactionToken or nil,
         expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+        attemptGeneration = metadata and metadata.attemptGeneration or BRIDGE_RUNTIME_EPOCH_LOCAL,
         final = "DEGRADED_GENERIC_PROXY", fallbackReason = "exact_visual_unavailable"
     })
     _spawn({
@@ -28136,8 +28202,11 @@ function BridgeIsArtBearingCard(object)
 end
 
 local BRIDGE_TOKEN_IMPORT_BACK_URL = "https://steamusercontent-a.akamaihd.net/ugc/1647720103762682461/35EF6E87970E2A5D6581E7D96A99F8A575B7A15F/"
-local BRIDGE_TOKEN_IMPORT_PRIMARY_URL = "https://importer.rikrassen.xyz/build"
-local BRIDGE_TOKEN_IMPORT_FALLBACK_URL = "https://importer-m7vpzqazfa-uc.a.run.app/build"
+-- The service routes POST /build/ with a trailing slash.  Without it the
+-- live endpoints answer 404 to WebRequest.custom, which made every exact
+-- visual attempt fall through to the blank degraded proxy.
+local BRIDGE_TOKEN_IMPORT_PRIMARY_URL = "https://importer.rikrassen.xyz/build/"
+local BRIDGE_TOKEN_IMPORT_FALLBACK_URL = "https://importer-m7vpzqazfa-uc.a.run.app/build/"
 
 function BridgeExactTokenImportPayload(expectedName)
     return {
@@ -28219,7 +28288,7 @@ function BridgeParseExactTokenImportJson(text, expectedName)
     return BridgeValidateExactTokenImportCandidate(candidates[1], expectedName)
 end
 
-function BridgeImportExactTokenVisual(expectedName, seatId, callback)
+function BridgeImportExactTokenVisual(expectedName, seatId, callback, metadata)
     if expectedName == nil or tostring(expectedName) == "" then
         callback(nil, "exact token visual import requires an authoritative card name")
         return
@@ -28237,8 +28306,12 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback)
     local completed = false
     BridgeRecordTokenMaterializationDiagnostic({
         sessionId = BridgeState.eventSessionId, stage = "IMPORT_REQUEST",
+        cardInstanceId = metadata and metadata.cardInstanceId or nil,
+        eventSequence = metadata and metadata.eventSequence or nil,
+        transactionToken = metadata and metadata.transactionToken or nil,
         expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
-        attemptGeneration = epoch, endpoint = BRIDGE_TOKEN_IMPORT_PRIMARY_URL, started = true
+        attemptGeneration = metadata and metadata.attemptGeneration or epoch,
+        endpoint = BRIDGE_TOKEN_IMPORT_PRIMARY_URL, started = true
     })
     local function finish(object, err)
         if completed then return end
@@ -28246,22 +28319,39 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback)
         if object ~= nil and not BridgeIsArtBearingCard(object) then
             BridgeRecordTokenMaterializationDiagnostic({
                 sessionId = BridgeState.eventSessionId, stage = "FINAL",
+                cardInstanceId = metadata and metadata.cardInstanceId or nil,
+                eventSequence = metadata and metadata.eventSequence or nil,
+                transactionToken = metadata and metadata.transactionToken or nil,
                 expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
-                attemptGeneration = epoch, final = "FAILED", fallbackReason = tostring(err or "non_art_bearing_spawn")
+                attemptGeneration = metadata and metadata.attemptGeneration or epoch,
+                final = "FAILED", fallbackReason = tostring(err or "non_art_bearing_spawn")
             })
             callback(nil, "exact token visual importer returned a non-art-bearing card")
             return
         end
         BridgeRecordTokenMaterializationDiagnostic({
             sessionId = BridgeState.eventSessionId, stage = "FINAL",
+            cardInstanceId = metadata and metadata.cardInstanceId or nil,
+            eventSequence = metadata and metadata.eventSequence or nil,
+            transactionToken = metadata and metadata.transactionToken or nil,
             expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
-            attemptGeneration = epoch, final = object ~= nil and "EXACT_IMPORTED" or "FAILED",
+            attemptGeneration = metadata and metadata.attemptGeneration or epoch,
+            final = object ~= nil and "EXACT_IMPORTED" or "FAILED",
             fallbackReason = object == nil and tostring(err) or nil
         })
         callback(object, err)
     end
 
     local function requestVisual(endpoint, allowFallback)
+        BridgeRecordTokenMaterializationDiagnostic({
+            sessionId = BridgeState.eventSessionId, stage = "IMPORT_REQUEST",
+            cardInstanceId = metadata and metadata.cardInstanceId or nil,
+            eventSequence = metadata and metadata.eventSequence or nil,
+            transactionToken = metadata and metadata.transactionToken or nil,
+            expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+            attemptGeneration = metadata and metadata.attemptGeneration or epoch,
+            endpoint = endpoint, started = true
+        })
         WebRequest.custom(endpoint, "POST", true, JSON.encode(BridgeExactTokenImportPayload(expectedName)), {
             ["Content-Type"] = "application/json",
             ["User-Agent"] = "Vokerr-TTS-MTG-Card-Importer",
@@ -28269,6 +28359,19 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback)
         }, function(request)
             if not BridgeRuntimeIsCurrent(epoch) then return end
             if request == nil or request.is_error or tonumber(request.response_code or 0) < 200 or tonumber(request.response_code or 0) >= 300 then
+                BridgeRecordTokenMaterializationDiagnostic({
+                    sessionId = BridgeState.eventSessionId, stage = "IMPORT_RESPONSE",
+                    cardInstanceId = metadata and metadata.cardInstanceId or nil,
+                    eventSequence = metadata and metadata.eventSequence or nil,
+                    transactionToken = metadata and metadata.transactionToken or nil,
+                    expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+                    attemptGeneration = metadata and metadata.attemptGeneration or epoch,
+                    endpoint = endpoint, completed = true,
+                    responseCode = request and tonumber(request.response_code or 0) or nil,
+                    responseBytes = request and string.len(tostring(request.text or "")) or 0,
+                    error = request and (request.error or request.response_code) or "no response",
+                    fallbackReason = request and (request.error or request.response_code) or "no response"
+                })
                 if allowFallback then
                     requestVisual(BRIDGE_TOKEN_IMPORT_FALLBACK_URL, false)
                 else
@@ -28278,8 +28381,12 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback)
             end
             BridgeRecordTokenMaterializationDiagnostic({
                 sessionId = BridgeState.eventSessionId, stage = "IMPORT_RESPONSE",
+                cardInstanceId = metadata and metadata.cardInstanceId or nil,
+                eventSequence = metadata and metadata.eventSequence or nil,
+                transactionToken = metadata and metadata.transactionToken or nil,
                 expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
-                attemptGeneration = epoch, endpoint = endpoint, completed = true,
+                attemptGeneration = metadata and metadata.attemptGeneration or epoch,
+                endpoint = endpoint, completed = true,
                 responseCode = tonumber(request.response_code or 0),
                 responseBytes = string.len(tostring(request.text or ""))
             })
@@ -28293,9 +28400,13 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback)
                 if spawnHandled then return end
                 spawnHandled = true
                 BridgeRecordTokenMaterializationDiagnostic({
-                    sessionId = BridgeState.eventSessionId, stage = "SPAWN",
+                    sessionId = BridgeState.eventSessionId, stage = "SPAWN_CALLBACK",
+                    cardInstanceId = metadata and metadata.cardInstanceId or nil,
+                    eventSequence = metadata and metadata.eventSequence or nil,
+                    transactionToken = metadata and metadata.transactionToken or nil,
                     expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
-                    attemptGeneration = epoch, callbackReceived = true,
+                    attemptGeneration = metadata and metadata.attemptGeneration or epoch,
+                    callbackReceived = true,
                     liveCard = BridgeObjectIsUsable(object),
                     artBearing = object ~= nil and BridgeIsArtBearingCard(object) or false
                 })
@@ -28313,6 +28424,15 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback)
                     end
                 end, 2)
             end
+            BridgeRecordTokenMaterializationDiagnostic({
+                sessionId = BridgeState.eventSessionId, stage = "SPAWN_REQUEST",
+                cardInstanceId = metadata and metadata.cardInstanceId or nil,
+                eventSequence = metadata and metadata.eventSequence or nil,
+                transactionToken = metadata and metadata.transactionToken or nil,
+                expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+                attemptGeneration = metadata and metadata.attemptGeneration or epoch,
+                spawnAttempted = true
+            })
             local spawnOk, objectOrError = pcall(function()
                 return spawnObjectJSON({
                     json = JSON.encode(cardJson), position = position, rotation = rotation,
@@ -28357,12 +28477,30 @@ function BridgeFindDeckWithContainedCardName(expectedName, excludeDeckGuidSet)
 
         for _, item in ipairs(contained) do
             local containedName = item.nickname or item.name or ""
-            local exact = BridgeNormalizeCardName(containedName) == BridgeNormalizeCardName(expectedName)
-            local tokenExact = expectedTokenKey ~= "" and BridgeTokenNameKey(containedName) == expectedTokenKey
-            if exact or tokenExact then
-                local entryScore = scoreBase + (exact and 50 or 0) + (tokenExact and 25 or 0)
-                table.insert(candidates, {deck = container, entry = item, score = entryScore})
-                return
+            local containedGuid = item.guid or item.GUID
+            local mappedInstance = containedGuid ~= nil
+                and ((BridgeState.physicalContainedInstanceIdByGuid or {})[containedGuid]
+                    or (BridgeState.physicalInstanceIdByGuid or {})[containedGuid]) or nil
+            local advertisedInstance = item.instanceId or item.cardInstanceId
+            local authoritativeEntry = mappedInstance ~= nil
+                or (advertisedInstance ~= nil
+                    and (((BridgeState.physicalContainerByInstanceId or {})[advertisedInstance] ~= nil)
+                        or ((BridgeState.physicalByInstanceId or {})[advertisedInstance] ~= nil)))
+            if authoritativeEntry then
+                BridgeRecordTokenMaterializationDiagnostic({
+                    sessionId = BridgeState.eventSessionId, stage = "REUSABLE_LOOKUP",
+                    expectedTokenName = expectedName, tokenVisualKey = expectedTokenKey,
+                    candidateFound = true, accepted = false,
+                    rejectedReason = "authoritative_gameplay_card_not_reusable"
+                })
+            else
+                local exact = BridgeNormalizeCardName(containedName) == BridgeNormalizeCardName(expectedName)
+                local tokenExact = expectedTokenKey ~= "" and BridgeTokenNameKey(containedName) == expectedTokenKey
+                if exact or tokenExact then
+                    local entryScore = scoreBase + (exact and 50 or 0) + (tokenExact and 25 or 0)
+                    table.insert(candidates, {deck = container, entry = item, score = entryScore})
+                    return
+                end
             end
         end
     end
@@ -28388,7 +28526,7 @@ function BridgeFindDeckWithContainedCardName(expectedName, excludeDeckGuidSet)
     return candidates[1].deck, candidates[1].entry
 end
 
-function BridgeTakeCardFromTokenFetcher(expectedName, seatId, callback)
+function BridgeTakeCardFromTokenFetcher(expectedName, seatId, callback, metadata)
     local finished = false
     local function finish(object, err)
         if finished then
@@ -28404,6 +28542,17 @@ function BridgeTakeCardFromTokenFetcher(expectedName, seatId, callback)
         local guid = deck and BridgeSafeObjectGuid(deck) or nil
         if guid ~= nil then excludeDeckGuidSet[guid] = true end
     end
+
+    local tokenDiagnostic = {
+        sessionId = BridgeState.eventSessionId,
+        cardInstanceId = metadata and metadata.cardInstanceId or nil,
+        eventSequence = metadata and metadata.eventSequence or nil,
+        transactionToken = metadata and metadata.transactionToken or nil,
+        expectedTokenName = expectedName,
+        tokenVisualKey = BridgeTokenNameKey(expectedName),
+        attemptGeneration = metadata and metadata.attemptGeneration or BRIDGE_RUNTIME_EPOCH_LOCAL,
+        stage = "REUSABLE_LOOKUP"
+    }
 
     local function fallbackVisualImport(reason)
         -- Source-card buttons such as EmblemsAndTokens are not a generic
@@ -28427,11 +28576,15 @@ function BridgeTakeCardFromTokenFetcher(expectedName, seatId, callback)
                 end
                 finish(nil, "exact token visual import failed: " .. tostring(importError)
                     .. "; generic proxy failed: " .. tostring(proxyError))
-            end)
-        end)
+            end, metadata)
+        end, metadata)
     end
 
     local deck, entry = BridgeFindDeckWithContainedCardName(expectedName, excludeDeckGuidSet)
+    tokenDiagnostic.candidateFound = deck ~= nil and entry ~= nil
+    tokenDiagnostic.accepted = tokenDiagnostic.candidateFound
+    tokenDiagnostic.rejectedReason = tokenDiagnostic.candidateFound and nil or "no_presentation_only_inventory"
+    BridgeRecordTokenMaterializationDiagnostic(tokenDiagnostic)
     if deck == nil or entry == nil then
         fallbackVisualImport("no matching reusable token in table containers")
         return
@@ -30451,7 +30604,11 @@ function BridgeHudSubmitReport(category, summary)
             objectCount = #(BridgeState.stackObjects or {}),
             summaryCount = #(BridgeState.stackSummary or {})
         },
-        tokenMaterializationJournal = BridgeState.tokenMaterializationJournal,
+        -- Keep an explicit bounded array even when no token has yet been
+        -- materialized; nil fields disappear from JSON and made the 0cf9
+        -- capture unable to distinguish "no attempts" from "not wired".
+        tokenMaterializationJournal = BridgeDiagnosticSnapshot(
+            BridgeState.tokenMaterializationJournal or {}),
         status = BridgeState.statusHeadline,
         terminalRecovery = BridgeDiagnosticSnapshot(BridgeCurrentTerminalRecoveryError ~= nil
             and BridgeCurrentTerminalRecoveryError() or {}),
