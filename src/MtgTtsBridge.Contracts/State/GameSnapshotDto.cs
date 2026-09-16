@@ -44,6 +44,23 @@ public sealed record GameStackObjectSnapshotDto(
     string? Provenance,
     IReadOnlyList<string> Targets);
 
+/// <summary>
+/// The authoritative stack-only projection used by TTS virtual-stack
+/// presentation. It deliberately excludes all other zones so a UI convergence
+/// refresh cannot trigger a physical-table rebuild.
+/// </summary>
+public sealed record GameStackProjectionDto(
+    string SessionId,
+    long ForgeSequence,
+    long EventCursor,
+    IReadOnlyList<GameStackCardProjectionDto> Stack,
+    IReadOnlyList<GameStackObjectSnapshotDto> StackObjects);
+
+public sealed record GameStackCardProjectionDto(
+    string CardInstanceId,
+    string CardName,
+    string CurrentCardName);
+
 public sealed record GameCombatSnapshotDto(IReadOnlyList<GameCombatAttackSnapshotDto> Attacks);
 public sealed record GameCombatAttackSnapshotDto(
     string AttackerCardInstanceId,

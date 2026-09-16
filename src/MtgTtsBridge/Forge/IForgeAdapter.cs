@@ -21,4 +21,6 @@ public interface IForgeAdapter
     Task<EventBatchDto> GetEventsAsync(long afterSequence, CancellationToken cancellationToken);
 
     Task<GameSnapshotDto?> GetSnapshotAsync(CancellationToken cancellationToken);
+
+    Task<GameStackProjectionDto?> GetStackProjectionAsync(CancellationToken cancellationToken);
 }

@@ -217,6 +217,24 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         }
     }
 
+    public Task<GameStackProjectionDto?> GetStackProjectionAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            var snapshot = _structuredState.Current;
+            if (snapshot is null) return Task.FromResult<GameStackProjectionDto?>(null);
+
+            return Task.FromResult<GameStackProjectionDto?>(new GameStackProjectionDto(
+                snapshot.SessionId,
+                snapshot.ForgeSequence,
+                _latestEventSequence,
+                snapshot.Stack.Select(card => new GameStackCardProjectionDto(
+                    card.CardInstanceId, card.CardName, card.CurrentCardName)).ToArray(),
+                (snapshot.StackObjects ?? []).ToArray()));
+        }
+    }
+
     public async Task<AdapterStateDto> StartSessionAsync(CancellationToken cancellationToken)
     {
         ValidateConfiguration();
