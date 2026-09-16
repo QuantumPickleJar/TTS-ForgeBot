@@ -3159,6 +3159,129 @@ function BridgeGetEmbodimentSnapshot(callback)
     BridgeHttp.requestJson("GET", "/api/v1/embodiment/snapshot", nil, callback)
 end
 
+function BridgeGetStackProjection(callback)
+    if BridgeHttp == nil or type(BridgeHttp.requestJson) ~= "function"
+        or WebRequest == nil then
+        callback(false, nil, "stack projection transport unavailable")
+        return
+    end
+    BridgeHttp.requestJson("GET", "/api/v1/embodiment/stack", nil, callback)
+end
+
+local function BridgeOrderedStackObjects(stackObjects)
+    local ordered = {}
+    local count = 0
+    for key, stackObject in pairs(stackObjects or {}) do
+        if type(stackObject) == "table" then
+            count = count + 1
+            ordered[count] = {object = stackObject, key = key}
+        end
+    end
+    table.sort(ordered, function(left, right)
+        local leftIndex = tonumber(left.object.stackIndex or left.key or 0) or 0
+        local rightIndex = tonumber(right.object.stackIndex or right.key or 0) or 0
+        return leftIndex < rightIndex
+    end)
+    local result = {}
+    for key, entry in pairs(ordered) do result[key] = entry.object end
+    return result, count
+end
+
+local function BridgeBuildStackPresentationSummary(stackObjects, stackCards)
+    local summary = {}
+    local summaryCount = 0
+    local orderedStackObjects, objectCount = BridgeOrderedStackObjects(stackObjects)
+    for index = 1, objectCount do
+        local stackObject = orderedStackObjects[index]
+        local source = tostring(stackObject.sourceName or "Forge source")
+        local kind = tostring(stackObject.stackKind or "stack object")
+        local text = tostring(stackObject.abilityText or stackObject.abilityName or "")
+        summaryCount = summaryCount + 1
+        summary[summaryCount] = source .. " — " .. kind .. (text ~= "" and (": " .. text) or "")
+    end
+    if objectCount == 0 then
+        for _, card in ipairs(stackCards or {}) do
+            summaryCount = summaryCount + 1
+            summary[summaryCount] = tostring(card.currentCardName or card.cardName or "Forge stack object")
+        end
+    end
+    return summary
+end
+
+-- Stack presentation is a deliberately narrow projection. It may converge
+-- ahead of the physical event cursor because it contains no physical-zone
+-- mutations; cursor/session/generation fences prevent an old callback from
+-- resurrecting a retired virtual stack item.
+function BridgeApplyAuthoritativeStackProjection(projection, reason, expectedSessionId, expectedSessionGeneration)
+    if projection == nil then return false, "missing stack projection" end
+    local currentSessionId = BridgeState.eventSessionId
+    if expectedSessionId ~= nil and expectedSessionId ~= currentSessionId then
+        return false, "stack projection session changed"
+    end
+    if projection.sessionId == nil or projection.sessionId ~= currentSessionId then
+        return false, "stack projection belongs to another session"
+    end
+    if expectedSessionGeneration ~= nil
+        and expectedSessionGeneration ~= BridgeState.eventSessionGeneration then
+        return false, "stack projection generation changed"
+    end
+
+    local cursor = tonumber(projection.eventCursor or 0) or 0
+    local previousCursor = tonumber(BridgeState.stackPresentationEventCursor or 0) or 0
+    if cursor < previousCursor then
+        BridgeLog(string.format("[Bridge] ignored stale stack projection cursor=%s previous=%s reason=%s",
+            tostring(cursor), tostring(previousCursor), tostring(reason)))
+        return false, "stale stack projection"
+    end
+
+    local stackObjects = projection.stackObjects or {}
+    local stackCards = projection.stack or {}
+    BridgeState.stackObjects = stackObjects
+    BridgeState.stackSummary = BridgeBuildStackPresentationSummary(stackObjects, stackCards)
+    BridgeState.stackPresentationSessionId = projection.sessionId
+    BridgeState.stackPresentationEventCursor = cursor
+    BridgeState.stackPresentationGeneration = (BridgeState.stackPresentationGeneration or 0) + 1
+    BridgeUiMarkDirty("authoritative-stack-projection")
+    BridgeLog(string.format("[Bridge] authoritative stack projection applied cursor=%s objects=%s cards=%s reason=%s",
+        tostring(cursor), tostring(#stackObjects), tostring(#stackCards), tostring(reason)))
+    return true, nil
+end
+
+function BridgeRefreshAuthoritativeStackProjection(requiredEventSequence, reason)
+    if BridgeState.eventSessionId == nil or BridgeState.gameEnded ~= nil then return end
+    local requested = tonumber(requiredEventSequence or 0) or 0
+    BridgeState.stackProjectionRefreshRequestedSequence = math.max(
+        tonumber(BridgeState.stackProjectionRefreshRequestedSequence or 0) or 0, requested)
+    if BridgeState.stackProjectionRefreshInFlight then return end
+
+    local expectedSessionId = BridgeState.eventSessionId
+    local expectedSessionGeneration = BridgeState.eventSessionGeneration
+    BridgeState.stackProjectionRefreshInFlight = true
+    BridgeState.stackProjectionRefreshGeneration = (BridgeState.stackProjectionRefreshGeneration or 0) + 1
+    BridgeGetStackProjection(function(ok, projection, err)
+        if expectedSessionId ~= BridgeState.eventSessionId
+            or expectedSessionGeneration ~= BridgeState.eventSessionGeneration then
+            BridgeState.stackProjectionRefreshInFlight = false
+            return
+        end
+        BridgeState.stackProjectionRefreshInFlight = false
+        if not ok or projection == nil then
+            BridgeLog("[Bridge] authoritative stack projection refresh failed: " .. tostring(err))
+            return
+        end
+
+        local requestedSequence = tonumber(BridgeState.stackProjectionRefreshRequestedSequence or 0) or 0
+        local projectionCursor = tonumber(projection.eventCursor or 0) or 0
+        if projectionCursor < requestedSequence then
+            BridgeLog(string.format("[Bridge] authoritative stack projection lagging cursor=%s required=%s",
+                tostring(projectionCursor), tostring(requestedSequence)))
+            return
+        end
+        BridgeApplyAuthoritativeStackProjection(projection, reason,
+            expectedSessionId, expectedSessionGeneration)
+    end)
+end
+
 function BridgeDecisionOffersActionType(decision, actionType)
     for _, action in ipairs(decision.actions or {}) do
         if action.type == actionType then return true end
@@ -4061,20 +4184,13 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
     BridgeSetMonarchSeat(snapshot and snapshot.monarchSeatId or nil)
     BridgePerformanceEnd(monarchToken, "snapshot_reconcile.monarch.end", "snapshotReconcileMonarch")
     local stackToken = BridgePerformanceBegin("snapshot_reconcile.stack")
-    BridgeState.stackSummary = {}
-    BridgeState.stackObjects = snapshot and snapshot.stackObjects or {}
-    for _, stackObject in ipairs(snapshot and snapshot.stackObjects or {}) do
-        local source = tostring(stackObject.sourceName or "Forge source")
-        local kind = tostring(stackObject.stackKind or "stack object")
-        local text = tostring(stackObject.abilityText or stackObject.abilityName or "")
-        table.insert(BridgeState.stackSummary, source .. " — " .. kind .. (text ~= "" and (": " .. text) or ""))
-    end
-    for _, card in ipairs(snapshot and snapshot.stack or {}) do
-        if #(snapshot and snapshot.stackObjects or {}) == 0 then
-            table.insert(BridgeState.stackSummary, tostring(card.currentCardName or card.cardName or "Forge stack object"))
-        end
-    end
-    BridgeUiMarkDirty("stack")
+    BridgeApplyAuthoritativeStackProjection({
+        sessionId = snapshot and snapshot.sessionId or BridgeState.eventSessionId,
+        forgeSequence = snapshot and snapshot.forgeSequence,
+        eventCursor = snapshot and snapshot.eventCursor or 0,
+        stack = snapshot and snapshot.stack or {},
+        stackObjects = snapshot and snapshot.stackObjects or {}
+    }, reason or "snapshot", BridgeState.eventSessionId, BridgeState.eventSessionGeneration)
     BridgePerformanceEnd(stackToken, "snapshot_reconcile.stack.end", "snapshotReconcileStack")
     local publicZoneToken = BridgePerformanceBegin("snapshot_reconcile.public_zone_diff")
     for _, seatSnapshot in ipairs(snapshot.seats or {}) do
