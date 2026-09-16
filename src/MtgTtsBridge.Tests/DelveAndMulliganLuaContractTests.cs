@@ -560,12 +560,21 @@ public sealed class DelveAndMulliganLuaContractTests
             BridgeState.ui = { mounted = true, dirty = false }
             BridgeState.nativeSearchSelectionSession = nil
             BridgeState.nativeSearchSessionGeneration = 0
-            BridgeState.physicalContainedInstanceIdByGuid = { ['card-1'] = 'forge-object:9' }
+            BridgeState.physicalContainedInstanceIdByGuid = {
+                ['card-1'] = 'forge-object:9', ['card-2'] = 'forge-object:10', ['card-3'] = 'forge-object:11'
+            }
             BridgeState.physicalInstanceIdByGuid = {}
 
             function BridgeUiMarkDirty() end
             function BridgeRecordInteractionProducer() end
-            function BridgeWaitFrames(callback) if callback then callback() end end
+            queuedCallbacks = {}
+            function BridgeWaitFrames(callback) if callback then queuedCallbacks[#queuedCallbacks + 1] = callback end end
+            function DrainQueuedCallbacks()
+                while #queuedCallbacks > 0 do
+                    local callback = table.remove(queuedCallbacks, 1)
+                    callback()
+                end
+            end
             submissions = {}
             submissionsArePhysical = true
             function BridgeSubmitChoice(decisionId, actionId, source)
@@ -583,6 +592,12 @@ public sealed class DelveAndMulliganLuaContractTests
             local card = { tag = 'Card', guid = 'card-1' }
             function card.getGUID() return card.guid end
             card.bridgeInstanceId = 'forge-object:9'
+            local cardB = { tag = 'Card', guid = 'card-2' }
+            function cardB.getGUID() return cardB.guid end
+            cardB.bridgeInstanceId = 'forge-object:10'
+            local cardC = { tag = 'Card', guid = 'card-3' }
+            function cardC.getGUID() return cardC.guid end
+            cardC.bridgeInstanceId = 'forge-object:11'
 
             function BridgeSafeObjectGuid(object)
                 return object ~= nil and object.guid or nil
@@ -591,7 +606,7 @@ public sealed class DelveAndMulliganLuaContractTests
                 return object ~= nil and object.bridgeInstanceId or nil
             end
             function BridgeResolveExactActionPhysical(decision, action)
-                if action ~= nil and action.actionId == 'toggle-9' then
+                if action ~= nil and (action.actionId == 'toggle-9' or action.actionId == 'toggle-10' or action.actionId == 'toggle-11') then
                     return { kind = 'exact-contained', deckGuid = 'deck-1', zone = 'graveyard' }, nil, action.cardInstanceId
                 end
                 return nil, 'not-contained', action and action.cardInstanceId or nil
@@ -606,7 +621,9 @@ public sealed class DelveAndMulliganLuaContractTests
                 seatId = 'forge-player-1',
                 actions = {
                     { actionId = 'done', type = 'choose_none' },
-                    { actionId = 'toggle-9', type = 'choose_option', cardInstanceId = 'forge-object:9', sourceZone = 'graveyard', isSelected = false }
+                    { actionId = 'toggle-9', type = 'choose_option', cardInstanceId = 'forge-object:9', sourceZone = 'graveyard', isSelected = false },
+                    { actionId = 'toggle-10', type = 'choose_option', cardInstanceId = 'forge-object:10', sourceZone = 'graveyard', isSelected = false },
+                    { actionId = 'toggle-11', type = 'choose_option', cardInstanceId = 'forge-object:11', sourceZone = 'graveyard', isSelected = false }
                 }
             }
 
@@ -614,7 +631,11 @@ public sealed class DelveAndMulliganLuaContractTests
                 testStep = 'first-sync'
                 BridgeState.lastDecision = decision
                 BridgeSyncNativeSearchSelectionSession(decision)
+                autoOwnerBeforeSearch = BridgeState.hudMainPanelAutoCollapseOwner
+                sessionReference = BridgeState.nativeSearchSelectionSession
                 testStep = 'leave'
+                windowArmed = onObjectSearchStart('White', deck)
+                pickupHandled = BridgeNativeSearchHandlePickup('White', card)
                 leaveHandled = BridgeNativeSearchHandleContainerTransition(deck, card, 'leave')
                 leaveSubmitCount = #submissions
                 leaveSelection = BridgeState.selectedActionIds['toggle-9'] == true
@@ -624,10 +645,19 @@ public sealed class DelveAndMulliganLuaContractTests
                     if action.actionId == 'toggle-9' then action.isSelected = true end
                 end
                 BridgeSyncNativeSearchSelectionSession(decision)
+                sessionReferencePreserved = sessionReference == BridgeState.nativeSearchSelectionSession
+                DrainQueuedCallbacks()
                 testStep = 'enter'
                 enterHandled = BridgeNativeSearchHandleContainerTransition(deck, card, 'enter')
                 enterSubmitCount = #submissions
                 enterSelectionCleared = BridgeState.selectedActionIds['toggle-9'] == nil
+
+                testStep = 'second-selection'
+                secondPickupHandled = BridgeNativeSearchHandlePickup('White', cardB)
+                secondLeaveHandled = BridgeNativeSearchHandleContainerTransition(deck, cardB, 'leave')
+                secondSelectionSubmitCount = #submissions
+                remainderLeaveHandled = BridgeNativeSearchHandleContainerTransition(deck, cardC, 'leave')
+                remainderSelectionCleared = BridgeState.selectedActionIds['toggle-11'] == nil
 
                 testStep = 'stale'
                 BridgeState.lastDecision = { decisionId = 'next-decision', kind = 'main_priority', actions = {} }
@@ -640,11 +670,20 @@ public sealed class DelveAndMulliganLuaContractTests
             "native search failed at " + lua.Globals.Get("testStep").String + ": "
             + lua.Globals.Get("runError").ToString());
         Assert.True(lua.Globals.Get("leaveHandled").Boolean);
+        Assert.True(lua.Globals.Get("windowArmed").Boolean);
+        Assert.True(lua.Globals.Get("autoOwnerBeforeSearch").IsNil());
+        Assert.True(lua.Globals.Get("pickupHandled").Boolean);
+        Assert.True(lua.Globals.Get("sessionReferencePreserved").Boolean);
         Assert.Equal(1, lua.Globals.Get("leaveSubmitCount").Number);
         Assert.True(lua.Globals.Get("leaveSelection").Boolean);
         Assert.True(lua.Globals.Get("enterHandled").Boolean);
         Assert.Equal(2, lua.Globals.Get("enterSubmitCount").Number);
         Assert.True(lua.Globals.Get("enterSelectionCleared").Boolean);
+        Assert.True(lua.Globals.Get("secondPickupHandled").Boolean);
+        Assert.True(lua.Globals.Get("secondLeaveHandled").Boolean);
+        Assert.Equal(3, lua.Globals.Get("secondSelectionSubmitCount").Number);
+        Assert.False(lua.Globals.Get("remainderLeaveHandled").Boolean);
+        Assert.True(lua.Globals.Get("remainderSelectionCleared").Boolean);
         Assert.False(lua.Globals.Get("staleHandled").Boolean);
         Assert.True(lua.Globals.Get("sessionRetired").Boolean);
 
@@ -676,8 +715,11 @@ public sealed class DelveAndMulliganLuaContractTests
             collapsedInitially = BridgeHudMainPanelCollapsed()
             autoAcquired = BridgeHudAcquireMainPanelAutoCollapse('owner-1')
             collapsedAfterAuto = BridgeHudMainPanelCollapsed()
+            BridgeHudMainPanelToggle('White', '', 'BridgeHudMainPanelToggle')
+            expandedByManualOverride = BridgeHudMainPanelCollapsed()
+            ownerStillHeldAfterExpand = BridgeState.hudMainPanelAutoCollapseOwner == 'owner-1'
             staleRelease = BridgeHudReleaseMainPanelAutoCollapse('owner-stale')
-            collapsedAfterStaleRelease = BridgeHudMainPanelCollapsed()
+            expandedAfterStaleRelease = BridgeHudMainPanelCollapsed()
             ownerRelease = BridgeHudReleaseMainPanelAutoCollapse('owner-1')
             collapsedAfterOwnerRelease = BridgeHudMainPanelCollapsed()
 
@@ -688,8 +730,10 @@ public sealed class DelveAndMulliganLuaContractTests
         Assert.False(lua.Globals.Get("collapsedInitially").Boolean);
         Assert.True(lua.Globals.Get("autoAcquired").Boolean);
         Assert.True(lua.Globals.Get("collapsedAfterAuto").Boolean);
+        Assert.False(lua.Globals.Get("expandedByManualOverride").Boolean);
+        Assert.True(lua.Globals.Get("ownerStillHeldAfterExpand").Boolean);
         Assert.False(lua.Globals.Get("staleRelease").Boolean);
-        Assert.True(lua.Globals.Get("collapsedAfterStaleRelease").Boolean);
+        Assert.False(lua.Globals.Get("expandedAfterStaleRelease").Boolean);
         Assert.True(lua.Globals.Get("ownerRelease").Boolean);
         Assert.False(lua.Globals.Get("collapsedAfterOwnerRelease").Boolean);
         Assert.True(lua.Globals.Get("collapsedAfterManualToggle").Boolean);
