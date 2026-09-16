@@ -171,7 +171,9 @@ public sealed class ForgeStructuredStateReconciler
             ObjectKind = string.IsNullOrWhiteSpace(card.ObjectKind) ? (card.IsToken ? "forge-token" : "physical-original") : card.ObjectKind,
             IsCopy = card.IsCopy,
             IsVirtual = card.IsVirtual,
-            MaterializationPolicy = card.MaterializationPolicy
+            MaterializationPolicy = card.MaterializationPolicy,
+            TokenSourceObjectId = string.IsNullOrWhiteSpace(card.TokenSourceObjectId)
+                ? null : NormalizeObjectId(card.TokenSourceObjectId, card.ForgeCardId)
         };
 
         static bool HasCreatureType(ForgeStructuredCard card) =>
@@ -365,6 +367,7 @@ public sealed class ForgeStructuredStateReconciler
                     IsCopy: card.IsCopy,
                     IsVirtual: card.IsVirtual,
                     MaterializationPolicy: card.MaterializationPolicy,
+                    TokenSourceObjectId: card.TokenSourceObjectId,
                     OwnerSeatId: card.OwnerSeatId,
                     ControllerSeatId: card.ControllerSeatId,
                     Tapped: card.Tapped,

@@ -1420,7 +1420,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             MaterializationPolicy: rawEvent.MaterializationPolicy,
             IsToken: rawEvent.IsToken,
             RevealPresentation: rawEvent.RevealPresentation,
-            RandomResultPresentation: rawEvent.RandomResultPresentation)
+            RandomResultPresentation: rawEvent.RandomResultPresentation,
+            TokenSourceObjectId: NormalizeObjectId(rawEvent.TokenSourceObjectId))
         {
             Characteristics = rawEvent.Characteristics
         };

@@ -40,6 +40,36 @@ local function BridgeSourceEntrySort(left, right)
     return tostring(left.guid or "") < tostring(right.guid or "")
 end
 
+-- A native contained GUID is only a locator.  During a resync the inverse
+-- table may be published by an older contained-deck observer while the
+-- per-instance container record is still the most complete exact provenance.
+-- Consult both representations before falling back to a printed-name
+-- multiset.  This remains exact identity matching.
+local function BridgeExactSourceInstanceForGuid(guid)
+    if guid == nil then return nil end
+    local key = tostring(guid)
+    local contained = BridgeState.physicalContainedInstanceIdByGuid
+        and (BridgeState.physicalContainedInstanceIdByGuid[guid]
+            or BridgeState.physicalContainedInstanceIdByGuid[key]) or nil
+    if contained ~= nil and BridgeCardInstanceBelongsToSession(contained, BridgeState.eventSessionId) then
+        return tostring(contained)
+    end
+    local loose = BridgeState.physicalInstanceIdByGuid
+        and (BridgeState.physicalInstanceIdByGuid[guid]
+            or BridgeState.physicalInstanceIdByGuid[key]) or nil
+    if loose ~= nil and BridgeCardInstanceBelongsToSession(loose, BridgeState.eventSessionId) then
+        return tostring(loose)
+    end
+    for instanceId, mapping in pairs(BridgeState.physicalContainerByInstanceId or {}) do
+        if mapping ~= nil and mapping.cardGuid ~= nil
+            and tostring(mapping.cardGuid) == key
+            and BridgeCardInstanceBelongsToSession(instanceId, BridgeState.eventSessionId) then
+            return tostring(instanceId)
+        end
+    end
+    return nil
+end
+
 -- Build a complete seat-local source assignment before touching any committed
 -- physical ledger.  This is intentionally broader than the final library
 -- binder: a 40-card Deck is a valid source inventory for a 33-card library
@@ -71,7 +101,8 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
             index = tonumber(entry and entry.index or -1) or -1,
             cardName = entry and (entry.nickname or entry.name or "") or "",
             normalizedName = BridgeNormalizeCardName(entry and (entry.nickname or entry.name or "") or ""),
-            locatorType = string.match(guid, "%S") ~= nil and "GUID_LOCATOR" or "SLOT_LOCATOR"
+            locatorType = string.match(guid, "%S") ~= nil and "GUID_LOCATOR" or "SLOT_LOCATOR",
+            instanceId = string.match(guid, "%S") ~= nil and BridgeExactSourceInstanceForGuid(guid) or nil
         }
         table.insert(sources, item)
         if item.guid ~= nil then sourceByGuid[item.guid] = item end
@@ -87,7 +118,7 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
                 cardName = BridgePhysicalCanonicalCardName(object),
                 normalizedName = BridgeNormalizeCardName(BridgePhysicalCanonicalCardName(object)),
                 instanceId = BridgeReadCurrentSessionPhysicalIdentity(object)
-                    or BridgeSessionScopedPhysicalInstanceForGuid(guid, BridgeState.eventSessionId)
+                    or BridgeExactSourceInstanceForGuid(guid)
             })
         end
     end
@@ -105,7 +136,7 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
                     cardName = asset.cardName or BridgePhysicalCanonicalCardName(object),
                     normalizedName = BridgeNormalizeCardName(asset.cardName or BridgePhysicalCanonicalCardName(object)),
                     instanceId = BridgeReadCurrentSessionPhysicalIdentity(object)
-                        or BridgeSessionScopedPhysicalInstanceForGuid(guid, BridgeState.eventSessionId)
+                        or BridgeExactSourceInstanceForGuid(guid)
                 })
                 knownSourceGuid[guid] = true
             end
@@ -180,6 +211,27 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
             assignment.source = takeCandidate(desiredCard, desiredCard.zone)
         end
         if assignment.source == nil then
+            local candidates = {}
+            for _, candidate in ipairs(byName[desiredCard.normalizedName] or {}) do
+                if #candidates >= 16 then break end
+                table.insert(candidates, {
+                    sourceZone = candidate.sourceZone,
+                    guid = candidate.guid,
+                    index = candidate.index,
+                    instanceId = candidate.instanceId,
+                    locatorType = candidate.locatorType
+                })
+            end
+            BridgeState.lastSourceAssignmentFailure = {
+                seatId = seatId,
+                cardInstanceId = desiredCard.cardInstanceId,
+                desiredZone = desiredCard.zone,
+                normalizedName = desiredCard.normalizedName,
+                exactSourceFound = false,
+                fallbackAttempted = true,
+                candidateCount = #candidates,
+                candidates = candidates
+            }
             return nil, "source assignment missing physical card " .. tostring(desiredCard.cardName)
         end
     end
@@ -6054,7 +6106,9 @@ local function BridgeApplyStructuredCardMoveCore(event)
             completeTransaction(true, "exact token materialization committed")
         end, {cardInstanceId = event.cardInstanceId, eventSequence = event.sequence,
             attemptGeneration = epoch, transactionToken = tx and tx.token or nil,
-            isToken = event.isToken == true, characteristics = event.characteristics})
+            isToken = event.isToken == true, characteristics = event.characteristics,
+            tokenSourceObjectId = event.tokenSourceObjectId,
+            sourceCardName = event.tokenSourceCardName})
         return true, nil
     end
 
@@ -7115,7 +7169,15 @@ end
 -- snapshot says belongs in graveyard but which was left loose by an aborted
 -- mutation.  The planner supplies the exact CardInstanceId; this path never
 -- searches by name and never treats a Deck entry as a loose source.
-function BridgeRecoverExactCardToGraveyard(seatId, cardInstanceId, sourceZone, expectedName, callback)
+function BridgeRecoverExactCardToGraveyard(seatId, cardInstanceId, sourceZone, expectedName,
+    desiredGraveyardCount, callback)
+    -- Preserve the narrow legacy/test call shape while allowing the planner
+    -- to state the cardinality-aware postcondition explicitly.
+    if type(desiredGraveyardCount) == "function" and callback == nil then
+        callback = desiredGraveyardCount
+        desiredGraveyardCount = nil
+    end
+    local requiresNativeDeck = desiredGraveyardCount == nil or desiredGraveyardCount >= 2
     local finished = false
     local function finish(ok, reason)
         if finished then return end
@@ -7149,7 +7211,8 @@ function BridgeRecoverExactCardToGraveyard(seatId, cardInstanceId, sourceZone, e
         finish(false, "exact physical source is not in the expected seat/source zone")
         return
     end
-    local currentDeck = BridgeResolveCurrentNativeGraveyardDeck(seatId)
+    local currentDeck = requiresNativeDeck
+        and BridgeResolveCurrentNativeGraveyardDeck(seatId) or nil
     BridgeRecordPhysicalMutationJournal({
         operation = "EMBODIMENT_GRAVEYARD_REPAIR", stage = "EXACT_SOURCE_RESOLVED",
         cardInstanceId = cardInstanceId, sourceZone = sourceZone,
@@ -7164,7 +7227,7 @@ function BridgeRecoverExactCardToGraveyard(seatId, cardInstanceId, sourceZone, e
         destinationZone = "graveyard", cardInstanceId = cardInstanceId,
         cardName = expectedName or BridgeState.cardNameByInstanceId[cardInstanceId],
         _bridgeRecoveryGraveyardRepair = true,
-        _bridgeDeferredGraveyardRequiresDeck = true,
+        _bridgeDeferredGraveyardRequiresDeck = requiresNativeDeck,
         _bridgeDeferredGraveyardPreferredDeckGuid = BridgeSafeObjectGuid(currentDeck)
     }
     local moved, moveError = BridgeMoveToGraveyard(event, object, function(ok, reason)

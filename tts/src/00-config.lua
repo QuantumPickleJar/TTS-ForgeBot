@@ -1337,6 +1337,7 @@ function BridgeEventDrainQueueState()
         snapshotPhysicalZoneOwnership = BridgeDiagnosticSnapshot(zoneOwnership),
         bootstrapLibraryMappings = BridgeDiagnosticSnapshot(libraryMapping),
         seatReconciliationDiagnostics = BridgeDiagnosticSnapshot(BridgeState.seatReconciliationDiagnosticsBySeatId or {}),
+        lastSourceAssignmentFailure = BridgeDiagnosticSnapshot(BridgeState.lastSourceAssignmentFailure),
         expectedLibraryMappings = aggregateExpected,
         verifiedLibraryMappings = aggregateVerified,
         missingLibraryMappings = aggregateMissing,
@@ -2142,6 +2143,14 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
         plan.unsettledZones[key] = "PRESENT_BUT_UNSETTLED"
         plan.affectedZones[key] = true
     end
+    local desiredGraveyardCountBySeat = {}
+    for _, card in pairs(desired.cardsByInstanceId or {}) do
+        if tostring(card.zone or "") == "graveyard" then
+            local seatKey = tostring(card.seatId or "")
+            desiredGraveyardCountBySeat[seatKey] = (desiredGraveyardCountBySeat[seatKey] or 0) + 1
+        end
+    end
+    plan.desiredGraveyardCountBySeat = desiredGraveyardCountBySeat
     for instanceId, card in pairs(desired.cardsByInstanceId or {}) do
         local physical = (observed.byInstanceId or {})[instanceId]
         if physical == nil then
@@ -2172,7 +2181,8 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
                 table.insert(plan.exactGraveyardMoves, {
                     cardInstanceId = instanceId, seatId = card.seatId,
                     sourceZone = physical.zone, destinationZone = "graveyard",
-                    cardName = card.cardName
+                    cardName = card.cardName,
+                    desiredGraveyardCount = desiredGraveyardCountBySeat[tostring(card.seatId or "")] or 0
                 })
             end
         end
@@ -2220,9 +2230,13 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
                 scope = "SEAT_GRAVEYARD", seatId = move.seatId, zone = "graveyard",
                 cardInstanceId = move.cardInstanceId, cardName = move.cardName,
                 sourceZone = move.sourceZone, destinationZone = move.destinationZone,
-                precondition = "exact mapped Forge instance is physically loose outside this seat graveyard Deck",
+                precondition = "exact mapped Forge instance is physically loose outside this seat graveyard topology",
                 nativeAction = "BridgeRecoverExactCardToGraveyard",
-                postcondition = "exact Forge instance is contained in the selected seat graveyard Deck"
+                postcondition = move.desiredGraveyardCount == 1
+                    and "exact Forge instance is the selected seat's loose graveyard Card"
+                    or "exact Forge instance is contained in the selected seat graveyard Deck",
+                desiredGraveyardCount = move.desiredGraveyardCount,
+                requiresNativeDeck = move.desiredGraveyardCount >= 2
             })
         end
         for _, localZone in ipairs(localZones) do
@@ -2839,7 +2853,8 @@ function BridgePumpEmbodimentTransaction()
             if operation.scope == "SEAT_GRAVEYARD" and operation.type == "MOVE_EXACT_CARD_TO_GRAVEYARD" then
                 local operationToken = operation.token
                 BridgeRecoverExactCardToGraveyard(operation.seatId, operation.cardInstanceId,
-                    operation.sourceZone, operation.cardName, function(moved, moveError)
+                    operation.sourceZone, operation.cardName, operation.desiredGraveyardCount,
+                    function(moved, moveError)
                     if not BridgeEmbodimentTransactionIsCurrent(tx)
                         or tx.currentOperation ~= operation
                         or tx.currentOperation.token ~= operationToken then return end

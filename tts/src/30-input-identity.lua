@@ -3182,10 +3182,11 @@ function BridgeBeginResyncMappingTransaction()
         "authoritativeObjectByInstanceId", "battlefieldKindByInstanceId",
         "pendingPrivateHandIdentityByInstanceId", "untappedRotationByGuid",
         "physicalTappedByGuid", "counterStateByInstanceId", "keywordStateByInstanceId",
-        "cardDesignationsByInstanceId"
+        "cardDesignationsByInstanceId", "physicalStateCertificate"
     }
     local snapshot = {}
     for _, name in ipairs(names) do snapshot[name] = BridgeCopyResyncTable(BridgeState[name]) end
+    snapshot._physicalOwnershipSessionId = BridgeState.physicalOwnershipSessionId
     BridgeState.resyncMappingTransaction = snapshot
     BridgeState.resyncMappingTransactionStartedAt = BridgeResyncCallbackNow ~= nil and BridgeResyncCallbackNow() or os.clock()
     BridgeState.resyncMappingTransactionStatus = "started"
@@ -3195,7 +3196,10 @@ end
 function BridgeRestoreResyncMappingTransaction(reason)
     local snapshot = BridgeState.resyncMappingTransaction
     if snapshot == nil then return end
-    for name, value in pairs(snapshot) do BridgeState[name] = value end
+    for name, value in pairs(snapshot) do
+        if string.sub(tostring(name), 1, 1) ~= "_" then BridgeState[name] = value end
+    end
+    BridgeState.physicalOwnershipSessionId = snapshot._physicalOwnershipSessionId
     BridgeState.resyncMappingTransaction = nil
     BridgeState.resyncMappingTransactionStatus = "rolled-back"
     BridgeState.resyncMappingTransactionCompletedAt = BridgeResyncCallbackNow ~= nil and BridgeResyncCallbackNow() or os.clock()
@@ -3224,21 +3228,23 @@ function BridgeValidateAuthoritativeSnapshotPhysicalState(snapshot)
         local seatId = seatSnapshot.seatId
         local expectedGraveyard = {}
         local expectedGraveyardCount = 0
+        local singletonGraveyardInstanceId = nil
         for _, zone in ipairs(seatSnapshot.zones or {}) do
             if zone.name == "graveyard" then
                 for _, card in ipairs(zone.cards or {}) do
                     if card.isVirtual ~= true and tostring(card.materializationPolicy or "") ~= "virtual"
                         and tostring(card.materializationPolicy or "") ~= "virtual-stack" then
                         expectedGraveyardCount = expectedGraveyardCount + 1
+                        singletonGraveyardInstanceId = card.cardInstanceId
                         table.insert(expectedGraveyard, {card.cardInstanceId, card.cardName})
                     end
                 end
             end
         end
-        if expectedGraveyardCount > 0 then
-            local deck = BridgeFindGraveyardContainer ~= nil and BridgeFindGraveyardContainer(seatId) or nil
+        if expectedGraveyardCount >= 2 then
+            local deck = BridgeFindGraveyardContainer ~= nil and BridgeFindGraveyardContainer(seatId, nil, true, true) or nil
             if deck == nil or deck.tag ~= "Deck" then
-                return false, "snapshot graveyard has no native Deck for seat " .. tostring(seatId)
+                return false, "snapshot graveyard requires native Deck for seat " .. tostring(seatId)
             end
             local entries = BridgeLibraryEntries(deck)
             if entries == nil or #entries ~= expectedGraveyardCount then
@@ -3253,13 +3259,28 @@ function BridgeValidateAuthoritativeSnapshotPhysicalState(snapshot)
                 local shapeOk, shapeError = BridgeAssertGraveyardObjectShape(seatId, "snapshot-validation")
                 if not shapeOk then return false, tostring(shapeError) end
             end
+        elseif expectedGraveyardCount == 1 then
+            -- TTS intentionally represents a singleton pile as one loose
+            -- Card.  Validate its exact instance/seat/zone mapping directly;
+            -- requiring a Deck here makes a healthy resync impossible.
+            local represented, representationError = BridgeVerifyFinalPhysicalRepresentation(
+                singletonGraveyardInstanceId, seatId, "graveyard")
+            if not represented then
+                return false, "snapshot singleton graveyard representation invalid for seat "
+                    .. tostring(seatId) .. ": " .. tostring(representationError)
+            end
+            if BridgeAssertGraveyardObjectShape ~= nil then
+                local shapeOk, shapeError = BridgeAssertGraveyardObjectShape(seatId, "snapshot-validation")
+                if not shapeOk then return false, tostring(shapeError) end
+            end
         elseif BridgeFindGraveyardContainer ~= nil and type(getAllObjects) == "function" then
             local deck = BridgeFindGraveyardContainer(seatId)
-            if deck ~= nil and deck.tag == "Deck" then
+            if deck ~= nil and (deck.tag == "Deck" or deck.tag == "Card") then
                 local entries = BridgeLibraryEntries(deck)
-                if entries ~= nil and #entries > 0 then
+                local physicalCount = deck.tag == "Card" and 1 or #(entries or {})
+                if physicalCount > 0 then
                     return false, string.format("snapshot graveyard has surplus physical entries: seat=%s physical=%d expected=0",
-                        tostring(seatId), #entries)
+                        tostring(seatId), physicalCount)
                 end
             end
         end
@@ -3386,6 +3407,10 @@ function BridgeRetireLocalPhysicalTransactions(reason)
 end
 
 function BridgeRestoreResyncCheckpoint(reason)
+    -- The event checkpoint and the physical identity publication are one
+    -- resync transaction.  Restoring only cursors leaves a failed candidate
+    -- bootstrap able to poison the previously coherent mapping graph.
+    BridgeRestoreResyncMappingTransaction(reason or "resync-checkpoint-restore")
     local checkpoint = BridgeState.resyncCheckpoint
     if checkpoint == nil or checkpoint.sessionId ~= BridgeState.eventSessionId then return false end
     BridgeState.lastReceivedEventSequence = checkpoint.lastReceived
@@ -3783,6 +3808,7 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         lastApplied = tonumber(BridgeState.lastAppliedEventSequence or 0) or 0,
         eventQueue = BridgeState.eventQueue
     }
+    BridgeBeginResyncMappingTransaction()
     BridgeState.resyncToken = (BridgeState.resyncToken or 0) + 1
     local resyncToken = BridgeState.resyncToken
     BridgeState.resyncAttempt = (BridgeState.resyncAttempt or 0) + 1
@@ -3877,11 +3903,16 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             BridgeSetSchedulerOwner("NORMAL", "resync-failed")
             BridgeStopOnDesync("authoritative resync failed: " .. tostring(err))
             BridgeState.hudResyncPending = false
-            BridgeSetStatus("RESYNC AVAILABLE", "Automatic recovery failed; use RESYNC FORGE for one new attempt.")
+            if BridgeIsExplicitResyncOrigin(origin) then
+                BridgeSetStatus("RESYNC FAILED", "Authoritative resync could not verify the physical table.")
+            else
+                BridgeSetStatus("RESYNC AVAILABLE", "Automatic recovery failed; use RESYNC FORGE for one new attempt.")
+            end
             BridgeUiMarkDirty("resync-failed")
             BridgeLog("[Bridge] RESYNC_FAILED reason=" .. tostring(err))
             return
         end
+        BridgeCommitResyncMappingTransaction()
         BridgeState.resyncCheckpoint = nil
         BridgeState.resyncSnapshotFingerprint = nil
         BridgeState.resyncSnapshotRepeatCount = 0

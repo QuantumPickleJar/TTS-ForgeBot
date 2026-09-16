@@ -231,7 +231,7 @@ function BridgeTokenVisualHasTypeLineEvidence(name)
     return false
 end
 
-function BridgeTokenVisualMatchesCharacteristics(typeLine, characteristics)
+function BridgeTokenVisualMatchesCharacteristics(typeLine, characteristics, cardJson)
     if type(characteristics) ~= "table" then return true end
     local lower = string.lower(tostring(typeLine or ""))
     local function containsAll(values)
@@ -241,8 +241,22 @@ function BridgeTokenVisualMatchesCharacteristics(typeLine, characteristics)
         end
         return true
     end
-    return containsAll(characteristics.currentCardTypes or characteristics.CurrentCardTypes)
-        and containsAll(characteristics.currentSubtypes or characteristics.CurrentSubtypes)
+    if not containsAll(characteristics.currentCardTypes or characteristics.CurrentCardTypes)
+        or not containsAll(characteristics.currentSubtypes or characteristics.CurrentSubtypes) then
+        return false
+    end
+    local mana = characteristics.currentManaValue or characteristics.CurrentManaValue
+    if mana ~= nil and string.find(lower, tostring(mana) .. "cmc", 1, true) == nil then return false end
+    local power = characteristics.currentPower or characteristics.CurrentPower
+    local toughness = characteristics.currentToughness or characteristics.CurrentToughness
+    if power ~= nil and toughness ~= nil then
+        local description = string.lower(tostring(cardJson and cardJson.Description or ""))
+        if string.find(description, tostring(power) .. "%s*/%s*" .. tostring(toughness)) == nil
+            and string.find(description, tostring(power) .. "/" .. tostring(toughness), 1, true) == nil then
+            return false
+        end
+    end
+    return true
 end
 
 function BridgeTokenVisualLookupCandidates(expectedName)
@@ -418,11 +432,10 @@ function BridgeIsArtBearingCard(object)
 end
 
 local BRIDGE_TOKEN_IMPORT_BACK_URL = "https://steamusercontent-a.akamaihd.net/ugc/1647720103762682461/35EF6E87970E2A5D6581E7D96A99F8A575B7A15F/"
--- The service routes POST /build/ with a trailing slash.  Without it the
--- live endpoints answer 404 to WebRequest.custom, which made every exact
--- visual attempt fall through to the blank degraded proxy.
-local BRIDGE_TOKEN_IMPORT_PRIMARY_URL = "https://importer.rikrassen.xyz/build/"
-local BRIDGE_TOKEN_IMPORT_FALLBACK_URL = "https://importer-m7vpzqazfa-uc.a.run.app/build/"
+-- Match the installed table Card Importer's endpoint exactly.  In particular,
+-- /build/ can return HTTP 200 with an empty body, which is not an import.
+local BRIDGE_TOKEN_IMPORT_PRIMARY_URL = "https://importer.rikrassen.xyz/build"
+local BRIDGE_TOKEN_IMPORT_FALLBACK_URL = "https://importer-m7vpzqazfa-uc.a.run.app/build"
 
 function BridgeExactTokenImportPayload(expectedName, lookupName)
     return {
@@ -476,7 +489,7 @@ function BridgeValidateExactTokenImportCandidate(cardJson, expectedName, metadat
     end
     local typeLine = string.sub(nickname, (string.find(nickname, "\n", 1, true) or 0) + 1)
     local characteristics = metadata and (metadata.characteristics or metadata.currentCharacteristics) or nil
-    if not BridgeTokenVisualMatchesCharacteristics(typeLine, characteristics) then
+    if not BridgeTokenVisualMatchesCharacteristics(typeLine, characteristics, cardJson) then
         BridgeRecordTokenMaterializationDiagnostic({
             sessionId = BridgeState.eventSessionId, stage = "PARSE",
             expectedTokenName = expectedName, tokenVisualKey = tokenVisualKey,
@@ -516,14 +529,37 @@ function BridgeValidateExactTokenImportCandidate(cardJson, expectedName, metadat
     return cardJson, nil
 end
 
-function BridgeParseExactTokenImportJson(text, expectedName, metadata)
+function BridgeDecodeTokenImportCandidates(text)
     local candidates = {}
-    for line in tostring(text or ""):gmatch("[^\r\n]+") do
-        local ok, candidate = pcall(function() return JSON.decode(line) end)
-        if ok and type(candidate) == "table" and candidate.error == nil then
-            table.insert(candidates, candidate)
+    local function addDecoded(decoded)
+        if type(decoded) ~= "table" then return end
+        if type(decoded.ObjectStates) == "table" then
+            -- TTS JSON tables and MoonSharp tables do not always expose a
+            -- contiguous Lua array length even when ObjectStates contains
+            -- indexed entries.  The bundle is identity-filtered below, so
+            -- iteration order is not part of the importer contract.
+            for _, objectState in pairs(decoded.ObjectStates) do
+                if type(objectState) == "table" and objectState.error == nil then
+                    table.insert(candidates, objectState)
+                end
+            end
+        elseif decoded.error == nil and (decoded.Name ~= nil or decoded.Nickname ~= nil
+            or decoded.CardID ~= nil or decoded.CustomDeck ~= nil) then
+            table.insert(candidates, decoded)
         end
     end
+    local wholeOk, wholeDecoded = pcall(function() return JSON.decode(tostring(text or "")) end)
+    if wholeOk then addDecoded(wholeDecoded) end
+    if #candidates > 0 then return candidates end
+    for line in tostring(text or ""):gmatch("[^\r\n]+") do
+        local ok, decodedLine = pcall(function() return JSON.decode(line) end)
+        if ok then addDecoded(decodedLine) end
+    end
+    return candidates
+end
+
+function BridgeParseExactTokenImportJson(text, expectedName, metadata)
+    local candidates = BridgeDecodeTokenImportCandidates(text)
     if #candidates ~= 1 then
         BridgeRecordTokenMaterializationDiagnostic({
             sessionId = BridgeState.eventSessionId, stage = "PARSE",
@@ -534,6 +570,175 @@ function BridgeParseExactTokenImportJson(text, expectedName, metadata)
         return nil, "exact token importer returned " .. tostring(#candidates) .. " visual results"
     end
     return BridgeValidateExactTokenImportCandidate(candidates[1], expectedName, metadata)
+end
+
+function BridgeTokenImportResponseIsEmpty(text)
+    return string.match(tostring(text or ""), "^%s*$") ~= nil
+end
+
+-- The installed Card Importer does not reliably support a token-only query.
+-- Its EmblemAndTokens workflow queries the creating card and returns one main
+-- card plus zero or more token visuals as newline-delimited JSON.  The source
+-- CardInstanceId is producer provenance; it is never inferred from a table
+-- card name.
+function BridgeParseTokenVisualBundleJson(text, expectedName, metadata)
+    local candidates = BridgeDecodeTokenImportCandidates(text)
+    local matches = {}
+    for _, candidate in pairs(candidates) do
+        local accepted = BridgeValidateExactTokenImportCandidate(candidate, expectedName, metadata)
+        if accepted ~= nil then matches[#matches + 1] = accepted end
+    end
+    BridgeRecordTokenMaterializationDiagnostic({
+        sessionId = BridgeState.eventSessionId, stage = "PARSE",
+        cardInstanceId = metadata and metadata.cardInstanceId or nil,
+        eventSequence = metadata and metadata.eventSequence or nil,
+        transactionToken = metadata and metadata.transactionToken or nil,
+        expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+        sourceCardInstanceId = metadata and metadata.tokenSourceObjectId or nil,
+        sourceVisualLookupName = metadata and metadata.sourceCardName or nil,
+        candidateCount = #candidates, tokenCandidateCount = #matches,
+        accepted = #matches == 1,
+        rejectedReason = #matches == 1 and nil or "token_bundle_candidate_count"
+    })
+    if #matches ~= 1 then
+        return nil, "token source-card bundle yielded " .. tostring(#matches) .. " matching token visuals"
+    end
+    return matches[1], nil
+end
+
+function BridgeImportTokenVisualBundle(sourceCardInstanceId, expectedName, seatId, callback, metadata)
+    local sourceName = metadata and metadata.sourceCardName or nil
+    if sourceName == nil and BridgeState.cardNameByInstanceId ~= nil then
+        sourceName = BridgeState.cardNameByInstanceId[sourceCardInstanceId]
+    end
+    if sourceName == nil or tostring(sourceName) == "" then
+        callback(nil, "token source-card provenance has no authoritative source name")
+        return
+    end
+    local seat = BRIDGE_SEATS[seatId]
+    if seat == nil then
+        callback(nil, "token source-card bundle import has no configured seat")
+        return
+    end
+    local anchor = seat.battlefieldAnchors and seat.battlefieldAnchors.creature or seat.commandAnchor
+    local position = {x = anchor and anchor.x or 0, y = (anchor and anchor.y or 2.0) + 1.5, z = anchor and anchor.z or 0}
+    local rotation = seat.faceUpRotation or {x = 0, y = 0, z = 0}
+    local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+    local endpoints = {BRIDGE_TOKEN_IMPORT_PRIMARY_URL, BRIDGE_TOKEN_IMPORT_FALLBACK_URL}
+    local completed = false
+    local function finish(object, err)
+        if completed then return end
+        completed = true
+        if object ~= nil and not BridgeIsArtBearingCard(object) then
+            callback(nil, "source-card token bundle spawned a non-art-bearing card")
+            return
+        end
+        BridgeRecordTokenMaterializationDiagnostic({
+            sessionId = BridgeState.eventSessionId, stage = "FINAL",
+            cardInstanceId = metadata and metadata.cardInstanceId or nil,
+            eventSequence = metadata and metadata.eventSequence or nil,
+            transactionToken = metadata and metadata.transactionToken or nil,
+            expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+            sourceCardInstanceId = sourceCardInstanceId,
+            sourceVisualLookupName = sourceName,
+            attemptGeneration = metadata and metadata.attemptGeneration or epoch,
+            final = object ~= nil and "EXACT_IMPORTED" or "FAILED",
+            fallbackReason = object == nil and tostring(err) or nil
+        })
+        callback(object, err)
+    end
+    local function requestBundle(endpointIndex)
+        local endpoint = endpoints[endpointIndex]
+        local payload = BridgeExactTokenImportPayload(sourceName, sourceName)
+        local body = JSON.encode(payload)
+        BridgeRecordTokenMaterializationDiagnostic({
+            sessionId = BridgeState.eventSessionId, stage = "IMPORT_REQUEST",
+            cardInstanceId = metadata and metadata.cardInstanceId or nil,
+            eventSequence = metadata and metadata.eventSequence or nil,
+            transactionToken = metadata and metadata.transactionToken or nil,
+            expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+            sourceCardInstanceId = sourceCardInstanceId,
+            sourceVisualLookupName = sourceName, endpoint = endpoint,
+            lookupCandidate = sourceName, lookupAttemptIndex = 1,
+            requestBytes = string.len(body), attemptGeneration = metadata and metadata.attemptGeneration or epoch,
+            started = true
+        })
+        WebRequest.custom(endpoint, "POST", true, body, {
+            ["Content-Type"] = "application/json",
+            ["User-Agent"] = "Vokerr-TTS-MTG-Card-Importer",
+            ["Accept"] = "application/json",
+            ["X-Client-Version"] = "0.9.1"
+        }, function(request)
+            if not BridgeRuntimeIsCurrent(epoch) then return end
+            local responseText = request and tostring(request.text or "") or ""
+            local responseBytes = string.len(responseText)
+            local emptyResponse = BridgeTokenImportResponseIsEmpty(responseText)
+            BridgeRecordTokenMaterializationDiagnostic({
+                sessionId = BridgeState.eventSessionId, stage = "IMPORT_RESPONSE",
+                cardInstanceId = metadata and metadata.cardInstanceId or nil,
+                eventSequence = metadata and metadata.eventSequence or nil,
+                transactionToken = metadata and metadata.transactionToken or nil,
+                expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+                sourceCardInstanceId = sourceCardInstanceId,
+                sourceVisualLookupName = sourceName, lookupCandidate = sourceName,
+                endpoint = endpoint, responseCode = request and tonumber(request.response_code or 0) or nil,
+                responseBytes = responseBytes, emptyResponse = emptyResponse, completed = true,
+                error = request and request.error or nil
+            })
+            if request == nil or request.is_error or tonumber(request.response_code or 0) < 200
+                or tonumber(request.response_code or 0) >= 300 or emptyResponse then
+                if endpointIndex < #endpoints then requestBundle(endpointIndex + 1)
+                else finish(nil, emptyResponse and "empty_response" or "source-card bundle backend failed") end
+                return
+            end
+            local bundleMetadata = {}
+            for key, value in pairs(metadata or {}) do bundleMetadata[key] = value end
+            bundleMetadata.tokenSourceObjectId = sourceCardInstanceId
+            bundleMetadata.sourceCardName = sourceName
+            local cardJson, parseError = BridgeParseTokenVisualBundleJson(responseText, expectedName, bundleMetadata)
+            if cardJson == nil then
+                if endpointIndex < #endpoints then requestBundle(endpointIndex + 1)
+                else finish(nil, parseError) end
+                return
+            end
+            local spawnHandled = false
+            local function handleSpawned(object)
+                if spawnHandled then return end
+                spawnHandled = true
+                BridgeRecordTokenMaterializationDiagnostic({
+                    sessionId = BridgeState.eventSessionId, stage = "SPAWN_CALLBACK",
+                    cardInstanceId = metadata and metadata.cardInstanceId or nil,
+                    eventSequence = metadata and metadata.eventSequence or nil,
+                    transactionToken = metadata and metadata.transactionToken or nil,
+                    expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+                    sourceCardInstanceId = sourceCardInstanceId, sourceVisualLookupName = sourceName,
+                    endpoint = endpoint, callbackReceived = true,
+                    liveCard = BridgeObjectIsUsable(object),
+                    artBearing = object ~= nil and BridgeIsArtBearingCard(object) or false
+                })
+                if not BridgeObjectIsUsable(object) then finish(nil, "source-card bundle spawn returned an unusable object"); return end
+                BridgeWaitFrames(function()
+                    if BridgeIsArtBearingCard(object) then BridgeMarkTokenPhysicalObject(object); finish(object, nil)
+                    else finish(nil, "source-card bundle spawn produced no CustomDeck/FaceURL") end
+                end, 2)
+            end
+            BridgeRecordTokenMaterializationDiagnostic({
+                sessionId = BridgeState.eventSessionId, stage = "SPAWN_REQUEST",
+                cardInstanceId = metadata and metadata.cardInstanceId or nil,
+                eventSequence = metadata and metadata.eventSequence or nil,
+                expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+                sourceCardInstanceId = sourceCardInstanceId, sourceVisualLookupName = sourceName,
+                endpoint = endpoint, spawnAttempted = true
+            })
+            local spawnOk, objectOrError = pcall(function()
+                return spawnObjectJSON({json = JSON.encode(cardJson), position = position, rotation = rotation,
+                    callback_function = handleSpawned})
+            end)
+            if not spawnOk then finish(nil, "source-card bundle spawn failed: " .. tostring(objectOrError)); return end
+            if BridgeObjectIsUsable(objectOrError) then handleSpawned(objectOrError) end
+        end)
+    end
+    requestBundle(1)
 end
 
 function BridgeImportExactTokenVisual(expectedName, seatId, callback, metadata)
@@ -608,6 +813,7 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback, metadata)
         WebRequest.custom(endpoint, "POST", true, JSON.encode(BridgeExactTokenImportPayload(expectedName, lookupCandidate)), {
             ["Content-Type"] = "application/json",
             ["User-Agent"] = "Vokerr-TTS-MTG-Card-Importer",
+            ["Accept"] = "application/json",
             ["X-Client-Version"] = "0.9.1"
         }, function(request)
             if not BridgeRuntimeIsCurrent(epoch) then return end
@@ -623,6 +829,7 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback, metadata)
                     endpoint = endpoint, completed = true,
                     responseCode = request and tonumber(request.response_code or 0) or nil,
                     responseBytes = request and string.len(tostring(request.text or "")) or 0,
+                    emptyResponse = request ~= nil and string.match(tostring(request.text or ""), "^%s*$") ~= nil or false,
                     error = request and (request.error or request.response_code) or "no response",
                     fallbackReason = request and (request.error or request.response_code) or "no response"
                 })
@@ -632,6 +839,29 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback, metadata)
                     requestVisual(candidateIndex + 1, 1)
                 else
                     finish(nil, "exact token visual backend failed: " .. tostring(request and (request.error or request.response_code) or "unknown error"))
+                end
+                return
+            end
+            local responseText = tostring(request.text or "")
+            local responseBytes = string.len(responseText)
+            local emptyResponse = BridgeTokenImportResponseIsEmpty(responseText)
+            if emptyResponse then
+                BridgeRecordTokenMaterializationDiagnostic({
+                    sessionId = BridgeState.eventSessionId, stage = "PARSE",
+                    cardInstanceId = metadata and metadata.cardInstanceId or nil,
+                    eventSequence = metadata and metadata.eventSequence or nil,
+                    transactionToken = metadata and metadata.transactionToken or nil,
+                    expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+                    lookupCandidate = lookupCandidate, lookupAttemptIndex = candidateIndex,
+                    attemptGeneration = metadata and metadata.attemptGeneration or epoch,
+                    candidateCount = 0, accepted = false, rejectedReason = "empty_response"
+                })
+                if endpointIndex < #endpoints then
+                    requestVisual(candidateIndex, endpointIndex + 1)
+                elseif candidateIndex < BridgeTokenVisualLookupCandidateCount(lookupCandidates) then
+                    requestVisual(candidateIndex + 1, 1)
+                else
+                    finish(nil, "empty_response")
                 end
                 return
             end
@@ -645,9 +875,9 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback, metadata)
                 attemptGeneration = metadata and metadata.attemptGeneration or epoch,
                 endpoint = endpoint, completed = true,
                 responseCode = tonumber(request.response_code or 0),
-                responseBytes = string.len(tostring(request.text or ""))
+                responseBytes = responseBytes, emptyResponse = false
             })
-            local cardJson, parseError = BridgeParseExactTokenImportJson(request.text, expectedName, metadata)
+            local cardJson, parseError = BridgeParseExactTokenImportJson(responseText, expectedName, metadata)
             if cardJson == nil then
                 if endpointIndex < #endpoints then
                     requestVisual(candidateIndex, endpointIndex + 1)
@@ -844,7 +1074,8 @@ function BridgeButtonLooksLikeCardReimport(button)
     return reimport and importer and tostring(button.click_function or "") ~= ""
 end
 
-function BridgeTryReimportTokenVisual(object, expectedName, metadata, callback)
+function BridgeTryReimportTokenVisual(object, expectedName, metadata, callback, discoveryAttempt)
+    discoveryAttempt = tonumber(discoveryAttempt or 1) or 1
     if not BridgeObjectIsUsable(object) or type(object.getButtons) ~= "function" then
         callback(nil, "card importer re-import button unavailable")
         return
@@ -870,9 +1101,16 @@ function BridgeTryReimportTokenVisual(object, expectedName, metadata, callback)
         eventSequence = metadata and metadata.eventSequence or nil,
         expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
         buttonDiscovered = selected ~= nil, buttonLabel = selected and selected.label or nil,
-        buttonFunction = selected and selected.click_function or nil, guid = guid
+        buttonFunction = selected and selected.click_function or nil, guid = guid,
+        discoveryAttempt = discoveryAttempt
     })
     if selected == nil then
+        if discoveryAttempt < 5 and BridgeWaitFrames ~= nil then
+            BridgeWaitFrames(function()
+                BridgeTryReimportTokenVisual(object, expectedName, metadata, callback, discoveryAttempt + 1)
+            end, 1)
+            return
+        end
         callback(nil, "card importer re-import button unavailable")
         return
     end
@@ -948,16 +1186,61 @@ function BridgeTakeCardFromTokenFetcher(expectedName, seatId, callback, metadata
     }
 
     local function fallbackVisualImport(reason)
-        -- Source-card buttons such as EmblemsAndTokens are not a generic
-        -- token-import API.  Their TTS callback ABI is (card, player, alt),
-        -- which Object.call cannot reproduce, and they may emit a bundle of
-        -- related tokens.  Go directly to the exact one-token visual import;
-        -- retain the button scanner only as an explicit legacy diagnostic.
+        -- First try the direct token lookup.  If the installed backend does
+        -- not support token-only queries, use the producer-provided source
+        -- CardInstanceId to reproduce the table importer's source-card bundle
+        -- workflow.  Never infer that source from a battlefield name.
         BridgeLog("[Bridge] exact token visual import requested name=" .. tostring(expectedName)
             .. " reason=" .. tostring(reason or "no art-bearing reusable token"))
         BridgeImportExactTokenVisual(expectedName, seatId, function(imported, importError)
             if imported ~= nil then
                 finish(imported, nil)
+                return
+            end
+            local sourceCardInstanceId = metadata and (metadata.tokenSourceObjectId or metadata.tokenSourceCardInstanceId) or nil
+            if sourceCardInstanceId ~= nil then
+                BridgeRecordTokenMaterializationDiagnostic({
+                    sessionId = BridgeState.eventSessionId, stage = "SOURCE_BUNDLE_REQUEST",
+                    cardInstanceId = metadata and metadata.cardInstanceId or nil,
+                    eventSequence = metadata and metadata.eventSequence or nil,
+                    expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+                    sourceCardInstanceId = sourceCardInstanceId,
+                    sourceVisualLookupName = BridgeState.cardNameByInstanceId
+                        and BridgeState.cardNameByInstanceId[sourceCardInstanceId] or nil,
+                    fallbackReason = tostring(importError or "direct_token_lookup_failed")
+                })
+                BridgeImportTokenVisualBundle(sourceCardInstanceId, expectedName, seatId, function(bundled, bundleError)
+                    if bundled ~= nil then
+                        finish(bundled, nil)
+                        return
+                    end
+                    BridgeSpawnGenericTokenProxy(expectedName, seatId, function(proxy, proxyError)
+                        if proxy ~= nil then
+                            BridgeTryReimportTokenVisual(proxy, expectedName, metadata, function(reimported, reimportError)
+                                if reimported ~= nil then
+                                    BridgeRecordTokenMaterializationDiagnostic({
+                                        sessionId = BridgeState.eventSessionId, stage = "FINAL",
+                                        cardInstanceId = metadata and metadata.cardInstanceId or nil,
+                                        eventSequence = metadata and metadata.eventSequence or nil,
+                                        expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+                                        final = "EXACT_REIMPORT", guid = BridgeSafeObjectGuid(reimported), accepted = true
+                                    })
+                                    finish(reimported, nil)
+                                    return
+                                end
+                                BridgeLog("[Bridge] DEGRADED token presentation: exact visual paths failed name="
+                                    .. tostring(expectedName) .. " directError=" .. tostring(importError)
+                                    .. " bundleError=" .. tostring(bundleError)
+                                    .. " reimportError=" .. tostring(reimportError))
+                                finish(proxy, nil)
+                            end)
+                            return
+                        end
+                        finish(nil, "token visual import failed: " .. tostring(importError)
+                            .. "; source bundle failed: " .. tostring(bundleError)
+                            .. "; generic proxy failed: " .. tostring(proxyError))
+                    end, metadata)
+                end, metadata)
                 return
             end
             BridgeSpawnGenericTokenProxy(expectedName, seatId, function(proxy, proxyError)

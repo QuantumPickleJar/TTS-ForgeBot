@@ -412,7 +412,8 @@ public sealed record ForgeStructuredCard(
     string ObjectKind = "physical-original",
     bool IsCopy = false,
     bool IsVirtual = false,
-    string? MaterializationPolicy = null);
+    string? MaterializationPolicy = null,
+    string? TokenSourceObjectId = null);
 
 public sealed record ForgeStructuredCharacteristics(
     string CurrentCardName,

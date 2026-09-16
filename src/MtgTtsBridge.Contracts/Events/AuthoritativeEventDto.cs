@@ -55,7 +55,11 @@ public sealed record AuthoritativeEventDto(
     // inferring from a display name or an unmapped battlefield object.
     bool IsToken = false,
     RevealPresentationDto? RevealPresentation = null,
-    RandomResultPresentationDto? RandomResultPresentation = null)
+    RandomResultPresentationDto? RandomResultPresentation = null,
+    // Exact Forge object that caused a token to be created, when Forge can
+    // prove it. This is provenance for visual lookup only; CardInstanceId
+    // remains the gameplay identity.
+    string? TokenSourceObjectId = null)
 {
     /// <summary>
     /// Complete current characteristics change when present. Provides structured

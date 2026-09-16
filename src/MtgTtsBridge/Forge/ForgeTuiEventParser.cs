@@ -327,6 +327,7 @@ public sealed record ForgeTuiRawEvent(
     bool IsCopy = false,
     bool IsVirtual = false,
     string? MaterializationPolicy = null,
+    string? TokenSourceObjectId = null,
     MtgTtsBridge.Contracts.Events.RevealPresentationDto? RevealPresentation = null,
     MtgTtsBridge.Contracts.Events.RandomResultPresentationDto? RandomResultPresentation = null)
 {
