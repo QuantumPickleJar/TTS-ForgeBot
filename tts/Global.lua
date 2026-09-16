@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 458e5ada98fb6c982b4674370a6e21ad820b8bf0035d1bc75aa8b19eb5676a3f
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "458e5ada98fb6c982b4674370a6e21ad820b8bf0035d1bc75aa8b19eb5676a3f"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 0d9c8795f3cb46edb06e97eee434d9a674a3eca9775d1fa4e9cb04bfef654c78
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "0d9c8795f3cb46edb06e97eee434d9a674a3eca9775d1fa4e9cb04bfef654c78"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -1255,6 +1255,13 @@ function BridgeEventDrainQueueState()
         retiredTerminalRecovery = BridgeDiagnosticSnapshot(BridgeState.terminalRecoveryErrorRetired or {}),
         eventSessionId = BridgeState.eventSessionId,
         eventSessionGeneration = BridgeState.eventSessionGeneration,
+        nativeSearchSelection = BridgeDiagnosticSnapshot(BridgeState.nativeSearchSelectionSession or {}),
+        nativeSearchEventHistory = BridgeDiagnosticSnapshot(BridgeState.nativeSearchEventHistory or {}),
+        hudMainPanel = {
+            autoCollapseRequested = BridgeState.hudMainPanelAutoCollapseOwner ~= nil,
+            manualOverride = BridgeState.hudMainPanelManualOverride,
+            effectiveCollapsed = BridgeHudMainPanelCollapsed ~= nil and BridgeHudMainPanelCollapsed() or false
+        },
         decisionAcceptanceRejections = BridgeDiagnosticSnapshot(BridgeState.decisionAcceptanceRejections or {}),
         cancelActionJournal = BridgeDiagnosticSnapshot(BridgeState.cancelActionJournal or {}),
         lastActionPhysicalResolution = BridgeDiagnosticSnapshot(BridgeState.lastActionPhysicalResolution or {}),
@@ -3697,7 +3704,9 @@ BridgeState = {
     libraryLookLastFailure = nil,
     nativeSearchSelectionSession = nil,
     nativeSearchSessionGeneration = 0,
+    nativeSearchEventHistory = {},
     hudMainPanelCollapsedManual = false,
+    hudMainPanelManualOverride = nil,
     hudMainPanelAutoCollapseOwner = nil,
     diagnosticCaptureFollowupToken = nil,
     diagnosticCaptureFollowupUntil = 0,
@@ -16354,6 +16363,21 @@ local function BridgeNativeSearchSessionIsCurrent(session)
     return true
 end
 
+local function BridgeNativeSearchRecordEvent(session, eventKind, object, playerColor, accepted, reason)
+    local history = BridgeState.nativeSearchEventHistory or {}
+    history[#history + 1] = {
+        event = eventKind,
+        objectGuid = object ~= nil and BridgeSafeObjectGuid(object) or nil,
+        playerColor = playerColor,
+        accepted = accepted == true,
+        reason = reason,
+        decisionId = session ~= nil and session.decisionId or nil,
+        generation = session ~= nil and session.generation or nil
+    }
+    while #history > 32 do table.remove(history, 1) end
+    BridgeState.nativeSearchEventHistory = history
+end
+
 function BridgeEndNativeSearchSelectionSession(reason)
     local session = BridgeState.nativeSearchSelectionSession
     if session == nil then return false end
@@ -16371,12 +16395,64 @@ function BridgeEndNativeSearchSelectionSession(reason)
     return true
 end
 
+function BridgeNativeSearchArmSearchWindow(container, playerColor)
+    local session = BridgeState.nativeSearchSelectionSession
+    if session == nil or not BridgeNativeSearchSessionIsCurrent(session) then return false end
+    if container == nil or playerColor == nil then return false end
+    local containerGuid = BridgeSafeObjectGuid(container)
+    local lineage = containerGuid ~= nil and session.sourceContainerByGuid[containerGuid] or nil
+    if lineage == nil then
+        BridgeNativeSearchRecordEvent(session, "search-start", container, playerColor, false, "unknown-source-lineage")
+        return false
+    end
+    local seat = BRIDGE_SEATS[session.seatId]
+    if seat ~= nil and seat.ttsColor ~= nil and seat.ttsColor ~= playerColor then
+        BridgeNativeSearchRecordEvent(session, "search-start", container, playerColor, false, "wrong-player-color")
+        return false
+    end
+    session.searchWindowOpen = true
+    session.searchPlayerColor = playerColor
+    session.searchWindowGeneration = (session.searchWindowGeneration or 0) + 1
+    session.searchContainerGuid = containerGuid
+    session.containerLineage = session.containerLineage or {}
+    session.containerLineage[containerGuid] = true
+    session.hudAutoCollapseOwner = "native-search-window:" .. tostring(session.sessionId)
+        .. ":" .. tostring(session.decisionId) .. ":" .. tostring(session.searchWindowGeneration)
+    if BridgeHudAcquireMainPanelAutoCollapse ~= nil then
+        BridgeHudAcquireMainPanelAutoCollapse(session.hudAutoCollapseOwner)
+    end
+    BridgeNativeSearchRecordEvent(session, "search-start", container, playerColor, true, "eligible-search-window")
+    BridgeUiMarkDirty("native-search-window-start")
+    return true
+end
+
+function BridgeNativeSearchCloseSearchWindow(container, playerColor)
+    local session = BridgeState.nativeSearchSelectionSession
+    if session == nil or session.searchWindowOpen ~= true then return false end
+    if playerColor ~= nil and session.searchPlayerColor ~= playerColor then return false end
+    local guid = container ~= nil and BridgeSafeObjectGuid(container) or nil
+    if guid ~= nil and session.containerLineage[guid] ~= true then return false end
+    if BridgeHudReleaseMainPanelAutoCollapse ~= nil then
+        BridgeHudReleaseMainPanelAutoCollapse(session.hudAutoCollapseOwner)
+    end
+    session.hudAutoCollapseOwner = nil
+    session.searchWindowOpen = false
+    session.searchPlayerColor = nil
+    BridgeNativeSearchRecordEvent(session, "search-end", container, playerColor, true, "search-window-closed")
+    BridgeUiMarkDirty("native-search-window-end")
+    return true
+end
+
 local function BridgeNativeSearchScheduleDispatch(session, reason)
     if session == nil or session.dispatchScheduled == true then return end
     session.dispatchScheduled = true
     BridgeWaitFrames(function()
         local current = BridgeState.nativeSearchSelectionSession
-        if current == nil or current ~= session then return end
+        if current == nil or not BridgeNativeSearchSessionIsCurrent(session)
+            or current.generation ~= session.generation then
+            BridgeNativeSearchRecordEvent(session, "dispatch-stale", nil, nil, false, "logical-session-fence")
+            return
+        end
         session.dispatchScheduled = false
         if BridgeNativeSearchDispatchDesired ~= nil then
             BridgeNativeSearchDispatchDesired(session, reason or "scheduled")
@@ -16405,6 +16481,12 @@ function BridgeNativeSearchDispatchDesired(session, reason)
         else
             local authoritative = action.isSelected == true
             if desired == authoritative then
+                for instanceId, mappedActionId in pairs(session.actionIdByInstanceId or {}) do
+                    if mappedActionId == actionId and session.provisionalByInstanceId ~= nil
+                        and session.provisionalByInstanceId[instanceId] ~= nil then
+                        session.provisionalByInstanceId[instanceId].authoritativeSelected = authoritative
+                    end
+                end
                 session.desiredSelectionByActionId[actionId] = nil
                 BridgeState.selectedActionIds[actionId] = authoritative and true or nil
             else
@@ -16426,6 +16508,7 @@ local function BridgeNativeSearchBuildSessionSnapshot(decision)
     local actionIdByInstanceId = {}
     local sourceContainerByGuid = {}
     local selectedByActionId = {}
+    local provisionalByInstanceId = {}
     local sourceZone = nil
     local candidateCount = 0
     for _, action in ipairs(decision.actions or {}) do
@@ -16449,6 +16532,16 @@ local function BridgeNativeSearchBuildSessionSnapshot(decision)
                                 and BridgeState.physicalContainerByInstanceId[instanceId].seatId
                                 or decision.seatId
                         }
+                        provisionalByInstanceId[instanceId] = {
+                            cardInstanceId = instanceId,
+                            actionId = action.actionId,
+                            seatId = decision.seatId,
+                            sourceZone = zone,
+                            sourceContainerGuid = resolved.deckGuid,
+                            representationKind = "real-extracted",
+                            desiredSelected = action.isSelected == true,
+                            authoritativeSelected = action.isSelected == true
+                        }
                         sourceZone = sourceZone or zone
                         candidateCount = candidateCount + 1
                     end
@@ -16468,13 +16561,15 @@ local function BridgeNativeSearchBuildSessionSnapshot(decision)
         presentationGeneration = BridgeState.decisionPresentationGeneration,
         actionIdByInstanceId = actionIdByInstanceId,
         selectedByActionId = selectedByActionId,
-        sourceContainerByGuid = sourceContainerByGuid
+        sourceContainerByGuid = sourceContainerByGuid,
+        provisionalByInstanceId = provisionalByInstanceId
     }
 end
 
 function BridgeSyncNativeSearchSelectionSession(decision)
     BridgeState.selectedActionIds = BridgeState.selectedActionIds or {}
     local existing = BridgeState.nativeSearchSelectionSession
+    local existingActionIdByInstanceId = existing ~= nil and existing.actionIdByInstanceId or nil
     local snapshot = BridgeNativeSearchBuildSessionSnapshot(decision)
     if snapshot == nil then
         if existing ~= nil then BridgeEndNativeSearchSelectionSession("decision-not-supported") end
@@ -16498,23 +16593,28 @@ function BridgeSyncNativeSearchSelectionSession(decision)
         session.desiredSelectionByActionId = {}
         session.localSelectionByActionId = {}
         session.dispatchScheduled = false
-        session.hudAutoCollapseOwner = "native-search:"
-            .. tostring(session.sessionId or "none") .. ":"
-            .. tostring(session.decisionId or "none") .. ":"
-            .. tostring(session.generation or 0)
+        session.hudAutoCollapseOwner = nil
+        session.searchWindowOpen = false
+        session.searchPlayerColor = nil
+        session.searchWindowGeneration = 0
+        session.containerLineage = {}
+        session.heldByGuid = {}
+        session.provisionalByInstanceId = snapshot.provisionalByInstanceId
         BridgeState.nativeSearchSelectionSession = session
-        if BridgeHudAcquireMainPanelAutoCollapse ~= nil then
-            BridgeHudAcquireMainPanelAutoCollapse(session.hudAutoCollapseOwner)
-        end
         BridgeLog("[Bridge] native search session started decision=" .. tostring(session.decisionId)
             .. " zone=" .. tostring(session.sourceZone))
     else
-        session.generation = existing.generation
-        session.desiredSelectionByActionId = existing.desiredSelectionByActionId or {}
-        session.localSelectionByActionId = existing.localSelectionByActionId or {}
-        session.dispatchScheduled = existing.dispatchScheduled == true
-        session.hudAutoCollapseOwner = existing.hudAutoCollapseOwner
-        BridgeState.nativeSearchSelectionSession = session
+        -- Preserve the transaction object across ordinary decision renders.
+        -- Delayed callbacks use immutable logical fields, not Lua table
+        -- identity, as their durability fence.
+        session = existing
+        session.actionIdByInstanceId = snapshot.actionIdByInstanceId
+        session.selectedByActionId = snapshot.selectedByActionId
+        session.sourceContainerByGuid = snapshot.sourceContainerByGuid
+        session.provisionalByInstanceId = snapshot.provisionalByInstanceId
+        session.sourceZone = snapshot.sourceZone
+        session.presentationGeneration = snapshot.presentationGeneration
+        session.kind = snapshot.kind
     end
 
     local retainedActionIds = {}
@@ -16527,7 +16627,7 @@ function BridgeSyncNativeSearchSelectionSession(decision)
         session.localSelectionByActionId[actionId] = selected and true or nil
     end
     if existing ~= nil then
-        for _, oldActionId in pairs(existing.actionIdByInstanceId or {}) do
+        for _, oldActionId in pairs(existingActionIdByInstanceId or {}) do
             if retainedActionIds[oldActionId] ~= true then
                 BridgeState.selectedActionIds[oldActionId] = nil
             end
@@ -16550,18 +16650,47 @@ function BridgeNativeSearchHandleContainerTransition(container, object, transiti
     if container == nil or object == nil then return false end
 
     local containerGuid = BridgeSafeObjectGuid(container)
-    if containerGuid == nil or session.sourceContainerByGuid[containerGuid] == nil then
+    local knownLineage = containerGuid ~= nil and session.sourceContainerByGuid[containerGuid] ~= nil
+    local continuedLineage = containerGuid ~= nil and session.containerLineage ~= nil
+        and session.containerLineage[containerGuid] == true
+    local sameSourceZone = BridgeObjectNearSeatZone ~= nil
+        and BridgeObjectNearSeatZone(container, session.seatId, session.sourceZone)
+    if containerGuid == nil or not knownLineage and not continuedLineage and not sameSourceZone then
+        BridgeNativeSearchRecordEvent(session, "container-" .. tostring(transitionKind), object, nil, false, "unknown-source-lineage")
+        return false
+    end
+    if transitionKind == "leave" and session.searchWindowOpen ~= true then return false end
+
+    local instanceId = BridgeNativeSearchResolveInstanceId(object)
+    if instanceId == nil then
+        BridgeNativeSearchRecordEvent(session, "container-" .. tostring(transitionKind), object, nil, false, "unmapped-object")
+        return false
+    end
+    local actionId = session.actionIdByInstanceId[instanceId]
+    if actionId == nil then
+        BridgeNativeSearchRecordEvent(session, "container-" .. tostring(transitionKind), object, nil, false, "non-candidate-remainder")
+        return false
+    end
+    if transitionKind == "enter"
+        and session.desiredSelectionByActionId[actionId] ~= true
+        and session.localSelectionByActionId[actionId] ~= true then
         return false
     end
 
-    local instanceId = BridgeNativeSearchResolveInstanceId(object)
-    if instanceId == nil then return false end
-    local actionId = session.actionIdByInstanceId[instanceId]
-    if actionId == nil then return false end
+    local objectGuid = BridgeSafeObjectGuid(object)
+    if transitionKind == "leave" and (session.heldByGuid == nil
+        or session.heldByGuid[objectGuid] ~= true) then
+        BridgeNativeSearchRecordEvent(session, "leave", object, nil, false, "no-player-pickup-provenance")
+        return false
+    end
 
     local selecting = transitionKind == "leave"
     session.desiredSelectionByActionId[actionId] = selecting
     session.localSelectionByActionId[actionId] = selecting
+    if not selecting and session.heldByGuid ~= nil then session.heldByGuid[objectGuid] = nil end
+    if session.provisionalByInstanceId ~= nil and session.provisionalByInstanceId[instanceId] ~= nil then
+        session.provisionalByInstanceId[instanceId].desiredSelected = selecting
+    end
     BridgeState.selectedActionIds[actionId] = selecting and true or nil
     local decision = BridgeState.lastDecision
     local action = BridgeNativeSearchFindAction(decision, actionId)
@@ -16569,6 +16698,46 @@ function BridgeNativeSearchHandleContainerTransition(container, object, transiti
         action or { actionId = actionId })
     BridgeUiMarkDirty("native-search-" .. tostring(transitionKind))
     BridgeNativeSearchDispatchDesired(session, "native-search-" .. tostring(transitionKind))
+    BridgeNativeSearchRecordEvent(session, "container-" .. tostring(transitionKind), object,
+        session.searchPlayerColor, true, "candidate-toggle")
+    return true
+end
+
+function BridgeNativeSearchHandlePickup(playerColor, object)
+    local session = BridgeState.nativeSearchSelectionSession
+    if session == nil or session.searchWindowOpen ~= true or object == nil then return false end
+    if session.searchPlayerColor ~= playerColor then return false end
+    local instanceId = BridgeNativeSearchResolveInstanceId(object)
+    local actionId = instanceId ~= nil and session.actionIdByInstanceId[instanceId] or nil
+    if actionId == nil then return false end
+    session.heldByGuid = session.heldByGuid or {}
+    session.heldByGuid[BridgeSafeObjectGuid(object)] = true
+    BridgeNativeSearchRecordEvent(session, "pickup", object, playerColor, true, "candidate-held")
+    return true
+end
+
+function BridgeNativeSearchHandleDrop(playerColor, object)
+    local session = BridgeState.nativeSearchSelectionSession
+    if session == nil or object == nil then return false end
+    local instanceId = BridgeNativeSearchResolveInstanceId(object)
+    local actionId = instanceId ~= nil and session.actionIdByInstanceId[instanceId] or nil
+    if actionId == nil or session.desiredSelectionByActionId[actionId] ~= true then return false end
+    if playerColor ~= nil and session.searchPlayerColor ~= nil and playerColor ~= session.searchPlayerColor then return false end
+    if BridgeObjectNearSeatZone == nil
+        or not BridgeObjectNearSeatZone(object, session.seatId, session.sourceZone) then
+        BridgeNativeSearchRecordEvent(session, "drop", object, playerColor, false, "not-source-zone")
+        return false
+    end
+    session.desiredSelectionByActionId[actionId] = false
+    session.localSelectionByActionId[actionId] = false
+    if session.provisionalByInstanceId ~= nil and session.provisionalByInstanceId[instanceId] ~= nil then
+        session.provisionalByInstanceId[instanceId].desiredSelected = false
+    end
+    BridgeState.selectedActionIds[actionId] = nil
+    if session.heldByGuid ~= nil then session.heldByGuid[BridgeSafeObjectGuid(object)] = nil end
+    BridgeNativeSearchRecordEvent(session, "drop", object, playerColor, true, "authorized-deselect")
+    BridgeUiMarkDirty("native-search-deselect")
+    BridgeNativeSearchDispatchDesired(session, "native-search-deselect")
     return true
 end
 
@@ -17125,6 +17294,10 @@ function onObjectPickUp(playerColor, object)
         return
     end
 
+    if BridgeNativeSearchHandlePickup ~= nil and BridgeNativeSearchHandlePickup(playerColor, object) then
+        return
+    end
+
     BridgeState.unboundPickupIntent = nil
     local guid = BridgeSafeObjectGuid(object)
     local actionsForSource = BridgeGetActionsForGuid(guid)
@@ -17327,6 +17500,16 @@ function onObjectLeaveContainer(container, leaveObject)
     end
 end
 
+function onObjectSearchStart(playerColor, object)
+    if type(playerColor) ~= "string" then object, playerColor = playerColor, object end
+    return BridgeNativeSearchArmSearchWindow(object, playerColor)
+end
+
+function onObjectSearchEnd(playerColor, object)
+    if type(playerColor) ~= "string" then object, playerColor = playerColor, object end
+    return BridgeNativeSearchCloseSearchWindow(object, playerColor)
+end
+
 function onObjectEnterContainer(container, enterObject)
     if BridgeNativeSearchHandleContainerTransition(container, enterObject, "enter") then
         return
@@ -17334,6 +17517,9 @@ function onObjectEnterContainer(container, enterObject)
 end
 
 function onObjectDrop(playerColor, object)
+    if BridgeNativeSearchHandleDrop ~= nil and BridgeNativeSearchHandleDrop(playerColor, object) then
+        return
+    end
     -- Library-look sessions are an explicit, Forge-authorized physical
     -- interaction. Consume their exact-card drops before the ordinary action
     -- intent handler so an unrelated table placement cannot be interpreted as
@@ -30426,6 +30612,8 @@ function BridgeHudConnectionPresentation()
 end
 
 function BridgeHudMainPanelCollapsed()
+    if BridgeState.hudMainPanelManualOverride == "expanded" then return false end
+    if BridgeState.hudMainPanelManualOverride == "collapsed" then return true end
     return BridgeState.hudMainPanelCollapsedManual == true
         or BridgeState.hudMainPanelAutoCollapseOwner ~= nil
 end
@@ -30449,7 +30637,13 @@ function BridgeHudReleaseMainPanelAutoCollapse(owner)
 end
 
 function BridgeHudMainPanelToggle(player, value, id)
-    BridgeState.hudMainPanelCollapsedManual = not (BridgeState.hudMainPanelCollapsedManual == true)
+    if BridgeHudMainPanelCollapsed() then
+        BridgeState.hudMainPanelManualOverride = "expanded"
+        BridgeState.hudMainPanelCollapsedManual = false
+    else
+        BridgeState.hudMainPanelManualOverride = "collapsed"
+        BridgeState.hudMainPanelCollapsedManual = true
+    end
     BridgeUiMarkDirty("hud-main-manual-toggle")
 end
 
@@ -30463,7 +30657,7 @@ function BridgeUiFlush()
     if ui == nil or not ui.mounted then return end
 
     local mainPanelCollapsed = BridgeHudMainPanelCollapsed()
-    local autoCollapsed = BridgeState.hudMainPanelAutoCollapseOwner ~= nil
+    local autoCollapsed = BridgeState.hudMainPanelAutoCollapseOwner ~= nil and mainPanelCollapsed
     local collapseLabel = mainPanelCollapsed and "EXPAND HUD" or "COLLAPSE HUD"
     local collapseState = autoCollapsed and "AUTO-COLLAPSED FOR NATIVE SEARCH"
         or (BridgeState.hudMainPanelCollapsedManual == true and "MANUALLY COLLAPSED" or "")
