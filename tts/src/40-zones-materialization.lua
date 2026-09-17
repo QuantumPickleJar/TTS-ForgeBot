@@ -1965,6 +1965,8 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.physicalZoneByGuid = {}
     BridgeState.tokenPhysicalGuids = {}
     BridgeState.tokenMaterializationByInstanceId = {}
+    BridgeState.tokenVisualAttemptsByGuid = {}
+    BridgeState.tokenMaterializationNextStagingSlot = 0
     BridgeState.canonicalCardScaleByGuid = {}
     BridgeState.landPlacementMode = BRIDGE_LAND_PLACEMENT_MODE
     BridgeState.landInsertionOrderByInstanceId = {}

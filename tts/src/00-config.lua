@@ -3648,6 +3648,8 @@ BridgeState = {
     -- Token imports are asynchronous. A Forge identity is allowed one and
     -- only one in-flight embodiment, independent of token name.
     tokenMaterializationByInstanceId = {},
+    tokenMaterializationNextStagingSlot = 0,
+    tokenVisualAttemptsByGuid = {},
     tokenMaterializationJournal = {},
     -- Authoritative Forge-object metadata is independent of physical GUIDs.
     -- Virtual/copy objects can exist without an original deck card.
@@ -4728,7 +4730,7 @@ function BridgeWakePhysicalReadinessDependency(generation, reason)
     return true
 end
 
-function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName, allowContainedExtraction)
+function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName, allowContainedExtraction, allowOwnedTokenAttempt)
     if cardInstanceId == nil or guid == nil or tostring(guid) == "" then
         BridgeLog("[Bridge] refusing incomplete Forge mapping")
         return false
@@ -4744,8 +4746,13 @@ function BridgeRecordLooseCardIdentity(cardInstanceId, guid, seatId, zoneName, a
         return false
     end
     if BridgeIsPresentationOnlyObject(guid) then
-        BridgeLog("[Bridge] refusing Forge mapping for presentation object " .. tostring(guid))
-        return false
+        local attempt = BridgeState.tokenVisualAttemptsByGuid
+            and BridgeState.tokenVisualAttemptsByGuid[guid] or nil
+        if allowOwnedTokenAttempt ~= true or attempt == nil
+            or tostring(attempt.cardInstanceId or "") ~= tostring(cardInstanceId) then
+            BridgeLog("[Bridge] refusing Forge mapping for presentation object " .. tostring(guid))
+            return false
+        end
     end
     local object = BridgeGetLiveObjectByGuid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
     local advertisedSession = BridgeReadPhysicalSessionIdentity(object)
@@ -5263,9 +5270,12 @@ function BridgeBeginTokenMaterialization(cardInstanceId, eventSequence, expected
     if current ~= nil and (current.state == "SPAWNING" or current.state == "BOUND") then
         return false, current.state
     end
+    BridgeState.tokenMaterializationNextStagingSlot =
+        (tonumber(BridgeState.tokenMaterializationNextStagingSlot) or 0) + 1
     BridgeState.tokenMaterializationByInstanceId[cardInstanceId] = {
         state = "SPAWNING", sessionId = BridgeState.eventSessionId, epoch = BRIDGE_RUNTIME_EPOCH_LOCAL,
-        eventSequence = eventSequence, expectedTokenName = expectedTokenName
+        eventSequence = eventSequence, expectedTokenName = expectedTokenName,
+        stagingSlot = BridgeState.tokenMaterializationNextStagingSlot
     }
     BridgeRecordTokenMaterializationDiagnostic({
         sessionId = BridgeState.eventSessionId, stage = "BEGIN",
@@ -5291,6 +5301,8 @@ function BridgeRecordTokenMaterializationDiagnostic(entry)
         transactionToken = entry.transactionToken,
         expectedTokenName = entry.expectedTokenName,
         tokenVisualKey = entry.tokenVisualKey,
+        sourceCardInstanceId = entry.sourceCardInstanceId,
+        sourceVisualLookupName = entry.sourceVisualLookupName,
         lookupCandidate = entry.lookupCandidate,
         lookupAttemptIndex = entry.lookupAttemptIndex,
         attemptGeneration = entry.attemptGeneration,
@@ -5306,6 +5318,8 @@ function BridgeRecordTokenMaterializationDiagnostic(entry)
         completed = entry.completed,
         responseCode = entry.responseCode,
         responseBytes = entry.responseBytes,
+        requestBytes = entry.requestBytes,
+        emptyResponse = entry.emptyResponse,
         error = entry.error,
         detail = entry.detail,
         rawNickname = entry.rawNickname ~= nil and string.sub(tostring(entry.rawNickname), 1, 120) or nil,
@@ -5322,7 +5336,18 @@ function BridgeRecordTokenMaterializationDiagnostic(entry)
         buttonFunction = entry.buttonFunction ~= nil and string.sub(tostring(entry.buttonFunction), 1, 120) or nil,
         invoked = entry.invoked,
         final = entry.final,
-        fallbackReason = entry.fallbackReason
+        fallbackReason = entry.fallbackReason,
+        attemptId = entry.attemptId,
+        strategy = entry.strategy,
+        attemptResult = entry.attemptResult,
+        initialTag = entry.initialTag,
+        settledTag = entry.settledTag,
+        initialArtBearing = entry.initialArtBearing,
+        settledArtBearing = entry.settledArtBearing,
+        initialPosition = entry.initialPosition,
+        settledPosition = entry.settledPosition,
+        mergedOrContained = entry.mergedOrContained,
+        liveObjectByOriginalGuid = entry.liveObjectByOriginalGuid
     }
     table.insert(journal, bounded)
     while #journal > 80 do table.remove(journal, 1) end
@@ -5355,7 +5380,8 @@ function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)
     end
     -- Bind the exact Forge identity before moving the object. Snapshot and
     -- event reconciliation now see BOUND instead of creating a second token.
-    local recorded, recordError = BridgeRecordLooseCardIdentity(event.cardInstanceId, guid, event.seatId, "battlefield")
+    local recorded, recordError = BridgeRecordLooseCardIdentity(
+        event.cardInstanceId, guid, event.seatId, "battlefield", false, true)
     if not recorded then
         BridgeState.tokenMaterializationByInstanceId[event.cardInstanceId].state = "FAILED"
         return false, recordError or "token identity registration failed"
@@ -5384,6 +5410,12 @@ function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)
         BridgeAdvancePhysicalPresentationGeneration("token-mapping-removed")
         BridgeSafeObjectCall(object, function(card) card.destruct() end)
         return false, moveError
+    end
+    -- The candidate was protected and presentation-only while art was being
+    -- verified.  Only after exact identity binding and battlefield placement
+    -- succeed may it re-enter normal Forge physical discovery/interactions.
+    if BridgeAdoptTokenVisualAttempt ~= nil then
+        BridgeAdoptTokenVisualAttempt(object)
     end
     return true, nil
 end

@@ -196,6 +196,64 @@ public sealed class HareApparentPresentationLuaTests
     }
 
     [Fact]
+    public void ConcurrentTokenVisualAttemptsUseDistinctProtectedSlotsAndRetireCleanly()
+    {
+        var lua = NewLua();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session-soldier'
+            BridgeState.tokenMaterializationByInstanceId = {
+                ['forge:session-soldier:83'] = { stagingSlot = 1 },
+                ['forge:session-soldier:84'] = { stagingSlot = 2 }
+            }
+            BridgeState.tokenVisualAttemptsByGuid = {}
+            local p1 = BridgeTokenVisualStagingPosition('forge-player-1', { cardInstanceId = 'forge:session-soldier:83' }, 'DIRECT')
+            local p2 = BridgeTokenVisualStagingPosition('forge-player-1', { cardInstanceId = 'forge:session-soldier:84' }, 'DIRECT')
+            assert(p1.x ~= p2.x or p1.z ~= p2.z, 'concurrent token attempts share a staging position')
+            local function card(guid)
+                local live = true
+                local vars = {}
+                local object = {}
+                object.tag = 'Card'
+                object.getGUID = function() return live and guid or nil end
+                object.getData = function() return { CustomDeck = { ['1'] = { FaceURL = 'https://example.invalid/token.png' } } } end
+                object.setVar = function(key, value) vars[key] = value end
+                object.getVar = function(key) return vars[key] end
+                object.setLock = function(value) object.locked = value end
+                object.destruct = function() live = false; object.destroyed = true end
+                object.use_hands = true
+                return object
+            end
+            local a = card('soldier-guid-a')
+            local b = card('soldier-guid-b')
+            local c = card('soldier-guid-c')
+            local m1 = { cardInstanceId = 'forge:session-soldier:83', eventSequence = 208 }
+            local m2 = { cardInstanceId = 'forge:session-soldier:84', eventSequence = 209 }
+            local attempt1 = BridgeBeginTokenVisualAttempt(a, 'Soldier Token', m1, 'DIRECT', p1)
+            local attempt2 = BridgeBeginTokenVisualAttempt(b, 'Soldier Token', m2, 'DIRECT', p2)
+            assert(attempt1 ~= nil and attempt2 ~= nil)
+            assert(a.locked == true and b.locked == true, 'staging Cards are not protected')
+            assert(BridgeIsPresentationOnlyObject(a) and BridgeIsPresentationOnlyObject(b))
+            assert(BridgeState.tokenVisualAttemptsByGuid['soldier-guid-a'] ~= nil)
+            assert(BridgeState.tokenVisualAttemptsByGuid['soldier-guid-b'] ~= nil)
+            assert(BridgeRetireTokenVisualAttempt(attempt1, 'settle collision test'))
+            assert(a.destroyed == true, 'failed attempt was not retired')
+            assert(BridgeState.tokenVisualAttemptsByGuid['soldier-guid-a'] == nil)
+            assert(BridgeAdoptTokenVisualAttempt(b))
+            assert(b.locked == false, 'adopted token remained locked')
+            assert(BridgeState.tokenVisualAttemptsByGuid['soldier-guid-b'] == nil)
+            assert(not BridgeIsPresentationOnlyObject(b), 'adopted token remained presentation-only')
+            local attempt3 = BridgeBeginTokenVisualAttempt(c, 'Soldier Token', { cardInstanceId = 'forge:session-soldier:85', eventSequence = 210 }, 'DIRECT', p1)
+            assert(attempt3 ~= nil and BridgeAdoptTokenVisualAttempt(c), 'second token was not adopted')
+            assert(a.getGUID() == nil and b.getGUID() ~= nil and c.getGUID() ~= nil,
+                'owned physical object count is not two')
+            assert(not BridgeIsPresentationOnlyObject(a) and not BridgeIsPresentationOnlyObject(b)
+                and not BridgeIsPresentationOnlyObject(c))
+            assert(BridgeState.tokenPhysicalGuids['soldier-guid-a'] == nil)
+            assert(BridgeState.tokenPhysicalGuids['soldier-guid-b'] == nil)
+        ");
+    }
+
+    [Fact]
     public void AuthoritativeStackProjectionRetiresResolvedTriggerAndRejectsOlderCallback()
     {
         var lua = NewLua();

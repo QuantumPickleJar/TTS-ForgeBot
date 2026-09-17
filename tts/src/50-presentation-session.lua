@@ -291,6 +291,156 @@ function BridgeMarkTokenPhysicalObject(object)
     if guid ~= nil then BridgeState.tokenPhysicalGuids[guid] = true end
 end
 
+-- Imported token visuals are asynchronous presentation candidates until the
+-- exact Forge identity has been bound.  Keep them out of normal discovery and
+-- give each candidate its own protected staging slot.  In particular, never
+-- use the battlefield creature anchor for two concurrent spawnObjectJSON
+-- calls: native TTS physics can merge those Cards before the settle check.
+function BridgeTokenVisualStagingPosition(seatId, metadata, strategy)
+    local seat = BRIDGE_SEATS[seatId]
+    local anchor = seat and (seat.commandAnchor
+        or (seat.battlefieldAnchors and seat.battlefieldAnchors.creature)) or nil
+    local state = metadata and metadata.cardInstanceId ~= nil
+        and BridgeState.tokenMaterializationByInstanceId[metadata.cardInstanceId] or nil
+    local slot = state and tonumber(state.stagingSlot) or nil
+    if slot == nil then
+        BridgeState.tokenMaterializationNextStagingSlot =
+            (tonumber(BridgeState.tokenMaterializationNextStagingSlot) or 0) + 1
+        slot = BridgeState.tokenMaterializationNextStagingSlot
+        if state ~= nil then state.stagingSlot = slot end
+    end
+    local column = (slot - 1) % 8
+    local row = math.floor((slot - 1) / 8)
+    local origin = anchor or {x = 0, y = 2.0, z = 0}
+    -- This is an offside staging row, not a gameplay placement.  The spacing
+    -- is deliberately greater than a Card width so native auto-stack cannot
+    -- combine concurrent visual attempts.
+    return {
+        x = (origin.x or 0) - 8.75 + column * 2.5,
+        y = (origin.y or 2.0) + 4.0 + row * 1.5,
+        z = (origin.z or 0) + 3.0,
+    }
+end
+
+function BridgeBeginTokenVisualAttempt(object, expectedName, metadata, strategy, position)
+    if not BridgeObjectIsUsable(object) then return nil end
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then return nil end
+    BridgeState.tokenVisualAttemptsByGuid = BridgeState.tokenVisualAttemptsByGuid or {}
+    BridgeState.tokenVisualAttemptCounter = (BridgeState.tokenVisualAttemptCounter or 0) + 1
+    local attemptId = tostring(metadata and metadata.cardInstanceId or "unknown") .. ":"
+        .. tostring(metadata and metadata.eventSequence or "unknown") .. ":"
+        .. tostring(strategy or "UNKNOWN") .. ":" .. tostring(BridgeState.tokenVisualAttemptCounter)
+    local attempt = {
+        attemptId = attemptId, guid = guid, object = object,
+        cardInstanceId = metadata and metadata.cardInstanceId or nil,
+        eventSequence = metadata and metadata.eventSequence or nil,
+        transactionToken = metadata and metadata.transactionToken or nil,
+        strategy = strategy or "UNKNOWN", position = position,
+        sessionId = BridgeState.eventSessionId, epoch = BRIDGE_RUNTIME_EPOCH_LOCAL,
+        attemptResult = "PENDING"
+    }
+    BridgeState.tokenVisualAttemptsByGuid[guid] = attempt
+    BridgeRegisterPresentationObject(object, "token-visual-attempt")
+    pcall(function() object.setVar("bridgePresentationOnly", true) end)
+    pcall(function() object.setVar("bridgeTokenVisualAttempt", true) end)
+    pcall(function() object.setVar("bridgeTokenVisualAttemptId", attemptId) end)
+    pcall(function() object.setVar("bridgeTokenCardInstanceId", attempt.cardInstanceId) end)
+    pcall(function() object.setVar("bridgeTokenEventSequence", attempt.eventSequence) end)
+    pcall(function() object.setVar("bridgeTokenTransactionToken", attempt.transactionToken) end)
+    pcall(function() object.use_hands = false; object.setLock(true) end)
+    return attempt
+end
+
+function BridgeObserveTokenVisualAttempt(attempt, stage, settled)
+    if attempt == nil then return end
+    local object = attempt.object
+    local live = BridgeObjectIsUsable(object)
+    local tag = live and BridgeSafeObjectTag(object) or nil
+    local art = live and BridgeIsArtBearingCard(object) or false
+    local position = nil
+    if live and type(object.getPosition) == "function" then
+        pcall(function() position = object.getPosition() end)
+    end
+    BridgeRecordTokenMaterializationDiagnostic({
+        sessionId = attempt.sessionId, eventSequence = attempt.eventSequence,
+        cardInstanceId = attempt.cardInstanceId, transactionToken = attempt.transactionToken,
+        attemptId = attempt.attemptId, strategy = attempt.strategy,
+        stage = stage or "SPAWN_SETTLE_VERIFY", guid = attempt.guid,
+        initialTag = attempt.initialTag, settledTag = settled and tag or nil,
+        initialArtBearing = attempt.initialArtBearing,
+        settledArtBearing = settled and art or nil,
+        initialPosition = attempt.initialPosition,
+        settledPosition = settled and position or nil,
+        mergedOrContained = live and tag ~= "Card" or false,
+        liveObjectByOriginalGuid = live,
+        artBearing = art, liveCard = live
+    })
+    if not settled then
+        attempt.initialTag = tag
+        attempt.initialArtBearing = art
+        attempt.initialPosition = position
+    end
+    return live, tag, art
+end
+
+function BridgeRetireTokenVisualAttempt(attempt, reason)
+    if attempt == nil then return false end
+    local guid = attempt.guid
+    local owner = BridgeState.tokenVisualAttemptsByGuid
+        and BridgeState.tokenVisualAttemptsByGuid[guid] or nil
+    if owner ~= nil and owner.attemptId == attempt.attemptId then
+        BridgeState.tokenVisualAttemptsByGuid[guid] = nil
+    end
+    if BridgeState.tokenPhysicalGuids ~= nil then
+        BridgeState.tokenPhysicalGuids[guid] = nil
+    end
+    local object = attempt.object
+    local live = BridgeObjectIsUsable(object)
+    local tag = live and BridgeSafeObjectTag(object) or nil
+    local retired = false
+    -- Never destruct an arbitrary native Deck.  Protected unique staging
+    -- should keep attempts as loose Cards; if TTS has already formed a Deck,
+    -- leave it for safe inspection rather than risking unrelated gameplay.
+    if live and tag == "Card" then
+        retired = BridgeSafeObjectCall(object, function(card) card.destruct() end)
+    end
+    BridgeUnregisterPresentationObject(guid)
+    attempt.attemptResult = retired and "RETIRED" or "FAILED"
+    BridgeRecordTokenMaterializationDiagnostic({
+        sessionId = attempt.sessionId, eventSequence = attempt.eventSequence,
+        cardInstanceId = attempt.cardInstanceId, transactionToken = attempt.transactionToken,
+        attemptId = attempt.attemptId, strategy = attempt.strategy,
+        stage = "ATTEMPT_RETIRED", attemptResult = attempt.attemptResult,
+        guid = guid, settledTag = tag, fallbackReason = tostring(reason or "attempt abandoned")
+    })
+    return retired
+end
+
+function BridgeAdoptTokenVisualAttempt(object)
+    local guid = BridgeSafeObjectGuid(object)
+    local attempt = guid ~= nil and BridgeState.tokenVisualAttemptsByGuid
+        and BridgeState.tokenVisualAttemptsByGuid[guid] or nil
+    if attempt == nil then return false end
+    BridgeState.tokenVisualAttemptsByGuid[guid] = nil
+    BridgeUnregisterPresentationObject(guid)
+    pcall(function() object.setVar("bridgePresentationOnly", nil) end)
+    pcall(function() object.setVar("bridgeTokenVisualAttempt", nil) end)
+    pcall(function() object.setVar("bridgeTokenVisualAttemptId", nil) end)
+    pcall(function() object.setVar("bridgeTokenCardInstanceId", nil) end)
+    pcall(function() object.setVar("bridgeTokenEventSequence", nil) end)
+    pcall(function() object.setVar("bridgeTokenTransactionToken", nil) end)
+    pcall(function() object.use_hands = false; object.setLock(false) end)
+    attempt.attemptResult = "SUCCESS"
+    BridgeRecordTokenMaterializationDiagnostic({
+        sessionId = attempt.sessionId, eventSequence = attempt.eventSequence,
+        cardInstanceId = attempt.cardInstanceId, transactionToken = attempt.transactionToken,
+        attemptId = attempt.attemptId, strategy = attempt.strategy,
+        stage = "ATTEMPT_ADOPTED", attemptResult = "SUCCESS", guid = guid
+    })
+    return true
+end
+
 function BridgeButtonLooksLikeTokenSpawner(button)
     if button == nil then return false end
     local label = string.lower(tostring(button.label or ""))
@@ -380,8 +530,7 @@ function BridgeSpawnGenericTokenProxy(expectedName, seatId, callback, metadata)
         callback(nil, "generic token proxy has no configured seat")
         return
     end
-    local anchor = seat.battlefieldAnchors and seat.battlefieldAnchors.creature or seat.commandAnchor
-    local position = anchor and {anchor.x, (anchor.y or 2.0) + 1.5, anchor.z} or {0, 3.0, 0}
+    local position = BridgeTokenVisualStagingPosition(seatId, metadata, "GENERIC")
     BridgeRecordTokenMaterializationDiagnostic({
         sessionId = BridgeState.eventSessionId, stage = "FINAL",
         cardInstanceId = metadata and metadata.cardInstanceId or nil,
@@ -400,13 +549,20 @@ function BridgeSpawnGenericTokenProxy(expectedName, seatId, callback, metadata)
                 callback(nil, "generic token proxy spawn returned an unusable object")
                 return
             end
+            local attempt = BridgeBeginTokenVisualAttempt(object, expectedName, metadata, "GENERIC", position)
+            if attempt == nil then
+                callback(nil, "generic token proxy could not claim presentation attempt")
+                return
+            end
+            BridgeObserveTokenVisualAttempt(attempt, "SPAWN_CALLBACK", false)
             local ok, setupError = pcall(function()
                 object.setName(tostring(expectedName))
                 object.setDescription("Forge-created token; characteristics are authoritative in Forge")
                 object.use_hands = false
-                object.setLock(false)
+                object.setLock(true)
             end)
             if not ok then
+                BridgeRetireTokenVisualAttempt(attempt, "generic proxy setup failed")
                 callback(nil, "generic token proxy setup failed: " .. tostring(setupError))
                 return
             end
@@ -620,16 +776,21 @@ function BridgeImportTokenVisualBundle(sourceCardInstanceId, expectedName, seatI
         callback(nil, "token source-card bundle import has no configured seat")
         return
     end
-    local anchor = seat.battlefieldAnchors and seat.battlefieldAnchors.creature or seat.commandAnchor
-    local position = {x = anchor and anchor.x or 0, y = (anchor and anchor.y or 2.0) + 1.5, z = anchor and anchor.z or 0}
+    local position = BridgeTokenVisualStagingPosition(seatId, metadata, "SOURCE_BUNDLE")
     local rotation = seat.faceUpRotation or {x = 0, y = 0, z = 0}
     local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
     local endpoints = {BRIDGE_TOKEN_IMPORT_PRIMARY_URL, BRIDGE_TOKEN_IMPORT_FALLBACK_URL}
     local completed = false
+    local activeAttempt = nil
     local function finish(object, err)
         if completed then return end
         completed = true
+        if object == nil and activeAttempt ~= nil then
+            BridgeRetireTokenVisualAttempt(activeAttempt, err)
+            activeAttempt = nil
+        end
         if object ~= nil and not BridgeIsArtBearingCard(object) then
+            if activeAttempt ~= nil then BridgeRetireTokenVisualAttempt(activeAttempt, "non-art-bearing spawn") end
             callback(nil, "source-card token bundle spawned a non-art-bearing card")
             return
         end
@@ -717,9 +878,16 @@ function BridgeImportTokenVisualBundle(sourceCardInstanceId, expectedName, seatI
                     artBearing = object ~= nil and BridgeIsArtBearingCard(object) or false
                 })
                 if not BridgeObjectIsUsable(object) then finish(nil, "source-card bundle spawn returned an unusable object"); return end
+                activeAttempt = BridgeBeginTokenVisualAttempt(object, expectedName, metadata, "SOURCE_BUNDLE", position)
+                if activeAttempt == nil then finish(nil, "source-card bundle spawn could not claim presentation attempt"); return end
+                BridgeObserveTokenVisualAttempt(activeAttempt, "SPAWN_CALLBACK", false)
                 BridgeWaitFrames(function()
-                    if BridgeIsArtBearingCard(object) then BridgeMarkTokenPhysicalObject(object); finish(object, nil)
-                    else finish(nil, "source-card bundle spawn produced no CustomDeck/FaceURL") end
+                    local live, settledTag, art = BridgeObserveTokenVisualAttempt(activeAttempt, "SPAWN_SETTLE_VERIFY", true)
+                    if live and settledTag == "Card" and art then
+                        BridgeMarkTokenPhysicalObject(object); finish(object, nil)
+                    else
+                        finish(nil, "source-card bundle spawn produced no stable CustomDeck/FaceURL Card")
+                    end
                 end, 2)
             end
             BridgeRecordTokenMaterializationDiagnostic({
@@ -752,13 +920,13 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback, metadata)
         return
     end
 
-    local anchor = seat.battlefieldAnchors and seat.battlefieldAnchors.creature or seat.commandAnchor
-    local position = {x = anchor and anchor.x or 0, y = (anchor and anchor.y or 2.0) + 1.5, z = anchor and anchor.z or 0}
+    local position = BridgeTokenVisualStagingPosition(seatId, metadata, "DIRECT")
     local rotation = seat.faceUpRotation or {x = 0, y = 0, z = 0}
     local epoch = BRIDGE_RUNTIME_EPOCH_LOCAL
     local completed = false
     local lookupCandidates = BridgeTokenVisualLookupCandidates(expectedName)
     local endpoints = {BRIDGE_TOKEN_IMPORT_PRIMARY_URL, BRIDGE_TOKEN_IMPORT_FALLBACK_URL}
+    local activeAttempt = nil
     BridgeRecordTokenMaterializationDiagnostic({
         sessionId = BridgeState.eventSessionId, stage = "IMPORT_REQUEST",
         cardInstanceId = metadata and metadata.cardInstanceId or nil,
@@ -771,7 +939,12 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback, metadata)
     local function finish(object, err)
         if completed then return end
         completed = true
+        if object == nil and activeAttempt ~= nil then
+            BridgeRetireTokenVisualAttempt(activeAttempt, err)
+            activeAttempt = nil
+        end
         if object ~= nil and not BridgeIsArtBearingCard(object) then
+            if activeAttempt ~= nil then BridgeRetireTokenVisualAttempt(activeAttempt, "non-art-bearing spawn") end
             BridgeRecordTokenMaterializationDiagnostic({
                 sessionId = BridgeState.eventSessionId, stage = "FINAL",
                 cardInstanceId = metadata and metadata.cardInstanceId or nil,
@@ -908,13 +1081,20 @@ function BridgeImportExactTokenVisual(expectedName, seatId, callback, metadata)
                     finish(nil, "exact token visual spawn returned an unusable object")
                     return
                 end
+                activeAttempt = BridgeBeginTokenVisualAttempt(object, expectedName, metadata, "DIRECT", position)
+                if activeAttempt == nil then
+                    finish(nil, "exact token visual spawn could not claim presentation attempt")
+                    return
+                end
+                BridgeObserveTokenVisualAttempt(activeAttempt, "SPAWN_CALLBACK", false)
                 BridgeWaitFrames(function()
-                    if BridgeIsArtBearingCard(object) then
+                    local live, settledTag, art = BridgeObserveTokenVisualAttempt(activeAttempt, "SPAWN_SETTLE_VERIFY", true)
+                    if live and settledTag == "Card" and art then
                         BridgeMarkTokenPhysicalObject(object)
                         BridgeLog("[Bridge] token fetcher resolved via exact Rikrassen visual import for " .. tostring(expectedName))
                         finish(object, nil)
                     else
-                        finish(nil, "exact token visual spawn produced no CustomDeck/FaceURL")
+                        finish(nil, "exact token visual spawn produced no stable CustomDeck/FaceURL Card")
                     end
                 end, 2)
             end
@@ -1279,30 +1459,37 @@ function BridgeTakeCardFromTokenFetcher(expectedName, seatId, callback, metadata
         local template = BridgeFindLooseTokenVisualTemplate(expectedName)
         if template ~= nil and type(template.clone) == "function" then
             local clone = nil
+            local stagingPosition = BridgeTokenVisualStagingPosition(seatId, metadata, "REUSED")
             local cloned = pcall(function()
-                clone = template.clone({position = template.getPosition(), rotation = template.getRotation()})
+                clone = template.clone({position = stagingPosition, rotation = template.getRotation()})
             end)
             if cloned and BridgeObjectIsUsable(clone) then
-                BridgeMarkTokenPhysicalObject(clone)
-                BridgeRecordTokenMaterializationDiagnostic({
-                    sessionId = BridgeState.eventSessionId, stage = "FINAL",
-                    cardInstanceId = metadata and metadata.cardInstanceId or nil,
-                    eventSequence = metadata and metadata.eventSequence or nil,
-                    expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
-                    attemptGeneration = metadata and metadata.attemptGeneration or BRIDGE_RUNTIME_EPOCH_LOCAL,
-                    final = "EXACT_REUSED", guid = BridgeSafeObjectGuid(clone), accepted = true
-                })
-                finish(clone, nil)
-                return
+                local attempt = BridgeBeginTokenVisualAttempt(clone, expectedName, metadata, "REUSED", stagingPosition)
+                if attempt == nil then
+                    BridgeSafeObjectCall(clone, function(card) card.destruct() end)
+                else
+                    BridgeObserveTokenVisualAttempt(attempt, "SPAWN_CALLBACK", false)
+                end
+                if attempt ~= nil then
+                    BridgeMarkTokenPhysicalObject(clone)
+                    BridgeRecordTokenMaterializationDiagnostic({
+                        sessionId = BridgeState.eventSessionId, stage = "FINAL",
+                        cardInstanceId = metadata and metadata.cardInstanceId or nil,
+                        eventSequence = metadata and metadata.eventSequence or nil,
+                        expectedTokenName = expectedName, tokenVisualKey = BridgeTokenNameKey(expectedName),
+                        attemptGeneration = metadata and metadata.attemptGeneration or BRIDGE_RUNTIME_EPOCH_LOCAL,
+                        final = "EXACT_REUSED", guid = BridgeSafeObjectGuid(clone), accepted = true
+                    })
+                    finish(clone, nil); return
+                end
             end
         end
         fallbackVisualImport("no matching reusable token in table containers")
         return
     end
 
-    local seat = BRIDGE_SEATS[seatId]
-    local anchor = seat and (seat.commandAnchor or (seat.battlefieldAnchors and seat.battlefieldAnchors.creature)) or nil
-    local position = anchor and {anchor.x, (anchor.y or 2.0) + 1.5, anchor.z} or {0, 3.0, 0}
+    local position = BridgeTokenVisualStagingPosition(seatId, metadata, "REUSED")
+    local attempt = nil
     local options = {
         position = position,
         smooth = false,
@@ -1312,6 +1499,13 @@ function BridgeTakeCardFromTokenFetcher(expectedName, seatId, callback, metadata
                 return
             end
             if BridgeIsArtBearingCard(taken) then
+                attempt = BridgeBeginTokenVisualAttempt(taken, expectedName, metadata, "REUSED", position)
+                if attempt == nil then
+                    BridgeSafeObjectCall(taken, function(card) card.destruct() end)
+                    finish(nil, "token fetcher could not claim presentation attempt")
+                    return
+                end
+                BridgeObserveTokenVisualAttempt(attempt, "SPAWN_CALLBACK", false)
                 BridgeMarkTokenPhysicalObject(taken)
                 finish(taken, nil)
                 return

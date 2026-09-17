@@ -2395,6 +2395,46 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void TokenVisualAttemptsAreCollisionFreeOwnedAndSettledBeforeAdoption()
+    {
+        Assert.Contains("function BridgeTokenVisualStagingPosition(seatId, metadata, strategy)", Script);
+        Assert.Contains("tokenMaterializationNextStagingSlot", Script);
+        Assert.Contains("offside staging row", Script);
+        Assert.Contains("column * 2.5", Script);
+        Assert.Contains("function BridgeBeginTokenVisualAttempt(object, expectedName, metadata, strategy, position)", Script);
+        Assert.Contains("bridgeTokenVisualAttemptId", Script);
+        Assert.Contains("object.setLock(true)", Script);
+        Assert.Contains("function BridgeObserveTokenVisualAttempt(attempt, stage, settled)", Script);
+        Assert.Contains("SPAWN_SETTLE_VERIFY", Script);
+        Assert.Contains("function BridgeRetireTokenVisualAttempt(attempt, reason)", Script);
+        Assert.Contains("Never destruct an arbitrary native Deck", Script);
+        Assert.Contains("function BridgeAdoptTokenVisualAttempt(object)", Script);
+        Assert.Contains("object.setLock(false)", Script);
+
+        var directStart = Script.IndexOf("function BridgeImportExactTokenVisual", StringComparison.Ordinal);
+        var directEnd = Script.IndexOf("function BridgeFindDeckWithContainedCardName", directStart, StringComparison.Ordinal);
+        var importer = Script[directStart..directEnd];
+        Assert.Contains("BridgeTokenVisualStagingPosition(seatId, metadata, \"DIRECT\")", importer);
+        Assert.Contains("BridgeBeginTokenVisualAttempt(object, expectedName, metadata, \"DIRECT\"", importer);
+        Assert.Contains("BridgeRetireTokenVisualAttempt(activeAttempt, err)", importer);
+        Assert.Contains("BridgeObserveTokenVisualAttempt(activeAttempt, \"SPAWN_SETTLE_VERIFY\", true)", importer);
+
+        var bundleStart = Script.IndexOf("function BridgeImportTokenVisualBundle", StringComparison.Ordinal);
+        var bundleEnd = Script.IndexOf("function BridgeImportExactTokenVisual", bundleStart, StringComparison.Ordinal);
+        Assert.Contains("BridgeTokenVisualStagingPosition(seatId, metadata, \"SOURCE_BUNDLE\")", Script[bundleStart..bundleEnd]);
+        Assert.Contains("BridgeBeginTokenVisualAttempt(object, expectedName, metadata, \"SOURCE_BUNDLE\"", Script[bundleStart..bundleEnd]);
+    }
+
+    [Fact]
+    public void TokenPhysicalCompletionAdoptsOnlyAfterExactBindAndPlacement()
+    {
+        Assert.Contains("function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)", Script);
+        Assert.Contains("BridgeRecordLooseCardIdentity(\n        event.cardInstanceId, guid, event.seatId, \"battlefield\", false, true)", Script);
+        Assert.Contains("BridgeMoveToBattlefield(event, object, row)", Script);
+        Assert.Contains("BridgeAdoptTokenVisualAttempt(object)", Script);
+    }
+
+    [Fact]
     public void TokenMaterialization_IsExactlyOncePerForgeInstanceAcrossAsyncSnapshotRaces()
     {
         Assert.Contains("tokenMaterializationByInstanceId", Script);
