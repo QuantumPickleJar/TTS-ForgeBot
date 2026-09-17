@@ -28,7 +28,8 @@ public sealed record GameSnapshotDto(
     string? ActiveSeatId = null,
     string? PrioritySeatId = null,
     string? Phase = null,
-    IReadOnlyList<RevealPresentationDto>? ActiveRevealPresentations = null);
+    IReadOnlyList<RevealPresentationDto>? ActiveRevealPresentations = null,
+    IReadOnlyList<LinkedExileRelationshipDto>? LinkedExileRelationships = null);
 
 /// <summary>Forge's logical stack entry. It is independent of a physical card object.</summary>
 public sealed record GameStackObjectSnapshotDto(
@@ -62,6 +63,13 @@ public sealed record GameStackCardProjectionDto(
     string CurrentCardName);
 
 public sealed record GameCombatSnapshotDto(IReadOnlyList<GameCombatAttackSnapshotDto> Attacks);
+
+/// <summary>Exact Forge relationship for a card temporarily exiled by a source permanent.</summary>
+public sealed record LinkedExileRelationshipDto(
+    string SourceCardInstanceId,
+    string ExiledCardInstanceId,
+    string RelationshipKind = "linked_exile");
+
 public sealed record GameCombatAttackSnapshotDto(
     string AttackerCardInstanceId,
     string? DefenderSeatId,

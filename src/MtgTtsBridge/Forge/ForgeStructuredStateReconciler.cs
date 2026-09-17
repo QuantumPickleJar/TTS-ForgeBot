@@ -181,6 +181,15 @@ public sealed class ForgeStructuredStateReconciler
                     stackObject.Provenance,
                     (stackObject.Targets ?? []).ToArray()))
                 .ToArray(),
+            LinkedExileRelationships: (source.LinkedExileRelationships ?? [])
+                .Where(link => !string.IsNullOrWhiteSpace(link.SourceObjectId)
+                    && !string.IsNullOrWhiteSpace(link.ExiledObjectId))
+                .Select(link => new LinkedExileRelationshipDto(
+                NormalizeObjectId(link.SourceObjectId, 0),
+                NormalizeObjectId(link.ExiledObjectId, 0),
+                    string.IsNullOrWhiteSpace(link.RelationshipKind) ? "linked_exile" : link.RelationshipKind))
+                .DistinctBy(link => $"{link.SourceCardInstanceId}|{link.ExiledCardInstanceId}|{link.RelationshipKind}", StringComparer.Ordinal)
+                .ToArray(),
             MonarchSeatId: source.MonarchSeatId,
             Combat: combat,
             Result: source.GameEnded is null ? null : new GameResultDto(

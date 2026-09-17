@@ -343,6 +343,7 @@ public sealed record ForgeStructuredSnapshot(
     IReadOnlyList<ForgeStructuredCard> Stack,
     IReadOnlyList<ForgeStructuredStackObject>? StackObjects = null,
     IReadOnlyList<ForgeStructuredZoneTransition>? ZoneTransitions = null,
+    IReadOnlyList<ForgeStructuredLinkedExileRelationship>? LinkedExileRelationships = null,
     string? MonarchSeatId = null,
     ForgeStructuredCombat? Combat = null,
     ForgeStructuredGameEnded? GameEnded = null,
@@ -382,6 +383,11 @@ public sealed record ForgeStructuredZoneTransition(
     bool IsVirtual = false,
     string? MaterializationPolicy = null,
     string? TokenSourceObjectId = null);
+
+public sealed record ForgeStructuredLinkedExileRelationship(
+    string SourceObjectId,
+    string ExiledObjectId,
+    string RelationshipKind = "linked_exile");
 
 public sealed record ForgeStructuredStackObject(
     string StackObjectId,
