@@ -1285,7 +1285,9 @@ public sealed class TtsGlobalLuaContractTests
     {
         Assert.Contains("function BridgeEnsureKeywordIconLayout(object, encoder)", Script);
         Assert.Contains("valueID = \"iconLayout\"", Script);
-        Assert.Contains("data = {iconLayout = \"above\"}", Script);
+        // Verify read-modify-write semantics to preserve module-owned metadata
+        Assert.Contains("local mergedData = valueData or {}", Script);
+        Assert.Contains("mergedData.iconLayout = \"above\"", Script);
         Assert.Contains("BridgeState.presentedIconLayoutByGuid", Script);
     }
 

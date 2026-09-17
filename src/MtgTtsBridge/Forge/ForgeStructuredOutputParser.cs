@@ -342,6 +342,7 @@ public sealed record ForgeStructuredSnapshot(
     IReadOnlyList<ForgeStructuredPlayer> Players,
     IReadOnlyList<ForgeStructuredCard> Stack,
     IReadOnlyList<ForgeStructuredStackObject>? StackObjects = null,
+    IReadOnlyList<ForgeStructuredZoneTransition>? ZoneTransitions = null,
     string? MonarchSeatId = null,
     ForgeStructuredCombat? Combat = null,
     ForgeStructuredGameEnded? GameEnded = null,
@@ -349,6 +350,38 @@ public sealed record ForgeStructuredSnapshot(
     string? ActiveSeatId = null,
     string? PrioritySeatId = null,
     string? Phase = null);
+
+/// <summary>
+/// A zone change observed directly from Forge's GameEvent stream.  Unlike a
+/// snapshot diff this record is retained even when Forge removes a token from
+/// all persistent zones during state-based actions before the next snapshot.
+/// </summary>
+public sealed record ForgeStructuredZoneTransition(
+    int ForgeCardId,
+    string CardName,
+    string? SourceZone,
+    string? DestinationZone,
+    string? OwnerSeatId = null,
+    string? ControllerSeatId = null,
+    string? CurrentCardName = null,
+    bool Tapped = false,
+    bool FaceDown = false,
+    bool PhasedOut = false,
+    int? NetPower = null,
+    int? NetToughness = null,
+    int? CurrentPower = null,
+    int? CurrentToughness = null,
+    IReadOnlyList<string>? CurrentTypes = null,
+    ForgeStructuredCharacteristics? Characteristics = null,
+    bool IsToken = false,
+    string? AuthoritativeObjectId = null,
+    string? OriginObjectId = null,
+    string? CopySourceObjectId = null,
+    string? ObjectKind = null,
+    bool IsCopy = false,
+    bool IsVirtual = false,
+    string? MaterializationPolicy = null,
+    string? TokenSourceObjectId = null);
 
 public sealed record ForgeStructuredStackObject(
     string StackObjectId,

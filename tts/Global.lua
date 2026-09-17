@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 12b65221ef1f8cec5ee2c67ac791a82a224ee75668df612796408b9326a7a76e
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "12b65221ef1f8cec5ee2c67ac791a82a224ee75668df612796408b9326a7a76e"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: f8cebb14ff3ab51144ae6afeb18faa810f38b313d8256624d246db189752a7bc
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "f8cebb14ff3ab51144ae6afeb18faa810f38b313d8256624d246db189752a7bc"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -30035,9 +30035,14 @@ function BridgeEnsureKeywordIconLayout(object, encoder)
         if guid ~= nil then BridgeState.presentedIconLayoutByGuid[guid] = "above" end
         return true, nil, false
     end
+    -- Read-modify-write: preserve all existing module-owned metadata while changing only iconLayout.
+    -- Do not destructively replace value data, which would erase image/art/imageMetadata/imageAtlas
+    -- and other fields owned by the keyword module or other Easy Modules components.
+    local mergedData = valueData or {}
+    mergedData.iconLayout = "above"
     local applied, applyError = BridgeEncoderMutation(object, function()
-        encoder.call("APIobjSetValueData", {obj = object, valueID = "iconLayout", data = {iconLayout = "above"}})
-    end, "APIobjSetValueData")
+        encoder.call("APIobjSetValueData", {obj = object, valueID = "iconLayout", data = mergedData})
+    end, "APIobjSetValueData+read-modify-write")
     if not applied then return false, tostring(applyError), false end
     if guid ~= nil then BridgeState.presentedIconLayoutByGuid[guid] = "above" end
     return true, nil, true

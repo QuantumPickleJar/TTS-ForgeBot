@@ -2048,9 +2048,14 @@ function BridgeEnsureKeywordIconLayout(object, encoder)
         if guid ~= nil then BridgeState.presentedIconLayoutByGuid[guid] = "above" end
         return true, nil, false
     end
+    -- Read-modify-write: preserve all existing module-owned metadata while changing only iconLayout.
+    -- Do not destructively replace value data, which would erase image/art/imageMetadata/imageAtlas
+    -- and other fields owned by the keyword module or other Easy Modules components.
+    local mergedData = valueData or {}
+    mergedData.iconLayout = "above"
     local applied, applyError = BridgeEncoderMutation(object, function()
-        encoder.call("APIobjSetValueData", {obj = object, valueID = "iconLayout", data = {iconLayout = "above"}})
-    end, "APIobjSetValueData")
+        encoder.call("APIobjSetValueData", {obj = object, valueID = "iconLayout", data = mergedData})
+    end, "APIobjSetValueData+read-modify-write")
     if not applied then return false, tostring(applyError), false end
     if guid ~= nil then BridgeState.presentedIconLayoutByGuid[guid] = "above" end
     return true, nil, true

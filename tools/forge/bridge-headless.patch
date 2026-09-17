@@ -613,6 +613,22 @@ index 00000000..f3a53020
 +            super("CardInstanceId " + card.getId() + " appeared more than once while emitting " + zone);
 +        }
 +    }
++    /**
++     * A zone change is captured at the GameEvent boundary, before a token can
++     * be removed by state-based actions. The source/destination are immutable
++     * event provenance and are never inferred from the later snapshot.
++     */
++    private static final class PendingZoneTransition {
++        final Card card;
++        final String sourceZone;
++        final String destinationZone;
++
++        PendingZoneTransition(final Card card, final String sourceZone, final String destinationZone) {
++            this.card = card;
++            this.sourceZone = sourceZone;
++            this.destinationZone = destinationZone;
++        }
++    }
 +    static final String SENTINEL = "@@FORGE_BRIDGE_STATE@@";
 +    static final String DECISION_READY_SENTINEL = "@@FORGE_BRIDGE_DECISION_READY@@";
 +    private static final String BRIDGE_SESSION_ID = System.getenv("FORGEBOT_BRIDGE_SESSION_ID");
@@ -636,6 +652,7 @@ index 00000000..f3a53020
 +    private long revealGeneration;
 +    private long randomResultSequence;
 +    private String lastPublicRevealFingerprint;
++    private final List<PendingZoneTransition> pendingZoneTransitions = new java.util.ArrayList<>();
 +
 +    BridgeStateFeed(final Game game) {
 +        this.game = game;

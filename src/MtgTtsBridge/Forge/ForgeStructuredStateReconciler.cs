@@ -53,7 +53,7 @@ public sealed class ForgeStructuredStateReconciler
             return [];
         }
 
-        var events = Diff(sessionId, Current, next);
+        var events = Diff(sessionId, Current, next, source.ZoneTransitions ?? []);
         Current = next;
         // Preserve the producer-local snapshot sequence on every event. It is
         // diagnostic metadata only; TTS orders physical work by the bridge's
@@ -63,50 +63,6 @@ public sealed class ForgeStructuredStateReconciler
 
     private static GameSnapshotDto ConvertSnapshot(string sessionId, ForgeStructuredSnapshot source)
     {
-        static CurrentCharacteristicsDto? ConvertCharacteristics(ForgeStructuredCard card)
-        {
-            if (card.Characteristics is null) return null;
-            var sourceCharacteristics = card.Characteristics;
-            return new CurrentCharacteristicsDto(
-                CurrentCardName: sourceCharacteristics.CurrentCardName,
-                CurrentManaCost: sourceCharacteristics.CurrentManaCost,
-                CurrentManaValue: sourceCharacteristics.CurrentManaValue,
-                CurrentColors: (sourceCharacteristics.CurrentColors ?? [])
-                    .Select(NormalizeColor)
-                    .Where(color => !string.IsNullOrWhiteSpace(color))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(color => color, StringComparer.Ordinal)
-                    .ToArray(),
-                CurrentSupertypes: (sourceCharacteristics.CurrentSupertypes ?? [])
-                    .Select(NormalizeType)
-                    .Where(type => !string.IsNullOrWhiteSpace(type))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(type => type, StringComparer.Ordinal)
-                    .ToArray(),
-                CurrentCardTypes: (sourceCharacteristics.CurrentCardTypes ?? [])
-                    .Select(NormalizeType)
-                    .Where(type => !string.IsNullOrWhiteSpace(type))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(type => type, StringComparer.Ordinal)
-                    .ToArray(),
-                CurrentSubtypes: (sourceCharacteristics.CurrentSubtypes ?? [])
-                    .Select(NormalizeType)
-                    .Where(type => !string.IsNullOrWhiteSpace(type))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(type => type, StringComparer.Ordinal)
-                    .ToArray(),
-                CurrentPower: sourceCharacteristics.CurrentPower,
-                CurrentToughness: sourceCharacteristics.CurrentToughness,
-                CurrentLoyalty: sourceCharacteristics.CurrentLoyalty,
-                CurrentDefense: sourceCharacteristics.CurrentDefense,
-                CurrentKeywords: (sourceCharacteristics.CurrentKeywords ?? [])
-                    .Select(NormalizeKeyword)
-                    .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(keyword => keyword, StringComparer.Ordinal)
-                    .ToArray());
-        }
-
         string NormalizeObjectId(string? value, int fallbackForgeCardId) =>
             string.IsNullOrWhiteSpace(value)
                 ? $"forge:{sessionId}:{fallbackForgeCardId}"
@@ -162,7 +118,7 @@ public sealed class ForgeStructuredStateReconciler
                 .OrderBy(designation => designation, StringComparer.Ordinal)
                 .ToArray(),
             IsToken = card.IsToken,
-            Characteristics = ConvertCharacteristics(card)
+            Characteristics = ConvertCharacteristics(card.Characteristics)
         } with
         {
             AuthoritativeObjectId = NormalizeObjectId(card.AuthoritativeObjectId, card.ForgeCardId),
@@ -237,9 +193,72 @@ public sealed class ForgeStructuredStateReconciler
             Phase: source.Phase);
     }
 
-    private static IReadOnlyList<ForgeTuiRawEvent> Diff(string sessionId, GameSnapshotDto previous, GameSnapshotDto next)
+    private static IReadOnlyList<ForgeTuiRawEvent> Diff(
+        string sessionId,
+        GameSnapshotDto previous,
+        GameSnapshotDto next,
+        IReadOnlyList<ForgeStructuredZoneTransition> explicitTransitions)
     {
         var events = new List<ForgeTuiRawEvent>();
+        var explicitKeys = new HashSet<string>(
+            explicitTransitions.Select(transition => TransitionKey(
+                NormalizeObjectId(sessionId, transition.AuthoritativeObjectId, transition.ForgeCardId),
+                transition.SourceZone,
+                transition.DestinationZone)),
+            StringComparer.Ordinal);
+
+        // GameEventCardChangeZone is the authoritative owner of zone
+        // transitions.  This is intentionally emitted before snapshot-derived
+        // state changes so a token that disappears during SBA still has an
+        // exact physical departure event.
+        foreach (var transition in explicitTransitions)
+        {
+            var cardInstanceId = NormalizeObjectId(sessionId, transition.AuthoritativeObjectId, transition.ForgeCardId);
+            var destinationZone = transition.DestinationZone;
+            var sourceZone = transition.SourceZone;
+            var isDraw = string.Equals(sourceZone, "library", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(destinationZone, "hand", StringComparison.OrdinalIgnoreCase);
+            events.Add(new ForgeTuiRawEvent(
+                isDraw ? "draw" : "card_moved",
+                transition.ControllerSeatId ?? transition.OwnerSeatId,
+                transition.CardName,
+                transition.ForgeCardId,
+                sourceZone,
+                destinationZone,
+                isDraw ? "Authoritative draw from Forge zone transition."
+                    : "Authoritative Forge zone transition.",
+                ContainsHiddenIdentity: isDraw
+                    || string.Equals(destinationZone, "library", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(destinationZone, "hand", StringComparison.OrdinalIgnoreCase),
+                BattlefieldKind: string.Equals(destinationZone, "battlefield", StringComparison.OrdinalIgnoreCase)
+                    ? (HasLandType(transition.CurrentTypes) ? "land" : "creature")
+                    : null,
+                IsToken: transition.IsToken,
+                AuthoritativeObjectId: cardInstanceId,
+                OriginObjectId: NormalizeNullableObjectId(sessionId, transition.OriginObjectId, transition.ForgeCardId),
+                CopySourceObjectId: NormalizeNullableObjectId(sessionId, transition.CopySourceObjectId, transition.ForgeCardId),
+                ObjectKind: string.IsNullOrWhiteSpace(transition.ObjectKind)
+                    ? (transition.IsToken ? "forge-token" : "physical-original")
+                    : transition.ObjectKind,
+                IsCopy: transition.IsCopy,
+                IsVirtual: transition.IsVirtual,
+                MaterializationPolicy: transition.MaterializationPolicy,
+                TokenSourceObjectId: NormalizeNullableObjectId(sessionId, transition.TokenSourceObjectId, transition.ForgeCardId),
+                OwnerSeatId: transition.OwnerSeatId,
+                ControllerSeatId: transition.ControllerSeatId,
+                Tapped: transition.Tapped,
+                FaceDown: transition.FaceDown,
+                PhasedOut: transition.PhasedOut,
+                NetPower: transition.NetPower,
+                NetToughness: transition.NetToughness,
+                CurrentPower: transition.CurrentPower,
+                CurrentToughness: transition.CurrentToughness,
+                CurrentTypes: transition.CurrentTypes,
+                CurrentCardName: transition.CurrentCardName ?? transition.CardName)
+            {
+                Characteristics = ConvertCharacteristics(transition.Characteristics)
+            });
+        }
         if (previous.TurnNumber != next.TurnNumber
             || !string.Equals(previous.ActiveSeatId, next.ActiveSeatId, StringComparison.Ordinal))
         {
@@ -339,7 +358,10 @@ public sealed class ForgeStructuredStateReconciler
         {
             beforeCards.TryGetValue(id, out var oldCard);
             var seatId = card.ControllerSeatId ?? card.OwnerSeatId;
-            if (oldCard is null || !string.Equals(oldCard.Zone, card.Zone, StringComparison.OrdinalIgnoreCase))
+            var explicitTransition = oldCard is not null
+                && explicitKeys.Contains(TransitionKey(id, oldCard.Zone, card.Zone));
+            if ((oldCard is null || !string.Equals(oldCard.Zone, card.Zone, StringComparison.OrdinalIgnoreCase))
+                && !explicitTransition)
             {
                 var sourceZone = oldCard?.Zone;
                 var isDraw = string.Equals(sourceZone, "library", StringComparison.OrdinalIgnoreCase)
@@ -539,6 +561,64 @@ public sealed class ForgeStructuredStateReconciler
     }
 
     private static string NormalizeType(string type) => (type ?? string.Empty).Trim().ToLowerInvariant();
+
+    private static CurrentCharacteristicsDto? ConvertCharacteristics(ForgeStructuredCharacteristics? sourceCharacteristics)
+    {
+        if (sourceCharacteristics is null) return null;
+        return new CurrentCharacteristicsDto(
+            CurrentCardName: sourceCharacteristics.CurrentCardName,
+            CurrentManaCost: sourceCharacteristics.CurrentManaCost,
+            CurrentManaValue: sourceCharacteristics.CurrentManaValue,
+            CurrentColors: (sourceCharacteristics.CurrentColors ?? [])
+                .Select(NormalizeColor)
+                .Where(color => !string.IsNullOrWhiteSpace(color))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(color => color, StringComparer.Ordinal)
+                .ToArray(),
+            CurrentSupertypes: (sourceCharacteristics.CurrentSupertypes ?? [])
+                .Select(NormalizeType)
+                .Where(type => !string.IsNullOrWhiteSpace(type))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(type => type, StringComparer.Ordinal)
+                .ToArray(),
+            CurrentCardTypes: (sourceCharacteristics.CurrentCardTypes ?? [])
+                .Select(NormalizeType)
+                .Where(type => !string.IsNullOrWhiteSpace(type))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(type => type, StringComparer.Ordinal)
+                .ToArray(),
+            CurrentSubtypes: (sourceCharacteristics.CurrentSubtypes ?? [])
+                .Select(NormalizeType)
+                .Where(type => !string.IsNullOrWhiteSpace(type))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(type => type, StringComparer.Ordinal)
+                .ToArray(),
+            CurrentPower: sourceCharacteristics.CurrentPower,
+            CurrentToughness: sourceCharacteristics.CurrentToughness,
+            CurrentLoyalty: sourceCharacteristics.CurrentLoyalty,
+            CurrentDefense: sourceCharacteristics.CurrentDefense,
+            CurrentKeywords: (sourceCharacteristics.CurrentKeywords ?? [])
+                .Select(NormalizeKeyword)
+                .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(keyword => keyword, StringComparer.Ordinal)
+                .ToArray());
+    }
+
+    private static string NormalizeObjectId(string sessionId, string? value, int fallbackForgeCardId) =>
+        string.IsNullOrWhiteSpace(value)
+            ? $"forge:{sessionId}:{fallbackForgeCardId}"
+            : value.StartsWith("forge:", StringComparison.Ordinal)
+                ? value
+                : value.StartsWith("forge-stack:", StringComparison.Ordinal)
+                    ? $"forge:{sessionId}:stack:{value["forge-stack:".Length..]}"
+                    : $"forge:{sessionId}:{(value.StartsWith("forge-object:", StringComparison.Ordinal) ? value[13..] : value)}";
+
+    private static string? NormalizeNullableObjectId(string sessionId, string? value, int fallbackForgeCardId) =>
+        string.IsNullOrWhiteSpace(value) ? null : NormalizeObjectId(sessionId, value, fallbackForgeCardId);
+
+    private static string TransitionKey(string cardInstanceId, string? sourceZone, string? destinationZone) =>
+        $"{cardInstanceId}|{sourceZone ?? ""}|{destinationZone ?? ""}";
 
     private static string NormalizeColor(string color) => (color ?? string.Empty).Trim().ToLowerInvariant();
 
