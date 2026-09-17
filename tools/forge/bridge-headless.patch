@@ -548,7 +548,7 @@ new file mode 100644
 index 00000000..f3a53020
 --- /dev/null
 +++ b/forge-headless/src/main/java/forge/headless/BridgeStateFeed.java
-@@ -0,0 +1,795 @@
+@@ -0,0 +1,915 @@
 +package forge.headless;
 +
 +import com.google.common.collect.Multiset;
@@ -790,6 +790,9 @@ index 00000000..f3a53020
 +            scheduleSnapshot(event.getClass().getSimpleName());
 +            return;
 +        }
++        if (event instanceof GameEventCardChangeZone zoneChange) {
++            rememberZoneTransition(zoneChange);
++        }
 +        if (event instanceof GameEventCardChangeZone
 +                || event instanceof GameEventCardTapped
 +                || event instanceof GameEventCardCounters
@@ -806,6 +809,24 @@ index 00000000..f3a53020
 +                || event instanceof GameEventSnapshotRestored) {
 +            scheduleSnapshot(event.getClass().getSimpleName());
 +        }
++    }
++
++    private synchronized void rememberZoneTransition(final GameEventCardChangeZone event) {
++        final Card card = game.findByView(event.card());
++        if (card == null) {
++            trace("zone transition omitted: card view no longer resolves id="
++                    + (event.card() == null ? "null" : event.card().getId()));
++            return;
++        }
++        if (pendingZoneTransitions.size() >= 256) {
++            // This is a bounded transport journal, not a gameplay queue.
++            pendingZoneTransitions.remove(0);
++            trace("zone transition buffer bounded at 256 entries");
++        }
++        pendingZoneTransitions.add(new PendingZoneTransition(
++                card,
++                zoneName(event.from() == null ? null : event.from().zoneType()),
++                zoneName(event.to() == null ? null : event.to().zoneType())));
 +    }
 +
 +    private synchronized void emitRandomResult(final GameEventRollDie roll) {
@@ -940,6 +961,15 @@ index 00000000..f3a53020
 +            firstStackObject = false;
 +            appendStackObject(json, item, stackIndex--, generation);
 +        }
++        json.append("],\"zoneTransitions\":[");
++        boolean firstTransition = true;
++        for (PendingZoneTransition transition : pendingZoneTransitions) {
++            if (!firstTransition) json.append(',');
++            firstTransition = false;
++            appendZoneTransition(json, transition);
++        }
++        json.append("],\"linkedExileRelationships\":[");
++        appendLinkedExileRelationships(json);
 +        json.append("],\"combat\":");
 +        appendCombat(json);
 +        if (game.isGameOver()) {
@@ -951,6 +981,7 @@ index 00000000..f3a53020
 +        synchronized (System.out) {
 +            System.out.println(SENTINEL + json);
 +        }
++        pendingZoneTransitions.clear();
 +        sequence = snapshotSequence; trace("snapshot sequence=" + snapshotSequence + " generation=" + generation + " reason=" + reason
 +                + " battlefield=" + battlefieldSummary());
 +    }
@@ -986,6 +1017,74 @@ index 00000000..f3a53020
 +            System.out.flush();
 +        }
 +        trace("decision_ready snapshotSequence=" + publishedSnapshotSequence + " mutationGeneration=" + mutationGeneration.get());
++    }
++
++    private void appendZoneTransition(final StringBuilder json, final PendingZoneTransition transition) {
++        final Card card = transition.card;
++        final String canonicalName = card.getPaperCard() == null ? card.getName() : card.getPaperCard().getName();
++        final Card cloneOrigin = card.getCloneOrigin();
++        final Card copySource = card.getCopiedPermanent();
++        final boolean copied = card.isCloned() || copySource != null;
++        final boolean token = card.isRealToken() || card.isTokenCard();
++        final SpellAbility tokenSpawningAbility = token ? card.getTokenSpawningAbility() : null;
++        final Card tokenSource = tokenSpawningAbility == null ? null : tokenSpawningAbility.getHostCard();
++        final String objectKind = token ? "forge-token" : (copied ? "copy-permanent" : "physical-original");
++        final Set<String> keywords = new LinkedHashSet<>();
++        for (KeywordInterface keyword : card.getKeywords()) {
++            final String name = keyword.getKeyword().toString();
++            if (!name.isEmpty()) keywords.add(name);
++        }
++        json.append('{');
++        property(json, "forgeCardId", card.getId()).append(',');
++        property(json, "cardName", canonicalName).append(',');
++        property(json, "currentCardName", card.getName()).append(',');
++        property(json, "sourceZone", transition.sourceZone).append(',');
++        property(json, "destinationZone", transition.destinationZone).append(',');
++        property(json, "ownerSeatId", seatOf(card.getOwner())).append(',');
++        property(json, "controllerSeatId", seatOf(card.getController())).append(',');
++        property(json, "tapped", card.isTapped()).append(',');
++        property(json, "faceDown", card.isFaceDown()).append(',');
++        property(json, "phasedOut", card.isPhasedOut()).append(',');
++        property(json, "netPower", card.isCreature() ? card.getNetPower() : 0).append(',');
++        property(json, "netToughness", card.isCreature() ? card.getNetToughness() : 0).append(',');
++        property(json, "currentPower", card.isCreature() ? card.getNetPower() : 0).append(',');
++        property(json, "currentToughness", card.isCreature() ? card.getNetToughness() : 0).append(',');
++        json.append("\"currentTypes\":");
++        appendCurrentTypes(json, card.getType());
++        json.append(',');
++        property(json, "isToken", token).append(',');
++        property(json, "authoritativeObjectId", "forge-object:" + card.getId()).append(',');
++        property(json, "originObjectId", cloneOrigin == null ? null : "forge-object:" + cloneOrigin.getId()).append(',');
++        property(json, "copySourceObjectId", copySource == null ? null : "forge-object:" + copySource.getId()).append(',');
++        property(json, "tokenSourceObjectId", tokenSource == null ? null : "forge-object:" + tokenSource.getId()).append(',');
++        property(json, "objectKind", objectKind).append(',');
++        property(json, "isCopy", copied).append(',');
++        property(json, "isVirtual", false).append(',');
++        property(json, "materializationPolicy", "physical").append(',');
++        appendCharacteristics(json, card, keywords);
++        json.append('}');
++    }
++
++    private void appendLinkedExileRelationships(final StringBuilder json) {
++        boolean first = true;
++        final Set<String> seen = new HashSet<>();
++        for (Player player : game.getPlayers()) {
++            for (ZoneType zoneType : PLAYER_ZONES) {
++                for (Card card : player.getZone(zoneType).getCards(false)) {
++                    final Card source = card.getExiledWith();
++                    if (source == null || !source.isInZone(ZoneType.Battlefield)) continue;
++                    final String key = source.getId() + ":" + card.getId();
++                    if (!seen.add(key)) continue;
++                    if (!first) json.append(',');
++                    first = false;
++                    json.append('{');
++                    property(json, "sourceObjectId", "forge-object:" + source.getId()).append(',');
++                    property(json, "exiledObjectId", "forge-object:" + card.getId()).append(',');
++                    property(json, "relationshipKind", "linked_exile");
++                    json.append('}');
++                }
++            }
++        }
 +    }
 +
 +    private void appendStackObject(final StringBuilder json, final SpellAbilityStackInstance item,
@@ -1400,7 +1499,7 @@ diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.jav
 index 0d731bb6..0171ea39 100644
 --- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 +++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-@@ -3,20 +3,41 @@ package forge.headless;
+@@ -3,20 +3,40 @@ package forge.headless;
  import com.google.common.collect.Multimap;
  import forge.LobbyPlayer;
  import forge.ai.ComputerUtilMana;
@@ -1410,6 +1509,7 @@ index 0d731bb6..0171ea39 100644
 +import forge.card.mana.ManaCost;
  import forge.game.GameEntity;
 +import forge.game.ability.ApiType;
++import forge.game.ability.AbilityUtils;
  import forge.ai.PlayerControllerAi;
  import forge.deck.DeckSection;
  import forge.game.Game;
@@ -1440,6 +1540,7 @@ index 0d731bb6..0171ea39 100644
  import forge.item.PaperCard;
 +import org.apache.commons.lang3.tuple.ImmutablePair;
  import forge.util.collect.FCollectionView;
++import forge.util.collect.FCollection;
  
  import java.io.BufferedReader;
 @@ -24,8 +45,10 @@ import java.io.IOException;
@@ -1644,7 +1745,7 @@ index 0d731bb6..0171ea39 100644
      @Override
      public void revealAnte(String message, Multimap<Player, PaperCard> removedAnteCards) {
          // No-op for TUI - we don't need to show ante cards
-@@ -165,7 +372,11 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -165,7 +378,11 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          }
  
          // Get user choice
@@ -2283,7 +2384,7 @@ index 0d731bb6..0171ea39 100644
  
                      // Add the blocker
                      combat.addBlocker(attacker, blocker);
-@@ -1465,122 +1746,645 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -1465,122 +1746,698 @@ public class PlayerControllerTUI extends PlayerControllerAi {
  
      @Override
      public boolean confirmTrigger(forge.game.trigger.WrappedAbility wrapper) {
@@ -3007,6 +3108,60 @@ index 0d731bb6..0171ea39 100644
 +        return super.arrangeForSurveil(topN);
 +    }
 +
++    @Override
++    public void orderAndPlaySimultaneousSa(List<SpellAbility> activePlayerSAs) {
++        // PlayerControllerAi.prepareSingleSa() delegates triggered targets to
++        // the AI brain.  That is the path that silently chose Banishing
++        // Light's ETB target before the bridge ever saw a decision.  Keep the
++        // inherited ordering and all non-target trigger behavior, but route
++        // every targeted human trigger through the same exact TUI candidate
++        // transport used by spell targeting.
++        for (SpellAbility sa : orderSimultaneousSa(activePlayerSAs)) {
++            if (sa.isTrigger() && !sa.isCopied() && sa.usesTargeting()) {
++                if (bridgePrepareTriggeredTargets(sa)) {
++                    forge.ai.ComputerUtil.playStack(sa, player, getGame());
++                }
++            } else {
++                super.orderAndPlaySimultaneousSa(Collections.singletonList(sa));
++            }
++        }
++    }
++
++    private boolean bridgePrepareTriggeredTargets(SpellAbility sa) {
++        if (sa.getActivatingPlayer() == null) sa.setActivatingPlayer(player);
++        if (sa.hasParam("TargetingPlayer")) {
++            FCollection<Player> candidates = new FCollection<>(
++                AbilityUtils.getDefinedPlayers(sa.getHostCard(), sa.getParam("TargetingPlayer"), sa));
++            Player targetingPlayer = chooseSingleEntityForEffect(candidates, sa,
++                "Choose the targeting player", false, null);
++            if (targetingPlayer == null) return false;
++            sa.setTargetingPlayer(targetingPlayer);
++        } else if (sa.getActivatingPlayer() != null) {
++            sa.setTargetingPlayer(sa.getActivatingPlayer());
++        }
++        return bridgeChooseTargetsFor(sa);
++    }
++
++    private boolean bridgeChooseTargetsFor(SpellAbility sa) {
++        if (!sa.usesTargeting() || sa.getTargetRestrictions() == null) return true;
++        final FCollection<GameEntity> candidates = new FCollection<>(
++            sa.getTargetRestrictions().getAllCandidates(sa));
++        final int min = sa.getMinTargets();
++        final int max = sa.getMaxTargets();
++        if (candidates.isEmpty()) return min == 0;
++        Card source = sa.getHostCard();
++        String sourceId = source == null ? "" : " sourceCardId=" + source.getId();
++        String sourceName = source == null ? "" : " sourceCardName=" + bridgeEncode(source.getName());
++        System.out.println("[bridge decisionCause=ability_targeting" + sourceId + sourceName
++            + " targetMin=" + min + " targetMax=" + max + "]");
++        List<GameEntity> selected = chooseEntitiesThroughTui("target_selection", candidates, min, max,
++            sa.getTargetRestrictions().getVTSelection(), false,
++            "decisionCause=ability_targeting sourceAbilityId=" + sa.getId());
++        if (selected == null || selected.size() < min || selected.size() > max) return false;
++        sa.clearTargets();
++        for (GameEntity entity : selected) sa.getTargets().add(entity);
++        return true;
++    }
  }
 diff --git a/forge-headless/src/main/java/forge/headless/TUICommand.java b/forge-headless/src/main/java/forge/headless/TUICommand.java
 index 3626ea89..b0e8729c 100644

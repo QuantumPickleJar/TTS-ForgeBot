@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: f8cebb14ff3ab51144ae6afeb18faa810f38b313d8256624d246db189752a7bc
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "f8cebb14ff3ab51144ae6afeb18faa810f38b313d8256624d246db189752a7bc"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: bbbbffcd5ae9b8f90f897bc8647f45576f82af1fe6a2390e64f6069f96c19a75
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "bbbbffcd5ae9b8f90f897bc8647f45576f82af1fe6a2390e64f6069f96c19a75"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -1225,6 +1225,8 @@ function BridgeEventDrainQueueState()
         physicalQueues = physical,
         physicalMutationProgress = BridgeDiagnosticSnapshot(BridgeState.eventDrainPhysicalProgress or {}),
         physicalMutationJournal = BridgeDiagnosticSnapshot(BridgeState.physicalMutationJournal or {}),
+        linkedExileDiagnostics = BridgeDiagnosticSnapshot(BridgeState.linkedExileDiagnostics or {}),
+        linkedExilePresentation = BridgeDiagnosticSnapshot(BridgeState.linkedExilePresentationByTargetInstanceId or {}),
         lastTtsRuntimeError = BridgeDiagnosticSnapshot(BridgeState.lastTtsRuntimeError or {}),
         presentationTiming = BridgePresentationTimingDiagnostics(),
         opponentSpellPresentation = BridgeOpponentSpellPresentationDiagnostics ~= nil
@@ -1351,7 +1353,8 @@ function BridgeEventDrainQueueState()
         firstBlockingObservation = BridgeState.firstBlockingObservation,
         firstActualFailure = BridgeState.firstActualFailure,
         currentObservedBlocker = BridgeState.currentObservedBlocker,
-        lastSnapshotRepresentationFailure = BridgeDiagnosticSnapshot(BridgeState.lastSnapshotRepresentationFailure)
+        lastSnapshotRepresentationFailure = BridgeDiagnosticSnapshot(BridgeState.lastSnapshotRepresentationFailure),
+        linkedExileRelationships = BridgeDiagnosticSnapshot(BridgeState.linkedExileSourceByTargetInstanceId or {})
     }
 end
 
@@ -3563,6 +3566,13 @@ BridgeState = {
     physicalContainerByInstanceId = {},
     physicalContainedInstanceIdByGuid = {},
     physicalSlotByInstanceId = {},
+    -- Forge-authoritative temporary exile edges.  The target remains in the
+    -- logical exile zone even while its physical Card is tucked under the
+    -- exact battlefield source permanent.
+    linkedExileBySourceInstanceId = {},
+    linkedExileSourceByTargetInstanceId = {},
+    linkedExilePresentationByTargetInstanceId = {},
+    linkedExileDiagnostics = {},
     libraryBindingGenerationBySeatId = {},
     -- Native Deck contained GUIDs are ephemeral TTS implementation details.
     -- Forge instance identity in a deck-like zone is this ordered ledger.
@@ -3654,6 +3664,7 @@ BridgeState = {
     tokenMaterializationNextStagingSlot = 0,
     tokenVisualAttemptsByGuid = {},
     tokenMaterializationJournal = {},
+    staleTokenMappingDiagnostics = {},
     -- Authoritative Forge-object metadata is independent of physical GUIDs.
     -- Virtual/copy objects can exist without an original deck card.
     authoritativeObjectByInstanceId = {},
@@ -5354,6 +5365,121 @@ function BridgeRecordTokenMaterializationDiagnostic(entry)
     }
     table.insert(journal, bounded)
     while #journal > 80 do table.remove(journal, 1) end
+end
+
+-- Forge-created tokens cease to exist after Forge authoritatively moves them
+-- off the battlefield.  They must not be inserted into a persistent TTS
+-- graveyard/exile/hand/library representation.  Keep this exact-instance
+-- retirement separate from ordinary Card -> Deck movement so no printed-name
+-- or spatial fallback can destroy the wrong object.
+function BridgeRetireAuthoritativeTokenDeparture(event, object, reason)
+    if event == nil or event.cardInstanceId == nil
+        or event.isToken ~= true
+        or event.sourceZone ~= "battlefield"
+        or event.destinationZone == nil
+        or event.destinationZone == "battlefield" then
+        return false, "not an authoritative battlefield token departure"
+    end
+
+    local instanceId = event.cardInstanceId
+    local mappedGuid = BridgeState.physicalByInstanceId[instanceId]
+    local mappedObject = mappedGuid ~= nil and BridgeGetLiveObjectByGuid(mappedGuid) or nil
+    local exactObject = object or mappedObject
+    local retiredGuid = mappedGuid or BridgeSafeObjectGuid(exactObject)
+    local exactObjectUsable = exactObject ~= nil and BridgeObjectIsUsable(exactObject)
+    if exactObjectUsable and BridgeSafeObjectTag(exactObject) ~= "Card" then
+        -- An unexpected native Deck is not safe to destroy and its current
+        -- identity must remain available to explicit recovery.  Do not clear
+        -- the ledger and then report success for a representation we did not
+        -- retire.
+        BridgeRecordPhysicalMutationJournal({
+            operation = "TokenDeparture",
+            stage = "TOKEN_PHYSICAL_RETIREMENT_UNAVAILABLE",
+            eventSequence = event.sequence,
+            cardInstanceId = instanceId,
+            sourceZone = event.sourceZone,
+            destinationZone = event.destinationZone,
+            physicalGuid = retiredGuid,
+            isToken = true,
+            reason = "unexpected native container during token departure"
+        })
+        return false, "exact token departure resolved to an unexpected native container"
+    end
+
+    -- Cancel every presentation-owned attempt for this exact Forge identity.
+    -- A delayed importer callback will fail BridgeTokenMaterializationIsCurrent
+    -- once the lifecycle is RETIRED and will clean up any unbound Card it
+    -- returns.  Never retire an attempt belonging to another instance.
+    for guid, attempt in pairs(BridgeState.tokenVisualAttemptsByGuid or {}) do
+        if attempt ~= nil and attempt.cardInstanceId == instanceId then
+            if BridgeRetireTokenVisualAttempt ~= nil then
+                BridgeRetireTokenVisualAttempt(attempt, reason or "authoritative token departure")
+            else
+                BridgeState.tokenVisualAttemptsByGuid[guid] = nil
+            end
+        end
+    end
+
+    BridgeClearCardDesignationPresentation(instanceId, exactObject)
+    local container = BridgeState.physicalContainerByInstanceId[instanceId]
+    if container ~= nil and container.cardGuid ~= nil then
+        if BridgeState.physicalContainedInstanceIdByGuid[container.cardGuid] == instanceId then
+            BridgeState.physicalContainedInstanceIdByGuid[container.cardGuid] = nil
+        end
+        BridgeState.physicalSeatByGuid[container.cardGuid] = nil
+        BridgeState.physicalZoneByGuid[container.cardGuid] = nil
+    end
+    BridgeState.physicalContainerByInstanceId[instanceId] = nil
+    if BridgeState.physicalSlotByInstanceId ~= nil then
+        BridgeState.physicalSlotByInstanceId[instanceId] = nil
+    end
+
+    if retiredGuid ~= nil then
+        if BridgeState.physicalInstanceIdByGuid[retiredGuid] == instanceId then
+            BridgeState.physicalInstanceIdByGuid[retiredGuid] = nil
+        end
+        BridgeState.physicalSeatByGuid[retiredGuid] = nil
+        BridgeState.physicalZoneByGuid[retiredGuid] = nil
+        BridgeState.physicalTappedByGuid[retiredGuid] = nil
+        BridgeState.tokenPhysicalGuids[retiredGuid] = nil
+        BridgeUnregisterPresentationObject(retiredGuid)
+    end
+    BridgeState.physicalByInstanceId[instanceId] = nil
+    BridgeState.authoritativeObjectByInstanceId[instanceId] = nil
+    BridgeState.preparedPresentationGuidByInstanceId[instanceId] = nil
+    BridgeState.preparedDesignationStateByInstanceId[instanceId] = nil
+    BridgeState.cardDesignationsByInstanceId[instanceId] = nil
+    BridgeState.pendingPrivateHandIdentityByInstanceId[instanceId] = nil
+    BridgeState.tokenMaterializationByInstanceId[instanceId] = {
+        state = "RETIRED",
+        sessionId = BridgeState.eventSessionId,
+        epoch = BRIDGE_RUNTIME_EPOCH_LOCAL,
+        eventSequence = event.sequence,
+        retiredDestinationZone = event.destinationZone,
+        retiredReason = reason or "authoritative token departure"
+    }
+    BridgeAdvancePhysicalPresentationGeneration("authoritative-token-departure")
+
+    -- Only destroy the exact live Card.  A native Deck is never destructed by
+    -- this path: token departures are not allowed to create a destination
+    -- container, and an unexpected Deck must be left for explicit recovery.
+    local destroyed = not exactObjectUsable
+    if exactObjectUsable then
+        BridgeRetirePhysicalIdentityForSession(exactObject, BridgeState.eventSessionId)
+        destroyed = BridgeSafeObjectCall(exactObject, function(card) card.destruct() end)
+    end
+    BridgeRecordPhysicalMutationJournal({
+        operation = "TokenDeparture",
+        stage = destroyed and "TOKEN_PHYSICAL_RETIRED" or "TOKEN_PHYSICAL_RETIREMENT_UNAVAILABLE",
+        eventSequence = event.sequence,
+        cardInstanceId = instanceId,
+        sourceZone = event.sourceZone,
+        destinationZone = event.destinationZone,
+        physicalGuid = retiredGuid,
+        isToken = true,
+        reason = reason or "authoritative Forge token departure"
+    })
+    return destroyed, destroyed and nil or "exact token Card could not be retired"
 end
 
 function BridgeTokenMaterializationIsCurrent(cardInstanceId, sessionId, epoch)
@@ -12585,6 +12711,9 @@ function BridgeApplySafeSnapshotReconcile(snapshot, reason)
         BridgePerformanceEnd(seatVisualToken, "snapshot_reconcile.seat_visual.end", "snapshotReconcileSeatVisual")
     end
     BridgePerformanceEnd(publicZoneToken, "snapshot_reconcile.public_zone_diff.end", "snapshotReconcilePublicZoneDiff", movedCount)
+    local linkedExileToken = BridgePerformanceBegin("snapshot_reconcile.linked_exile")
+    BridgeApplyAuthoritativeLinkedExileRelationships(snapshot)
+    BridgePerformanceEnd(linkedExileToken, "snapshot_reconcile.linked_exile.end", "snapshotReconcileLinkedExile")
     local combatToken = BridgePerformanceBegin("snapshot_reconcile.combat")
     BridgeApplyCombatSnapshot(snapshot.combat)
     BridgePerformanceEnd(combatToken, "snapshot_reconcile.combat.end", "snapshotReconcileCombat")
@@ -21031,6 +21160,259 @@ function BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
     return true, nil
 end
 
+local function BridgeLinkedExileReadPosition(object)
+    if object == nil or type(object.getPosition) ~= "function" then return nil end
+    local ok, position = pcall(function() return object.getPosition() end)
+    if not ok or position == nil then return nil end
+    return {x = tonumber(position.x) or 0, y = tonumber(position.y) or 0, z = tonumber(position.z) or 0}
+end
+
+local function BridgeLinkedExileTargetPosition(sourceObject, index)
+    local sourcePosition = BridgeLinkedExileReadPosition(sourceObject)
+    if sourcePosition == nil then return nil end
+    -- Keep the target visibly tucked under its source while retaining enough
+    -- lateral/vertical separation that TTS cannot merge the two Cards into a
+    -- native Deck.  This is layout only; the logical zone remains exile.
+    local slot = math.max(1, tonumber(index or 1) or 1)
+    return {
+        x = sourcePosition.x + 0.22 * slot,
+        y = sourcePosition.y - 0.035,
+        z = sourcePosition.z + 0.34
+    }
+end
+
+local function BridgeLinkedExileRecordDiagnostic(entry)
+    local diagnostics = BridgeState.linkedExileDiagnostics or {}
+    BridgeState.linkedExileDiagnostics = diagnostics
+    local bounded = {
+        relationshipKind = entry.relationshipKind or "linked_exile",
+        sourceCardInstanceId = entry.sourceCardInstanceId,
+        targetCardInstanceId = entry.targetCardInstanceId,
+        sourceMappingAvailable = entry.sourceMappingAvailable == true,
+        targetMappingAvailable = entry.targetMappingAvailable == true,
+        presentationMode = entry.presentationMode or "linked_tuck",
+        layoutSuccess = entry.layoutSuccess == true,
+        reason = entry.reason
+    }
+    table.insert(diagnostics, bounded)
+    while #diagnostics > 40 do table.remove(diagnostics, 1) end
+end
+
+local function BridgeLinkedExileRestoreOrdinaryPresentation(targetId, presentation)
+    local guid = BridgeState.physicalByInstanceId[targetId]
+    local object = guid ~= nil and BridgeGetLiveObjectByGuid(guid) or nil
+    if object == nil or BridgeSafeObjectTag(object) ~= "Card" then return false end
+    local seatId = BridgeState.physicalSeatByGuid[guid]
+    if presentation ~= nil and presentation.lockedBefore ~= nil then
+        pcall(function() object.setLock(presentation.lockedBefore == true) end)
+    else
+        pcall(function() object.setLock(false) end)
+    end
+    object.use_hands = false
+    local position = seatId ~= nil and BridgeResolveSeatZoneAnchor(seatId, "exile") or nil
+    if position ~= nil then pcall(function() object.setPositionSmooth(position, false, true) end) end
+    return true
+end
+
+local function BridgeLinkedExileApplyPresentation(sourceId, targetId, index, relationshipKind)
+    local sourceGuid = BridgeState.physicalByInstanceId[sourceId]
+    local targetGuid = BridgeState.physicalByInstanceId[targetId]
+    local sourceObject = sourceGuid ~= nil and BridgeGetLiveObjectByGuid(sourceGuid) or nil
+    local targetObject = targetGuid ~= nil and BridgeGetLiveObjectByGuid(targetGuid) or nil
+    local sourceAvailable = sourceObject ~= nil and BridgeSafeObjectTag(sourceObject) == "Card"
+    local targetAvailable = targetObject ~= nil and BridgeSafeObjectTag(targetObject) == "Card"
+    local contained = BridgeState.physicalContainerByInstanceId[targetId]
+    if sourceAvailable and not targetAvailable and contained ~= nil
+        and BridgeTakeContainedExileCardByIdentity ~= nil then
+        local position = BridgeLinkedExileTargetPosition(sourceObject, index)
+        local pending = BridgeState.linkedExilePresentationByTargetInstanceId[targetId]
+        if pending == nil or pending.extractionPending ~= true then
+            BridgeState.linkedExilePresentationByTargetInstanceId[targetId] = {
+                sourceCardInstanceId = sourceId,
+                targetCardInstanceId = targetId,
+                extractionPending = true,
+                presentationMode = "linked_tuck"
+            }
+            BridgeTakeContainedExileCardByIdentity(targetId, position, false, function(taken, extractionError)
+                local current = BridgeState.linkedExileSourceByTargetInstanceId[targetId]
+                if current == nil or current.sourceCardInstanceId ~= sourceId then return end
+                if taken == nil then
+                    BridgeLinkedExileRecordDiagnostic({
+                        relationshipKind = relationshipKind,
+                        sourceCardInstanceId = sourceId,
+                        targetCardInstanceId = targetId,
+                        sourceMappingAvailable = true,
+                        targetMappingAvailable = false,
+                        layoutSuccess = false,
+                        reason = "linked exile exact extraction failed: " .. tostring(extractionError)
+                    })
+                    BridgeState.linkedExilePresentationByTargetInstanceId[targetId] = nil
+                    return
+                end
+                local takenGuid = BridgeSafeObjectGuid(taken)
+                local seatId = contained.seatId or BridgeState.physicalSeatByGuid[sourceGuid]
+                if takenGuid == nil or seatId == nil
+                    or not BridgeRecordLooseCardIdentity(targetId, takenGuid, seatId, "exile", true) then
+                    BridgeLinkedExileRecordDiagnostic({
+                        relationshipKind = relationshipKind,
+                        sourceCardInstanceId = sourceId,
+                        targetCardInstanceId = targetId,
+                        sourceMappingAvailable = true,
+                        targetMappingAvailable = false,
+                        layoutSuccess = false,
+                        reason = "linked exile extraction could not publish exact loose identity"
+                    })
+                    return
+                end
+                BridgeState.linkedExilePresentationByTargetInstanceId[targetId] = nil
+                BridgeRefreshLinkedExileTargetPresentation(targetId)
+            end)
+        end
+        BridgeLinkedExileRecordDiagnostic({
+            relationshipKind = relationshipKind,
+            sourceCardInstanceId = sourceId,
+            targetCardInstanceId = targetId,
+            sourceMappingAvailable = true,
+            targetMappingAvailable = false,
+            layoutSuccess = false,
+            reason = "exact exile target extraction pending"
+        })
+        return false
+    end
+    if not sourceAvailable or not targetAvailable then
+        BridgeLinkedExileRecordDiagnostic({
+            relationshipKind = relationshipKind,
+            sourceCardInstanceId = sourceId,
+            targetCardInstanceId = targetId,
+            sourceMappingAvailable = sourceAvailable,
+            targetMappingAvailable = targetAvailable,
+            layoutSuccess = false,
+            reason = "exact linked-exile physical mapping unavailable"
+        })
+        return false
+    end
+    local position = BridgeLinkedExileTargetPosition(sourceObject, index)
+    if position == nil then
+        BridgeLinkedExileRecordDiagnostic({
+            relationshipKind = relationshipKind,
+            sourceCardInstanceId = sourceId,
+            targetCardInstanceId = targetId,
+            sourceMappingAvailable = true,
+            targetMappingAvailable = true,
+            layoutSuccess = false,
+            reason = "source position unavailable"
+        })
+        return false
+    end
+    local existing = BridgeState.linkedExilePresentationByTargetInstanceId[targetId]
+    local lockedBefore = existing ~= nil and existing.lockedBefore or false
+    if existing == nil and type(targetObject.getLock) == "function" then
+        local ok, value = pcall(function() return targetObject.getLock() end)
+        if ok then lockedBefore = value == true end
+    end
+    targetObject.use_hands = false
+    pcall(function() targetObject.setLock(true) end)
+    pcall(function() targetObject.setPosition(position) end)
+    BridgeState.linkedExilePresentationByTargetInstanceId[targetId] = {
+        sourceCardInstanceId = sourceId,
+        targetCardInstanceId = targetId,
+        lockedBefore = lockedBefore,
+        presentationMode = "linked_tuck"
+    }
+    BridgeLinkedExileRecordDiagnostic({
+        relationshipKind = relationshipKind,
+        sourceCardInstanceId = sourceId,
+        targetCardInstanceId = targetId,
+        sourceMappingAvailable = true,
+        targetMappingAvailable = true,
+        layoutSuccess = true
+    })
+    return true
+end
+
+function BridgeApplyAuthoritativeLinkedExileRelationships(snapshot)
+    local nextBySource, nextByTarget = {}, {}
+    local seen = {}
+    for _, relationship in ipairs(snapshot and snapshot.linkedExileRelationships or {}) do
+        local sourceId = relationship.sourceCardInstanceId
+        local targetId = relationship.exiledCardInstanceId
+        local kind = relationship.relationshipKind or "linked_exile"
+        if sourceId ~= nil and targetId ~= nil then
+            sourceId, targetId = tostring(sourceId), tostring(targetId)
+            local sourceDescriptor = BridgeState.authoritativeObjectByInstanceId[sourceId]
+            local targetDescriptor = BridgeState.authoritativeObjectByInstanceId[targetId]
+            local valid = sourceDescriptor ~= nil and targetDescriptor ~= nil
+                and string.lower(tostring(sourceDescriptor.zone or "")) == "battlefield"
+                and string.lower(tostring(targetDescriptor.zone or "")) == "exile"
+            local key = sourceId .. "|" .. targetId .. "|" .. tostring(kind)
+            if valid and not seen[key] and nextByTarget[targetId] == nil then
+                seen[key] = true
+                nextByTarget[targetId] = {
+                    sourceCardInstanceId = sourceId,
+                    targetCardInstanceId = targetId,
+                    relationshipKind = kind
+                }
+                nextBySource[sourceId] = nextBySource[sourceId] or {}
+                table.insert(nextBySource[sourceId], nextByTarget[targetId])
+            elseif not valid then
+                BridgeLinkedExileRecordDiagnostic({
+                    relationshipKind = kind,
+                    sourceCardInstanceId = sourceId,
+                    targetCardInstanceId = targetId,
+                    sourceMappingAvailable = BridgeState.physicalByInstanceId[sourceId] ~= nil,
+                    targetMappingAvailable = BridgeState.physicalByInstanceId[targetId] ~= nil,
+                    layoutSuccess = false,
+                    reason = "authoritative relationship endpoint is not battlefield->exile"
+                })
+            end
+        end
+    end
+
+    for targetId, presentation in pairs(BridgeState.linkedExilePresentationByTargetInstanceId or {}) do
+        if nextByTarget[targetId] == nil then
+            BridgeLinkedExileRestoreOrdinaryPresentation(targetId, presentation)
+            BridgeState.linkedExilePresentationByTargetInstanceId[targetId] = nil
+        end
+    end
+    BridgeState.linkedExileBySourceInstanceId = nextBySource
+    BridgeState.linkedExileSourceByTargetInstanceId = nextByTarget
+    for sourceId, relationships in pairs(nextBySource) do
+        table.sort(relationships, function(left, right)
+            return tostring(left.targetCardInstanceId) < tostring(right.targetCardInstanceId)
+        end)
+        for index, relationship in ipairs(relationships) do
+            BridgeLinkedExileApplyPresentation(sourceId, relationship.targetCardInstanceId, index,
+                relationship.relationshipKind)
+        end
+    end
+    return true
+end
+
+function BridgeClearLinkedExilePresentation(targetId)
+    if targetId == nil then return false end
+    local presentation = BridgeState.linkedExilePresentationByTargetInstanceId[targetId]
+    local restored = BridgeLinkedExileRestoreOrdinaryPresentation(targetId, presentation)
+    BridgeState.linkedExilePresentationByTargetInstanceId[targetId] = nil
+    BridgeState.linkedExileSourceByTargetInstanceId[targetId] = nil
+    return restored
+end
+
+function BridgeRefreshLinkedExileTargetPresentation(targetId)
+    local relationship = BridgeState.linkedExileSourceByTargetInstanceId[targetId]
+    if relationship == nil then return false end
+    local siblings = BridgeState.linkedExileBySourceInstanceId[relationship.sourceCardInstanceId] or {}
+    table.sort(siblings, function(left, right)
+        return tostring(left.targetCardInstanceId) < tostring(right.targetCardInstanceId)
+    end)
+    for index, candidate in ipairs(siblings) do
+        if candidate.targetCardInstanceId == targetId then
+            return BridgeLinkedExileApplyPresentation(relationship.sourceCardInstanceId, targetId, index,
+                relationship.relationshipKind)
+        end
+    end
+    return false
+end
+
 function BridgeApplySeatSnapshotVisualState(seatSnapshot)
     local seat = BRIDGE_SEATS[seatSnapshot.seatId]
     BridgeState.playerCountersBySeatId[seatSnapshot.seatId] = {}
@@ -21776,6 +22158,10 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.physicalInstanceIdByGuid = {}
     BridgeState.physicalContainerByInstanceId = {}
     BridgeState.physicalContainedInstanceIdByGuid = {}
+    BridgeState.linkedExileBySourceInstanceId = {}
+    BridgeState.linkedExileSourceByTargetInstanceId = {}
+    BridgeState.linkedExilePresentationByTargetInstanceId = {}
+    BridgeState.linkedExileDiagnostics = {}
     -- Slot indices and their generations are session-owned locator state.
     -- Never carry an old match's native Deck topology into a replacement.
     BridgeState.physicalSlotByInstanceId = {}
@@ -21827,6 +22213,7 @@ function BridgePrepareEventSession(sessionId, forceReset, preserveLiveMappings)
     BridgeState.tokenMaterializationByInstanceId = {}
     BridgeState.tokenVisualAttemptsByGuid = {}
     BridgeState.tokenMaterializationNextStagingSlot = 0
+    BridgeState.staleTokenMappingDiagnostics = {}
     BridgeState.canonicalCardScaleByGuid = {}
     BridgeState.landPlacementMode = BRIDGE_LAND_PLACEMENT_MODE
     BridgeState.landInsertionOrderByInstanceId = {}
@@ -25421,6 +25808,21 @@ end
 local function BridgeApplyStructuredCardMoveCore(event)
     if event.cardInstanceId == nil then return false, "structured zone change has no cardInstanceId" end
     BridgeBeginLibraryBatch(event)
+    -- Forge owns token death/leaves-battlefield semantics.  Once that exact
+    -- transition is authoritative, retire the physical token instead of
+    -- treating it as an ordinary Card destined for a persistent graveyard or
+    -- Deck.  This must run before the deferred graveyard batching branch.
+    if event.isToken == true
+        and event.sourceZone == "battlefield"
+        and event.destinationZone ~= nil
+        and event.destinationZone ~= "battlefield" then
+        local retired, retirementError = BridgeRetireAuthoritativeTokenDeparture(
+            event, nil, "authoritative Forge token departure")
+        if retired and event._bridgePhysicalCompletion ~= nil then
+            event._bridgePhysicalCompletion(true, nil)
+        end
+        return retired, retirementError
+    end
     -- When a same-forgeSequence transaction already owns a multi-card
     -- library->graveyard batch, defer other graveyard arrivals (notably the
     -- resolving Mental Note itself) until the owned native Deck exists. This
@@ -26144,6 +26546,10 @@ local function BridgeApplyStructuredCardMoveCore(event)
         object.setPositionSmooth(hand.position, false, true)
     elseif event.destinationZone == "battlefield" then
         object.use_hands = false
+        -- A linked exile relationship is Forge-owned.  The exact exile Card
+        -- returns as the same physical object only when Forge emits this
+        -- authoritative destination; never infer a return from source loss.
+        BridgeClearLinkedExilePresentation(event.cardInstanceId)
         local row = BridgeBattlefieldRowForEvent(event, "creature")
         local sourcePhysicalZone = BridgeState.physicalZoneByGuid[guid] or event.sourceZone
         if sourcePhysicalZone == "stack" then
@@ -26172,6 +26578,9 @@ local function BridgeApplyStructuredCardMoveCore(event)
             return false, "no exile anchor configured for seat " .. tostring(event.seatId)
         end
         object.setPositionSmooth(exilePosition, false, true)
+        -- Snapshot relationship publication normally follows the zone event,
+        -- but an already-known edge can be applied immediately as well.
+        BridgeRefreshLinkedExileTargetPresentation(event.cardInstanceId)
         if BridgeOpponentSpellCommitDeparture ~= nil then
             BridgeOpponentSpellCommitDeparture(opponentSpellDeparture, event, true)
         end
@@ -26283,8 +26692,13 @@ function BridgeApplyStructuredCardMove(event)
     -- so its non-graveyard physical operation is already the success point.
     -- Graveyard moves are deliberately excluded: Card -> Deck settlement is
     -- asynchronous and must retire stack ownership only from that callback.
+    local synchronousTokenDeparture = event ~= nil
+        and event.isToken == true
+        and event.sourceZone == "battlefield"
+        and event.destinationZone ~= nil
+        and event.destinationZone ~= "battlefield"
     if ok == true and event ~= nil and event._bridgePhysicalCompletion == nil
-        and event.destinationZone ~= "graveyard" then
+        and (event.destinationZone ~= "graveyard" or synchronousTokenDeparture) then
         BridgeFinalizeStructuredStackDeparture(event, "direct structured move")
     end
     return ok, err
@@ -30816,6 +31230,14 @@ function BridgeTakeContainedCardByIdentity(cardInstanceId, position, smooth, cal
     BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, "graveyard", position, smooth, callback)
 end
 
+-- Linked exile is logically public exile but is intentionally kept loose when
+-- its source permanent is on the battlefield.  Resync may observe a target
+-- inside a native exile Deck, so expose the same exact GUID extraction seam
+-- without teaching the relationship layer about Deck internals.
+function BridgeTakeContainedExileCardByIdentity(cardInstanceId, position, smooth, callback)
+    BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, "exile", position, smooth, callback)
+end
+
 -- Library-to-public transitions must extract the exact Forge CardInstanceId
 -- binding rather than assuming native top order.
 function BridgeTakeContainedLibraryCardByIdentity(cardInstanceId, position, smooth, callback)
@@ -31165,15 +31587,31 @@ end
 function BridgeHudReportPhysicalMappings()
     local mappings = {}
     local seenGuids = {}
+    local staleTokenMappings = {}
     for cardInstanceId, guid in pairs(BridgeState.physicalByInstanceId or {}) do
         local object = BridgeGetLiveObjectByGuid(guid)
+        local materialization = BridgeState.tokenMaterializationByInstanceId
+            and BridgeState.tokenMaterializationByInstanceId[cardInstanceId] or nil
+        local descriptor = BridgeState.authoritativeObjectByInstanceId
+            and BridgeState.authoritativeObjectByInstanceId[cardInstanceId] or nil
+        local staleToken = BridgeState.tokenPhysicalGuids[guid] == true
+            and descriptor == nil
+            and not (materialization ~= nil and materialization.state == "SPAWNING")
+        if staleToken then
+            table.insert(staleTokenMappings, {
+                cardInstanceId = cardInstanceId, guid = guid,
+                state = materialization and materialization.state or nil,
+                reason = "token mapping is absent from the latest authoritative snapshot"
+            })
+        end
         table.insert(mappings, {
             cardInstanceId = cardInstanceId,
             guid = guid,
             zone = BridgeState.physicalZoneByGuid[guid],
             seatId = BridgeState.physicalSeatByGuid[guid],
             isLive = object ~= nil,
-            advertisedCardInstanceId = BridgeReadPhysicalIdentity(object)
+            advertisedCardInstanceId = BridgeReadPhysicalIdentity(object),
+            staleTokenMapping = staleToken
         })
         seenGuids[guid] = true
     end
@@ -31220,6 +31658,7 @@ function BridgeHudReportPhysicalMappings()
     table.sort(mappings, function(left, right)
         return tostring(left.cardInstanceId) < tostring(right.cardInstanceId)
     end)
+    BridgeState.staleTokenMappingDiagnostics = staleTokenMappings
     return mappings
 end
 
