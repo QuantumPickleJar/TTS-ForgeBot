@@ -619,12 +619,32 @@ index 00000000..f3a53020
 +     * event provenance and are never inferred from the later snapshot.
 +     */
 +    private static final class PendingZoneTransition {
-+        final Card card;
++        // The live Card is optional. Tokens can be removed by SBA immediately
++        // after the GameEvent is published, so the event-view fields below are
++        // the durable identity/provenance for the transport record.
++        final Card liveCard;
++        final int forgeCardId;
++        final String cardName;
++        final String currentCardName;
++        final String ownerSeatId;
++        final String controllerSeatId;
++        final boolean token;
++        final String objectKind;
 +        final String sourceZone;
 +        final String destinationZone;
 +
-+        PendingZoneTransition(final Card card, final String sourceZone, final String destinationZone) {
-+            this.card = card;
++        PendingZoneTransition(final Card liveCard, final CardView eventCard,
++                final String sourceZone, final String destinationZone, final String ownerSeatId,
++                final String controllerSeatId) {
++            this.liveCard = liveCard;
++            this.forgeCardId = eventCard.getId();
++            this.cardName = eventCard.getOracleName() == null || eventCard.getOracleName().isBlank()
++                    ? eventCard.getName() : eventCard.getOracleName();
++            this.currentCardName = eventCard.getName();
++            this.ownerSeatId = ownerSeatId;
++            this.controllerSeatId = controllerSeatId;
++            this.token = eventCard.isToken() || eventCard.isTokenCard();
++            this.objectKind = this.token ? "forge-token" : "physical-original";
 +            this.sourceZone = sourceZone;
 +            this.destinationZone = destinationZone;
 +        }
@@ -812,21 +832,35 @@ index 00000000..f3a53020
 +    }
 +
 +    private synchronized void rememberZoneTransition(final GameEventCardChangeZone event) {
-+        final Card card = game.findByView(event.card());
-+        if (card == null) {
-+            trace("zone transition omitted: card view no longer resolves id="
-+                    + (event.card() == null ? "null" : event.card().getId()));
++        final CardView eventCard = event.card();
++        final String sourceZone = zoneName(event.from() == null ? null : event.from().zoneType());
++        final String destinationZone = zoneName(event.to() == null ? null : event.to().zoneType());
++        if (eventCard == null) {
++            trace("zone transition omitted: event view is null source=" + sourceZone
++                    + " destination=" + destinationZone);
 +            return;
 +        }
++        // Resolve only as enrichment. The CardView is the event-time
++        // authoritative evidence and must survive a token disappearing from
++        // all live zones before the snapshot is emitted.
++        final Card card = game.findByView(eventCard);
++        final String ownerSeatId = seatOf(game.getPlayer(eventCard.getOwner()));
++        final String controllerSeatId = seatOf(game.getPlayer(eventCard.getController()));
++        final PendingZoneTransition transition = new PendingZoneTransition(
++                card, eventCard, sourceZone, destinationZone, ownerSeatId, controllerSeatId);
++        trace("zone transition observed cardViewId=" + eventCard.getId()
++                + " liveCardResolved=" + (card != null)
++                + " transitionPreservedFromEventView=" + (card == null)
++                + " forgeCardId=" + transition.forgeCardId
++                + " source=" + sourceZone + " destination=" + destinationZone
++                + " isToken=" + transition.token + " queued=true queueSize=" + (pendingZoneTransitions.size() + 1));
++
 +        if (pendingZoneTransitions.size() >= 256) {
 +            // This is a bounded transport journal, not a gameplay queue.
 +            pendingZoneTransitions.remove(0);
 +            trace("zone transition buffer bounded at 256 entries");
 +        }
-+        pendingZoneTransitions.add(new PendingZoneTransition(
-+                card,
-+                zoneName(event.from() == null ? null : event.from().zoneType()),
-+                zoneName(event.to() == null ? null : event.to().zoneType())));
++        pendingZoneTransitions.add(transition);
 +    }
 +
 +    private synchronized void emitRandomResult(final GameEventRollDie roll) {
@@ -1020,40 +1054,50 @@ index 00000000..f3a53020
 +    }
 +
 +    private void appendZoneTransition(final StringBuilder json, final PendingZoneTransition transition) {
-+        final Card card = transition.card;
-+        final String canonicalName = card.getPaperCard() == null ? card.getName() : card.getPaperCard().getName();
-+        final Card cloneOrigin = card.getCloneOrigin();
-+        final Card copySource = card.getCopiedPermanent();
-+        final boolean copied = card.isCloned() || copySource != null;
-+        final boolean token = card.isRealToken() || card.isTokenCard();
-+        final SpellAbility tokenSpawningAbility = token ? card.getTokenSpawningAbility() : null;
++        final Card card = transition.liveCard;
++        final String canonicalName = card == null ? transition.cardName
++                : card.getPaperCard() == null ? card.getName() : card.getPaperCard().getName();
++        final String currentCardName = card == null ? transition.currentCardName : card.getName();
++        final Card cloneOrigin = card == null ? null : card.getCloneOrigin();
++        final Card copySource = card == null ? null : card.getCopiedPermanent();
++        final boolean copied = card != null && (card.isCloned() || copySource != null);
++        final boolean token = card == null ? transition.token : card.isRealToken() || card.isTokenCard();
++        final SpellAbility tokenSpawningAbility = token && card != null ? card.getTokenSpawningAbility() : null;
 +        final Card tokenSource = tokenSpawningAbility == null ? null : tokenSpawningAbility.getHostCard();
-+        final String objectKind = token ? "forge-token" : (copied ? "copy-permanent" : "physical-original");
++        final String objectKind = card == null ? transition.objectKind
++                : token ? "forge-token" : (copied ? "copy-permanent" : "physical-original");
++        final String ownerSeatId = card == null ? transition.ownerSeatId : seatOf(card.getOwner());
++        final String controllerSeatId = card == null ? transition.controllerSeatId : seatOf(card.getController());
++        final boolean tapped = card != null && card.isTapped();
++        final boolean faceDown = card != null && card.isFaceDown();
++        final boolean phasedOut = card != null && card.isPhasedOut();
++        final int netPower = card != null && card.isCreature() ? card.getNetPower() : 0;
++        final int netToughness = card != null && card.isCreature() ? card.getNetToughness() : 0;
 +        final Set<String> keywords = new LinkedHashSet<>();
-+        for (KeywordInterface keyword : card.getKeywords()) {
++        for (KeywordInterface keyword : card == null ? java.util.Collections.<KeywordInterface>emptyList() : card.getKeywords()) {
 +            final String name = keyword.getKeyword().toString();
 +            if (!name.isEmpty()) keywords.add(name);
 +        }
 +        json.append('{');
-+        property(json, "forgeCardId", card.getId()).append(',');
++        property(json, "forgeCardId", card == null ? transition.forgeCardId : card.getId()).append(',');
 +        property(json, "cardName", canonicalName).append(',');
-+        property(json, "currentCardName", card.getName()).append(',');
++        property(json, "currentCardName", currentCardName).append(',');
 +        property(json, "sourceZone", transition.sourceZone).append(',');
 +        property(json, "destinationZone", transition.destinationZone).append(',');
-+        property(json, "ownerSeatId", seatOf(card.getOwner())).append(',');
-+        property(json, "controllerSeatId", seatOf(card.getController())).append(',');
-+        property(json, "tapped", card.isTapped()).append(',');
-+        property(json, "faceDown", card.isFaceDown()).append(',');
-+        property(json, "phasedOut", card.isPhasedOut()).append(',');
-+        property(json, "netPower", card.isCreature() ? card.getNetPower() : 0).append(',');
-+        property(json, "netToughness", card.isCreature() ? card.getNetToughness() : 0).append(',');
-+        property(json, "currentPower", card.isCreature() ? card.getNetPower() : 0).append(',');
-+        property(json, "currentToughness", card.isCreature() ? card.getNetToughness() : 0).append(',');
++        property(json, "ownerSeatId", ownerSeatId).append(',');
++        property(json, "controllerSeatId", controllerSeatId).append(',');
++        property(json, "tapped", tapped).append(',');
++        property(json, "faceDown", faceDown).append(',');
++        property(json, "phasedOut", phasedOut).append(',');
++        property(json, "netPower", netPower).append(',');
++        property(json, "netToughness", netToughness).append(',');
++        property(json, "currentPower", netPower).append(',');
++        property(json, "currentToughness", netToughness).append(',');
 +        json.append("\"currentTypes\":");
-+        appendCurrentTypes(json, card.getType());
++        if (card == null) json.append("[]"); else appendCurrentTypes(json, card.getType());
 +        json.append(',');
 +        property(json, "isToken", token).append(',');
-+        property(json, "authoritativeObjectId", "forge-object:" + card.getId()).append(',');
++        property(json, "authoritativeObjectId", "forge-object:" + (card == null ? transition.forgeCardId : card.getId())).append(',');
 +        property(json, "originObjectId", cloneOrigin == null ? null : "forge-object:" + cloneOrigin.getId()).append(',');
 +        property(json, "copySourceObjectId", copySource == null ? null : "forge-object:" + copySource.getId()).append(',');
 +        property(json, "tokenSourceObjectId", tokenSource == null ? null : "forge-object:" + tokenSource.getId()).append(',');
@@ -1061,7 +1105,8 @@ index 00000000..f3a53020
 +        property(json, "isCopy", copied).append(',');
 +        property(json, "isVirtual", false).append(',');
 +        property(json, "materializationPolicy", "physical").append(',');
-+        appendCharacteristics(json, card, keywords);
++        if (card == null) json.append("\"characteristics\":null");
++        else appendCharacteristics(json, card, keywords);
 +        json.append('}');
 +    }
 +

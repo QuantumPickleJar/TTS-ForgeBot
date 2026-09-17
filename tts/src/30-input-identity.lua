@@ -957,6 +957,50 @@ function BridgeActionRequiresPhysicalPresentation(action)
     return not BridgeAuthoritativeDescriptorIsVirtual(descriptor)
 end
 
+-- The decision seat identifies who is choosing, not who owns or controls
+-- every physical candidate.  Source-card actions still validate against the
+-- acting seat; target/entity candidates validate against the exact
+-- authoritative object they name.
+function BridgeActionPhysicalRole(action)
+    if action == nil then return "none" end
+    local actionType = tostring(action.type or action.actionKind or "")
+    if actionType == "choose_target"
+        and tostring(action.targetKind or "") == "player" then
+        return "player-target"
+    end
+    if actionType == "choose_target"
+        and tostring(action.targetKind or "") == "card" then
+        return "entity-target"
+    end
+    if actionType == "choose_entity" and action.entityCardInstanceId ~= nil then
+        return "entity-selection"
+    end
+    if actionType == "choose_target"
+        and action.cardInstanceId ~= nil
+        and tostring(action.targetKind or "") ~= "player" then
+        return "entity-target"
+    end
+    return "source-card"
+end
+
+function BridgeActionExpectedPhysicalSeat(decision, action, instanceId)
+    local role = BridgeActionPhysicalRole(action)
+    if role == "entity-target" or role == "entity-selection" then
+        local explicitSeat = action ~= nil and (action.entitySeatId or action.targetSeatId) or nil
+        if explicitSeat ~= nil and tostring(explicitSeat) ~= "" then
+            return tostring(explicitSeat)
+        end
+        local descriptor = BridgeActionAuthoritativeDescriptor(instanceId)
+        if descriptor ~= nil then
+            -- seatId is the authoritative physical seat/zone owner published
+            -- by the snapshot.  The optional controller/owner fields are
+            -- retained for richer contracts and diagnostics when present.
+            return descriptor.seatId or descriptor.controllerSeatId or descriptor.ownerSeatId
+        end
+    end
+    return decision ~= nil and decision.seatId or nil
+end
+
 function BridgePreparedSourceIsAuthoritativelyPrepared(action)
     if action == nil or tostring(action.castMode or "") ~= "prepare"
         or action.preparedSourceCardInstanceId == nil then return true end
@@ -990,6 +1034,8 @@ function BridgeRecordActionPhysicalResolution(decision, action, kind, reason, gu
     local liveObject = diagnosticGuid ~= nil and BridgeGetLiveObjectByGuid(diagnosticGuid) or nil
     local authoritativeDescriptor = exactInstanceId ~= nil
         and authoritativeObjectByInstanceId[exactInstanceId] or nil
+    local actionRole = BridgeActionPhysicalRole(action)
+    local expectedPhysicalSeat = BridgeActionExpectedPhysicalSeat(decision, action, exactInstanceId)
     BridgeState.lastActionPhysicalResolution = {
         decisionId = decision and decision.decisionId or nil,
         decisionKind = decision and decision.kind or nil,
@@ -1021,6 +1067,11 @@ function BridgeRecordActionPhysicalResolution(decision, action, kind, reason, gu
             locatorType = containerMapping.locatorType
         } or nil,
         expectedPhysicalZone = BridgeActionExpectedPhysicalSourceZone(action),
+        actionRole = actionRole,
+        expectedPhysicalSeat = expectedPhysicalSeat,
+        authoritativeCandidateSeat = authoritativeDescriptor ~= nil
+            and (authoritativeDescriptor.seatId or authoritativeDescriptor.controllerSeatId
+                or authoritativeDescriptor.ownerSeatId) or nil,
         resolutionKind = kind,
         reason = reason,
         physicalGuid = guid,
@@ -1089,13 +1140,10 @@ function BridgeResolveExactActionPhysical(decision, action)
     local observedZone = guid and physicalZoneByGuid[guid] or nil
     local observedSeat = guid and physicalSeatByGuid[guid] or nil
     local inverse = guid and physicalInstanceIdByGuid[guid] or nil
-    local isCardTarget = action ~= nil
-        and action.type == "choose_target"
-        and tostring(action.targetKind or "") == "card"
+    local expectedPhysicalSeat = BridgeActionExpectedPhysicalSeat(decision, action, instanceId)
     if object ~= nil and object.tag == "Card" and not BridgeIsPresentationOnlyObject(object)
         and inverse == instanceId
-        and (isCardTarget
-            or decision == nil or decision.seatId == nil or observedSeat == decision.seatId)
+        and (expectedPhysicalSeat == nil or observedSeat == expectedPhysicalSeat)
         and (expectedZone == nil or observedZone == expectedZone) then
         BridgeRecordActionPhysicalResolution(decision, action, "exact-loose", nil, guid, nil, observedZone)
         return {kind = "exact-loose", object = object, guid = guid, zone = observedZone}, nil, instanceId
@@ -1107,8 +1155,7 @@ function BridgeResolveExactActionPhysical(decision, action)
     end
     local container = physicalContainerByInstanceId[instanceId]
     if containedDeck ~= nil and containedEntry ~= nil and container ~= nil
-        and (isCardTarget
-            or decision == nil or decision.seatId == nil or container.seatId == decision.seatId)
+        and (expectedPhysicalSeat == nil or container.seatId == expectedPhysicalSeat)
         and (expectedZone == nil or container.zoneName == expectedZone) then
         local deckGuid = BridgeSafeObjectGuid(containedDeck)
         BridgeRecordActionPhysicalResolution(decision, action, "exact-contained", nil,
@@ -1119,7 +1166,17 @@ function BridgeResolveExactActionPhysical(decision, action)
 
     local reason = containedError or "exact physical mapping is unavailable"
     if object ~= nil and object.tag == "Card" and inverse == instanceId then
+        local descriptor = BridgeActionAuthoritativeDescriptor(instanceId)
+        local authoritativeSeat = descriptor ~= nil
+            and (descriptor.seatId or descriptor.controllerSeatId or descriptor.ownerSeatId) or nil
+        local expectedSeat = BridgeActionExpectedPhysicalSeat(decision, action, instanceId)
         reason = "exact mapping is in wrong seat or source zone"
+            .. " role=" .. tostring(BridgeActionPhysicalRole(action))
+            .. " actor=" .. tostring(decision and decision.seatId or nil)
+            .. " authoritativeSeat=" .. tostring(authoritativeSeat)
+            .. " physicalSeat=" .. tostring(observedSeat)
+            .. " expectedZone=" .. tostring(expectedZone)
+            .. " physicalZone=" .. tostring(observedZone)
     end
     BridgeRecordActionPhysicalResolution(decision, action, "unresolved", reason,
         guid, container and container.deckGuid or nil, observedZone or (container and container.zoneName))

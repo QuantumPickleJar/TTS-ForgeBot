@@ -230,6 +230,82 @@ public sealed class PrepareLuaMappingTests
         ");
     }
 
+    [Fact]
+    public void EntitySelectionUsesAuthoritativeCandidateSeatInsteadOfDecisionSeat()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local target = {tag='Card', guid='g-opponent'}
+            local source = {tag='Card', guid='g-source'}
+            function target.getGUID() return target.guid end
+            function target.getVar() return nil end
+            function source.getGUID() return source.guid end
+            function source.getVar() return nil end
+            function getObjectFromGUID(guid)
+                if guid == 'g-opponent' then return target end
+                if guid == 'g-source' then return source end
+                return nil
+            end
+
+            local targetId = 'forge:ebec-session:41'
+            local sourceId = 'forge:ebec-session:40'
+            BridgeState.eventSessionId = 'ebec-session'
+            BridgeState.eventSessionGeneration = 1
+            BridgeState.physicalByInstanceId = {[targetId]='g-opponent', [sourceId]='g-source'}
+            BridgeState.physicalInstanceIdByGuid = {['g-opponent']=targetId, ['g-source']=sourceId}
+            BridgeState.physicalSeatByGuid = {['g-opponent']='forge-player-2', ['g-source']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['g-opponent']='battlefield', ['g-source']='hand'}
+            BridgeState.physicalContainerByInstanceId = {}
+            BridgeState.authoritativeObjectByInstanceId = {
+                [targetId]={objectId=targetId, objectKind='physical-original', isVirtual=false,
+                    zone='battlefield', seatId='forge-player-2'},
+                [sourceId]={objectId=sourceId, objectKind='physical-original', isVirtual=false,
+                    zone='hand', seatId='forge-player-1'}
+            }
+            local entityAction = {
+                actionId='forge-tui-26-choice-1', type='choose_entity',
+                entityKind='permanent', entityCardInstanceId=targetId,
+                cardInstanceId=targetId, sourceZone='battlefield'
+            }
+            local entityDecision = {
+                decisionId='forge-tui-26', kind='entity_selection',
+                seatId='forge-player-1', actions={entityAction}
+            }
+            assert(BridgeActionPhysicalRole(entityAction) == 'entity-selection')
+            assert(BridgeActionExpectedPhysicalSeat(entityDecision, entityAction, targetId) == 'forge-player-2')
+            entityReady, entityReason = BridgeDecisionPhysicalMappingsReady(entityDecision)
+            assert(entityReady, tostring(entityReason))
+            resolvedEntity, entityError = BridgeResolveExactActionPhysical(entityDecision, entityAction)
+            assert(resolvedEntity ~= nil, tostring(entityError))
+            assert(resolvedEntity.guid == 'g-opponent')
+
+            BridgeState.physicalSeatByGuid['g-opponent'] = 'forge-player-1'
+            wrongSeatReady, wrongSeatReason = BridgeDecisionPhysicalMappingsReady(entityDecision)
+            assert(not wrongSeatReady)
+            assert(string.find(tostring(wrongSeatReason), 'authoritativeSeat=forge-player-2', 1, true) ~= nil)
+            BridgeState.physicalSeatByGuid['g-opponent'] = 'forge-player-2'
+            BridgeState.physicalZoneByGuid['g-opponent'] = 'graveyard'
+            wrongZoneReady = BridgeDecisionPhysicalMappingsReady(entityDecision)
+            assert(not wrongZoneReady)
+            BridgeState.physicalZoneByGuid['g-opponent'] = 'battlefield'
+
+            local sourceAction = {
+                actionId='cast-pacifism', type='cast_spell',
+                cardInstanceId=sourceId, sourceCardInstanceId=sourceId, sourceZone='hand'
+            }
+            local sourceDecision = {
+                decisionId='forge-tui-25', kind='main_priority',
+                seatId='forge-player-1', actions={sourceAction}
+            }
+            assert(BridgeActionPhysicalRole(sourceAction) == 'source-card')
+            sourceReady, sourceReason = BridgeDecisionPhysicalMappingsReady(sourceDecision)
+            assert(sourceReady, tostring(sourceReason))
+            BridgeState.physicalSeatByGuid['g-source'] = 'forge-player-2'
+            wrongSourceReady = BridgeDecisionPhysicalMappingsReady(sourceDecision)
+            assert(not wrongSourceReady)
+        ");
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script();
