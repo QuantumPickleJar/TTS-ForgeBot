@@ -2437,6 +2437,57 @@ public sealed class TtsGlobalLuaContractTests
     }
 
     [Fact]
+    public void AuthoritativeTokenDepartureRetiresExactIdentityInsteadOfUsingPersistentGraveyardPath()
+    {
+        Assert.Contains("function BridgeRetireAuthoritativeTokenDeparture(event, object, reason)", Script);
+        Assert.Contains("event.sourceZone == \"battlefield\"", Script);
+        Assert.Contains("BridgeState.tokenMaterializationByInstanceId[instanceId] = {", Script);
+        Assert.Contains("state = \"RETIRED\"", Script);
+        Assert.Contains("BridgeState.physicalByInstanceId[instanceId] = nil", Script);
+        Assert.Contains("BridgeState.physicalInstanceIdByGuid[retiredGuid] = nil", Script);
+        Assert.Contains("card.destruct()", Script);
+
+        var moveStart = Script.IndexOf("local function BridgeApplyStructuredCardMoveCore(event)", StringComparison.Ordinal);
+        var moveEnd = Script.IndexOf("function BridgeApplyStructuredCardMove(event)", moveStart, StringComparison.Ordinal);
+        Assert.True(moveStart >= 0 && moveEnd > moveStart);
+        var move = Script[moveStart..moveEnd];
+        Assert.Contains("BridgeRetireAuthoritativeTokenDeparture", move);
+        Assert.True(move.IndexOf("BridgeRetireAuthoritativeTokenDeparture", StringComparison.Ordinal)
+            < move.IndexOf("if event.destinationZone == \"graveyard\"", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LinkedExileUsesExactRelationshipStateAndKeepsLogicalExileSeparateFromPhysicalTuck()
+    {
+        Assert.Contains("function BridgeApplyAuthoritativeLinkedExileRelationships(snapshot)", Script);
+        Assert.Contains("sourceCardInstanceId", Script);
+        Assert.Contains("exiledCardInstanceId", Script);
+        Assert.Contains("sourceDescriptor.zone", Script);
+        Assert.Contains("targetDescriptor.zone", Script);
+        Assert.Contains("presentationMode = \"linked_tuck\"", Script);
+        Assert.Contains("physicalZoneByGuid", Script);
+        Assert.Contains("BridgeResolveSeatZoneAnchor(seatId, \"exile\")", Script);
+        Assert.Contains("targetObject.setLock(true)", Script);
+        Assert.Contains("function BridgeClearLinkedExilePresentation(targetId)", Script);
+        Assert.Contains("BridgeRefreshLinkedExileTargetPresentation(event.cardInstanceId)", Script);
+        Assert.Contains("snapshot_reconcile.linked_exile", Script);
+        Assert.DoesNotContain("BridgeRecordContainedCardIdentitySet", Script[Script.IndexOf("function BridgeApplyAuthoritativeLinkedExileRelationships", StringComparison.Ordinal)..Script.IndexOf("function BridgeApplySeatSnapshotVisualState", StringComparison.Ordinal)]);
+    }
+
+    [Fact]
+    public void PhysicalMappingReportFlagsOrphanedAuthoritativeTokenMappings()
+    {
+        var start = Script.IndexOf("function BridgeHudReportPhysicalMappings", StringComparison.Ordinal);
+        var end = Script.IndexOf("function BridgeHudReportSummaryText", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        var report = Script[start..end];
+        Assert.Contains("staleTokenMappings", report);
+        Assert.Contains("descriptor == nil", report);
+        Assert.Contains("staleTokenMapping = staleToken", report);
+        Assert.Contains("BridgeState.staleTokenMappingDiagnostics = staleTokenMappings", report);
+    }
+
+    [Fact]
     public void TokenMaterialization_IsExactlyOncePerForgeInstanceAcrossAsyncSnapshotRaces()
     {
         Assert.Contains("tokenMaterializationByInstanceId", Script);

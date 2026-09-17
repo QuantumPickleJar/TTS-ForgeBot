@@ -164,6 +164,79 @@ public sealed class ForgeStructuredOutputParserTests
     }
 
     [Fact]
+    public void ForgeZoneTransitions_PreserveTokensThatVanishBeforeTheNextSnapshot()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        var baseline = Frame(47, Player(
+            battlefield:
+            [
+                Card(88, "Rabbit Token", "battlefield", 0, netPower: 1, netToughness: 1,
+                    currentTypes: "[\"creature\",\"rabbit\"]", isToken: true),
+                Card(89, "Rabbit Token", "battlefield", 1, netPower: 1, netToughness: 1,
+                    currentTypes: "[\"creature\",\"rabbit\"]", isToken: true)
+            ]));
+        _ = reconciler.Apply("session-departure", Parse(parser, baseline));
+
+        var departureTransitions =
+            "\"zoneTransitions\":["
+            + "{\"forgeCardId\":88,\"cardName\":\"Rabbit Token\",\"currentCardName\":\"Rabbit Token\",\"sourceZone\":\"battlefield\",\"destinationZone\":\"graveyard\",\"ownerSeatId\":\"forge-player-1\",\"controllerSeatId\":\"forge-player-1\",\"currentTypes\":[\"creature\",\"rabbit\"],\"isToken\":true,\"objectKind\":\"forge-token\"},"
+            + "{\"forgeCardId\":89,\"cardName\":\"Rabbit Token\",\"currentCardName\":\"Rabbit Token\",\"sourceZone\":\"battlefield\",\"destinationZone\":\"graveyard\",\"ownerSeatId\":\"forge-player-1\",\"controllerSeatId\":\"forge-player-1\",\"currentTypes\":[\"creature\",\"rabbit\"],\"isToken\":true,\"objectKind\":\"forge-token\"}]";
+        var next = Frame(48, Player()).Replace("\"stack\":[]", departureTransitions + ",\"stack\":[]", StringComparison.Ordinal);
+
+        var events = reconciler.Apply("session-departure", Parse(parser, next));
+
+        var departures = events.Where(item => item.Kind == "card_moved").ToArray();
+        Assert.Equal([88, 89], departures.Select(item => item.ForgeObjectId).ToArray());
+        Assert.All(departures, item =>
+        {
+            Assert.Equal("battlefield", item.SourceZone);
+            Assert.Equal("graveyard", item.DestinationZone);
+            Assert.True(item.IsToken);
+            Assert.Equal("forge-token", item.ObjectKind);
+        });
+    }
+
+    [Fact]
+    public void ExplicitZoneTransition_OwnsVisibleMoveAndSuppressesSnapshotDiffDuplicate()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        var baseline = Frame(70, Player(hand: [Card(12, "Raise the Alarm", "hand", 0)]));
+        _ = reconciler.Apply("session-transition", Parse(parser, baseline));
+
+        var next = Frame(71, Player(graveyard: [Card(12, "Raise the Alarm", "graveyard", 0)]))
+            .Replace("\"stack\":[]", "\"zoneTransitions\":[{\"forgeCardId\":12,\"cardName\":\"Raise the Alarm\",\"sourceZone\":\"hand\",\"destinationZone\":\"graveyard\",\"ownerSeatId\":\"forge-player-1\",\"controllerSeatId\":\"forge-player-1\"}],\"stack\":[]", StringComparison.Ordinal);
+
+        var events = reconciler.Apply("session-transition", Parse(parser, next));
+
+        Assert.Single(events.Where(item => item.Kind == "card_moved" && item.ForgeObjectId == 12));
+    }
+
+    [Fact]
+    public void LinkedExileRelationship_PreservesExactSourceAndTargetIdentity()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        _ = reconciler.Apply("session-linked", Parse(parser, Frame(80, Player(
+            battlefield: [Card(22, "Banishing Light", "battlefield", 0)],
+            exile: [Card(64, "Fire Elemental", "exile", 0, netPower: 5, netToughness: 5,
+                currentTypes: "[\"creature\"]")] ))));
+
+        var next = Frame(81, Player(
+            battlefield: [Card(22, "Banishing Light", "battlefield", 0)],
+            exile: [Card(64, "Fire Elemental", "exile", 0, netPower: 5, netToughness: 5,
+                currentTypes: "[\"creature\"]")]))
+            .Replace("\"stack\":[]", "\"linkedExileRelationships\":[{\"sourceObjectId\":\"forge-object:22\",\"exiledObjectId\":\"forge-object:64\",\"relationshipKind\":\"linked_exile\"}],\"stack\":[]", StringComparison.Ordinal);
+
+        _ = reconciler.Apply("session-linked", Parse(parser, next));
+        var relationship = Assert.Single(reconciler.Current!.LinkedExileRelationships!);
+        Assert.Equal("forge:session-linked:22", relationship.SourceCardInstanceId);
+        Assert.Equal("forge:session-linked:64", relationship.ExiledCardInstanceId);
+        Assert.Equal("linked_exile", relationship.RelationshipKind);
+    }
+
+    [Fact]
     public void MalformedDecisionReadyFrame_FailsVisibly()
     {
         var parser = new ForgeStructuredOutputParser();
@@ -854,13 +927,14 @@ public sealed class ForgeStructuredOutputParserTests
         IReadOnlyList<string>? hand = null,
         IReadOnlyList<string>? battlefield = null,
         IReadOnlyList<string>? graveyard = null,
+        IReadOnlyList<string>? exile = null,
         string manaPool = "{\"W\":0,\"U\":0,\"B\":0,\"R\":0,\"G\":0,\"C\":0}",
         string counters = "{}",
         int speed = 0,
         string designations = "[]",
         string seatId = "forge-player-1",
         int forgePlayerId = 1) =>
-        $$"""{"seatId":"{{seatId}}","forgePlayerId":{{forgePlayerId}},"displayName":"Player {{forgePlayerId}}","life":20,"poison":0,"counters":{{counters}},"manaPool":{{manaPool}},"speed":{{speed}},"designations":{{designations}},"zones":[{"name":"library","cards":[{{string.Join(',', library ?? [])}}]},{"name":"hand","cards":[{{string.Join(',', hand ?? [])}}]},{"name":"battlefield","cards":[{{string.Join(',', battlefield ?? [])}}]},{"name":"graveyard","cards":[{{string.Join(',', graveyard ?? [])}}]},{"name":"exile","cards":[]}]}""";
+        $$"""{"seatId":"{{seatId}}","forgePlayerId":{{forgePlayerId}},"displayName":"Player {{forgePlayerId}}","life":20,"poison":0,"counters":{{counters}},"manaPool":{{manaPool}},"speed":{{speed}},"designations":{{designations}},"zones":[{"name":"library","cards":[{{string.Join(',', library ?? [])}}]},{"name":"hand","cards":[{{string.Join(',', hand ?? [])}}]},{"name":"battlefield","cards":[{{string.Join(',', battlefield ?? [])}}]},{"name":"graveyard","cards":[{{string.Join(',', graveyard ?? [])}}]},{"name":"exile","cards":[{{string.Join(',', exile ?? [])}}]}]}""";
 
     private static string Card(
         int id,

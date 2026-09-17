@@ -122,6 +122,42 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void TrackedBridgeStateFeed_PreservesGameEventZoneTransitionsBeforeSnapshotFinalization()
+    {
+        Assert.Contains("GameEventCardChangeZone zoneChange", Patch);
+        Assert.Contains("rememberZoneTransition(zoneChange)", Patch);
+        Assert.Contains("zoneTransitions", Patch);
+        Assert.Contains("appendZoneTransition", Patch);
+        Assert.Contains("pendingZoneTransitions.clear()", Patch);
+        Assert.Contains("pendingZoneTransitions.size() >= 256", Patch);
+    }
+
+    [Fact]
+    public void HumanController_RoutesTargetedTriggeredAbilitiesThroughExactTuiSelection()
+    {
+        var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
+        Assert.Contains("orderAndPlaySimultaneousSa", controller);
+        Assert.Contains("bridgePrepareTriggeredTargets", controller);
+        Assert.Contains("getAllCandidates(sa)", controller);
+        Assert.Contains("chooseEntitiesThroughTui(\"target_selection\"", controller);
+        Assert.Contains("sa.getTargets().add(entity)", controller);
+        Assert.Contains("ComputerUtil.playStack(sa, player, getGame())", controller);
+        Assert.Contains("decisionCause=ability_targeting", controller);
+        Assert.Contains("return bridgeChooseTargetsFor(sa);", controller);
+    }
+
+    [Fact]
+    public void TrackedBridgeStateFeed_ExportsGenericLinkedExileEdgesFromForgeCardState()
+    {
+        Assert.Contains("getExiledWith()", Patch);
+        Assert.Contains("linkedExileRelationships", Patch);
+        Assert.Contains("sourceObjectId", Patch);
+        Assert.Contains("exiledObjectId", Patch);
+        Assert.Contains("relationshipKind", Patch);
+        Assert.Contains("isInZone(ZoneType.Battlefield)", Patch);
+    }
+
+    [Fact]
     public void TrackedBridgeStateFeed_EmitsExplicitDecisionReadinessWatermark()
     {
         Assert.Contains("@@FORGE_BRIDGE_DECISION_READY@@", Patch);

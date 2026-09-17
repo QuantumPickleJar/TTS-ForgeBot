@@ -3498,6 +3498,100 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Assert.Contains("event mutation 197-198 aborted", lua.Globals.Get("duplicateState").String);
     }
 
+    [Fact]
+    public void AuthoritativeTokenBattlefieldDepartureRetiresExactCardsWithoutGraveyardInsertion()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'session-death'
+            BridgeState.eventSessionGeneration = 4
+            local rabbitA = BridgeTestCreateCard('forge:session-death:88', 'Rabbit Token', 'rabbit-a')
+            local rabbitB = BridgeTestCreateCard('forge:session-death:89', 'Rabbit Token', 'rabbit-b')
+            rabbitA._inLibrary = false
+            rabbitB._inLibrary = false
+            BridgeRecordLooseCardIdentity('forge:session-death:88', 'rabbit-a', 'forge-player-1', 'battlefield')
+            BridgeRecordLooseCardIdentity('forge:session-death:89', 'rabbit-b', 'forge-player-1', 'battlefield')
+            BridgeState.tokenPhysicalGuids['rabbit-a'] = true
+            BridgeState.tokenPhysicalGuids['rabbit-b'] = true
+            BridgeState.authoritativeObjectByInstanceId['forge:session-death:88'] = {isToken=true, zone='battlefield'}
+            BridgeState.authoritativeObjectByInstanceId['forge:session-death:89'] = {isToken=true, zone='battlefield'}
+            local first = {sequence=208, cardInstanceId='forge:session-death:88', cardName='Rabbit Token',
+                seatId='forge-player-1', sourceZone='battlefield', destinationZone='graveyard', isToken=true}
+            local second = {sequence=209, cardInstanceId='forge:session-death:89', cardName='Rabbit Token',
+                seatId='forge-player-1', sourceZone='battlefield', destinationZone='graveyard', isToken=true}
+            firstOk, firstError = BridgeApplyStructuredCardMove(first)
+            secondOk, secondError = BridgeApplyStructuredCardMove(second)
+            firstDestroyed = rabbitA._destructed == true
+            secondDestroyed = rabbitB._destructed == true
+            firstMapping = BridgeState.physicalByInstanceId['forge:session-death:88']
+            secondMapping = BridgeState.physicalByInstanceId['forge:session-death:89']
+            firstInverse = BridgeState.physicalInstanceIdByGuid['rabbit-a']
+            secondInverse = BridgeState.physicalInstanceIdByGuid['rabbit-b']
+            graveyardEntries = BridgeTestArrayLength(bridgeTest.graveyardDeck.entries)
+        ");
+
+        Assert.True(lua.Globals.Get("firstOk").Boolean, "firstOk=" + lua.Globals.Get("firstOk").ToPrintString() + " error=" + lua.Globals.Get("firstError").ToPrintString());
+        Assert.True(lua.Globals.Get("secondOk").Boolean, "secondOk=" + lua.Globals.Get("secondOk").ToPrintString() + " error=" + lua.Globals.Get("secondError").ToPrintString());
+        Assert.True(lua.Globals.Get("firstDestroyed").Boolean);
+        Assert.True(lua.Globals.Get("secondDestroyed").Boolean);
+        Assert.True(lua.Globals.Get("firstMapping").IsNil());
+        Assert.True(lua.Globals.Get("secondMapping").IsNil());
+        Assert.True(lua.Globals.Get("firstInverse").IsNil());
+        Assert.True(lua.Globals.Get("secondInverse").IsNil());
+        Assert.Equal(0, lua.Globals.Get("graveyardEntries").Number);
+    }
+
+    [Fact]
+    public void LinkedExileKeepsExactCardLooseAndReturnsTheSamePhysicalObject()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'session-linked'
+            local source = BridgeTestCreateCard('forge:session-linked:22', 'Banishing Light', 'source-guid')
+            local target = BridgeTestCreateCard('forge:session-linked:64', 'Fire Elemental', 'target-guid')
+            source._inLibrary = false
+            target._inLibrary = false
+            BridgeRecordLooseCardIdentity('forge:session-linked:22', 'source-guid', 'forge-player-1', 'battlefield')
+            BridgeRecordLooseCardIdentity('forge:session-linked:64', 'target-guid', 'forge-player-1', 'exile')
+            BridgeState.authoritativeObjectByInstanceId['forge:session-linked:22'] = {zone='battlefield', seatId='forge-player-1'}
+            BridgeState.authoritativeObjectByInstanceId['forge:session-linked:64'] = {zone='exile', seatId='forge-player-1'}
+            linkedSnapshot = {linkedExileRelationships={}}
+            linkedSnapshot.linkedExileRelationships[1] = {
+                sourceCardInstanceId='forge:session-linked:22', exiledCardInstanceId='forge:session-linked:64', relationshipKind='linked_exile'
+            }
+            BridgeApplyAuthoritativeLinkedExileRelationships(linkedSnapshot)
+            tuckedX = target._lastPosition and target._lastPosition.x or nil
+            tuckedZ = target._lastPosition and target._lastPosition.z or nil
+            targetLocked = target._locked == true
+            targetZone = BridgeState.physicalZoneByGuid['target-guid']
+            targetContainer = BridgeState.physicalContainerByInstanceId['forge:session-linked:64']
+            BridgeApplyAuthoritativeLinkedExileRelationships({linkedExileRelationships={}})
+            relationCleared = BridgeState.linkedExileSourceByTargetInstanceId['forge:session-linked:64'] == nil
+            unlockedForOrdinaryExile = target._locked ~= true
+            returnOk = BridgeApplyStructuredCardMove({
+                sequence=401, seatId='forge-player-1', cardInstanceId='forge:session-linked:64',
+                cardName='Fire Elemental', sourceZone='exile', destinationZone='battlefield'
+            })
+            returnedGuid = BridgeState.physicalByInstanceId['forge:session-linked:64']
+            returnedZone = BridgeState.physicalZoneByGuid['target-guid']
+            sameObject = getObjectFromGUID('target-guid') == target
+        ");
+
+        Assert.True(lua.Globals.Get("tuckedX").Number != 0, CapturedLogsTail(lua));
+        Assert.NotEqual(0, lua.Globals.Get("tuckedZ").Number);
+        Assert.True(lua.Globals.Get("targetLocked").Boolean);
+        Assert.Equal("exile", lua.Globals.Get("targetZone").String);
+        Assert.True(lua.Globals.Get("targetContainer").IsNil());
+        Assert.True(lua.Globals.Get("relationCleared").Boolean);
+        Assert.True(lua.Globals.Get("unlockedForOrdinaryExile").Boolean);
+        Assert.True(lua.Globals.Get("returnOk").Boolean, CapturedLogsTail(lua));
+        Assert.Equal("target-guid", lua.Globals.Get("returnedGuid").String);
+        Assert.Equal("battlefield", lua.Globals.Get("returnedZone").String);
+        Assert.True(lua.Globals.Get("sameObject").Boolean);
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script();
