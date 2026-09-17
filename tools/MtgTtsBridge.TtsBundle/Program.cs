@@ -14,18 +14,19 @@ foreach (var part in parts)
 {
     builder.Append("-- BEGIN GENERATED SOURCE: ")
         .Append(Path.GetFileName(part))
-        .AppendLine();
-    builder.Append(File.ReadAllText(part));
-    if (builder.Length == 0 || builder[^1] != '\n') builder.AppendLine();
+        .Append('\n');
+    var partSource = File.ReadAllText(part).Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+    builder.Append(partSource);
+    if (builder.Length == 0 || builder[^1] != '\n') builder.Append('\n');
     builder.Append("-- END GENERATED SOURCE: ")
         .Append(Path.GetFileName(part))
-        .AppendLine();
+        .Append('\n');
 }
 
 var source = builder.ToString();
 var sourceHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source))).ToLowerInvariant();
-var generated = "-- GENERATED GLOBAL.LUA SOURCE SHA256: " + sourceHash + Environment.NewLine
-    + "BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = \"" + sourceHash + "\"" + Environment.NewLine + source;
+var generated = "-- GENERATED GLOBAL.LUA SOURCE SHA256: " + sourceHash + "\n"
+    + "BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = \"" + sourceHash + "\"\n" + source;
 if (args.Contains("--check", StringComparer.Ordinal))
 {
     var current = File.Exists(outputPath) ? File.ReadAllText(outputPath) : string.Empty;

@@ -2431,7 +2431,8 @@ public sealed class TtsGlobalLuaContractTests
     public void TokenPhysicalCompletionAdoptsOnlyAfterExactBindAndPlacement()
     {
         Assert.Contains("function BridgeBindTokenMaterialization(event, object, row, sessionId, epoch)", Script);
-        Assert.Contains("BridgeRecordLooseCardIdentity(\n        event.cardInstanceId, guid, event.seatId, \"battlefield\", false, true)", Script);
+        Assert.Contains("BridgeRecordLooseCardIdentity(", Script);
+        Assert.Contains("event.cardInstanceId, guid, event.seatId, \"battlefield\", false, true)", Script);
         Assert.Contains("BridgeMoveToBattlefield(event, object, row)", Script);
         Assert.Contains("BridgeAdoptTokenVisualAttempt(object)", Script);
     }
@@ -3145,17 +3146,17 @@ public sealed class TtsGlobalLuaContractTests
                      .OrderBy(Path.GetFileName, StringComparer.Ordinal))
         {
             var name = Path.GetFileName(path);
-            expected.Append("-- BEGIN GENERATED SOURCE: ").Append(name).AppendLine();
-            expected.Append(File.ReadAllText(path));
-            if (expected.Length == 0 || expected[^1] != '\n') expected.AppendLine();
-            expected.Append("-- END GENERATED SOURCE: ").Append(name).AppendLine();
+            expected.Append("-- BEGIN GENERATED SOURCE: ").Append(name).Append('\n');
+            expected.Append(File.ReadAllText(path).Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n'));
+            if (expected.Length == 0 || expected[^1] != '\n') expected.Append('\n');
+            expected.Append("-- END GENERATED SOURCE: ").Append(name).Append('\n');
         }
 
         var source = expected.ToString();
         var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(source))).ToLowerInvariant();
-        Assert.Equal("-- GENERATED GLOBAL.LUA SOURCE SHA256: " + hash + Environment.NewLine
-            + "BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = \"" + hash + "\"" + Environment.NewLine + source,
+        Assert.Equal("-- GENERATED GLOBAL.LUA SOURCE SHA256: " + hash + "\n"
+            + "BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = \"" + hash + "\"\n" + source,
             File.ReadAllText(Path.Combine(repositoryRoot, "tts", "Global.lua")));
     }
 

@@ -133,6 +133,21 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void TrackedBridgeStateFeed_PreservesVanishedTokenIdentityFromEventView()
+    {
+        Assert.Contains("final CardView eventCard = event.card()", Patch);
+        Assert.Contains("final Card card = game.findByView(eventCard)", Patch);
+        Assert.Contains("transitionPreservedFromEventView=", Patch);
+        Assert.Contains("new PendingZoneTransition(", Patch);
+        Assert.Contains("eventCard.getId()", Patch);
+        Assert.Contains("eventCard.isToken() || eventCard.isTokenCard()", Patch);
+        Assert.Contains("card == null ? transition.forgeCardId : card.getId()", Patch);
+        Assert.Contains("card == null ? transition.cardName", Patch);
+        Assert.Contains("card == null ? transition.ownerSeatId", Patch);
+        Assert.DoesNotContain("zone transition omitted: card view no longer resolves", Patch);
+    }
+
+    [Fact]
     public void HumanController_RoutesTargetedTriggeredAbilitiesThroughExactTuiSelection()
     {
         var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
