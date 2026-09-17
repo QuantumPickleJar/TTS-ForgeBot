@@ -1222,6 +1222,8 @@ function BridgeEventDrainQueueState()
         physicalQueues = physical,
         physicalMutationProgress = BridgeDiagnosticSnapshot(BridgeState.eventDrainPhysicalProgress or {}),
         physicalMutationJournal = BridgeDiagnosticSnapshot(BridgeState.physicalMutationJournal or {}),
+        linkedExileDiagnostics = BridgeDiagnosticSnapshot(BridgeState.linkedExileDiagnostics or {}),
+        linkedExilePresentation = BridgeDiagnosticSnapshot(BridgeState.linkedExilePresentationByTargetInstanceId or {}),
         lastTtsRuntimeError = BridgeDiagnosticSnapshot(BridgeState.lastTtsRuntimeError or {}),
         presentationTiming = BridgePresentationTimingDiagnostics(),
         opponentSpellPresentation = BridgeOpponentSpellPresentationDiagnostics ~= nil
@@ -1348,7 +1350,8 @@ function BridgeEventDrainQueueState()
         firstBlockingObservation = BridgeState.firstBlockingObservation,
         firstActualFailure = BridgeState.firstActualFailure,
         currentObservedBlocker = BridgeState.currentObservedBlocker,
-        lastSnapshotRepresentationFailure = BridgeDiagnosticSnapshot(BridgeState.lastSnapshotRepresentationFailure)
+        lastSnapshotRepresentationFailure = BridgeDiagnosticSnapshot(BridgeState.lastSnapshotRepresentationFailure),
+        linkedExileRelationships = BridgeDiagnosticSnapshot(BridgeState.linkedExileSourceByTargetInstanceId or {})
     }
 end
 
@@ -3560,6 +3563,13 @@ BridgeState = {
     physicalContainerByInstanceId = {},
     physicalContainedInstanceIdByGuid = {},
     physicalSlotByInstanceId = {},
+    -- Forge-authoritative temporary exile edges.  The target remains in the
+    -- logical exile zone even while its physical Card is tucked under the
+    -- exact battlefield source permanent.
+    linkedExileBySourceInstanceId = {},
+    linkedExileSourceByTargetInstanceId = {},
+    linkedExilePresentationByTargetInstanceId = {},
+    linkedExileDiagnostics = {},
     libraryBindingGenerationBySeatId = {},
     -- Native Deck contained GUIDs are ephemeral TTS implementation details.
     -- Forge instance identity in a deck-like zone is this ordered ledger.
@@ -3651,6 +3661,7 @@ BridgeState = {
     tokenMaterializationNextStagingSlot = 0,
     tokenVisualAttemptsByGuid = {},
     tokenMaterializationJournal = {},
+    staleTokenMappingDiagnostics = {},
     -- Authoritative Forge-object metadata is independent of physical GUIDs.
     -- Virtual/copy objects can exist without an original deck card.
     authoritativeObjectByInstanceId = {},
@@ -5351,6 +5362,121 @@ function BridgeRecordTokenMaterializationDiagnostic(entry)
     }
     table.insert(journal, bounded)
     while #journal > 80 do table.remove(journal, 1) end
+end
+
+-- Forge-created tokens cease to exist after Forge authoritatively moves them
+-- off the battlefield.  They must not be inserted into a persistent TTS
+-- graveyard/exile/hand/library representation.  Keep this exact-instance
+-- retirement separate from ordinary Card -> Deck movement so no printed-name
+-- or spatial fallback can destroy the wrong object.
+function BridgeRetireAuthoritativeTokenDeparture(event, object, reason)
+    if event == nil or event.cardInstanceId == nil
+        or event.isToken ~= true
+        or event.sourceZone ~= "battlefield"
+        or event.destinationZone == nil
+        or event.destinationZone == "battlefield" then
+        return false, "not an authoritative battlefield token departure"
+    end
+
+    local instanceId = event.cardInstanceId
+    local mappedGuid = BridgeState.physicalByInstanceId[instanceId]
+    local mappedObject = mappedGuid ~= nil and BridgeGetLiveObjectByGuid(mappedGuid) or nil
+    local exactObject = object or mappedObject
+    local retiredGuid = mappedGuid or BridgeSafeObjectGuid(exactObject)
+    local exactObjectUsable = exactObject ~= nil and BridgeObjectIsUsable(exactObject)
+    if exactObjectUsable and BridgeSafeObjectTag(exactObject) ~= "Card" then
+        -- An unexpected native Deck is not safe to destroy and its current
+        -- identity must remain available to explicit recovery.  Do not clear
+        -- the ledger and then report success for a representation we did not
+        -- retire.
+        BridgeRecordPhysicalMutationJournal({
+            operation = "TokenDeparture",
+            stage = "TOKEN_PHYSICAL_RETIREMENT_UNAVAILABLE",
+            eventSequence = event.sequence,
+            cardInstanceId = instanceId,
+            sourceZone = event.sourceZone,
+            destinationZone = event.destinationZone,
+            physicalGuid = retiredGuid,
+            isToken = true,
+            reason = "unexpected native container during token departure"
+        })
+        return false, "exact token departure resolved to an unexpected native container"
+    end
+
+    -- Cancel every presentation-owned attempt for this exact Forge identity.
+    -- A delayed importer callback will fail BridgeTokenMaterializationIsCurrent
+    -- once the lifecycle is RETIRED and will clean up any unbound Card it
+    -- returns.  Never retire an attempt belonging to another instance.
+    for guid, attempt in pairs(BridgeState.tokenVisualAttemptsByGuid or {}) do
+        if attempt ~= nil and attempt.cardInstanceId == instanceId then
+            if BridgeRetireTokenVisualAttempt ~= nil then
+                BridgeRetireTokenVisualAttempt(attempt, reason or "authoritative token departure")
+            else
+                BridgeState.tokenVisualAttemptsByGuid[guid] = nil
+            end
+        end
+    end
+
+    BridgeClearCardDesignationPresentation(instanceId, exactObject)
+    local container = BridgeState.physicalContainerByInstanceId[instanceId]
+    if container ~= nil and container.cardGuid ~= nil then
+        if BridgeState.physicalContainedInstanceIdByGuid[container.cardGuid] == instanceId then
+            BridgeState.physicalContainedInstanceIdByGuid[container.cardGuid] = nil
+        end
+        BridgeState.physicalSeatByGuid[container.cardGuid] = nil
+        BridgeState.physicalZoneByGuid[container.cardGuid] = nil
+    end
+    BridgeState.physicalContainerByInstanceId[instanceId] = nil
+    if BridgeState.physicalSlotByInstanceId ~= nil then
+        BridgeState.physicalSlotByInstanceId[instanceId] = nil
+    end
+
+    if retiredGuid ~= nil then
+        if BridgeState.physicalInstanceIdByGuid[retiredGuid] == instanceId then
+            BridgeState.physicalInstanceIdByGuid[retiredGuid] = nil
+        end
+        BridgeState.physicalSeatByGuid[retiredGuid] = nil
+        BridgeState.physicalZoneByGuid[retiredGuid] = nil
+        BridgeState.physicalTappedByGuid[retiredGuid] = nil
+        BridgeState.tokenPhysicalGuids[retiredGuid] = nil
+        BridgeUnregisterPresentationObject(retiredGuid)
+    end
+    BridgeState.physicalByInstanceId[instanceId] = nil
+    BridgeState.authoritativeObjectByInstanceId[instanceId] = nil
+    BridgeState.preparedPresentationGuidByInstanceId[instanceId] = nil
+    BridgeState.preparedDesignationStateByInstanceId[instanceId] = nil
+    BridgeState.cardDesignationsByInstanceId[instanceId] = nil
+    BridgeState.pendingPrivateHandIdentityByInstanceId[instanceId] = nil
+    BridgeState.tokenMaterializationByInstanceId[instanceId] = {
+        state = "RETIRED",
+        sessionId = BridgeState.eventSessionId,
+        epoch = BRIDGE_RUNTIME_EPOCH_LOCAL,
+        eventSequence = event.sequence,
+        retiredDestinationZone = event.destinationZone,
+        retiredReason = reason or "authoritative token departure"
+    }
+    BridgeAdvancePhysicalPresentationGeneration("authoritative-token-departure")
+
+    -- Only destroy the exact live Card.  A native Deck is never destructed by
+    -- this path: token departures are not allowed to create a destination
+    -- container, and an unexpected Deck must be left for explicit recovery.
+    local destroyed = not exactObjectUsable
+    if exactObjectUsable then
+        BridgeRetirePhysicalIdentityForSession(exactObject, BridgeState.eventSessionId)
+        destroyed = BridgeSafeObjectCall(exactObject, function(card) card.destruct() end)
+    end
+    BridgeRecordPhysicalMutationJournal({
+        operation = "TokenDeparture",
+        stage = destroyed and "TOKEN_PHYSICAL_RETIRED" or "TOKEN_PHYSICAL_RETIREMENT_UNAVAILABLE",
+        eventSequence = event.sequence,
+        cardInstanceId = instanceId,
+        sourceZone = event.sourceZone,
+        destinationZone = event.destinationZone,
+        physicalGuid = retiredGuid,
+        isToken = true,
+        reason = reason or "authoritative Forge token departure"
+    })
+    return destroyed, destroyed and nil or "exact token Card could not be retired"
 end
 
 function BridgeTokenMaterializationIsCurrent(cardInstanceId, sessionId, epoch)

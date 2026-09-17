@@ -2829,6 +2829,14 @@ function BridgeTakeContainedCardByIdentity(cardInstanceId, position, smooth, cal
     BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, "graveyard", position, smooth, callback)
 end
 
+-- Linked exile is logically public exile but is intentionally kept loose when
+-- its source permanent is on the battlefield.  Resync may observe a target
+-- inside a native exile Deck, so expose the same exact GUID extraction seam
+-- without teaching the relationship layer about Deck internals.
+function BridgeTakeContainedExileCardByIdentity(cardInstanceId, position, smooth, callback)
+    BridgeTakeContainedCardFromZoneByIdentity(cardInstanceId, "exile", position, smooth, callback)
+end
+
 -- Library-to-public transitions must extract the exact Forge CardInstanceId
 -- binding rather than assuming native top order.
 function BridgeTakeContainedLibraryCardByIdentity(cardInstanceId, position, smooth, callback)
@@ -3178,15 +3186,31 @@ end
 function BridgeHudReportPhysicalMappings()
     local mappings = {}
     local seenGuids = {}
+    local staleTokenMappings = {}
     for cardInstanceId, guid in pairs(BridgeState.physicalByInstanceId or {}) do
         local object = BridgeGetLiveObjectByGuid(guid)
+        local materialization = BridgeState.tokenMaterializationByInstanceId
+            and BridgeState.tokenMaterializationByInstanceId[cardInstanceId] or nil
+        local descriptor = BridgeState.authoritativeObjectByInstanceId
+            and BridgeState.authoritativeObjectByInstanceId[cardInstanceId] or nil
+        local staleToken = BridgeState.tokenPhysicalGuids[guid] == true
+            and descriptor == nil
+            and not (materialization ~= nil and materialization.state == "SPAWNING")
+        if staleToken then
+            table.insert(staleTokenMappings, {
+                cardInstanceId = cardInstanceId, guid = guid,
+                state = materialization and materialization.state or nil,
+                reason = "token mapping is absent from the latest authoritative snapshot"
+            })
+        end
         table.insert(mappings, {
             cardInstanceId = cardInstanceId,
             guid = guid,
             zone = BridgeState.physicalZoneByGuid[guid],
             seatId = BridgeState.physicalSeatByGuid[guid],
             isLive = object ~= nil,
-            advertisedCardInstanceId = BridgeReadPhysicalIdentity(object)
+            advertisedCardInstanceId = BridgeReadPhysicalIdentity(object),
+            staleTokenMapping = staleToken
         })
         seenGuids[guid] = true
     end
@@ -3233,6 +3257,7 @@ function BridgeHudReportPhysicalMappings()
     table.sort(mappings, function(left, right)
         return tostring(left.cardInstanceId) < tostring(right.cardInstanceId)
     end)
+    BridgeState.staleTokenMappingDiagnostics = staleTokenMappings
     return mappings
 end
 
