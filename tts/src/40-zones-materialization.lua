@@ -1137,13 +1137,17 @@ function BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
     if zone.name == "battlefield" then
         BridgeTraceStart("START-16 battlefield-reconstruction", tostring(seatSnapshot.seatId))
         local row = card.battlefieldKind == "land" and "land" or "creature"
-        local position, positionError = BridgeBattlefieldPosition(seatSnapshot.seatId, row)
+        -- Create a minimal event-like object for BridgeBattlefieldPosition to check isToken
+        local reconstructionEvent = {
+            isToken = card.isToken == true
+        }
+        local position, positionError = BridgeBattlefieldPosition(seatSnapshot.seatId, row, reconstructionEvent)
         if position == nil then
             BridgeStopOnDesync(positionError)
             return false, positionError
         end
         object.setPosition(position)
-        local rowKey = seatSnapshot.seatId .. ":" .. row
+        local rowKey = seatSnapshot.seatId .. ":" .. (card.isToken == true and "token" or row)
         BridgeState.battlefieldCounts[rowKey] = (BridgeState.battlefieldCounts[rowKey] or 0) + 1
     elseif zone.name == "graveyard" then
         local position = BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, "graveyard")

@@ -2425,10 +2425,11 @@ function BridgeMoveToBattlefield(event, object, row, countAsNewPlacement)
     if event ~= nil and event.cardInstanceId ~= nil then
         BridgeState.battlefieldKindByInstanceId[event.cardInstanceId] = row
     end
-    BridgeLog(string.format("[Bridge] ROW_PLACEMENT seat=%s instance=%s row=%s source=%s destination=%s",
+    BridgeLog(string.format("[Bridge] ROW_PLACEMENT seat=%s instance=%s row=%s source=%s destination=%s isToken=%s",
         tostring(event and event.seatId), tostring(event and event.cardInstanceId), tostring(row),
-        tostring(event and event.sourceZone), tostring(event and event.destinationZone)))
-    local destination, positionError = BridgeBattlefieldPosition(event.seatId, row)
+        tostring(event and event.sourceZone), tostring(event and event.destinationZone),
+        tostring(event and event.isToken)))
+    local destination, positionError = BridgeBattlefieldPosition(event.seatId, row, event)
     if destination == nil then
         return false, positionError
     end
@@ -2544,25 +2545,46 @@ function BridgeRelayoutStrictLandRow(seatId)
     end
 end
 
-function BridgeBattlefieldPosition(seatId, row)
+function BridgeBattlefieldPosition(seatId, row, event)
     local seat = BRIDGE_SEATS[seatId]
     local anchor = seat and seat.battlefieldAnchors and seat.battlefieldAnchors[row]
     if anchor == nil then
         return nil, "no battlefield anchor configured for seat " .. tostring(seatId) .. " row " .. tostring(row)
     end
 
-    local rowKey = seatId .. ":" .. row
+    -- Tokens use vertical-first layout (3 depth positions × 4 columns),
+    -- while normal creatures use horizontal-first layout (4 columns × 3 rows).
+    local isToken = event ~= nil and event.isToken == true and row == "creature"
+    local rowKey = seatId .. ":" .. (isToken and "token" or row)
     local count = BridgeState.battlefieldCounts[rowKey] or 0
+    
     for offset = 0, 11 do
         local slot = count + offset
-        local candidate = {
-            -- A tapped card is roughly as wide as an upright card is tall.
-            -- Four wider slots preserve a grab/tap gap instead of overlapping
-            -- adjacent creatures in the old six-card row.
-            x = anchor.x + (slot % 4) * 3.4,
-            y = anchor.y,
-            z = anchor.z + math.floor(slot / 4) * seat.tableSideZ * 4.0
-        }
+        local candidate
+        
+        if isToken then
+            -- Token grid: vertical-first ordering
+            -- 3 depth positions per column, then advance horizontally
+            local depthIndex = slot % 3
+            local column = math.floor(slot / 3)
+            candidate = {
+                x = anchor.x + column * 3.4,
+                y = anchor.y,
+                z = anchor.z + depthIndex * seat.tableSideZ * 4.0
+            }
+        else
+            -- Normal creature/land grid: horizontal-first ordering
+            -- 4 columns per row, then advance vertically
+            candidate = {
+                -- A tapped card is roughly as wide as an upright card is tall.
+                -- Four wider slots preserve a grab/tap gap instead of overlapping
+                -- adjacent creatures in the old six-card row.
+                x = anchor.x + (slot % 4) * 3.4,
+                y = anchor.y,
+                z = anchor.z + math.floor(slot / 4) * seat.tableSideZ * 4.0
+            }
+        end
+        
         if not BridgeBattlefieldPositionOccupied(candidate) then
             BridgeState.battlefieldCounts[rowKey] = slot
             return candidate, nil

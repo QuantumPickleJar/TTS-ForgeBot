@@ -632,10 +632,11 @@ index 00000000..f3a53020
 +        final String objectKind;
 +        final String sourceZone;
 +        final String destinationZone;
++        final long mutationGeneration;
 +
 +        PendingZoneTransition(final Card liveCard, final CardView eventCard,
 +                final String sourceZone, final String destinationZone, final String ownerSeatId,
-+                final String controllerSeatId) {
++                final String controllerSeatId, final long mutationGeneration) {
 +            this.liveCard = liveCard;
 +            this.forgeCardId = eventCard.getId();
 +            this.cardName = eventCard.getOracleName() == null || eventCard.getOracleName().isBlank()
@@ -647,6 +648,7 @@ index 00000000..f3a53020
 +            this.objectKind = this.token ? "forge-token" : "physical-original";
 +            this.sourceZone = sourceZone;
 +            this.destinationZone = destinationZone;
++            this.mutationGeneration = mutationGeneration;
 +        }
 +    }
 +    static final String SENTINEL = "@@FORGE_BRIDGE_STATE@@";
@@ -664,7 +666,10 @@ index 00000000..f3a53020
 +    private final Game game;
 +    private final Map<Player, String> seats = new IdentityHashMap<>();
 +    private final AtomicBoolean snapshotScheduled = new AtomicBoolean();
++    private final AtomicBoolean snapshotAttemptInProgress = new AtomicBoolean();
 +    private final AtomicLong mutationGeneration = new AtomicLong();
++    private final Object mutationRegistrationLock = new Object();
++    private final Object transitionJournalLock = new Object();
 +    private final AtomicReference<String> latestReason = new AtomicReference<>("initial");
 +    private final AtomicBoolean terminalSnapshotEmitted = new AtomicBoolean();
 +    private long sequence;
@@ -799,6 +804,7 @@ index 00000000..f3a53020
 +            return;
 +        }
 +        if (event instanceof GameEventGameOutcome) {
++            markMutation(event.getClass().getSimpleName());
 +            emitTerminalSnapshot();
 +            return;
 +        }
@@ -807,11 +813,17 @@ index 00000000..f3a53020
 +            // value for an unblocked attacker. Its event payload is therefore
 +            // not an exact blocker identity. The following complete combat
 +            // snapshot is the sole authoritative source for presentation.
-+            scheduleSnapshot(event.getClass().getSimpleName());
++            markMutation(event.getClass().getSimpleName());
++            ensureSnapshotScheduled();
 +            return;
 +        }
 +        if (event instanceof GameEventCardChangeZone zoneChange) {
-+            rememberZoneTransition(zoneChange);
++            synchronized (mutationRegistrationLock) {
++                final long generation = markMutationLocked(event.getClass().getSimpleName());
++                rememberZoneTransition(zoneChange, generation);
++            }
++            ensureSnapshotScheduled();
++            return;
 +        }
 +        if (event instanceof GameEventCardChangeZone
 +                || event instanceof GameEventCardTapped
@@ -827,11 +839,12 @@ index 00000000..f3a53020
 +                || event instanceof GameEventMulligan
 +                || event instanceof GameEventTurnBegan
 +                || event instanceof GameEventSnapshotRestored) {
-+            scheduleSnapshot(event.getClass().getSimpleName());
++            markMutation(event.getClass().getSimpleName());
++            ensureSnapshotScheduled();
 +        }
 +    }
 +
-+    private synchronized void rememberZoneTransition(final GameEventCardChangeZone event) {
++    private void rememberZoneTransition(final GameEventCardChangeZone event, final long generation) {
 +        final CardView eventCard = event.card();
 +        final String sourceZone = zoneName(event.from() == null ? null : event.from().zoneType());
 +        final String destinationZone = zoneName(event.to() == null ? null : event.to().zoneType());
@@ -847,20 +860,24 @@ index 00000000..f3a53020
 +        final String ownerSeatId = seatOf(game.getPlayer(eventCard.getOwner()));
 +        final String controllerSeatId = seatOf(game.getPlayer(eventCard.getController()));
 +        final PendingZoneTransition transition = new PendingZoneTransition(
-+                card, eventCard, sourceZone, destinationZone, ownerSeatId, controllerSeatId);
++                card, eventCard, sourceZone, destinationZone, ownerSeatId, controllerSeatId, generation);
++        final int queueSize;
++        synchronized (transitionJournalLock) {
++            if (pendingZoneTransitions.size() >= 256) {
++                // This is a bounded transport journal, not a gameplay queue.
++                pendingZoneTransitions.remove(0);
++                trace("zone transition buffer bounded at 256 entries");
++            }
++            pendingZoneTransitions.add(transition);
++            queueSize = pendingZoneTransitions.size();
++        }
 +        trace("zone transition observed cardViewId=" + eventCard.getId()
 +                + " liveCardResolved=" + (card != null)
 +                + " transitionPreservedFromEventView=" + (card == null)
 +                + " forgeCardId=" + transition.forgeCardId
 +                + " source=" + sourceZone + " destination=" + destinationZone
-+                + " isToken=" + transition.token + " queued=true queueSize=" + (pendingZoneTransitions.size() + 1));
-+
-+        if (pendingZoneTransitions.size() >= 256) {
-+            // This is a bounded transport journal, not a gameplay queue.
-+            pendingZoneTransitions.remove(0);
-+            trace("zone transition buffer bounded at 256 entries");
-+        }
-+        pendingZoneTransitions.add(transition);
++                + " isToken=" + transition.token + " queued=true queueSize=" + queueSize
++                + " generation=" + generation);
 +    }
 +
 +    private synchronized void emitRandomResult(final GameEventRollDie roll) {
@@ -907,10 +924,22 @@ index 00000000..f3a53020
 +     * during opening-hand setup. Coalesce events and snapshot shortly after the
 +     * mutation batch on the bridge's read-only observer path instead.
 +     */
-+    private void scheduleSnapshot(final String reason) {
++    private void markMutation(final String reason) {
++        synchronized (mutationRegistrationLock) {
++            markMutationLocked(reason);
++        }
++    }
++
++    private long markMutationLocked(final String reason) {
 +        final long generation = mutationGeneration.incrementAndGet();
 +        latestReason.set(reason);
-+        trace("event=" + reason + " generation=" + generation + " scheduled=" + snapshotScheduled.get());
++        trace("mutation observed reason=" + reason + " generation=" + generation);
++        return generation;
++    }
++
++    private void ensureSnapshotScheduled() {
++        trace("snapshot scheduled generation=" + mutationGeneration.get()
++                + " scheduled=" + snapshotScheduled.get());
 +        if (!snapshotScheduled.compareAndSet(false, true)) {
 +            return;
 +        }
@@ -919,7 +948,8 @@ index 00000000..f3a53020
 +
 +    void emitTerminalSnapshot() {
 +        if (!game.isGameOver() || !terminalSnapshotEmitted.compareAndSet(false, true)) return;
-+        emitSnapshot("game_ended", mutationGeneration.get());
++        latestReason.set("game_ended");
++        if (snapshotScheduled.compareAndSet(false, true)) emitWhenStable();
 +    }
 +
 +    /**
@@ -929,19 +959,20 @@ index 00000000..f3a53020
 +     * lost until a later unrelated game event happens to cause a snapshot.
 +     */
 +    private void emitWhenStable() {
-+        final long generation = mutationGeneration.get();
-+        final String reason = latestReason.get();
++        if (!snapshotAttemptInProgress.compareAndSet(false, true)) return;
 +        try {
-+            emitSnapshot(reason, generation);
-+            if (mutationGeneration.get() != generation) {
++            final long publishedGeneration = emitSnapshot(null);
++            if (publishedGeneration < 0) {
++                trace("snapshot candidate discarded currentGeneration=" + mutationGeneration.get()
++                        + " reason=mutation_during_snapshot");
 +                ThreadUtil.delay(25, this::emitWhenStable);
 +                return;
 +            }
 +            snapshotScheduled.set(false);
 +            // Close the race where an event arrived after the equality check
 +            // but before clearing the scheduled flag.
-+            if (mutationGeneration.get() != generation) {
-+                scheduleSnapshot(latestReason.get());
++            if (mutationGeneration.get() != publishedGeneration) {
++                ensureSnapshotScheduled();
 +            }
 +        } catch (ConcurrentModificationException ignored) {
 +            ThreadUtil.delay(25, this::emitWhenStable);
@@ -957,10 +988,28 @@ index 00000000..f3a53020
 +            // A diagnostics feed must never change or terminate Forge gameplay.
 +            snapshotScheduled.set(false);
 +            System.err.println("Forge bridge state snapshot skipped: " + exception.getClass().getSimpleName());
++        } finally {
++            snapshotAttemptInProgress.set(false);
 +        }
 +    }
 +
-+    private synchronized void emitSnapshot(final String reason, final long generation) {
++    private long emitSnapshot(final String requestedReason) {
++        final long generation;
++        final String reason;
++        final List<PendingZoneTransition> includedTransitions;
++        synchronized (mutationRegistrationLock) {
++            generation = mutationGeneration.get();
++            reason = requestedReason == null ? latestReason.get() : requestedReason;
++            synchronized (transitionJournalLock) {
++                includedTransitions = new java.util.ArrayList<>();
++                for (PendingZoneTransition transition : pendingZoneTransitions) {
++                    if (transition.mutationGeneration <= generation) includedTransitions.add(transition);
++                }
++            }
++        }
++        trace("snapshot candidate generation=" + generation
++                + " pendingTransitionCount=" + includedTransitions.size());
++
 +        final StringBuilder json = new StringBuilder(32768);
 +        final Set<Integer> emittedCardIds = new HashSet<>();
 +        json.append('{');
@@ -997,7 +1046,7 @@ index 00000000..f3a53020
 +        }
 +        json.append("],\"zoneTransitions\":[");
 +        boolean firstTransition = true;
-+        for (PendingZoneTransition transition : pendingZoneTransitions) {
++        for (PendingZoneTransition transition : includedTransitions) {
 +            if (!firstTransition) json.append(',');
 +            firstTransition = false;
 +            appendZoneTransition(json, transition);
@@ -1012,12 +1061,34 @@ index 00000000..f3a53020
 +        }
 +        json.append('}');
 +
-+        synchronized (System.out) {
-+            System.out.println(SENTINEL + json);
++        synchronized (mutationRegistrationLock) {
++            if (mutationGeneration.get() != generation) {
++                trace("snapshot candidate discarded capturedGeneration=" + generation
++                        + " currentGeneration=" + mutationGeneration.get()
++                        + " reason=mutation_during_snapshot");
++                return -1;
++            }
++            synchronized (System.out) {
++                System.out.println(SENTINEL + json);
++                System.out.flush();
++            }
++            sequence = snapshotSequence;
++            synchronized (transitionJournalLock) {
++                final java.util.Iterator<PendingZoneTransition> iterator = pendingZoneTransitions.iterator();
++                while (iterator.hasNext()) {
++                    final PendingZoneTransition transition = iterator.next();
++                    if (transition.mutationGeneration <= generation) {
++                        iterator.remove();
++                        trace("transition retired cardId=" + transition.forgeCardId
++                                + " generation=" + transition.mutationGeneration);
++                    }
++                }
++            }
 +        }
-+        pendingZoneTransitions.clear();
-+        sequence = snapshotSequence; trace("snapshot sequence=" + snapshotSequence + " generation=" + generation + " reason=" + reason
++        trace("snapshot published sequence=" + snapshotSequence + " generation=" + generation
++                + " transitionCount=" + includedTransitions.size() + " reason=" + reason
 +                + " battlefield=" + battlefieldSummary());
++        return generation;
 +    }
 +
 +    private synchronized void emitDecisionReady() {

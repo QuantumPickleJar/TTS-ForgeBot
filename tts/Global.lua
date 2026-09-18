@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 86ec021394bdfc7dda2bcb19b305c450e81e5d744854e244f9320a4c63464a73
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "86ec021394bdfc7dda2bcb19b305c450e81e5d744854e244f9320a4c63464a73"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 01c05d7c2b0d4a9c52291d6fc635c3bdbb2eb754bcf5c78a9b2b27966c3e6b8e
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "01c05d7c2b0d4a9c52291d6fc635c3bdbb2eb754bcf5c78a9b2b27966c3e6b8e"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -21183,13 +21183,17 @@ function BridgePlaceSnapshotCard(object, card, zone, seatSnapshot)
     if zone.name == "battlefield" then
         BridgeTraceStart("START-16 battlefield-reconstruction", tostring(seatSnapshot.seatId))
         local row = card.battlefieldKind == "land" and "land" or "creature"
-        local position, positionError = BridgeBattlefieldPosition(seatSnapshot.seatId, row)
+        -- Create a minimal event-like object for BridgeBattlefieldPosition to check isToken
+        local reconstructionEvent = {
+            isToken = card.isToken == true
+        }
+        local position, positionError = BridgeBattlefieldPosition(seatSnapshot.seatId, row, reconstructionEvent)
         if position == nil then
             BridgeStopOnDesync(positionError)
             return false, positionError
         end
         object.setPosition(position)
-        local rowKey = seatSnapshot.seatId .. ":" .. row
+        local rowKey = seatSnapshot.seatId .. ":" .. (card.isToken == true and "token" or row)
         BridgeState.battlefieldCounts[rowKey] = (BridgeState.battlefieldCounts[rowKey] or 0) + 1
     elseif zone.name == "graveyard" then
         local position = BridgeResolveSeatZoneAnchor(seatSnapshot.seatId, "graveyard")
@@ -30883,10 +30887,11 @@ function BridgeMoveToBattlefield(event, object, row, countAsNewPlacement)
     if event ~= nil and event.cardInstanceId ~= nil then
         BridgeState.battlefieldKindByInstanceId[event.cardInstanceId] = row
     end
-    BridgeLog(string.format("[Bridge] ROW_PLACEMENT seat=%s instance=%s row=%s source=%s destination=%s",
+    BridgeLog(string.format("[Bridge] ROW_PLACEMENT seat=%s instance=%s row=%s source=%s destination=%s isToken=%s",
         tostring(event and event.seatId), tostring(event and event.cardInstanceId), tostring(row),
-        tostring(event and event.sourceZone), tostring(event and event.destinationZone)))
-    local destination, positionError = BridgeBattlefieldPosition(event.seatId, row)
+        tostring(event and event.sourceZone), tostring(event and event.destinationZone),
+        tostring(event and event.isToken)))
+    local destination, positionError = BridgeBattlefieldPosition(event.seatId, row, event)
     if destination == nil then
         return false, positionError
     end
@@ -31002,25 +31007,46 @@ function BridgeRelayoutStrictLandRow(seatId)
     end
 end
 
-function BridgeBattlefieldPosition(seatId, row)
+function BridgeBattlefieldPosition(seatId, row, event)
     local seat = BRIDGE_SEATS[seatId]
     local anchor = seat and seat.battlefieldAnchors and seat.battlefieldAnchors[row]
     if anchor == nil then
         return nil, "no battlefield anchor configured for seat " .. tostring(seatId) .. " row " .. tostring(row)
     end
 
-    local rowKey = seatId .. ":" .. row
+    -- Tokens use vertical-first layout (3 depth positions × 4 columns),
+    -- while normal creatures use horizontal-first layout (4 columns × 3 rows).
+    local isToken = event ~= nil and event.isToken == true and row == "creature"
+    local rowKey = seatId .. ":" .. (isToken and "token" or row)
     local count = BridgeState.battlefieldCounts[rowKey] or 0
+    
     for offset = 0, 11 do
         local slot = count + offset
-        local candidate = {
-            -- A tapped card is roughly as wide as an upright card is tall.
-            -- Four wider slots preserve a grab/tap gap instead of overlapping
-            -- adjacent creatures in the old six-card row.
-            x = anchor.x + (slot % 4) * 3.4,
-            y = anchor.y,
-            z = anchor.z + math.floor(slot / 4) * seat.tableSideZ * 4.0
-        }
+        local candidate
+        
+        if isToken then
+            -- Token grid: vertical-first ordering
+            -- 3 depth positions per column, then advance horizontally
+            local depthIndex = slot % 3
+            local column = math.floor(slot / 3)
+            candidate = {
+                x = anchor.x + column * 3.4,
+                y = anchor.y,
+                z = anchor.z + depthIndex * seat.tableSideZ * 4.0
+            }
+        else
+            -- Normal creature/land grid: horizontal-first ordering
+            -- 4 columns per row, then advance vertically
+            candidate = {
+                -- A tapped card is roughly as wide as an upright card is tall.
+                -- Four wider slots preserve a grab/tap gap instead of overlapping
+                -- adjacent creatures in the old six-card row.
+                x = anchor.x + (slot % 4) * 3.4,
+                y = anchor.y,
+                z = anchor.z + math.floor(slot / 4) * seat.tableSideZ * 4.0
+            }
+        end
+        
         if not BridgeBattlefieldPositionOccupied(candidate) then
             BridgeState.battlefieldCounts[rowKey] = slot
             return candidate, nil

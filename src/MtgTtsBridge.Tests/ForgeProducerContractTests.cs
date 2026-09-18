@@ -117,7 +117,7 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("mutationGeneration.incrementAndGet()", Patch);
         Assert.Contains("if (mutationGeneration.get() != generation)", Patch);
         Assert.Contains("ThreadUtil.delay(25, this::emitWhenStable)", Patch);
-        Assert.Contains("trace(\"event=\"", Patch);
+        Assert.Contains("trace(\"mutation observed reason=\"", Patch);
         Assert.Contains("battlefieldSummary()", Patch);
     }
 
@@ -125,11 +125,67 @@ public sealed class ForgeProducerContractTests
     public void TrackedBridgeStateFeed_PreservesGameEventZoneTransitionsBeforeSnapshotFinalization()
     {
         Assert.Contains("GameEventCardChangeZone zoneChange", Patch);
-        Assert.Contains("rememberZoneTransition(zoneChange)", Patch);
+        Assert.Contains("rememberZoneTransition(zoneChange, generation)", Patch);
         Assert.Contains("zoneTransitions", Patch);
         Assert.Contains("appendZoneTransition", Patch);
-        Assert.Contains("pendingZoneTransitions.clear()", Patch);
+        Assert.Contains("transitionJournalLock", Patch);
+        Assert.Contains("iterator.remove()", Patch);
+        Assert.DoesNotContain("pendingZoneTransitions.clear()", Patch);
         Assert.Contains("pendingZoneTransitions.size() >= 256", Patch);
+    }
+
+    [Fact]
+    public void Exact301b_RegistersZoneMutationBeforeJournalingOrScheduling()
+    {
+        var feed = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/BridgeStateFeed.java");
+        var receive = ExtractMethodBody(feed, "public void receive(final GameEvent event)");
+        var zoneStart = receive.IndexOf("if (event instanceof GameEventCardChangeZone zoneChange)", StringComparison.Ordinal);
+        Assert.True(zoneStart >= 0);
+        var zoneBody = receive[zoneStart..];
+
+        var registration = zoneBody.IndexOf("synchronized (mutationRegistrationLock)", StringComparison.Ordinal);
+        var generation = zoneBody.IndexOf("markMutationLocked", registration, StringComparison.Ordinal);
+        var journal = zoneBody.IndexOf("rememberZoneTransition(zoneChange, generation)", generation, StringComparison.Ordinal);
+        var schedule = zoneBody.IndexOf("ensureSnapshotScheduled()", journal, StringComparison.Ordinal);
+        Assert.True(registration >= 0);
+        Assert.True(generation > registration);
+        Assert.True(journal > generation);
+        Assert.True(schedule > journal);
+        Assert.Contains("final long mutationGeneration;", feed);
+    }
+
+    [Fact]
+    public void StructuredSnapshot_RejectsStaleCandidateBeforePublicationAndRetiresOnlyIncludedTransitions()
+    {
+        var feed = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/BridgeStateFeed.java");
+        var emitSnapshot = ExtractMethodBody(feed, "private long emitSnapshot(final String requestedReason)");
+
+        var staleCheck = emitSnapshot.IndexOf("if (mutationGeneration.get() != generation)", StringComparison.Ordinal);
+        var print = emitSnapshot.IndexOf("System.out.println(SENTINEL + json)", StringComparison.Ordinal);
+        var sequenceCommit = emitSnapshot.IndexOf("sequence = snapshotSequence", StringComparison.Ordinal);
+        var journalRetirement = emitSnapshot.IndexOf("iterator.remove()", StringComparison.Ordinal);
+
+        Assert.True(staleCheck >= 0);
+        Assert.True(print > staleCheck);
+        Assert.True(sequenceCommit > print);
+        Assert.True(journalRetirement > sequenceCommit);
+        Assert.Contains("return -1", emitSnapshot);
+        Assert.Contains("transition.mutationGeneration <= generation", emitSnapshot);
+        Assert.Contains("snapshot candidate discarded capturedGeneration=", emitSnapshot);
+    }
+
+    [Fact]
+    public void OpeningHandBatch_UsesOneCoherentMutationBoundaryForEveryObservedZoneTransition()
+    {
+        var feed = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/BridgeStateFeed.java");
+        Assert.Contains("snapshotAttemptInProgress", feed);
+        Assert.Contains("snapshot candidate generation=", feed);
+        Assert.Contains("snapshot published sequence=", feed);
+        Assert.Contains("transition retired cardId=", feed);
+        Assert.Contains("reason=mutation_during_snapshot", feed);
+        Assert.Contains("mutation observed reason=", feed);
+        Assert.Contains("rememberZoneTransition(zoneChange, generation)", feed);
+        Assert.DoesNotContain("private synchronized void emitSnapshot", feed);
     }
 
     [Fact]
@@ -187,7 +243,8 @@ public sealed class ForgeProducerContractTests
     [Fact]
     public void TrackedBridgeStateFeed_SerializesSnapshotSequenceAllocationAndPublication()
     {
-        Assert.Contains("synchronized void emitSnapshot", Patch);
+        Assert.Contains("private long emitSnapshot(final String requestedReason)", Patch);
+        Assert.Contains("synchronized (mutationRegistrationLock)", Patch);
         Assert.Contains("final long snapshotSequence = sequence + 1;", Patch);
         Assert.Contains("property(json, \"sequence\", snapshotSequence)", Patch);
         Assert.Contains("sequence = snapshotSequence;", Patch);
