@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using MtgTtsBridge.Contracts.State;
 
 namespace MtgTtsBridge.Forge;
@@ -23,7 +24,10 @@ public sealed class ForgeStructuredDuplicateCardInstanceException : InvalidOpera
 /// <summary>Diffs authoritative snapshots into bounded embodiment changes; it never derives game rules.</summary>
 public sealed class ForgeStructuredStateReconciler
 {
+    private readonly ILogger? _logger;
     private bool _hasBaseline;
+
+    public ForgeStructuredStateReconciler(ILogger? logger = null) => _logger = logger;
 
     public GameSnapshotDto? Current { get; private set; }
 
@@ -202,19 +206,28 @@ public sealed class ForgeStructuredStateReconciler
             Phase: source.Phase);
     }
 
-    private static IReadOnlyList<ForgeTuiRawEvent> Diff(
+    private IReadOnlyList<ForgeTuiRawEvent> Diff(
         string sessionId,
         GameSnapshotDto previous,
         GameSnapshotDto next,
         IReadOnlyList<ForgeStructuredZoneTransition> explicitTransitions)
     {
         var events = new List<ForgeTuiRawEvent>();
-        var explicitKeys = new HashSet<string>(
-            explicitTransitions.Select(transition => TransitionKey(
-                NormalizeObjectId(sessionId, transition.AuthoritativeObjectId, transition.ForgeCardId),
-                transition.SourceZone,
-                transition.DestinationZone)),
-            StringComparer.Ordinal);
+        var beforeCards = Flatten(sessionId, previous);
+        var afterCards = Flatten(sessionId, next);
+        var explicitChains = explicitTransitions
+            .Select(transition =>
+            (
+                InstanceId: NormalizeObjectId(sessionId, transition.AuthoritativeObjectId, transition.ForgeCardId),
+                Transition: transition))
+            .GroupBy(item => item.InstanceId, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(item => item.Transition).ToArray(),
+                StringComparer.Ordinal);
+        var explicitCardInstanceIds = explicitChains.Keys.ToHashSet(StringComparer.Ordinal);
+
+        ValidateExplicitTransitionOwnership(sessionId, next.ForgeSequence, beforeCards, afterCards, explicitChains);
 
         // GameEventCardChangeZone is the authoritative owner of zone
         // transitions.  This is intentionally emitted before snapshot-derived
@@ -361,16 +374,12 @@ public sealed class ForgeStructuredStateReconciler
             }
         }
 
-        var beforeCards = Flatten(sessionId, previous);
-        var afterCards = Flatten(sessionId, next);
         foreach (var (id, card) in afterCards.OrderBy(pair => pair.Value.ZonePosition))
         {
             beforeCards.TryGetValue(id, out var oldCard);
             var seatId = card.ControllerSeatId ?? card.OwnerSeatId;
-            var explicitTransition = oldCard is not null
-                && explicitKeys.Contains(TransitionKey(id, oldCard.Zone, card.Zone));
             if ((oldCard is null || !string.Equals(oldCard.Zone, card.Zone, StringComparison.OrdinalIgnoreCase))
-                && !explicitTransition)
+                && !explicitCardInstanceIds.Contains(id))
             {
                 var sourceZone = oldCard?.Zone;
                 var isDraw = string.Equals(sourceZone, "library", StringComparison.OrdinalIgnoreCase)
@@ -529,6 +538,82 @@ public sealed class ForgeStructuredStateReconciler
         return events;
     }
 
+    private void ValidateExplicitTransitionOwnership(
+        string sessionId,
+        long forgeSequence,
+        IReadOnlyDictionary<string, GameCardSnapshotDto> beforeCards,
+        IReadOnlyDictionary<string, GameCardSnapshotDto> afterCards,
+        IReadOnlyDictionary<string, ForgeStructuredZoneTransition[]> explicitChains)
+    {
+        foreach (var (cardInstanceId, chain) in explicitChains)
+        {
+            beforeCards.TryGetValue(cardInstanceId, out var previousCard);
+            afterCards.TryGetValue(cardInstanceId, out var nextCard);
+
+            var currentZone = previousCard?.Zone;
+            var chainConsistent = true;
+            var reason = previousCard is null
+                ? "no previous snapshot card; chain starts from explicit provenance"
+                : "explicit chain agrees with previous and next snapshot zones";
+            var reasons = new List<string>();
+
+            foreach (var transition in chain)
+            {
+                if (currentZone is not null
+                    && transition.SourceZone is not null
+                    && !ZoneEqual(currentZone, transition.SourceZone))
+                {
+                    chainConsistent = false;
+                    reasons.Add($"previous chain zone {currentZone} does not match source {transition.SourceZone}");
+                }
+
+                currentZone = transition.DestinationZone;
+            }
+
+            if (nextCard is not null
+                && currentZone is not null
+                && !ZoneEqual(currentZone, nextCard.Zone))
+            {
+                chainConsistent = false;
+                reasons.Add($"chain destination {currentZone} does not match next snapshot zone {nextCard.Zone}");
+            }
+
+            if (reasons.Count > 0) reason = string.Join("; ", reasons);
+            else if (nextCard is null) reason = "card absent from next snapshot; explicit departure chain retained";
+
+            var orderedChain = string.Join(
+                " | ",
+                chain
+                    .Take(32)
+                    .Select(transition => $"{transition.SourceZone ?? "?"}->{transition.DestinationZone ?? "?"}"));
+            if (chain.Length > 32) orderedChain += " | ...";
+
+            // This is bridge-side, bounded diagnostic data.  It deliberately
+            // records the exact instance and ordered provenance without
+            // publishing it through the TTS contract.
+            _logger?.LogDebug(
+                "Structured zone transition ownership session={SessionId} instance={CardInstanceId} previousSnapshotZone={PreviousSnapshotZone} explicitTransitionCount={ExplicitTransitionCount} orderedChain={OrderedChain} nextSnapshotZone={NextSnapshotZone} chainConsistent={ChainConsistent} snapshotFallbackSuppressed={SnapshotFallbackSuppressed} reason={Reason}",
+                sessionId,
+                cardInstanceId,
+                previousCard?.Zone,
+                chain.Length,
+                orderedChain,
+                nextCard?.Zone,
+                chainConsistent,
+                true,
+                reason);
+
+            if (!chainConsistent)
+            {
+                throw new ForgeStructuredFrameException(
+                    $"Forge structured zone transition chain is inconsistent for card instance {cardInstanceId} at sequence {forgeSequence}: {reason}.");
+            }
+        }
+    }
+
+    private static bool ZoneEqual(string? first, string? second) =>
+        string.Equals(first, second, StringComparison.OrdinalIgnoreCase);
+
     private static Dictionary<string, GameCardSnapshotDto> Flatten(string sessionId, GameSnapshotDto snapshot)
     {
         var located = snapshot.Seats
@@ -625,9 +710,6 @@ public sealed class ForgeStructuredStateReconciler
 
     private static string? NormalizeNullableObjectId(string sessionId, string? value, int fallbackForgeCardId) =>
         string.IsNullOrWhiteSpace(value) ? null : NormalizeObjectId(sessionId, value, fallbackForgeCardId);
-
-    private static string TransitionKey(string cardInstanceId, string? sourceZone, string? destinationZone) =>
-        $"{cardInstanceId}|{sourceZone ?? ""}|{destinationZone ?? ""}";
 
     private static string NormalizeColor(string color) => (color ?? string.Empty).Trim().ToLowerInvariant();
 

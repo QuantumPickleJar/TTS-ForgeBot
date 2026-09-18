@@ -210,7 +210,127 @@ public sealed class ForgeStructuredOutputParserTests
 
         var events = reconciler.Apply("session-transition", Parse(parser, next));
 
-        Assert.Single(events.Where(item => item.Kind == "card_moved" && item.ForgeObjectId == 12));
+        var moves = events.Where(item => item.Kind == "card_moved" && item.ForgeObjectId == 12).ToArray();
+        var move = Assert.Single(moves);
+        Assert.Equal("hand", move.SourceZone);
+        Assert.Equal("graveyard", move.DestinationZone);
+    }
+
+    [Fact]
+    public void ExplicitZoneTransitionChain_8177MountainDoesNotEmitCollapsedSnapshotMove()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        _ = reconciler.Apply("session-8177", Parse(parser, Frame(45, Player(
+            library: [Card(51, "Mountain", "library", 0, currentTypes: "[\"land\"]")] ))));
+
+        var next = Frame(46, Player(
+            battlefield: [Card(51, "Mountain", "battlefield", 0, currentTypes: "[\"land\"]")]))
+            .Replace(
+                "\"stack\":[]",
+                "\"zoneTransitions\":["
+                + "{\"forgeCardId\":51,\"cardName\":\"Mountain\",\"sourceZone\":\"library\",\"destinationZone\":\"hand\",\"ownerSeatId\":\"forge-player-1\",\"controllerSeatId\":\"forge-player-1\",\"currentTypes\":[\"land\"],\"authoritativeObjectId\":\"forge-object:51\"},"
+                + "{\"forgeCardId\":51,\"cardName\":\"Mountain\",\"sourceZone\":\"hand\",\"destinationZone\":\"battlefield\",\"ownerSeatId\":\"forge-player-1\",\"controllerSeatId\":\"forge-player-1\",\"currentTypes\":[\"land\"],\"authoritativeObjectId\":\"forge-object:51\"}],\"stack\":[]",
+                StringComparison.Ordinal);
+
+        var moves = reconciler.Apply("session-8177", Parse(parser, next))
+            .Where(item => item.ForgeObjectId == 51 && item.Kind is ("draw" or "card_moved"))
+            .ToArray();
+
+        Assert.Equal(2, moves.Length);
+        Assert.Equal(["draw", "card_moved"], moves.Select(item => item.Kind).ToArray());
+        Assert.Equal(["library", "hand"], moves.Select(item => item.SourceZone).ToArray());
+        Assert.Equal(["hand", "battlefield"], moves.Select(item => item.DestinationZone).ToArray());
+        Assert.DoesNotContain(moves, item => item.SourceZone == "library" && item.DestinationZone == "battlefield");
+    }
+
+    [Fact]
+    public void ExplicitZoneTransitionChain_IsGenericAcrossThreeArbitraryHops()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        _ = reconciler.Apply("session-three-hop", Parse(parser, Frame(1, Player(
+            library: [Card(52, "Test Permanent", "alpha", 0)]))));
+
+        var next = Frame(2, Player(
+            battlefield: [Card(52, "Test Permanent", "delta", 0)])).Replace(
+                "\"stack\":[]",
+                "\"zoneTransitions\":["
+                + "{\"forgeCardId\":52,\"cardName\":\"Test Permanent\",\"sourceZone\":\"alpha\",\"destinationZone\":\"beta\",\"authoritativeObjectId\":\"forge-object:52\"},"
+                + "{\"forgeCardId\":52,\"cardName\":\"Test Permanent\",\"sourceZone\":\"beta\",\"destinationZone\":\"gamma\",\"authoritativeObjectId\":\"forge-object:52\"},"
+                + "{\"forgeCardId\":52,\"cardName\":\"Test Permanent\",\"sourceZone\":\"gamma\",\"destinationZone\":\"delta\",\"authoritativeObjectId\":\"forge-object:52\"}],\"stack\":[]",
+                StringComparison.Ordinal);
+
+        var moves = reconciler.Apply("session-three-hop", Parse(parser, next))
+            .Where(item => item.ForgeObjectId == 52 && item.SourceZone is not null && item.DestinationZone is not null)
+            .ToArray();
+
+        Assert.Equal(3, moves.Length);
+        Assert.Equal(["alpha", "beta", "gamma"], moves.Select(item => item.SourceZone).ToArray());
+        Assert.Equal(["beta", "gamma", "delta"], moves.Select(item => item.DestinationZone).ToArray());
+        Assert.DoesNotContain(moves, item => item.SourceZone == "alpha" && item.DestinationZone == "delta");
+    }
+
+    [Fact]
+    public void SnapshotZoneFallback_RemainsWhenNoExplicitTransitionProvenanceExists()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        _ = reconciler.Apply("session-fallback", Parse(parser, Frame(1, Player(
+            hand: [Card(53, "Fallback Card", "hand", 0)]))));
+
+        var events = reconciler.Apply("session-fallback", Parse(parser, Frame(2, Player(
+            battlefield: [Card(53, "Fallback Card", "battlefield", 0)]))));
+
+        var move = Assert.Single(events.Where(item => item.ForgeObjectId == 53 && item.Kind == "card_moved"));
+        Assert.Equal("hand", move.SourceZone);
+        Assert.Equal("battlefield", move.DestinationZone);
+    }
+
+    [Fact]
+    public void ExplicitZoneTransitionChain_PreservesMultipleTokenDeparturesWithoutCollapsedMove()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        _ = reconciler.Apply("session-token-chain", Parse(parser, Frame(1, Player(
+            battlefield: [Card(54, "Soldier Token", "battlefield", 0, isToken: true)]))));
+
+        var next = Frame(2, Player()).Replace(
+                "\"stack\":[]",
+                "\"zoneTransitions\":["
+                + "{\"forgeCardId\":54,\"cardName\":\"Soldier Token\",\"sourceZone\":\"battlefield\",\"destinationZone\":\"graveyard\",\"isToken\":true,\"objectKind\":\"forge-token\",\"authoritativeObjectId\":\"forge-object:54\"},"
+                + "{\"forgeCardId\":54,\"cardName\":\"Soldier Token\",\"sourceZone\":\"graveyard\",\"destinationZone\":\"exile\",\"isToken\":true,\"objectKind\":\"forge-token\",\"authoritativeObjectId\":\"forge-object:54\"}],\"stack\":[]",
+                StringComparison.Ordinal);
+
+        var moves = reconciler.Apply("session-token-chain", Parse(parser, next))
+            .Where(item => item.ForgeObjectId == 54 && item.Kind == "card_moved")
+            .ToArray();
+
+        Assert.Equal(2, moves.Length);
+        Assert.All(moves, item => Assert.True(item.IsToken));
+        Assert.Equal(["battlefield", "graveyard"], moves.Select(item => item.SourceZone).ToArray());
+        Assert.Equal(["graveyard", "exile"], moves.Select(item => item.DestinationZone).ToArray());
+        Assert.DoesNotContain(moves, item => item.SourceZone == "battlefield" && item.DestinationZone == "exile");
+    }
+
+    [Fact]
+    public void ExplicitZoneTransitionChain_RejectsContradictorySnapshotProvenance()
+    {
+        var parser = new ForgeStructuredOutputParser();
+        var reconciler = new ForgeStructuredStateReconciler();
+        _ = reconciler.Apply("session-inconsistent", Parse(parser, Frame(1, Player(
+            library: [Card(55, "Inconsistent Card", "library", 0)]))));
+
+        var next = Frame(2, Player(
+            battlefield: [Card(55, "Inconsistent Card", "battlefield", 0)])).Replace(
+                "\"stack\":[]",
+                "\"zoneTransitions\":[{\"forgeCardId\":55,\"cardName\":\"Inconsistent Card\",\"sourceZone\":\"hand\",\"destinationZone\":\"battlefield\",\"authoritativeObjectId\":\"forge-object:55\"}],\"stack\":[]",
+                StringComparison.Ordinal);
+
+        var exception = Assert.Throws<ForgeStructuredFrameException>(() =>
+            reconciler.Apply("session-inconsistent", Parse(parser, next)));
+        Assert.Contains("zone transition chain is inconsistent", exception.Message, StringComparison.Ordinal);
+        Assert.Equal("library", reconciler.Current!.Seats[0].Zones.Single(zone => zone.Name == "library").Cards.Single().Zone);
     }
 
     [Fact]

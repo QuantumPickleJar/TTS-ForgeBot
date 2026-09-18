@@ -108,7 +108,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         _parser = new ForgeTuiParser(_options.PlayerSeats, _opponentSeatId ?? "forge-player-2");
         _eventParser = new ForgeTuiEventParser(_options.PlayerSeats, _opponentSeatId ?? "forge-player-2");
         _structuredParser = new ForgeStructuredOutputParser();
-        _structuredState = new ForgeStructuredStateReconciler();
+        _structuredState = new ForgeStructuredStateReconciler(logger);
     }
 
     public string Name => "ForgeTuiAdapter";
