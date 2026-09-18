@@ -2701,9 +2701,82 @@ index 0d731bb6..0171ea39 100644
 +            forge.game.player.DelayedReveal delayedReveal, SpellAbility sa, String title,
 +            boolean isOptional, Player relatedPlayer, Map<String, Object> params) {
 +        if (delayedReveal != null) reveal(delayedReveal);
-+        List<T> result = chooseEntitiesThroughTui("entity_selection", optionList,
-+            isOptional ? 0 : 1, 1, bridgeResolveCardNamePlaceholders(title, sa), false);
-+        return result.isEmpty() ? null : result.get(0);
++        int existingTargetCount = sa == null || sa.getTargets() == null ? 0 : sa.getTargets().size();
++        String sourceId = sa == null || sa.getHostCard() == null ? "none" : String.valueOf(sa.getHostCard().getId());
++        String sourceName = sa == null || sa.getHostCard() == null ? "none" : bridgeDisplayCardName(sa.getHostCard());
++        String paramsKeys = params == null ? "none" : params.keySet().toString();
++        System.out.println("[TUI-DIAG entity] sourceCardId=" + sourceId
++            + " sourceCardName=" + sourceName
++            + " api=" + (sa == null ? "none" : sa.getApi())
++            + " isSpell=" + (sa != null && sa.isSpell())
++            + " isTrigger=" + (sa != null && sa.isTrigger())
++            + " isOptional=" + isOptional
++            + " optionCount=" + optionList.size()
++            + " existingTargetCount=" + existingTargetCount
++            + " paramsKeys=" + paramsKeys);
++
++        T reusedAuraTarget = reuseAlreadyChosenAuraAttachment(optionList, sa, isOptional, params);
++        if (reusedAuraTarget != null) {
++            System.out.println("[TUI-DIAG entity] disposition=REUSED_EXISTING_AURA_TARGET objectId="
++                + (reusedAuraTarget instanceof Card ? ((Card) reusedAuraTarget).getId() : reusedAuraTarget));
++            return reusedAuraTarget;
++        }
++
++        System.out.println("[TUI-DIAG entity] disposition=HUMAN_SINGLE_ENTITY");
++        return chooseSingleEntityThroughTui(optionList, sa, title, isOptional);
++    }
++
++    /**
++     * AttachEffect asks the controller to perform the mechanical destination
++     * lookup again while an Aura spell resolves.  For an already-targeted Aura
++     * this is not a second Magic choice: the only legal candidate is the exact
++     * target already stored on the SpellAbility.  Keep the proof deliberately
++     * narrow so singleton effects which genuinely ask the player to choose
++     * still reach the TUI.
++     */
++    private <T extends GameEntity> T reuseAlreadyChosenAuraAttachment(
++            FCollectionView<T> optionList, SpellAbility sa, boolean isOptional,
++            Map<String, Object> params) {
++        if (isOptional || optionList == null || optionList.size() != 1 || sa == null
++            || !sa.isSpell() || sa.isTrigger() || sa.getApi() != ApiType.Attach
++            || sa.getHostCard() == null || !sa.getHostCard().isAura()
++            || params == null || params.get("Attachments") == null
++            || sa.getTargets() == null || sa.getTargets().isEmpty()) {
++            return null;
++        }
++        T candidate = optionList.get(0);
++        // optionList is Forge's currently legal candidate set. The target-set
++        // membership is the authoritative proof that this exact object was
++        // selected during casting, rather than merely being a singleton.
++        if (!sa.getTargets().contains(candidate)) return null;
++        return candidate;
++    }
++
++    private <T extends GameEntity> T chooseSingleEntityThroughTui(
++            FCollectionView<T> optionList, SpellAbility sa, String title, boolean isOptional) {
++        List<T> candidates = new ArrayList<>();
++        for (T option : optionList) candidates.add(option);
++        String resolvedTitle = bridgeResolveCardNamePlaceholders(title, sa);
++        System.out.println("\n=== FORGE CHOICE ===");
++        System.out.println(resolvedTitle == null || resolvedTitle.isBlank()
++            ? "Choose one entity" : resolvedTitle);
++        System.out.println("[kind=entity_selection selectionKind=single_entity min="
++            + (isOptional ? 0 : 1) + " max=1 selected=0 ordered=false]");
++        int firstCandidate = 1;
++        if (isOptional) {
++            System.out.println("  0. None");
++            firstCandidate = 1;
++        }
++        for (int i = 0; i < candidates.size(); i++) {
++            System.out.println("  " + (i + firstCandidate) + ". "
++                + formatDecisionEntity(candidates.get(i)) + bridgeEntityMetadata(candidates.get(i)));
++        }
++        int minimumChoice = isOptional ? 0 : 1;
++        int maximumChoice = candidates.size();
++        System.out.print("Enter choice (" + minimumChoice + "-" + maximumChoice + "): ");
++        int choice = getIntInput(minimumChoice, maximumChoice);
++        if (isOptional && choice == 0) return null;
++        return candidates.get(choice - firstCandidate);
 +    }
 +
 +    @Override

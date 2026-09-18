@@ -202,6 +202,80 @@ public sealed class TtsCardTargetInteractionLuaTests
         Assert.Equal("choice-3", state.Get("ui").Table.Get("actionRows").Table.Get(4).Table.Get("actionId").String);
     }
 
+    [Fact]
+    public void SingleEntityPermanentTargetUsesExactPhysicalPickupAsOneShotSubmission()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local card = {tag='Card', guid='g64', buttons={}}
+            function card.getGUID() return card.guid end
+            function card.getName() return 'Fire Elemental' end
+            function card.getPosition() return {x=0,y=0,z=0} end
+            function card.getRotation() return {x=0,y=0,z=0} end
+            function card.highlightOff() end
+            function card.highlightOn() end
+            function getObjectFromGUID(guid) if guid == 'g64' then return card end end
+            BridgeState.eventSessionId = 'entity-session'
+            BridgeState.eventSessionGeneration = 1
+            BridgeState.physicalTransactionGeneration = 1
+            BridgeState.submitting = false
+            BridgeState.choiceProtocolPaused = false
+            BridgeState.desyncLatched = false
+            BridgeState.gameEnded = nil
+            BridgeState.lastAppliedEventSequence = 0
+            BridgeState.setupStage = 'READY'
+            BridgeState.physicalByInstanceId = {['forge-object:64']='g64'}
+            BridgeState.physicalInstanceIdByGuid = {g64='forge-object:64'}
+            BridgeState.physicalSeatByGuid = {g64='forge-player-2'}
+            BridgeState.physicalZoneByGuid = {g64='battlefield'}
+            BridgeState.physicalContainerByInstanceId = {}
+            BridgeState.authoritativeObjectByInstanceId = {
+                ['forge-object:64']={isVirtual=false, seatId='forge-player-2', zone='battlefield'}
+            }
+            local action = {actionId='forge-tui-44-choice-1', type='choose_entity', actionKind='choose_entity',
+                entityKind='permanent', entityCardInstanceId='forge-object:64', cardInstanceId='forge-object:64',
+                entitySeatId='forge-player-2', sourceZone='battlefield'}
+            local decision = {decisionId='forge-tui-44', kind='entity_selection', selectionKind='single_entity',
+                seatId='forge-player-1', sessionId='entity-session', eventCursor=0,
+                minSelections=1, maxSelections=1, confirmRequired=false, requiresConfirmation=false,
+                actions={}}
+            decision.actions[1] = action
+            BridgeState.lastDecision = decision
+            BridgeState.actionsByGuid = {g64={action}}
+            BridgeState.actionByGuid = {g64=action}
+            BridgeState.highlightedGuids = {'g64'}
+            BridgeState.humanActionReadiness = {
+                certified=true, globalCertified=true, decisionAccepted=true,
+                sessionId='entity-session', decisionId='forge-tui-44', sessionGeneration=1,
+                physicalTransactionGeneration=1, authoritativeCursor=0
+            }
+            function BridgeClearHighlights() end
+            function BridgeRecordInteractionProducer() end
+            function BridgeClaimHumanTtsColor() end
+            function BridgeShowHumanActionBlocked(readiness) blockedReason = readiness and readiness.reason or 'unknown' end
+            function BridgeShowError(message) errorMessage = message end
+            function BridgeSubmitChoice(decisionId, actionId, source)
+                submitted = (submitted or 0) + 1
+                lastSubmission = {decisionId=decisionId, actionId=actionId, source=source}
+            end
+            oneShot = BridgeIsSingleEntityChoice(decision)
+            directGesture = BridgeActionSupportsDirectPhysicalGesture(action, decision)
+            role = BridgeActionPhysicalRole(action)
+            onObjectPickUp('White', card)
+        ");
+
+        Assert.True(lua.Globals.Get("oneShot").Boolean);
+        Assert.True(lua.Globals.Get("directGesture").Boolean);
+        Assert.Equal("entity-selection", lua.Globals.Get("role").String);
+        Assert.True(lua.Globals.Get("submitted").Number == 1,
+            "blocked=" + (lua.Globals.Get("blockedReason").IsNil() ? "nil" : lua.Globals.Get("blockedReason").String)
+                + "; error=" + (lua.Globals.Get("errorMessage").IsNil() ? "nil" : lua.Globals.Get("errorMessage").String));
+        var submission = lua.Globals.Get("lastSubmission").Table;
+        Assert.Equal("forge-tui-44", submission.Get("decisionId").String);
+        Assert.Equal("forge-tui-44-choice-1", submission.Get("actionId").String);
+        Assert.Equal("physical_single_entity_pickup", submission.Get("source").String);
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script();

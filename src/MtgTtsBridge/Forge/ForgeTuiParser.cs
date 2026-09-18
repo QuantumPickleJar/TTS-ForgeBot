@@ -160,7 +160,8 @@ public sealed partial class ForgeTuiParser
         // logical decision identity until its explicit Done action is sent;
         // otherwise the bridge treats the next toggle as stale and Forge
         // never receives the completed discard.
-        var collectionKey = selectionMetadata.Success && RequiresForgeCollectionConfirmation(kind,
+        var selectionKind = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["selectionKind"].Value) : null;
+        var collectionKey = selectionMetadata.Success && RequiresForgeCollectionConfirmation(kind, selectionKind,
             selectionMetadata.Groups["mulliganStage"].Value)
             ? string.Join("|", kind,
                 selectionMetadata.Groups["selectionKind"].Value,
@@ -190,9 +191,8 @@ public sealed partial class ForgeTuiParser
             : $"forge-tui-{_decisionNumber}";
         var bridgeActions = actions.Select(option => BuildAction(option, decisionId, kind)).ToList();
         var mulliganStage = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["mulliganStage"].Value) : null;
-        var selectionKind = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["selectionKind"].Value) : null;
         var forgeCollectionRequiresDone = selectionMetadata.Success
-            && RequiresForgeCollectionConfirmation(kind, mulliganStage);
+            && RequiresForgeCollectionConfirmation(kind, selectionKind, mulliganStage);
         var shape = selectionMetadata.Success
             ? (
                 Min: int.Parse(selectionMetadata.Groups["min"].Value, CultureInfo.InvariantCulture),
@@ -527,8 +527,9 @@ public sealed partial class ForgeTuiParser
         _activeCollectionDecisionId = null;
     }
 
-    private static bool RequiresForgeCollectionConfirmation(string kind, string? mulliganStage) =>
-        kind is "discard" or "sacrifice" or "payment_option" or "search_selection" or "entity_selection" or "cost_selection" or "mode_selection"
+    private static bool RequiresForgeCollectionConfirmation(string kind, string? selectionKind, string? mulliganStage) =>
+        kind is "discard" or "sacrifice" or "payment_option" or "search_selection" or "cost_selection" or "mode_selection"
+        || kind == "entity_selection" && !string.Equals(selectionKind, "single_entity", StringComparison.OrdinalIgnoreCase)
         || (kind == "mulligan" && string.Equals(mulliganStage, "bottom_selection", StringComparison.Ordinal));
 
     private bool TryResolveSeat(string playerName, out string seatId)
@@ -586,7 +587,8 @@ public sealed partial class ForgeTuiParser
         ("attacker_selection", var value) when value.Equals("done", StringComparison.OrdinalIgnoreCase) => "finish_attacking",
         ("attacker_selection", var value) when value.StartsWith("No further attackers", StringComparison.OrdinalIgnoreCase) => "finish_attacking",
         ("attacker_selection", _) => "choose_attacker",
-        (_, var value) when value.Equals("Done", StringComparison.OrdinalIgnoreCase) => "choose_none",
+        (_, var value) when value.Equals("Done", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("None", StringComparison.OrdinalIgnoreCase) => "choose_none",
         ("sacrifice", _) => "sacrifice",
         ("discard", _) => "discard_card",
         ("mode_selection", _) => "choose_mode",
@@ -608,7 +610,8 @@ public sealed partial class ForgeTuiParser
     // the card's rules; this extracts only the name Forge printed in the real menu.
     private static string? GetCardIdentity(string label, string kind)
     {
-        if (label.Equals("Done", StringComparison.OrdinalIgnoreCase)) return null;
+        if (label.Equals("Done", StringComparison.OrdinalIgnoreCase)
+            || label.Equals("None", StringComparison.OrdinalIgnoreCase)) return null;
         var land = PlayLandRegex().Match(label);
         if (land.Success) return land.Groups["name"].Value.Trim();
 

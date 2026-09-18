@@ -438,6 +438,22 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void AuraAttachmentReusesOnlyAnAlreadyChosenTargetAndSingleEntityIsOneShot()
+    {
+        var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
+        Assert.Contains("reuseAlreadyChosenAuraAttachment", controller);
+        Assert.Contains("params.get(\"Attachments\")", controller);
+        Assert.Contains("sa.getApi() != ApiType.Attach", controller);
+        Assert.Contains("sa.isSpell()", controller);
+        Assert.Contains("sa.getHostCard().isAura()", controller);
+        Assert.Contains("sa.getTargets().contains(candidate)", controller);
+        Assert.Contains("disposition=REUSED_EXISTING_AURA_TARGET", controller);
+        Assert.Contains("selectionKind=single_entity", controller);
+        Assert.Contains("return chooseSingleEntityThroughTui", controller);
+        Assert.DoesNotContain("optionList.size() == 1) return optionList.get(0)", controller);
+    }
+
+    [Fact]
     public void DelveAndMulliganRemainNativeForgeControllerTransactions()
     {
         Assert.Contains("chooseCardsToDelve(int genericAmount, CardCollection grave)", Patch);

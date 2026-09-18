@@ -653,6 +653,62 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void SingleEntitySelectionIsOneShotAndDoesNotRequireDone()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\nChoose one entity\n" +
+            "[kind=entity_selection selectionKind=single_entity min=1 max=1 selected=0 ordered=false]\n" +
+            "  1. Fire Elemental [id=64] [bridge entityKind=permanent cardInstanceId=64 sourceZone=battlefield]\n" +
+            "Enter choice (1-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("single_entity", decision.SelectionKind);
+        Assert.False(decision.ConfirmRequired);
+        Assert.False(decision.RequiresConfirmation);
+        var action = Assert.Single(decision.Actions);
+        Assert.Equal("choose_entity", action.Type);
+        Assert.Equal("forge-object:64", action.EntityCardInstanceId);
+        Assert.Equal("forge-tui-1-choice-1", result.ParsedDecision!.Inputs.Keys.Single());
+    }
+
+    [Fact]
+    public void OptionalSingleEntitySelectionUsesNoneWithoutCollectionConfirmation()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\nChoose one entity\n" +
+            "[kind=entity_selection selectionKind=single_entity min=0 max=1 selected=0 ordered=false]\n" +
+            "  0. None\n  1. Fire Elemental [id=64]\nEnter choice (0-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.False(decision.ConfirmRequired);
+        var none = Assert.Single(decision.Actions.Where(action => action.Type == "choose_none"));
+        Assert.Equal("forge-tui-1-choice-0", none.ActionId);
+    }
+
+    [Fact]
+    public void TriggerTargetSelectionRemainsARealCardTargetChoice()
+    {
+        var parser = new ForgeTuiParser(new Dictionary<string, string>
+        {
+            ["Player 1"] = "forge-player-1",
+            ["AI-monored"] = "forge-player-2",
+        });
+        var result = parser.Append(
+            "Choose a target:\n" +
+            "  0. AI-monored (Life: 20)\n" +
+            "  1. Fire Elemental (2/2) [AI-monored] [id=64]\n" +
+            "Enter choice (0-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("target_selection", decision.Kind);
+        Assert.False(decision.ConfirmRequired);
+        Assert.Contains(decision.Actions, action => action.Type == "choose_target"
+            && action.TargetKind == "card" && action.CardInstanceId == "forge-object:64");
+    }
+
+    [Fact]
     public void ModeSelectionIsAForgeOwnedCollectionWithStableSelectionAndDone()
     {
         var parser = new ForgeTuiParser();
