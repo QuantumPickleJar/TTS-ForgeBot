@@ -40,6 +40,35 @@ local function BridgeSourceEntrySort(left, right)
     return tostring(left.guid or "") < tostring(right.guid or "")
 end
 
+-- Generated Forge objects do not have a counterpart in the original seat
+-- library.  They are either already represented by an exact live mapping or
+-- must be created by the generated-object materializer below.  Keep this
+-- classification on authoritative metadata; printed names are never a
+-- provenance signal.
+function BridgeIsGeneratedSnapshotCard(card)
+    if card == nil then return false end
+    if card.isToken == true or card.isCopy == true or card.isGenerated == true then return true end
+    local objectKind = string.lower(tostring(card.objectKind or ""))
+    if objectKind == "forge-token" or objectKind == "token" or objectKind == "generated" then return true end
+    if string.find(objectKind, "token", 1, true) ~= nil
+        or string.find(objectKind, "copy", 1, true) ~= nil then return true end
+    local policy = string.lower(tostring(card.materializationPolicy or ""))
+    return policy == "generated" or policy == "token" or policy == "copy-permanent"
+end
+
+local function BridgeAuthoritativeGeneratedInstanceSet(seatSnapshot)
+    local generated = {}
+    for _, zone in ipairs(seatSnapshot and seatSnapshot.zones or {}) do
+        for _, card in ipairs(zone.cards or {}) do
+            local instanceId = card.cardInstanceId or card.instanceId
+            if instanceId ~= nil and BridgeIsGeneratedSnapshotCard(card) then
+                generated[tostring(instanceId)] = true
+            end
+        end
+    end
+    return generated
+end
+
 -- A native contained GUID is only a locator.  During a resync the inverse
 -- table may be published by an older contained-deck observer while the
 -- per-instance container record is still the most complete exact provenance.
@@ -76,6 +105,15 @@ end
 -- plus a seven-card opening hand.
 function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
     local seatId = seatSnapshot.seatId
+    local generatedInstances = BridgeAuthoritativeGeneratedInstanceSet(seatSnapshot)
+    local function isGeneratedPhysicalInstance(instanceId)
+        if instanceId == nil then return false end
+        local key = tostring(instanceId)
+        if generatedInstances[key] then return true end
+        return BridgeIsGeneratedSnapshotCard(
+            BridgeState.authoritativeObjectByInstanceId
+                and BridgeState.authoritativeObjectByInstanceId[key] or nil)
+    end
     BridgeState.physicalContainerByInstanceId = BridgeState.physicalContainerByInstanceId or {}
     BridgeState.physicalZoneByGuid = BridgeState.physicalZoneByGuid or {}
     BridgeState.physicalInstanceIdByGuid = BridgeState.physicalInstanceIdByGuid or {}
@@ -104,8 +142,10 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
             locatorType = string.match(guid, "%S") ~= nil and "GUID_LOCATOR" or "SLOT_LOCATOR",
             instanceId = string.match(guid, "%S") ~= nil and BridgeExactSourceInstanceForGuid(guid) or nil
         }
-        table.insert(sources, item)
-        if item.guid ~= nil then sourceByGuid[item.guid] = item end
+        if item.instanceId == nil or not isGeneratedPhysicalInstance(item.instanceId) then
+            table.insert(sources, item)
+            if item.guid ~= nil then sourceByGuid[item.guid] = item end
+        end
     end
     local handObjects = BridgeTryGetSeatHandObjects(seatId) or {}
     local handSeen = {}
@@ -113,13 +153,14 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
         local guid = BridgeSafeObjectGuid(object)
         if guid ~= nil and not handSeen[guid] then
             handSeen[guid] = true
-            table.insert(sources, {
+            local instanceId = BridgeReadCurrentSessionPhysicalIdentity(object)
+                or BridgeExactSourceInstanceForGuid(guid)
+            if instanceId == nil or not isGeneratedPhysicalInstance(instanceId) then table.insert(sources, {
                 sourceZone = "hand", object = object, guid = guid,
                 cardName = BridgePhysicalCanonicalCardName(object),
                 normalizedName = BridgeNormalizeCardName(BridgePhysicalCanonicalCardName(object)),
-                instanceId = BridgeReadCurrentSessionPhysicalIdentity(object)
-                    or BridgeExactSourceInstanceForGuid(guid)
-            })
+                instanceId = instanceId
+            }) end
         end
     end
     local knownSourceGuid = {}
@@ -131,13 +172,14 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
             local assetSeat, assetZone = BridgeObserveObjectPhysicalZone(object, seatId)
             if assetSeat == nil or tostring(assetSeat) == tostring(seatId) then
                 local zone = assetZone or BridgeState.physicalZoneByGuid[guid] or "public"
-                table.insert(sources, {
+                local instanceId = BridgeReadCurrentSessionPhysicalIdentity(object)
+                    or BridgeExactSourceInstanceForGuid(guid)
+                if instanceId == nil or not isGeneratedPhysicalInstance(instanceId) then table.insert(sources, {
                     sourceZone = zone, object = object, guid = guid,
                     cardName = asset.cardName or BridgePhysicalCanonicalCardName(object),
                     normalizedName = BridgeNormalizeCardName(asset.cardName or BridgePhysicalCanonicalCardName(object)),
-                    instanceId = BridgeReadCurrentSessionPhysicalIdentity(object)
-                        or BridgeExactSourceInstanceForGuid(guid)
-                })
+                    instanceId = instanceId
+                }) end
                 knownSourceGuid[guid] = true
             end
         end
@@ -155,10 +197,16 @@ function BridgeBuildSeatSourceAssignment(seatSnapshot, assets)
                 if cardName == nil or BridgeNormalizeCardName(cardName) == "" then
                     return nil, "source assignment missing canonical card name for " .. tostring(cardInstanceId)
                 end
-                table.insert(desired, {
-                    card = card, cardInstanceId = tostring(cardInstanceId), cardName = tostring(cardName), zone = zone.name,
-                    zonePosition = card.zonePosition, normalizedName = BridgeNormalizeCardName(cardName)
-                })
+                -- Generated objects are deliberately absent from this source
+                -- inventory plan.  Existing exact mappings remain owned by
+                -- the physical ledger; missing ones are materialized by
+                -- BridgeMaterializeSeatSnapshot after ordinary reconciliation.
+                if not generatedInstances[tostring(cardInstanceId)] then
+                    table.insert(desired, {
+                        card = card, cardInstanceId = tostring(cardInstanceId), cardName = tostring(cardName), zone = zone.name,
+                        zonePosition = card.zonePosition, normalizedName = BridgeNormalizeCardName(cardName)
+                    })
+                end
             end
         end
     end
@@ -696,14 +744,27 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
         or (BridgeState.embodimentTransaction ~= nil
             and BridgeState.embodimentTransaction.resumeFromSnapshotCursor == true)
     local handGuids = BridgeBuildSeatHandGuidSet(seatSnapshot.seatId)
+    local generatedInstances = BridgeAuthoritativeGeneratedInstanceSet(seatSnapshot)
+    local function isGeneratedPhysicalInstance(instanceId)
+        if instanceId == nil then return false end
+        local key = tostring(instanceId)
+        if generatedInstances[key] then return true end
+        return BridgeIsGeneratedSnapshotCard(
+            BridgeState.authoritativeObjectByInstanceId
+                and BridgeState.authoritativeObjectByInstanceId[key] or nil)
+    end
     for _, asset in ipairs(assets) do
-        local name = BridgeNormalizeCardName(asset.cardName)
         local assetGuid = asset.guid or (asset.object and BridgeSafeObjectGuid(asset.object))
-        local destination = handGuids[assetGuid] == true and handByName or nonHandByName
-        destination[name] = destination[name] or {}
-        table.insert(destination[name], asset)
         if assetGuid ~= nil then assetByGuid[tostring(assetGuid)] = asset end
-        looseCountByName[name] = (looseCountByName[name] or 0) + 1
+        local assetInstanceId = BridgeReadCurrentSessionPhysicalIdentity(asset.object)
+            or BridgeExactSourceInstanceForGuid(assetGuid)
+        if assetInstanceId == nil or not isGeneratedPhysicalInstance(assetInstanceId) then
+            local name = BridgeNormalizeCardName(asset.cardName)
+            local destination = handGuids[assetGuid] == true and handByName or nonHandByName
+            destination[name] = destination[name] or {}
+            table.insert(destination[name], asset)
+            looseCountByName[name] = (looseCountByName[name] or 0) + 1
+        end
     end
 
     local ledger, ledgerError = BridgeBuildSeatLibraryLedger(seatSnapshot)
@@ -718,10 +779,12 @@ function BridgeReconcileSeatSnapshot(seatSnapshot, assets, includeInventoryDiagn
     local authoritativeDisplayNameByName = {}
     for _, zone in ipairs(seatSnapshot.zones or {}) do
         for _, card in ipairs(zone.cards or {}) do
-            table.insert(authoritativeCards, {zoneName = zone.name, card = card})
-            local normalized = BridgeNormalizeCardName(card.cardName)
-            authoritativeCountByName[normalized] = (authoritativeCountByName[normalized] or 0) + 1
-            authoritativeDisplayNameByName[normalized] = authoritativeDisplayNameByName[normalized] or card.cardName
+            if not BridgeIsGeneratedSnapshotCard(card) then
+                table.insert(authoritativeCards, {zoneName = zone.name, card = card})
+                local normalized = BridgeNormalizeCardName(card.cardName)
+                authoritativeCountByName[normalized] = (authoritativeCountByName[normalized] or 0) + 1
+                authoritativeDisplayNameByName[normalized] = authoritativeDisplayNameByName[normalized] or card.cardName
+            end
         end
     end
 
@@ -1062,9 +1125,10 @@ function BridgeMaterializeSeatSnapshot(seatSnapshot, zoneIndex, cardIndex, callb
         -- recovery path, never an identity source.
         BridgeLog("[Bridge] resync materialization using contained-library fallback for unmapped public card")
     end
-    if BridgeState.resyncInFlight == true
+    if BridgeState.resyncInFlight == true and not BridgeIsGeneratedSnapshotCard(card)
         or (BridgeState.embodimentTransaction ~= nil
-            and BridgeState.embodimentTransaction.resumeFromSnapshotCursor == true) then
+            and BridgeState.embodimentTransaction.resumeFromSnapshotCursor == true
+            and not BridgeIsGeneratedSnapshotCard(card)) then
         callback(false, "same-session snapshot materialization has no exact physical identity for "
             .. tostring(card.cardInstanceId))
         return
@@ -7461,7 +7525,8 @@ end
 -- mutation.  The planner supplies the exact CardInstanceId; this path never
 -- searches by name and never treats a Deck entry as a loose source.
 function BridgeRecoverExactCardToGraveyard(seatId, cardInstanceId, sourceZone, expectedName,
-    desiredGraveyardCount, callback)
+    desiredGraveyardCount, callback, observedGuid, observedSeatId, observedZone,
+    observedContainerGuid, observedTag)
     -- Preserve the narrow legacy/test call shape while allowing the planner
     -- to state the cardinality-aware postcondition explicitly.
     if type(desiredGraveyardCount) == "function" and callback == nil then
@@ -7496,10 +7561,34 @@ function BridgeRecoverExactCardToGraveyard(seatId, cardInstanceId, sourceZone, e
         finish(false, "exact physical source GUID belongs to another Forge instance")
         return
     end
-    if sourceZone ~= nil
-        and (BridgeState.physicalSeatByGuid[guid] ~= seatId
-            or BridgeState.physicalZoneByGuid[guid] ~= sourceZone) then
-        finish(false, "exact physical source is not in the expected seat/source zone")
+    -- Recovery is specifically for a physical/authoritative mismatch.  The
+    -- source precondition is the observed representation captured by the
+    -- planner, not the authoritative destination or an assumed library
+    -- location.  A changed GUID/seat/zone means the observation went stale;
+    -- fail closed so the transaction can reobserve and replan.
+    if observedGuid ~= nil and tostring(guid or "") ~= tostring(observedGuid) then
+        finish(false, "exact physical source observation is stale: GUID changed")
+        return
+    end
+    local expectedSourceSeat = observedSeatId or seatId
+    local expectedSourceZone = observedZone or sourceZone
+    local currentSeat = BridgeState.physicalSeatByGuid[guid]
+    local currentZone = BridgeState.physicalZoneByGuid[guid]
+    if expectedSourceZone ~= nil
+        and (tostring(currentSeat or "") ~= tostring(expectedSourceSeat or "")
+            or tostring(currentZone or "") ~= tostring(expectedSourceZone)) then
+        finish(false, "exact physical source observation is stale: seat or zone changed")
+        return
+    end
+    if observedTag ~= nil and BridgeSafeObjectTag(object) ~= observedTag then
+        finish(false, "exact physical source observation is stale: object kind changed")
+        return
+    end
+    local currentContainer = BridgeState.physicalContainerByInstanceId[cardInstanceId]
+    local currentContainerGuid = currentContainer and currentContainer.deckGuid or nil
+    if observedContainerGuid ~= nil
+        and tostring(currentContainerGuid or "") ~= tostring(observedContainerGuid) then
+        finish(false, "exact physical source observation is stale: container changed")
         return
     end
     local currentDeck = requiresNativeDeck

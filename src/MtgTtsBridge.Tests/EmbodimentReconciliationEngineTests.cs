@@ -758,6 +758,138 @@ public sealed class EmbodimentReconciliationEngineTests
     }
 
     [Fact]
+    public void GeneratedObjectsDoNotRequireSeatSourceInventoryEvenWhenTokenMappingExistsOrIsMissing()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            BridgeState.eventSessionId = 'session'
+            local deck = {tag='Deck', getGUID=function() return 'ai-library' end,
+                getObjects=function() return {{index=1, nickname='Plains', guid='plains-guid'}} end}
+            function BridgeResolveSeatLibraryDeck(_) return deck end
+            local token = {tag='Card', guid='rabbit-guid', getGUID=function(self) return self.guid end}
+            function BridgeGetLiveObjectByGuid(guid) if guid == 'rabbit-guid' then return token end end
+            BridgeState.physicalByInstanceId = {['forge:session:90']='rabbit-guid'}
+            BridgeState.physicalInstanceIdByGuid = {['rabbit-guid']='forge:session:90'}
+            BridgeState.physicalSeatByGuid = {['rabbit-guid']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['rabbit-guid']='battlefield'}
+            local seat = {seatId='forge-player-1', zones={
+                {name='library', cards={{cardInstanceId='forge:session:1', cardName='Plains'}}},
+                {name='battlefield', cards={{cardInstanceId='forge:session:90', cardName='Rabbit Token',
+                    isToken=true, objectKind='forge-token'}}}}}
+            existingPlan, existingError = BridgeBuildSeatSourceAssignment(seat, {})
+            BridgeState.physicalByInstanceId = {}
+            BridgeState.physicalInstanceIdByGuid = {}
+            BridgeState.physicalSeatByGuid = {}
+            BridgeState.physicalZoneByGuid = {}
+            missingPlan, missingError = BridgeBuildSeatSourceAssignment(seat, {})
+        ");
+
+        Assert.False(lua.Globals.Get("existingPlan").IsNil(), lua.Globals.Get("existingError").ToPrintString());
+        Assert.False(lua.Globals.Get("missingPlan").IsNil(), lua.Globals.Get("missingError").ToPrintString());
+        Assert.Equal(1, lua.Globals.Get("existingPlan").Table.Get("desiredTotalInventory").Number);
+        Assert.Equal(1, lua.Globals.Get("missingPlan").Table.Get("desiredTotalInventory").Number);
+        Assert.DoesNotContain("Rabbit Token", lua.Globals.Get("existingError").ToPrintString());
+        Assert.DoesNotContain("Rabbit Token", lua.Globals.Get("missingError").ToPrintString());
+    }
+
+    [Fact]
+    public void GraveyardRepairPlanCarriesObservedWrongZoneAsExactRecoverySource()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local desired = {cardsByInstanceId={
+                [':4']={cardInstanceId=':4', cardName='Raise the Alarm', seatId='forge-player-1', zone='graveyard'}}}
+            local observed = {byInstanceId={
+                [':4']={instanceId=':4', guid='raise-guid', tag='Card', seatId='forge-player-1', zone='stack'}},
+                duplicateInstanceIds={}}
+            plan = BridgePlanEmbodimentReconciliation(desired, observed)
+            exactMoveCount = #plan.exactGraveyardMoves
+            misplacedCount = #plan.misplaced
+            missingCount = #plan.missing
+            operationCount = #plan.operations
+            repairType = nil
+            repairGuid = nil
+            repairSeat = nil
+            repairZone = nil
+            for _, candidate in ipairs(plan.operations or {}) do
+                if candidate.type == 'MOVE_EXACT_CARD_TO_GRAVEYARD' then
+                    repairType = candidate.type
+                    repairGuid = candidate.observedGuid
+                    repairSeat = candidate.observedSeatId
+                    repairZone = candidate.observedZone
+                end
+            end
+        ");
+
+        Assert.Equal("MOVE_EXACT_CARD_TO_GRAVEYARD", lua.Globals.Get("repairType").String);
+        Assert.Equal("raise-guid", lua.Globals.Get("repairGuid").String);
+        Assert.Equal("forge-player-1", lua.Globals.Get("repairSeat").String);
+        Assert.Equal("stack", lua.Globals.Get("repairZone").String);
+    }
+
+    [Fact]
+    public void D816ResyncPlanKeepsNineExactGeneratedMappingsAndPlansOnlyTwoWrongZoneRepairs()
+    {
+        var lua = NewProbe();
+        lua.DoString(@"
+            local desired = {cardsByInstanceId={},}
+            local observed = {byInstanceId={}, duplicateInstanceIds={}}
+            local function addDesired(id, name, seat, zone, token)
+                desired.cardsByInstanceId[id] = {cardInstanceId=id, cardName=name, seatId=seat, zone=zone,
+                    isToken=token == true, objectKind=token == true and 'forge-token' or nil}
+            end
+            local function addObserved(id, guid, seat, zone)
+                observed.byInstanceId[id] = {instanceId=id, guid=guid, tag='Card', seatId=seat, zone=zone}
+            end
+            addDesired(':29', 'Hare Apparent', 'forge-player-1', 'graveyard', false)
+            addDesired(':4', 'Raise the Alarm', 'forge-player-1', 'graveyard', false)
+            addDesired(':45', 'Lightning Strike', 'forge-player-2', 'graveyard', false)
+            addDesired(':43', 'Hurloon Minotaur', 'forge-player-2', 'graveyard', false)
+            for _, id in ipairs({':90', ':91', ':94', ':99', ':100', ':101', ':102', ':104', ':105'}) do
+                addDesired(id, string.find(id, ':10', 1, true) == 1 and 'Soldier Token' or 'Rabbit Token',
+                    'forge-player-1', 'battlefield', true)
+                addObserved(id, 'guid-' .. string.sub(id, 2), 'forge-player-1', 'battlefield')
+            end
+            addObserved(':29', 'hare-guid', 'forge-player-1', 'graveyard')
+            addObserved(':4', 'raise-guid', 'forge-player-1', 'stack')
+            addObserved(':45', 'strike-guid', 'forge-player-2', 'graveyard')
+            addObserved(':43', 'minotaur-guid', 'forge-player-2', 'battlefield')
+            plan = BridgePlanEmbodimentReconciliation(desired, observed)
+            missingIds = ''
+            for index, id in ipairs(plan.missing or {}) do missingIds = missingIds .. tostring(id) .. ',' end
+            repairIds = {}
+            repairIdCount = 0
+            for _, move in pairs(plan.exactGraveyardMoves or {}) do
+                repairIdCount = repairIdCount + 1
+                repairIds[repairIdCount] = move.cardInstanceId or ''
+            end
+            generatedMappingCount = 0
+            generatedMappingsStable = true
+            for _, id in ipairs({':90', ':91', ':94', ':99', ':100', ':101', ':102', ':104', ':105'}) do
+                local entry = observed.byInstanceId[id]
+                if entry ~= nil and entry.guid == 'guid-' .. string.sub(id, 2) then
+                    generatedMappingCount = generatedMappingCount + 1
+                else
+                    generatedMappingsStable = false
+                end
+            end
+        ");
+
+        var plan = lua.Globals.Get("plan").Table;
+        Assert.Equal(2, plan.Get("exactGraveyardMoves").Table.Length);
+        Assert.Equal(2, plan.Get("operations").Table.Length);
+        Assert.True(plan.Get("missing").Table.Length == 0,
+            $"missing={lua.Globals.Get("missingIds").ToPrintString()}");
+        Assert.Equal(2, plan.Get("misplaced").Table.Length);
+        var operationIds = lua.Globals.Get("repairIds").Table.Values
+            .Select(value => value.String).ToArray();
+        Assert.Contains(":4", operationIds);
+        Assert.Contains(":43", operationIds);
+        Assert.Equal(9, lua.Globals.Get("generatedMappingCount").Number);
+        Assert.True(lua.Globals.Get("generatedMappingsStable").Boolean);
+    }
+
+    [Fact]
     public void NewMatchRetiresOldSessionIdentityBeforeBootstrap()
     {
         var lua = NewProbe();
@@ -1539,12 +1671,19 @@ public sealed class EmbodimentReconciliationEngineTests
                     kind='main_priority', actions={{actionId='pass', type='pass_priority'}}}, nil)
             end
             function BridgeAcceptDecision(_, _, _, _) decisionReattached = true end
-            function BridgeBootstrapCurrentSnapshot(_, callback, _, _) callback(true, nil) end
+            resyncCount = 0
+            function BridgeBootstrapCurrentSnapshot(_, callback, _, _)
+                resyncCount = resyncCount + 1
+                callback(true, nil)
+            end
             started = BridgeResyncFromAuthoritativeSnapshot('hud')
+            startedSecond = BridgeResyncFromAuthoritativeSnapshot('hud-again')
         ");
 
         var state = lua.Globals.Get("BridgeState").Table;
         Assert.True(lua.Globals.Get("started").Boolean);
+        Assert.True(lua.Globals.Get("startedSecond").Boolean);
+        Assert.Equal(2, lua.Globals.Get("resyncCount").Number);
         Assert.True(lua.Globals.Get("eventPollingRestarted").Boolean);
         Assert.True(lua.Globals.Get("decisionReattached").Boolean);
         Assert.Equal(260, state.Get("lastAppliedEventSequence").Number);

@@ -1931,6 +1931,42 @@ function BridgeEmbodimentRecordActualFailure(tx, detail)
     BridgeState.firstActualFailure = BridgeState.firstActualFailure or value
 end
 
+-- A failed exact recovery is safe to retry only when the physical observation
+-- changed. Include the operation and exact mapped topology in the fingerprint
+-- so a stale-source callback can reobserve once, while a genuinely stuck
+-- repair fails closed instead of consuming every bounded replan.
+function BridgeEmbodimentRecordNoProgress(tx, detail)
+    if tx == nil then return false, nil end
+    local operation = tx.currentOperation or {}
+    local instanceId = operation.cardInstanceId or ""
+    local guid = BridgeState.physicalByInstanceId
+        and BridgeState.physicalByInstanceId[instanceId] or nil
+    local container = BridgeState.physicalContainerByInstanceId
+        and BridgeState.physicalContainerByInstanceId[instanceId] or nil
+    local inverse = BridgeState.physicalInstanceIdByGuid
+        and guid ~= nil and BridgeState.physicalInstanceIdByGuid[guid] or nil
+    local seat = BridgeState.physicalSeatByGuid
+        and guid ~= nil and BridgeState.physicalSeatByGuid[guid] or nil
+    local zone = BridgeState.physicalZoneByGuid
+        and guid ~= nil and BridgeState.physicalZoneByGuid[guid] or nil
+    local fingerprint = table.concat({
+        tostring(operation.type or ""), tostring(instanceId),
+        tostring(operation.observedGuid or ""), tostring(guid or ""),
+        tostring(inverse or ""), tostring(seat or ""), tostring(zone or ""),
+        tostring(container and container.deckGuid or ""), tostring(detail or "")
+    }, "|")
+    local prior = tx.noProgressFailure
+    if prior ~= nil and prior.fingerprint == fingerprint then
+        prior.count = (prior.count or 1) + 1
+    else
+        prior = {fingerprint = fingerprint, count = 1, detail = tostring(detail or "")}
+        tx.noProgressFailure = prior
+    end
+    BridgeEmbodimentJournal(tx, "OBSERVE", "NO_PROGRESS_REPLAN",
+        "count=" .. tostring(prior.count) .. " fingerprint=" .. fingerprint)
+    return prior.count >= 2, prior
+end
+
 function BridgeEmbodimentTransactionIsCurrent(tx)
     return tx ~= nil and BridgeState.embodimentTransaction == tx
         and tx.runtimeEpoch == BRIDGE_RUNTIME_EPOCH_LOCAL
@@ -2185,6 +2221,11 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
                     cardInstanceId = instanceId, seatId = card.seatId,
                     sourceZone = physical.zone, destinationZone = "graveyard",
                     cardName = card.cardName,
+                    observedGuid = physical.guid,
+                    observedSeatId = physical.seatId,
+                    observedZone = physical.zone,
+                    observedContainerGuid = physical.deckGuid,
+                    observedTag = physical.tag,
                     desiredGraveyardCount = desiredGraveyardCountBySeat[tostring(card.seatId or "")] or 0
                 })
             end
@@ -2233,7 +2274,12 @@ function BridgePlanEmbodimentReconciliation(desired, observed)
                 scope = "SEAT_GRAVEYARD", seatId = move.seatId, zone = "graveyard",
                 cardInstanceId = move.cardInstanceId, cardName = move.cardName,
                 sourceZone = move.sourceZone, destinationZone = move.destinationZone,
-                precondition = "exact mapped Forge instance is physically loose outside this seat graveyard topology",
+                observedGuid = move.observedGuid,
+                observedSeatId = move.observedSeatId,
+                observedZone = move.observedZone,
+                observedContainerGuid = move.observedContainerGuid,
+                observedTag = move.observedTag,
+                precondition = "exact observed physical GUID/seat/zone still belongs to this Forge instance",
                 nativeAction = "BridgeRecoverExactCardToGraveyard",
                 postcondition = move.desiredGraveyardCount == 1
                     and "exact Forge instance is the selected seat's loose graveyard Card"
@@ -2740,6 +2786,14 @@ function BridgeEmbodimentOperationCallback(tx, attempt, result)
     else
         tx.lastBlockingPredicate = tostring(errorMessage or "physical operation failed")
         BridgeEmbodimentRecordActualFailure(tx, tx.lastBlockingPredicate)
+        local noProgress, noProgressState = BridgeEmbodimentRecordNoProgress(tx, tx.lastBlockingPredicate)
+        if noProgress then
+            local detail = "embodiment reconciliation made no physical progress: "
+                .. tostring(tx.lastBlockingPredicate)
+                .. " repeats=" .. tostring(noProgressState and noProgressState.count or 0)
+            BridgeEmbodimentRecordActualFailure(tx, detail)
+            return BridgeFinishEmbodimentTransaction(tx, false, detail)
+        end
         if tx.snapshot == nil then
             -- No authoritative target was obtained, so there is nothing safe
             -- to replan toward. Transport/session failure is immediately
@@ -2872,7 +2926,9 @@ function BridgePumpEmbodimentTransaction()
                     BridgeEmbodimentJournal(tx, "OBSERVE", "SEAT_GRAVEYARD_EXACT_MOVE_COMPLETED",
                         "cardInstanceId=" .. tostring(operation.cardInstanceId))
                     tx.phase = "OBSERVE"
-                end)
+                    end, operation.observedGuid, operation.observedSeatId,
+                    operation.observedZone, operation.observedContainerGuid,
+                    operation.observedTag)
                 return
             elseif operation.scope == "SEAT_LIBRARY" then
                 local seatSnapshot = nil

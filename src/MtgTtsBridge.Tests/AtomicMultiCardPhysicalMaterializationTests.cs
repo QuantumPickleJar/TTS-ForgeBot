@@ -3042,6 +3042,69 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
     }
 
     [Fact]
+    public void ResyncGraveyardRepairUsesObservedStackOrBattlefieldSourceAndRejectsStaleGuid()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'd816-session'
+            BridgeState.eventSessionGeneration = 4
+            BridgeState.physicalTransactionGeneration = 9
+            BridgeTestSeedExistingDeck({instanceId=':29', cardName='Hare Apparent'})
+
+            local stackCard = BridgeTestCreateCard(':4', 'Raise the Alarm', 'raise-guid')
+            stackCard._inLibrary = false
+            stackCard._lastPosition = {x=3, y=2, z=0}
+            BridgeRecordLooseCardIdentity(':4', 'raise-guid', 'forge-player-1', 'stack')
+            BridgeRecoverExactCardToGraveyard('forge-player-1', ':4', 'stack', 'Raise the Alarm', 2,
+                function(ok, reason) stackOk = ok; stackError = reason end,
+                'raise-guid', 'forge-player-1', 'stack', nil, 'Card')
+
+            local battlefieldCard = BridgeTestCreateCard(':43', 'Hurloon Minotaur', 'minotaur-guid')
+            battlefieldCard._inLibrary = false
+            battlefieldCard._lastPosition = {x=4, y=2, z=0}
+            BridgeRecordLooseCardIdentity(':43', 'minotaur-guid', 'forge-player-2', 'battlefield')
+            BridgeRecoverExactCardToGraveyard('forge-player-2', ':43', 'battlefield', 'Hurloon Minotaur', 2,
+                function(ok, reason) battlefieldOk = ok; battlefieldError = reason end,
+                'minotaur-guid', 'forge-player-2', 'battlefield', nil, 'Card')
+
+            local stale = BridgeTestCreateCard(':stale', 'Stale Card', 'stale-guid-b')
+            stale._inLibrary = false
+            BridgeRecordLooseCardIdentity(':stale', 'stale-guid-b', 'forge-player-1', 'stack')
+            BridgeRecoverExactCardToGraveyard('forge-player-1', ':stale', 'stack', 'Stale Card', 1,
+                function(ok, reason) staleOk = ok; staleError = reason end,
+                'stale-guid-a', 'forge-player-1', 'stack', nil, 'Card')
+        ");
+
+        Assert.True(lua.Globals.Get("stackOk").Boolean, lua.Globals.Get("stackError").ToPrintString());
+        Assert.True(lua.Globals.Get("battlefieldOk").Boolean, lua.Globals.Get("battlefieldError").ToPrintString());
+        Assert.False(lua.Globals.Get("staleOk").Boolean);
+        Assert.Contains("stale", lua.Globals.Get("staleError").String);
+        Assert.NotNull(lua.Globals.Get("BridgeState").Table.Get("physicalContainerByInstanceId").Table.Get(":4"));
+        Assert.NotNull(lua.Globals.Get("BridgeState").Table.Get("physicalContainerByInstanceId").Table.Get(":43"));
+    }
+
+    [Fact]
+    public void RepeatedIdenticalEmbodimentFailureStopsAsNoProgressInsteadOfExhaustingReplans()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeState.physicalByInstanceId = {[':4']='raise-guid'}
+            BridgeState.physicalInstanceIdByGuid = {['raise-guid']=':4'}
+            BridgeState.physicalSeatByGuid = {['raise-guid']='forge-player-1'}
+            BridgeState.physicalZoneByGuid = {['raise-guid']='stack'}
+            local tx = {currentOperation={type='MOVE_EXACT_CARD_TO_GRAVEYARD', cardInstanceId=':4', observedGuid='raise-guid'},
+                embodimentJournal={}, targetCursor=518, epoch=1, token='d816', runtimeEpoch=BRIDGE_RUNTIME_EPOCH_LOCAL}
+            firstNoProgress = BridgeEmbodimentRecordNoProgress(tx, 'exact physical source observation is stale')
+            secondNoProgress, noProgressState = BridgeEmbodimentRecordNoProgress(tx, 'exact physical source observation is stale')
+        ");
+
+        Assert.False(lua.Globals.Get("firstNoProgress").Boolean);
+        Assert.True(lua.Globals.Get("secondNoProgress").Boolean);
+        Assert.Equal(2, lua.Globals.Get("noProgressState").Table.Get("count").Number);
+    }
+
+    [Fact]
     public void CompoundMutationNativeSettlementExceptionAbortsOwnedTransactionWithoutOrphaningAnimation()
     {
         var lua = NewProbe();
@@ -3385,6 +3448,76 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
         Assert.Equal("forge:session-rabbit:85", lua.Globals.Get("inverseA").String);
         Assert.Equal("forge:session-rabbit:88", lua.Globals.Get("inverseB").String);
         Assert.Equal("forge:session-rabbit:89", lua.Globals.Get("inverseC").String);
+    }
+
+    [Fact]
+    public void MissingGeneratedTokenUsesTokenMaterializerDuringSameSessionResync()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'd816-session'
+            BridgeState.eventSessionGeneration = 4
+            BridgeState.physicalTransactionGeneration = 9
+            BridgeState.resyncInFlight = true
+            local token = BridgeTestCreateCard('forge:d816-session:90', 'Rabbit Token', 'new-rabbit-guid')
+            token._inLibrary = false
+            token._lastPosition = {x=1, y=2, z=-4}
+            fetchCalls = 0
+            BridgeTakeCardFromTokenFetcher = function(name, seatId, callback)
+                fetchCalls = fetchCalls + 1
+                callback(token, nil)
+            end
+            local snapshot = {seatId='forge-player-1', zones={}}
+            snapshot.zones[1] = {name='battlefield', cards={}}
+            snapshot.zones[1].cards[1] = {cardInstanceId='forge:d816-session:90',
+                cardName='Rabbit Token', isToken=true, objectKind='forge-token', zonePosition=1, faceDown=false}
+            setmetatable(snapshot.zones, {__len=function() return 1 end})
+            setmetatable(snapshot.zones[1].cards, {__len=function() return 1 end})
+            BridgeMaterializeSeatSnapshot(snapshot, 1, 1,
+                function(ok, reason) materializeOk = ok; materializeError = reason end)
+            finalGuid = BridgeState.physicalByInstanceId['forge:d816-session:90']
+            finalInverse = BridgeState.physicalInstanceIdByGuid['new-rabbit-guid']
+        ");
+
+        Assert.True(lua.Globals.Get("materializeOk").Boolean, lua.Globals.Get("materializeError").ToPrintString());
+        Assert.Equal(1, lua.Globals.Get("fetchCalls").Number);
+        Assert.Equal("new-rabbit-guid", lua.Globals.Get("finalGuid").String);
+        Assert.Equal("forge:d816-session:90", lua.Globals.Get("finalInverse").String);
+    }
+
+    [Fact]
+    public void AlreadyMappedGeneratedTokenIsResyncIdempotentAndNeverReimported()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeTestInitAtomicHarness()
+            BridgeState.eventSessionId = 'd816-session'
+            BridgeState.eventSessionGeneration = 4
+            BridgeState.physicalTransactionGeneration = 9
+            BridgeState.resyncInFlight = true
+            local token = BridgeTestCreateCard('forge:d816-session:90', 'Rabbit Token', 'stable-rabbit-guid')
+            token._inLibrary = false
+            BridgeRecordLooseCardIdentity('forge:d816-session:90', 'stable-rabbit-guid', 'forge-player-1', 'battlefield')
+            fetchCalls = 0
+            BridgeTakeCardFromTokenFetcher = function(name, seatId, callback)
+                fetchCalls = fetchCalls + 1
+                callback(nil, 'unexpected token import')
+            end
+            local snapshot = {seatId='forge-player-1', zones={}}
+            snapshot.zones[1] = {name='battlefield', cards={}}
+            snapshot.zones[1].cards[1] = {cardInstanceId='forge:d816-session:90',
+                cardName='Rabbit Token', isToken=true, objectKind='forge-token', zonePosition=1, faceDown=false}
+            setmetatable(snapshot.zones, {__len=function() return 1 end})
+            setmetatable(snapshot.zones[1].cards, {__len=function() return 1 end})
+            BridgeMaterializeSeatSnapshot(snapshot, 1, 1,
+                function(ok, reason) materializeOk = ok; materializeError = reason end)
+            finalGuid = BridgeState.physicalByInstanceId['forge:d816-session:90']
+        ");
+
+        Assert.True(lua.Globals.Get("materializeOk").Boolean, lua.Globals.Get("materializeError").ToPrintString());
+        Assert.Equal(0, lua.Globals.Get("fetchCalls").Number);
+        Assert.Equal("stable-rabbit-guid", lua.Globals.Get("finalGuid").String);
     }
 
     [Fact]
