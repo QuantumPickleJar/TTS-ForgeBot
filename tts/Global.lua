@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: 7f98d7c35898a19690f2d57cf753edac5c36e9e66f93f0ae8561862df9405733
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "7f98d7c35898a19690f2d57cf753edac5c36e9e66f93f0ae8561862df9405733"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: e76577a3fe9dec397533ebc476954d58d38958d5395982bebebe2cc096ab58f3
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "e76577a3fe9dec397533ebc476954d58d38958d5395982bebebe2cc096ab58f3"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -8555,6 +8555,9 @@ function BridgeActionSupportsDirectPhysicalGesture(action, decision)
         or actionType == "sacrifice" then
         return true
     end
+    if actionType == "choose_entity" and BridgeIsSingleEntityChoice(decision) then
+        return true
+    end
     return false
 end
 
@@ -10936,7 +10939,21 @@ end
 
 function BridgeDecisionNeedsConfirmation(decision)
     if decision == nil then return false end
+    -- Forge's single-entity controller contract is one-shot. The explicit
+    -- selectionKind metadata is authoritative even if an older producer
+    -- accidentally carried a collection confirmation flag along with it.
+    if decision.kind == "entity_selection"
+        and tostring(decision.selectionKind or "") == "single_entity" then
+        return false
+    end
     return decision.requiresConfirmation == true or decision.confirmRequired == true
+end
+
+function BridgeIsSingleEntityChoice(decision)
+    return decision ~= nil
+        and decision.kind == "entity_selection"
+        and tostring(decision.selectionKind or "") == "single_entity"
+        and tonumber(decision.maxSelections or 1) == 1
 end
 
 function BridgeIsPaymentCancelAction(action)
@@ -10963,7 +10980,7 @@ function BridgeDecisionHasPaymentCancel(decision)
 end
 
 function BridgeIsStructuredForgeToggleChoice(decision)
-    if decision == nil or decision.confirmRequired ~= true then return false end
+    if decision == nil or decision.confirmRequired ~= true or BridgeIsSingleEntityChoice(decision) then return false end
     local kind = tostring(decision.kind or "")
     return kind == "discard" or kind == "sacrifice" or kind == "payment_option"
         or kind == "search_selection" or kind == "entity_selection" or kind == "cost_selection"
@@ -17574,6 +17591,7 @@ function BridgeRenderDecision(decision, force)
         local mappedObject = BridgeGetLiveObjectByGuid(mappedGuid)
         local mappedSeatMatches = mappedObject ~= nil
             and (action.type == "choose_target" and tostring(action.targetKind or "") == "card"
+                or BridgeActionPhysicalRole(action) == "entity-selection"
                 or decision.seatId == nil
                 or BridgeState.physicalSeatByGuid[mappedGuid] == decision.seatId)
         -- Main-priority actions are not limited to cards in hand: activated
@@ -17859,6 +17877,17 @@ function onObjectPickUp(playerColor, object)
     if object.tag == "Card" and action.type == "choose_target" then
         BridgeClearHighlights()
         BridgeSubmitChoice(decision.decisionId, action.actionId, "physical_card_target_pickup")
+        return
+    end
+
+    -- Forge's chooseSingleEntityForEffect contract is a one-shot choice when
+    -- the producer marks the decision as single_entity. The exact entity
+    -- mapping was already verified above; submit it immediately instead of
+    -- staging a collection toggle or waiting for a manufactured Done step.
+    if object.tag == "Card" and action.type == "choose_entity"
+        and BridgeIsSingleEntityChoice(decision) then
+        BridgeClearHighlights()
+        BridgeSubmitChoice(decision.decisionId, action.actionId, "physical_single_entity_pickup")
         return
     end
 

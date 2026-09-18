@@ -82,6 +82,9 @@ function BridgeActionSupportsDirectPhysicalGesture(action, decision)
         or actionType == "sacrifice" then
         return true
     end
+    if actionType == "choose_entity" and BridgeIsSingleEntityChoice(decision) then
+        return true
+    end
     return false
 end
 
@@ -2463,7 +2466,21 @@ end
 
 function BridgeDecisionNeedsConfirmation(decision)
     if decision == nil then return false end
+    -- Forge's single-entity controller contract is one-shot. The explicit
+    -- selectionKind metadata is authoritative even if an older producer
+    -- accidentally carried a collection confirmation flag along with it.
+    if decision.kind == "entity_selection"
+        and tostring(decision.selectionKind or "") == "single_entity" then
+        return false
+    end
     return decision.requiresConfirmation == true or decision.confirmRequired == true
+end
+
+function BridgeIsSingleEntityChoice(decision)
+    return decision ~= nil
+        and decision.kind == "entity_selection"
+        and tostring(decision.selectionKind or "") == "single_entity"
+        and tonumber(decision.maxSelections or 1) == 1
 end
 
 function BridgeIsPaymentCancelAction(action)
@@ -2490,7 +2507,7 @@ function BridgeDecisionHasPaymentCancel(decision)
 end
 
 function BridgeIsStructuredForgeToggleChoice(decision)
-    if decision == nil or decision.confirmRequired ~= true then return false end
+    if decision == nil or decision.confirmRequired ~= true or BridgeIsSingleEntityChoice(decision) then return false end
     local kind = tostring(decision.kind or "")
     return kind == "discard" or kind == "sacrifice" or kind == "payment_option"
         or kind == "search_selection" or kind == "entity_selection" or kind == "cost_selection"

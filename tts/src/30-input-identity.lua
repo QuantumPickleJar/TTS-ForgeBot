@@ -1946,6 +1946,7 @@ function BridgeRenderDecision(decision, force)
         local mappedObject = BridgeGetLiveObjectByGuid(mappedGuid)
         local mappedSeatMatches = mappedObject ~= nil
             and (action.type == "choose_target" and tostring(action.targetKind or "") == "card"
+                or BridgeActionPhysicalRole(action) == "entity-selection"
                 or decision.seatId == nil
                 or BridgeState.physicalSeatByGuid[mappedGuid] == decision.seatId)
         -- Main-priority actions are not limited to cards in hand: activated
@@ -2231,6 +2232,17 @@ function onObjectPickUp(playerColor, object)
     if object.tag == "Card" and action.type == "choose_target" then
         BridgeClearHighlights()
         BridgeSubmitChoice(decision.decisionId, action.actionId, "physical_card_target_pickup")
+        return
+    end
+
+    -- Forge's chooseSingleEntityForEffect contract is a one-shot choice when
+    -- the producer marks the decision as single_entity. The exact entity
+    -- mapping was already verified above; submit it immediately instead of
+    -- staging a collection toggle or waiting for a manufactured Done step.
+    if object.tag == "Card" and action.type == "choose_entity"
+        and BridgeIsSingleEntityChoice(decision) then
+        BridgeClearHighlights()
+        BridgeSubmitChoice(decision.decisionId, action.actionId, "physical_single_entity_pickup")
         return
     end
 
