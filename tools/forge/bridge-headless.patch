@@ -1615,7 +1615,7 @@ diff --git a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.jav
 index 0d731bb6..0171ea39 100644
 --- a/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
 +++ b/forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java
-@@ -3,20 +3,40 @@ package forge.headless;
+@@ -3,20 +3,43 @@ package forge.headless;
  import com.google.common.collect.Multimap;
  import forge.LobbyPlayer;
  import forge.ai.ComputerUtilMana;
@@ -1866,14 +1866,12 @@ index 0d731bb6..0171ea39 100644
  
          // Get user choice
 -        int choice = getIntInput(0, validTargets.size() - 1);
-+        int choice = getOptionalTargetInput(validTargets.size() - 1);
++        int choice = getOptionalSelectionInput(0, validTargets.size() - 1);
 +        if (choice < 0) {
 +            sa.clearTargets();
 +            return false;
 +        }
          forge.game.GameObject chosen = validTargets.get(choice);
- 
-         // Set the target
 @@ -192,7 +403,7 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              return desc;
          } else if (target instanceof Card) {
@@ -2066,7 +2064,7 @@ index 0d731bb6..0171ea39 100644
              optionNum++;
          }
  
-@@ -422,29 +612,9 @@ public class PlayerControllerTUI extends PlayerControllerAi {
+@@ -422,35 +614,18 @@ public class PlayerControllerTUI extends PlayerControllerAi {
              System.out.println(">> Passing priority...\n");
              return null; // Pass priority
          } else {
@@ -2093,12 +2091,27 @@ index 0d731bb6..0171ea39 100644
 -                chosen = uniqueActivated.get(idx);
 -                System.out.println(">> Activating " + chosen.getHostCard().getName() + "...\n");
 -            }
+-
 +            SpellAbility chosen = availableActions.get(choice - 1);
 +            System.out.println(chosen.isLandAbility() ? ">> Playing " : chosen.isSpell() ? ">> Casting " : ">> Activating ");
 +            System.out.println(chosen.getHostCard().getName() + "...\n");
- 
-             // For spells that require targeting, choose targets now before returning
-             if (chosen != null && chosen.isSpell() && chosen.usesTargeting()) {
++
+-            // For spells that require targeting, choose targets now before returning
+-            if (chosen != null && chosen.isSpell() && chosen.usesTargeting()) {
+-                if (!chooseTargetsFor(chosen)) {
+-                    // Targeting failed - don't cast the spell
+-                    System.out.println("Targeting cancelled. Spell not cast.\n");
++            // Every main-priority SpellAbility is an intent until its Forge
++            // targets have been selected. This includes targeted activated
++            // abilities and planeswalker loyalty abilities, not only spells.
++            if (chosen != null && chosen.usesTargeting()) {
++                if (!bridgePrepareHumanTargets(chosen)) {
++                    // Do not return a chosen ability to the activation path
++                    // until its mandatory targets are present.
++                    System.out.println("Targeting cancelled. Action not committed.\n");
+                     return null;
+                 }
+             }
 @@ -459,6 +629,38 @@ public class PlayerControllerTUI extends PlayerControllerAi {
          }
      }
@@ -2203,12 +2216,40 @@ index 0d731bb6..0171ea39 100644
 +            // ordinary human controllers and can make Main 1 appear skipped.
 +            return super.playChosenSpellAbility(chosenSa);
 +        }
++        if (chosenSa.isAbility()) {
++            int candidateCount = chosenSa.getTargetRestrictions() == null ? 0
++                : chosenSa.getTargetRestrictions().getAllCandidates(chosenSa).size();
++            int min = chosenSa.getTargetRestrictions() == null ? 0 : chosenSa.getMinTargets();
++            int max = chosenSa.getTargetRestrictions() == null ? 0 : chosenSa.getMaxTargets();
++            if (!bridgeTargetsRemainLegal(chosenSa)) {
++                bridgeActivationDiagnostic("ACTIVATION_COMMIT_REJECTED", chosenSa, candidateCount, min, max,
++                    "reason=target_preflight_invalid");
++                return false;
++            }
++            bridgeActivationDiagnostic("ACTIVATION_COMMIT_BEGIN", chosenSa, candidateCount, min, max, null);
++        }
 +        beginPaymentContext(chosenSa.isAbility() ? "activate_begin" : "cast_begin", chosenSa);
 +        try {
 +            boolean accepted = super.playChosenSpellAbility(chosenSa);
++            if (chosenSa.isAbility()) {
++                int candidateCount = chosenSa.getTargetRestrictions() == null ? 0
++                    : chosenSa.getTargetRestrictions().getAllCandidates(chosenSa).size();
++                int min = chosenSa.getTargetRestrictions() == null ? 0 : chosenSa.getMinTargets();
++                int max = chosenSa.getTargetRestrictions() == null ? 0 : chosenSa.getMaxTargets();
++                bridgeActivationDiagnostic(accepted ? "ACTIVATION_COMMIT_ACCEPTED" : "ACTIVATION_COMMIT_REJECTED",
++                    chosenSa, candidateCount, min, max, accepted ? null : "reason=forge_rejected");
++            }
 +            retirePaymentContext(accepted ? "success" : "failed", chosenSa);
 +            return accepted;
 +        } catch (RuntimeException ex) {
++            if (chosenSa.isAbility()) {
++                int candidateCount = chosenSa.getTargetRestrictions() == null ? 0
++                    : chosenSa.getTargetRestrictions().getAllCandidates(chosenSa).size();
++                int min = chosenSa.getTargetRestrictions() == null ? 0 : chosenSa.getMinTargets();
++                int max = chosenSa.getTargetRestrictions() == null ? 0 : chosenSa.getMaxTargets();
++                bridgeActivationDiagnostic("ACTIVATION_COMMIT_REJECTED", chosenSa, candidateCount, min, max,
++                    "reason=exception");
++            }
 +            retirePaymentContext("failed_exception", chosenSa);
 +            throw ex;
          }
@@ -2392,9 +2433,10 @@ index 0d731bb6..0171ea39 100644
       * In normal mode, also handles special commands: "?" for help, "v" for viewing cards, "g" for graveyards.
       */
 -    private int getIntInput(int min, int max) {
-+    private int getOptionalTargetInput(int max) {
-         while (true) {
-+            System.out.print("Enter target (0-" + max + ", or q to cancel): ");
++    private int getOptionalSelectionInput(int min, int max) {
++        while (true) {
++            // chooseEntitiesThroughTui owns the single structured prompt line;
++            // do not emit a second raw target prompt for the same decision.
 +            try {
 +                String line = reader.readLine();
 +                if (line == null || line.trim().equalsIgnoreCase("q")
@@ -2403,13 +2445,30 @@ index 0d731bb6..0171ea39 100644
 +                    return -1;
 +                }
 +                int choice = Integer.parseInt(line.trim());
-+                if (choice >= 0 && choice <= max) return choice;
++                if (choice >= min && choice <= max) return choice;
 +                System.out.println("Invalid target choice.");
 +            } catch (IOException e) {
 +                System.err.println("Error reading target: " + e.getMessage());
 +                return -1;
 +            } catch (NumberFormatException e) {
 +                System.out.println("Invalid target choice.");
++            }
++        }
++    }
++
++    private int getLegacyTargetInput(int max) {
+         while (true) {
++            System.out.print("Legacy target input (0-" + max + "): ");
++            try {
++                String line = reader.readLine();
++                if (line == null || line.trim().equalsIgnoreCase("q")
++                    || line.trim().equalsIgnoreCase("cancel")) return -1;
++                int choice = Integer.parseInt(line.trim());
++                if (choice >= 0 && choice <= max) return choice;
++            } catch (IOException e) {
++                return -1;
++            } catch (NumberFormatException e) {
++                // Continue reading until Forge receives a valid number.
 +            }
 +        }
 +    }
@@ -2598,6 +2657,7 @@ index 0d731bb6..0171ea39 100644
 +            ? "entity_selection" : !candidates.isEmpty() && candidates.get(0) instanceof Player
 +            ? "player_selection" : kind;
 +        boolean canCancelPayment = isCancelablePaymentChoice(kind);
++        boolean oneShotTarget = "target_selection".equals(kind) && min == 1 && boundedMax == 1;
 +
 +        while (true) {
 +            System.out.println("\n=== FORGE CHOICE ===");
@@ -2616,7 +2676,9 @@ index 0d731bb6..0171ea39 100644
 +                + (requiredTotalPower > 0 ? " requiredTotalPower=" + requiredTotalPower
 +                    + " selectedTotalPower=" + selectedTotalPower : "")
 +                + " selected=" + selected.size() + " ordered=" + ordered + "]");
-+            System.out.println("  0. Done");
++            if (!oneShotTarget) {
++                System.out.println("  0. Done");
++            }
 +            for (int i = 0; i < candidates.size(); i++) {
 +                T candidate = candidates.get(i);
 +                System.out.println("  " + (i + 1) + ". " + formatDecisionEntity(candidate)
@@ -2629,11 +2691,20 @@ index 0d731bb6..0171ea39 100644
 +                    + bridgeCancelPaymentMetadata());
 +            }
 +            int maximumChoice = canCancelPayment ? cancelChoice : candidates.size();
-+            System.out.print("Enter choice (0-" + maximumChoice + "): ");
-+            int choice = getIntInput(0, maximumChoice);
++            int minimumChoice = oneShotTarget ? 1 : 0;
++            System.out.print("Enter choice (" + minimumChoice + "-" + maximumChoice + "): ");
++            int choice = "target_selection".equals(kind)
++                ? getOptionalSelectionInput(minimumChoice, maximumChoice)
++                : getIntInput(0, maximumChoice);
++            if (choice < 0) return null;
 +            if (canCancelPayment && choice == cancelChoice) {
 +                System.out.println("Casting cancelled by player.");
 +                return null;
++            }
++            if (oneShotTarget) {
++                T candidate = candidates.get(choice - 1);
++                selected.add(candidate);
++                return selected;
 +            }
 +            if (choice == 0) {
 +                if (selected.size() >= min && selected.size() <= boundedMax) {
@@ -3331,13 +3402,82 @@ index 0d731bb6..0171ea39 100644
 +        return bridgeChooseTargetsFor(sa);
 +    }
 +
++    private boolean bridgePrepareHumanTargets(SpellAbility sa) {
++        if (sa.getActivatingPlayer() == null) sa.setActivatingPlayer(player);
++        boolean selectedTargetingPlayer = false;
++        if (sa.hasParam("TargetingPlayer")) {
++            FCollection<Player> candidates = new FCollection<>(
++                AbilityUtils.getDefinedPlayers(sa.getHostCard(), sa.getParam("TargetingPlayer"), sa));
++            Player targetingPlayer = chooseSingleEntityForEffect(candidates, sa,
++                "Choose the targeting player", false, null);
++            if (targetingPlayer == null) return false;
++            sa.setTargetingPlayer(targetingPlayer);
++            selectedTargetingPlayer = true;
++        }
++        boolean selected = bridgeChooseTargetsFor(sa);
++        // ComputerUtil's deferred TargetingPlayer callback is for choices
++        // that have not already been made by this controller. Clear only the
++        // main-priority marker after preflight so it cannot prompt twice.
++        if (selectedTargetingPlayer) sa.setTargetingPlayer(null);
++        return selected;
++    }
++
++    private boolean bridgeIsHumanActivation(SpellAbility sa) {
++        return sa != null && sa.isAbility() && !sa.isTrigger();
++    }
++
++    private void bridgeActivationDiagnostic(String stage, SpellAbility sa,
++            int candidateCount, int min, int max, String suffix) {
++        if (!bridgeIsHumanActivation(sa)) return;
++        Card source = sa.getHostCard();
++        String loyalty = sa.isPwAbility() && source != null
++            ? " loyalty=" + source.getCurrentLoyalty() : "";
++        System.out.println("[" + stage
++            + " sourceCardId=" + (source == null ? "" : source.getId())
++            + " spellAbilityId=" + sa.getId()
++            + " isSpell=" + sa.isSpell()
++            + " isAbility=" + sa.isAbility()
++            + " isPwAbility=" + sa.isPwAbility()
++            + " usesTargeting=" + sa.usesTargeting()
++            + " targetMin=" + min
++            + " targetMax=" + max
++            + " candidateCount=" + candidateCount
++            + loyalty
++            + (suffix == null || suffix.isBlank() ? "" : " " + suffix) + "]");
++    }
++
++    private boolean bridgeTargetsRemainLegal(SpellAbility sa) {
++        if (!sa.usesTargeting()) return true;
++        if (!sa.isTargetNumberValid()) return false;
++        for (forge.game.GameObject target : sa.getTargets()) {
++            if (!sa.canTarget(target)) return false;
++        }
++        return true;
++    }
++
 +    private boolean bridgeChooseTargetsFor(SpellAbility sa) {
 +        if (!sa.usesTargeting() || sa.getTargetRestrictions() == null) return true;
++        int existingTargetCount = sa.getTargets() == null ? 0 : sa.getTargets().size();
++        if (existingTargetCount > 0 && bridgeTargetsRemainLegal(sa)) {
++            bridgeTargetDiagnostic("TARGET_DECISION_CONSUMED", sa, "PREINSTALLED",
++                0, sa.getMinTargets(), sa.getMaxTargets(), existingTargetCount, null);
++            return true;
++        }
++        if (existingTargetCount > 0) sa.clearTargets();
 +        final FCollection<GameEntity> candidates = new FCollection<>(
 +            sa.getTargetRestrictions().getAllCandidates(sa));
 +        final int min = sa.getMinTargets();
 +        final int max = sa.getMaxTargets();
-+        if (candidates.isEmpty()) return min == 0;
++        bridgeTargetDiagnostic("TARGET_DECISION_CREATED", sa, sa.isTrigger() ? "TRIGGER_PREFLIGHT"
++            : sa.isAbility() ? "ACTIVATION_PREFLIGHT" : "PRECAST", candidates.size(), min, max,
++            existingTargetCount, null);
++        if (candidates.isEmpty()) {
++            boolean optional = min == 0;
++            bridgeTargetDiagnostic(optional ? "TARGET_DECISION_SUBMITTED" : "TARGET_PREFLIGHT_CANCELLED", sa,
++                sa.isTrigger() ? "TRIGGER_PREFLIGHT" : sa.isAbility() ? "ACTIVATION_PREFLIGHT" : "PRECAST",
++                0, min, max, existingTargetCount, optional ? "selectedCount=0" : "reason=no_legal_targets");
++            return optional;
++        }
 +        Card source = sa.getHostCard();
 +        String sourceId = source == null ? "" : " sourceCardId=" + source.getId();
 +        String sourceName = source == null ? "" : " sourceCardName=" + bridgeEncode(source.getName());
@@ -3346,10 +3486,33 @@ index 0d731bb6..0171ea39 100644
 +        List<GameEntity> selected = chooseEntitiesThroughTui("target_selection", candidates, min, max,
 +            sa.getTargetRestrictions().getVTSelection(), false,
 +            "decisionCause=ability_targeting sourceAbilityId=" + sa.getId());
-+        if (selected == null || selected.size() < min || selected.size() > max) return false;
++        if (selected == null || selected.size() < min || selected.size() > max) {
++            bridgeTargetDiagnostic("TARGET_PREFLIGHT_CANCELLED", sa,
++                sa.isTrigger() ? "TRIGGER_PREFLIGHT" : sa.isAbility() ? "ACTIVATION_PREFLIGHT" : "PRECAST",
++                candidates.size(), min, max, existingTargetCount,
++                "reason=cancelled selectedCount=" + (selected == null ? 0 : selected.size()));
++            return false;
++        }
 +        sa.clearTargets();
 +        for (GameEntity entity : selected) sa.getTargets().add(entity);
++        bridgeTargetDiagnostic("TARGETS_INSTALLED", sa,
++            sa.isTrigger() ? "TRIGGER_PREFLIGHT" : sa.isAbility() ? "ACTIVATION_PREFLIGHT" : "PRECAST",
++            candidates.size(), min, max, existingTargetCount, "selectedCount=" + selected.size());
 +        return true;
++    }
++
++    private void bridgeTargetDiagnostic(String stage, SpellAbility sa, String owner,
++            int candidateCount, int min, int max, int existingTargetCount, String suffix) {
++        Card source = sa == null ? null : sa.getHostCard();
++        String kind = sa == null ? "unknown" : sa.isTrigger() ? "triggered"
++            : sa.isAbility() ? "activated" : sa.isSpell() ? "spell" : "other";
++        System.out.println("[" + stage + " sourceCardId=" + (source == null ? "" : source.getId())
++            + " spellAbilityId=" + (sa == null ? "" : sa.getId())
++            + " abilityKind=" + kind + " targetOwner=" + owner
++            + " targetInputGeneration=" + (sa == null ? "" : sa.getId())
++            + " candidateCount=" + candidateCount + " existingTargetCount=" + existingTargetCount
++            + " targetMin=" + min + " targetMax=" + max
++            + (suffix == null || suffix.isBlank() ? "" : " " + suffix) + "]");
 +    }
  }
 diff --git a/forge-headless/src/main/java/forge/headless/TUICommand.java b/forge-headless/src/main/java/forge/headless/TUICommand.java
@@ -3486,6 +3649,7 @@ index 5d371355..45414663 100644
  import forge.deck.io.DeckSerializer;
  import forge.game.*;
 +import forge.game.card.Card;
++import forge.game.card.CounterEnumType;
 +import forge.game.phase.PhaseType;
  import forge.game.player.Player;
  import forge.game.player.RegisteredPlayer;
@@ -3616,6 +3780,119 @@ index 5d371355..45414663 100644
 +    @Test
 +    public void testCancelledDelveCastRestoresExactCardToHand() {
 +        assertCancelledSpellRestoresHand("Murderous Cut");
++    }
++
++    @Test
++    public void testTargetedPlaneswalkerActivationPreflightAndNativeOncePerTurnRule() {
++        LoyaltyScenario success = createLoyaltyScenario("3\n1\n0\n");
++        ByteArrayOutputStream successOutput = new ByteArrayOutputStream();
++        PrintStream originalOut = System.out;
++        System.setOut(new PrintStream(successOutput));
++        List<SpellAbility> chosen;
++        try {
++            chosen = success.tui.chooseSpellAbilityToPlay();
++        } finally {
++            System.setOut(originalOut);
++        }
++
++        assertNotNull("Elspeth -3 should be offered", chosen);
++        assertEquals(1, chosen.size());
++        SpellAbility minusThree = chosen.get(0);
++        assertTrue("Expected a planeswalker ability", minusThree.isPwAbility());
++        assertTrue("Expected a targeted planeswalker ability", minusThree.usesTargeting());
++        assertTrue("Target preflight must be visible before payment",
++            successOutput.toString().contains("[kind=target_selection"));
++        assertEquals("Preflight must not spend loyalty", 5, success.elspeth.getCurrentLoyalty());
++        assertSame("Preflight must retain the exact Forge target",
++            success.fireElemental, minusThree.getTargets().getFirstTargetedCard());
++
++        success.tui.playChosenSpellAbility(minusThree);
++        assertEquals("Successful -3 must pay loyalty exactly once", 2, success.elspeth.getCurrentLoyalty());
++        assertEquals("Successful ability must enter the stack", 1, success.game.getStack().size());
++        success.game.getStack().resolveStack();
++
++        ByteArrayOutputStream afterActivationOutput = new ByteArrayOutputStream();
++        System.setOut(new PrintStream(afterActivationOutput));
++        try {
++            new PlayerControllerTUI(success.game, success.human, success.humanLobby,
++                new BufferedReader(new StringReader("0\n"))).chooseSpellAbilityToPlay();
++        } finally {
++            System.setOut(originalOut);
++        }
++        assertTrue("Forge native canPlay must suppress further loyalty abilities after success",
++            afterActivationOutput.toString().contains("activated=0["));
++
++        LoyaltyScenario cancelled = createLoyaltyScenario("3\nq\n");
++        ByteArrayOutputStream cancelledOutput = new ByteArrayOutputStream();
++        System.setOut(new PrintStream(cancelledOutput));
++        try {
++            assertNull("Cancelled target preflight must return no action",
++                cancelled.tui.chooseSpellAbilityToPlay());
++        } finally {
++            System.setOut(originalOut);
++        }
++        assertEquals("Cancelled -3 must not spend loyalty", 5, cancelled.elspeth.getCurrentLoyalty());
++        assertTrue("Cancelled -3 must not enter the stack", cancelled.game.getStack().isEmpty());
++        assertTrue("Cancellation must be diagnosed",
++            cancelledOutput.toString().contains("TARGET_PREFLIGHT_CANCELLED"));
++    }
++
++    private static final class LoyaltyScenario {
++        private final Game game;
++        private final Player human;
++        private final LobbyPlayer humanLobby;
++        private final Card elspeth;
++        private final Card fireElemental;
++        private final PlayerControllerTUI tui;
++
++        private LoyaltyScenario(Game game, Player human, LobbyPlayer humanLobby,
++                Card elspeth, Card fireElemental, PlayerControllerTUI tui) {
++            this.game = game;
++            this.human = human;
++            this.humanLobby = humanLobby;
++            this.elspeth = elspeth;
++            this.fireElemental = fireElemental;
++            this.tui = tui;
++        }
++    }
++
++    private LoyaltyScenario createLoyaltyScenario(String input) {
++        Deck deck = loadTestDeck("monored.dck");
++        List<RegisteredPlayer> players = new ArrayList<>();
++        RegisteredPlayer player1 = new RegisteredPlayer(deck);
++        LobbyPlayer player1Lobby = GamePlayerUtil.getGuiPlayer("Player 1", 0, 0, false);
++        player1.setPlayer(player1Lobby);
++        players.add(player1);
++        RegisteredPlayer player2 = new RegisteredPlayer(deck);
++        LobbyPlayer player2Lobby = GamePlayerUtil.createAiPlayer("AI-TestDeck", 0);
++        player2.setPlayer(player2Lobby);
++        players.add(player2);
++
++        Game game = new Match(new GameRules(GameType.Constructed), players,
++            "Targeted Planeswalker Activation Test").createGame();
++        Player human = null;
++        Player opponent = null;
++        for (Player candidate : game.getPlayers()) {
++            if (candidate.getLobbyPlayer() == player1Lobby) human = candidate;
++            if (candidate.getLobbyPlayer() == player2Lobby) opponent = candidate;
++        }
++        assertNotNull(human);
++        assertNotNull(opponent);
++
++        var cardDb = FModel.getMagicDb().getCommonCards();
++        Card elspeth = Card.fromPaperCard(cardDb.getCard("Elspeth, Storm Slayer"), human);
++        Card fireElemental = Card.fromPaperCard(cardDb.getCard("Fire Elemental"), opponent);
++        assertNotNull(elspeth);
++        assertNotNull(fireElemental);
++        game.getAction().moveToPlay(elspeth, human, null, null);
++        game.getAction().moveToPlay(fireElemental, opponent, null, null);
++        elspeth.setCounters(CounterEnumType.LOYALTY, 5);
++        assertEquals(5, elspeth.getCurrentLoyalty());
++        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, human, true, 1);
++        PlayerControllerTUI tui = new PlayerControllerTUI(game, human, player1Lobby,
++            new BufferedReader(new StringReader(input)));
++        human.dangerouslySetController(tui);
++        return new LoyaltyScenario(game, human, player1Lobby, elspeth, fireElemental, tui);
 +    }
 +
 +    private void assertCancelledSpellRestoresHand(String spellName) {

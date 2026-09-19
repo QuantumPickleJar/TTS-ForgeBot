@@ -941,6 +941,24 @@ public sealed class ForgeTuiParserTests
     }
 
     [Fact]
+    public void TargetDecisionMetadata_StopsSourceNameAtFollowingKeysAndDecodesIt()
+    {
+        var parser = new ForgeTuiParser();
+        var result = parser.Append(
+            "=== FORGE CHOICE ===\n" +
+            "Select target nonland permanent\n" +
+            "[bridge decisionCause=ability_targeting sourceCardId=23 sourceCardName=Banishing%20Light targetMin=1 targetMax=1]\n" +
+            "[kind=target_selection decisionCause=ability_targeting sourceAbilityId=221 min=1 max=1 selected=0 ordered=false]\n" +
+            "  1. Raging Goblin [id=78]\n" +
+            "Enter choice (1-1): ");
+
+        var decision = Assert.IsType<ForgeTuiDecision>(result.ParsedDecision).Decision;
+        Assert.Equal("forge-object:23", decision.SourceCardInstanceId);
+        Assert.Equal("Banishing Light", decision.SourceCardName);
+        Assert.Equal("ability_targeting", decision.DecisionCauseKind);
+    }
+
+    [Fact]
     public void CleanupDiscardDecision_HasNoInventedSourceCard()
     {
         var parser = new ForgeTuiParser();

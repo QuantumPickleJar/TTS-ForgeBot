@@ -214,7 +214,7 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("sa.getTargets().add(entity)", controller);
         Assert.Contains("ComputerUtil.playStack(sa, player, getGame())", controller);
         Assert.Contains("decisionCause=ability_targeting", controller);
-        Assert.Contains("return bridgeChooseTargetsFor(sa);", controller);
+        Assert.Contains("bridgeChooseTargetsFor(sa)", controller);
     }
 
     [Fact]
@@ -454,6 +454,21 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void TargetedTriggeredAbilityHasOneStructuredOwnerAndMandatorySingleTargetIsOneShot()
+    {
+        var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
+        Assert.Contains("return bridgeChooseTargetsFor(sa);", controller);
+        Assert.DoesNotContain("getOptionalTargetInput", controller);
+        Assert.Contains("boolean oneShotTarget = \"target_selection\".equals(kind)", controller);
+        Assert.Contains("if (!oneShotTarget)", controller);
+        Assert.Contains("int minimumChoice = oneShotTarget ? 1 : 0", controller);
+        Assert.Contains("TARGET_DECISION_CONSUMED", controller);
+        Assert.Contains("TARGET_DECISION_CREATED", controller);
+        Assert.Contains("TARGETS_INSTALLED", controller);
+        Assert.Contains("targetOwner=", controller);
+    }
+
+    [Fact]
     public void DelveAndMulliganRemainNativeForgeControllerTransactions()
     {
         Assert.Contains("chooseCardsToDelve(int genericAmount, CardCollection grave)", Patch);
@@ -545,7 +560,7 @@ public sealed class ForgeProducerContractTests
         Assert.DoesNotContain("sa.isLandAbility() && sa.canPlay() && player.canPlayLand(c, false, sa)", Patch);
         Assert.Contains("if (!player.canPlayLand(land, false, chosenSa))", Patch);
         Assert.Contains("rejected stale land action", Patch);
-        Assert.Contains("getOptionalTargetInput", Patch);
+        Assert.DoesNotContain("getOptionalTargetInput", Patch);
         Assert.DoesNotContain("+            chosenSa.resolve();", Patch);
         Assert.Contains("return super.playChosenSpellAbility(chosenSa);", Patch);
         Assert.Contains("return accepted;", Patch);
@@ -556,6 +571,49 @@ public sealed class ForgeProducerContractTests
         Assert.Contains("totalActions == 0 && !isMainPhase", Patch);
         Assert.DoesNotContain("totalActions == 0 && (!isMainPhase || stackHasItems)", Patch);
         Assert.True(Patch.IndexOf("sa.setActivatingPlayer(player);", StringComparison.Ordinal) < Patch.IndexOf("if (!sa.canPlay()) continue;", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void MainPriorityPreflightsTargetedActivatedAbilitiesBeforeCommit()
+    {
+        var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
+        Assert.Contains("if (chosen != null && chosen.usesTargeting())", controller);
+        Assert.Contains("if (!bridgePrepareHumanTargets(chosen))", controller);
+        Assert.DoesNotContain("chosen.isSpell() && chosen.usesTargeting()", controller);
+        Assert.Contains("bridgeChooseTargetsFor(sa)", controller);
+        Assert.Contains("getAllCandidates(sa)", controller);
+        Assert.Contains("sa.getTargets().add(entity)", controller);
+        Assert.Contains("TARGET_DECISION_CREATED", controller);
+        Assert.Contains("TARGETS_INSTALLED", controller);
+        Assert.Contains("TARGET_PREFLIGHT_CANCELLED", controller);
+    }
+
+    [Fact]
+    public void ActivationCommitUsesForgeTargetFenceAndBoundedDiagnosticsWithoutRollbackHack()
+    {
+        var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
+        Assert.Contains("ACTIVATION_COMMIT_BEGIN", controller);
+        Assert.Contains("ACTIVATION_COMMIT_ACCEPTED", controller);
+        Assert.Contains("ACTIVATION_COMMIT_REJECTED", controller);
+        Assert.Contains("bridgeTargetsRemainLegal(chosenSa)", controller);
+        Assert.Contains("isPwAbility", controller);
+        Assert.Contains("getCurrentLoyalty", controller);
+        Assert.Contains("targetMin=", controller);
+        Assert.Contains("targetMax=", controller);
+        Assert.Contains("candidateCount=", controller);
+        Assert.DoesNotContain("planeswalkerActivatedThisTurn", controller);
+        Assert.DoesNotContain("addCounter(CounterEnumType.LOYALTY", controller);
+    }
+
+    [Fact]
+    public void NativePlaneswalkerActivationLegalityRemainsAuthoritativeForExtraActivationEffects()
+    {
+        var controller = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/PlayerControllerTUI.java");
+        Assert.Contains("private List<SpellAbility> getActivatedAbilities()", Patch);
+        Assert.Contains("sa.canPlay()", Patch);
+        Assert.Contains("if (source.isPlaneswalker()) category = \"planeswalker\"", controller);
+        Assert.DoesNotContain("planeswalkerActivatedThisTurn", Patch);
+        Assert.DoesNotContain("one loyalty ability per turn", Patch);
     }
 
     [Fact]

@@ -265,6 +265,70 @@ public sealed class ForgeTuiAdapterTests
     }
 
     [Fact]
+    public async Task BanishingLightTargetSelection_UsesOneInputBoundaryAndAcceptsExactTarget()
+    {
+        var command = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (!File.Exists(command)) return;
+
+        var script = Path.Combine(Path.GetTempPath(), $"forge-tui-banishing-light-{Guid.NewGuid():N}.cmd");
+        var inputLog = Path.Combine(Path.GetTempPath(), $"forge-tui-banishing-light-{Guid.NewGuid():N}.log");
+        await WriteForgeScriptAsync(script, """
+            @echo off
+            echo === FORGE CHOICE ===
+            echo Select target nonland permanent
+            echo [bridge decisionCause=ability_targeting sourceCardId=23 sourceCardName=Banishing%%20Light targetMin=1 targetMax=1]
+            echo [kind=target_selection decisionCause=ability_targeting sourceAbilityId=221 min=1 max=1 selected=0 ordered=false]
+            echo   1. Goblin Piker [id=68] [bridge entityKind=permanent cardInstanceId=68 sourceZone=battlefield]
+            echo   2. Raging Goblin [id=78] [bridge entityKind=permanent cardInstanceId=78 sourceZone=battlefield]
+            <nul set /p "=Enter choice (1-2): "
+            set /p choice=
+            >>"__INPUT_LOG__" echo(%choice%
+            if not "%choice%"=="2" exit /b 41
+            echo What would you like to do?
+            echo   0. Pass priority (do nothing)
+            <nul set /p "=Enter choice (0-0): "
+            set /p choice=
+            """.Replace("__INPUT_LOG__", inputLog));
+
+        try
+        {
+            await using var adapter = new ForgeTuiAdapter(
+                Options.Create(new ForgeTuiOptions
+                {
+                    Executable = command,
+                    Arguments = $"/d /q /c \"{script}\"",
+                    WorkingDirectory = Path.GetDirectoryName(script)!,
+                    StartupTimeoutSeconds = 5,
+                    DecisionTimeoutSeconds = 5,
+                }), NullLogger<ForgeTuiAdapter>.Instance);
+
+            var initial = await adapter.StartSessionAsync(CancellationToken.None);
+            var decision = Assert.IsType<DecisionDto>(initial.CurrentDecision);
+            Assert.Equal("target_selection", decision.Kind);
+            Assert.Equal("Banishing Light", decision.SourceCardName);
+            var target = Assert.Single(decision.Actions,
+                action => action.EntityCardInstanceId?.EndsWith(":78", StringComparison.Ordinal) == true);
+            Assert.Equal("choose_target", target.Type);
+            Assert.Equal("awaiting_human_decision", initial.State);
+
+            var accepted = await adapter.SubmitChoiceAsync(
+                new ChoiceRequestDto(decision.DecisionId, target.ActionId) { SessionId = initial.SessionId },
+                CancellationToken.None);
+
+            Assert.True(accepted.Accepted);
+            Assert.Equal("awaiting_human_decision", accepted.State.State);
+            Assert.Equal("main_priority", accepted.State.CurrentDecision?.Kind);
+            Assert.Equal(["2"], (await File.ReadAllLinesAsync(inputLog)).Select(line => line.Trim()).ToArray());
+            Assert.NotEqual("unsupported_decision", accepted.State.State);
+        }
+        finally
+        {
+            File.Delete(script);
+            File.Delete(inputLog);
+        }
+    }
+
+    [Fact]
     public async Task G3_ReadinessMarkerBeforeCandidatePublishesAfterCandidateArrives()
     {
         await using var adapter = WatermarkAdapter("session-before", 7, 3);

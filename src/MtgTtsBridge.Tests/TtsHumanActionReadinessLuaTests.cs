@@ -679,6 +679,26 @@ public sealed class TtsHumanActionReadinessLuaTests
         Assert.False(lua.Globals.Get("BridgeState").Table.Get("humanActionReadiness").Table.Get("certified").Boolean);
     }
 
+    [Fact]
+    public void UnsupportedForgeInputDoesNotMasqueradeAsTableSync()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            BridgeState.adapterState = 'unsupported_decision'
+            BridgeState.snapshotReconcilePending = false
+            BridgeState.snapshotReconcileInFlight = false
+            BridgeState.resyncInFlight = false
+            function BridgeSetStatus(headline, detail)
+                observedHeadline = headline
+                observedDetail = detail
+            end
+            BridgeShowHumanActionBlocked({classification='NOT_CERTIFIED', reason='Forge input unsupported'})
+        ");
+
+        Assert.Equal("FORGE INPUT UNSUPPORTED", lua.Globals.Get("observedHeadline").String);
+        Assert.NotEqual("SYNCING TABLE", lua.Globals.Get("observedHeadline").String);
+    }
+
     private static Script NewProbe()
     {
         var lua = new Script(CoreModules.Preset_Complete);
