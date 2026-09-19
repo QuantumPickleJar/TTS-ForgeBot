@@ -4306,6 +4306,7 @@ end
 
 function BridgeObserveBridgeHealth(body)
     if body == nil then return end
+    BridgeState.adapterState = body.adapterState
     local processId = body.bridgeProcessInstanceId
     if processId ~= nil and processId ~= "" then
         if BridgeState.bridgeProcessInstanceId ~= nil

@@ -246,7 +246,8 @@ public sealed partial class ForgeTuiParser
                 DecisionReason = decisionProvenance is { Success: true } ? NullIfBlank(decisionProvenance.Groups["reason"].Value) : null,
                 SourceCardInstanceId = decisionProvenance is { Success: true } && decisionProvenance.Groups["sourceId"].Success
                     ? $"forge-object:{decisionProvenance.Groups["sourceId"].Value}" : null,
-                SourceCardName = decisionProvenance is { Success: true } ? NullIfBlank(decisionProvenance.Groups["sourceName"].Value) : null,
+                SourceCardName = decisionProvenance is { Success: true }
+                    ? DecodeBridgeToken(decisionProvenance.Groups["sourceName"].Value) : null,
                 ContextCardInstanceId = decisionContext is { Success: true } ? $"forge-object:{decisionContext.Groups["cardId"].Value}" : null,
                 ContextCardName = decisionContext is { Success: true } ? NullIfBlank(decisionContext.Groups["cardName"].Value) : null,
                 CostKind = selectionMetadata.Success ? NullIfBlank(selectionMetadata.Groups["costKind"].Value) : null,
@@ -718,7 +719,7 @@ public sealed partial class ForgeTuiParser
     // This compact record is emitted by the controlled Forge producer, not
     // inferred from the English discard prompt. sourceName is deliberately
     // last because card names may contain spaces.
-    [GeneratedRegex(@"\[bridge\s+decisionCause=(?<cause>[a-z_]+)(?:\s+decisionReason=(?<reason>[a-z_]+))?(?:\s+sourceCardId=(?<sourceId>\d+))?(?:\s+sourceCardName=(?<sourceName>[^\]]*?))?\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\[bridge\s+decisionCause=(?<cause>[a-z_]+)(?:\s+decisionReason=(?<reason>[a-z_]+))?(?:\s+sourceCardId=(?<sourceId>\d+))?(?:\s+sourceCardName=(?<sourceName>[^\]]*?))?(?=\s+[A-Za-z][A-Za-z0-9_]*=|\s*\])[^\]]*\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex DecisionProvenanceRegex();
 
     [GeneratedRegex(@"\[bridge\s+blockerForCardId=(?<cardId>\d+)\s+blockerForName=(?<cardName>[^\]]*?)\]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]

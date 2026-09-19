@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: e76577a3fe9dec397533ebc476954d58d38958d5395982bebebe2cc096ab58f3
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "e76577a3fe9dec397533ebc476954d58d38958d5395982bebebe2cc096ab58f3"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: f982991e1308984b1279cc8875502176bfa1b3d297424efcf70613e845991fe0
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "f982991e1308984b1279cc8875502176bfa1b3d297424efcf70613e845991fe0"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -4309,6 +4309,7 @@ end
 
 function BridgeObserveBridgeHealth(body)
     if body == nil then return end
+    BridgeState.adapterState = body.adapterState
     local processId = body.bridgeProcessInstanceId
     if processId ~= nil and processId ~= "" then
         if BridgeState.bridgeProcessInstanceId ~= nil
@@ -9310,8 +9311,17 @@ end
 function BridgeShowHumanActionBlocked(readiness)
     local reason = readiness and readiness.reason or "physical state is not ready"
     local classification = readiness and readiness.classification or "NOT_CERTIFIED"
-    local headline = (classification == "RESYNC" or classification == "DESYNC" or classification == "BOOTSTRAP")
-        and "RESYNC REQUIRED" or "SYNCING TABLE"
+    local resyncActive = BridgeState.snapshotReconcilePending == true
+        or BridgeState.snapshotReconcileInFlight == true
+        or BridgeState.resyncInFlight == true
+    local headline
+    if BridgeState.adapterState == "unsupported_decision" and not resyncActive then
+        headline = "FORGE INPUT UNSUPPORTED"
+    elseif classification == "RESYNC" or classification == "DESYNC" or classification == "BOOTSTRAP" then
+        headline = "RESYNC REQUIRED"
+    else
+        headline = "SYNCING TABLE"
+    end
     BridgeState.lastHumanActionBlockReason = tostring(reason)
     BridgeSetStatus(headline, "Actions unlock when physical state matches Forge.")
     BridgeLog("[Bridge] HUMAN_ACTION_BLOCKED classification=" .. tostring(classification)

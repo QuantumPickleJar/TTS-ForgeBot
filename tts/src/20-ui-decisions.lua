@@ -837,8 +837,17 @@ end
 function BridgeShowHumanActionBlocked(readiness)
     local reason = readiness and readiness.reason or "physical state is not ready"
     local classification = readiness and readiness.classification or "NOT_CERTIFIED"
-    local headline = (classification == "RESYNC" or classification == "DESYNC" or classification == "BOOTSTRAP")
-        and "RESYNC REQUIRED" or "SYNCING TABLE"
+    local resyncActive = BridgeState.snapshotReconcilePending == true
+        or BridgeState.snapshotReconcileInFlight == true
+        or BridgeState.resyncInFlight == true
+    local headline
+    if BridgeState.adapterState == "unsupported_decision" and not resyncActive then
+        headline = "FORGE INPUT UNSUPPORTED"
+    elseif classification == "RESYNC" or classification == "DESYNC" or classification == "BOOTSTRAP" then
+        headline = "RESYNC REQUIRED"
+    else
+        headline = "SYNCING TABLE"
+    end
     BridgeState.lastHumanActionBlockReason = tostring(reason)
     BridgeSetStatus(headline, "Actions unlock when physical state matches Forge.")
     BridgeLog("[Bridge] HUMAN_ACTION_BLOCKED classification=" .. tostring(classification)
