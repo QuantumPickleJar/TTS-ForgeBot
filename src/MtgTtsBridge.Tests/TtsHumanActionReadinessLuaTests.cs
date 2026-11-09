@@ -143,6 +143,196 @@ public sealed class TtsHumanActionReadinessLuaTests
     }
 
     [Fact]
+    public void CombatAttackerPickupPreservesBindingAndClickInPlaceSubmitsExactlyOnce()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            local card = {
+                tag='Card', guid='attacker-guid', buttons={}, highlights=0,
+                position={x=0,y=1,z=0}, rotation={x=0,y=0,z=0}, use_hands=true
+            }
+            function card.getGUID() return card.guid end
+            function card.getName() return 'Hare Apparent' end
+            function card.getButtons() return card.buttons end
+            function card.createButton(button) button.index=#card.buttons; table.insert(card.buttons, button) end
+            function card.removeButton(index) table.remove(card.buttons, index + 1) end
+            function card.highlightOn(color) card.highlights=card.highlights+1 end
+            function card.highlightOff() end
+            function card.getPosition() return card.position end
+            function card.getRotation() return card.rotation end
+            function card.setPositionSmooth(position) card.position=position end
+            function card.setRotationSmooth(rotation) card.rotation=rotation end
+            function card.getVar() return nil end
+            function getObjectFromGUID(guid) if guid == 'attacker-guid' then return card end end
+            function getAllObjects() return {card} end
+            Player = {White={}}
+            Global = {}
+            BRIDGE_SEATS['forge-player-1'] = {ttsColor='White', attackLaneZ=5, blockerLaneZ=7,
+                tableSideZ=-1, animateAuthoritativeEvents=false}
+            BridgeState.eventSessionId='combat-session'
+            BridgeState.eventSessionGeneration=4
+            BridgeState.humanActionGeneration=8
+            BridgeState.physicalTransactionGeneration=3
+            BridgeState.currentPhysicalPresentationGeneration=0
+            BridgeState.lastAppliedEventSequence=348
+            BridgeState.lastStateProjectedEventSequence=348
+            BridgeState.snapshotReconcileLastAppliedCursor=348
+            BridgeState.setupStage='READY'
+            BridgeState.resyncStage='Idle'
+            BridgeState.desyncLatched=false
+            BridgeState.resyncInFlight=false
+            BridgeState.setupBusy=false
+            BridgeState.bootstrapping=false
+            BridgeState.snapshotReconcileInFlight=false
+            BridgeState.humanActionReadiness={certified=true, globalCertified=true, decisionAccepted=true,
+                sessionId='combat-session', decisionId='forge-tui-39', sessionGeneration=4,
+                physicalTransactionGeneration=3, authoritativeCursor=348}
+            BridgeState.physicalByInstanceId={['forge:combat:30']='attacker-guid'}
+            BridgeState.physicalInstanceIdByGuid={['attacker-guid']='forge:combat:30'}
+            BridgeState.physicalSeatByGuid={['attacker-guid']='forge-player-1'}
+            BridgeState.physicalZoneByGuid={['attacker-guid']='battlefield'}
+            BridgeState.authoritativeObjectByInstanceId={
+                ['forge:combat:30']={isVirtual=false, zone='battlefield', seatId='forge-player-1'}
+            }
+            local attacker = {actionId='attacker-A', type='choose_attacker',
+                cardInstanceId='forge:combat:30', sourceCardInstanceId='forge:combat:30',
+                sourceZone='battlefield', seat='forge-player-1', isSelected=false}
+            local other = {actionId='attacker-B', type='choose_attacker',
+                cardInstanceId='forge:combat:31', sourceCardInstanceId='forge:combat:31',
+                sourceZone='battlefield', seat='forge-player-1', isSelected=false}
+            BridgeState.lastDecision={decisionId='forge-tui-39', sessionId='combat-session',
+                kind='attacker_selection', seatId='forge-player-1', eventCursor=348,
+                actions={attacker, other, {actionId='finish-attacking', type='choose_none'}}}
+            BridgeState.actionsByGuid={}
+            BridgeState.actionByGuid={}
+            BridgeState.gestureActionAmbiguousByGuid={}
+            BridgeState.highlightedGuids={}
+            BridgeHighlightPhysicalObjectOnce(card, 'attacker-guid', {0.2,0.5,1.0})
+            BridgeRegisterPhysicalAction('attacker-guid', attacker, BridgeState.lastDecision)
+            -- A second legal combat binding remains represented by the normal
+            -- one-to-many registry even when its probe object is omitted.
+            BridgeRegisterPhysicalAction('other-guid', other, BridgeState.lastDecision)
+            submissions={}
+            function BridgeSubmitChoice(decisionId, actionId, source)
+                lastSubmitDecision=decisionId
+                lastSubmitAction=actionId
+                lastSubmitSource=source
+                table.insert(submissions, {decisionId=decisionId, actionId=actionId, source=source})
+            end
+
+            onObjectPickUp('White', card)
+            bindingAfterPickup = BridgeFindPhysicalActionForGuid('attacker-guid', 'attacker-A') ~= nil
+            otherBindingAfterPickup = BridgeFindPhysicalActionForGuid('other-guid', 'attacker-B') ~= nil
+            pendingAfterPickup = BridgeState.pendingIntent ~= nil
+            onObjectDrop('White', card)
+            submissionCount = #submissions
+            gestureStage = BridgeState.lastCombatGesture and BridgeState.lastCombatGesture.stage or 'nil'
+            submittedDecision = lastSubmitDecision or 'none'
+            submittedAction = lastSubmitAction or 'none'
+            submittedSource = lastSubmitSource or 'none'
+            bindingAfterDrop = BridgeFindPhysicalActionForGuid('attacker-guid', 'attacker-A') ~= nil
+            -- The same physical action remains valid when the card is moved
+            -- into the attack lane before release.
+            BridgeCommitPendingIntent('forge-tui-39', 'attacker-A')
+            card.position={x=0,y=1,z=0}
+            onObjectPickUp('White', card)
+            card.position={x=2,y=2,z=5}
+            onObjectDrop('White', card)
+            dragSubmissionCount=#submissions
+            dragSubmittedAction=lastSubmitAction or 'none'
+            dragSubmittedSource=lastSubmitSource or 'none'
+        ");
+
+        Assert.True(lua.Globals.Get("pendingAfterPickup").Boolean);
+        Assert.True(lua.Globals.Get("bindingAfterPickup").Boolean);
+        Assert.True(lua.Globals.Get("otherBindingAfterPickup").Boolean);
+        Assert.Equal(1, lua.Globals.Get("submissionCount").Number);
+        Assert.Equal("SUBMIT", lua.Globals.Get("gestureStage").String);
+        Assert.True(lua.Globals.Get("submittedDecision").String == "forge-tui-39",
+            $"last={lua.Globals.Get("lastSubmitDecision").String}/{lua.Globals.Get("lastSubmitAction").String}/{lua.Globals.Get("lastSubmitSource").String}");
+        Assert.True(lua.Globals.Get("submittedAction").String == "attacker-A",
+            $"last={lua.Globals.Get("lastSubmitDecision").String}/{lua.Globals.Get("lastSubmitAction").String}/{lua.Globals.Get("lastSubmitSource").String}");
+        Assert.Equal("attacker_drop", lua.Globals.Get("submittedSource").String);
+        Assert.True(lua.Globals.Get("bindingAfterDrop").Boolean);
+        Assert.Equal(2, lua.Globals.Get("dragSubmissionCount").Number);
+        Assert.Equal("attacker-A", lua.Globals.Get("dragSubmittedAction").String);
+        Assert.Equal("attacker_drop", lua.Globals.Get("dragSubmittedSource").String);
+    }
+
+    [Fact]
+    public void CombatBlockerPickupUsesTheSamePreservedBindingPath()
+    {
+        var lua = NewProbe();
+        ExecuteProbe(lua, @"
+            local card = {tag='Card', guid='blocker-guid', buttons={}, position={x=0,y=1,z=0},
+                rotation={x=0,y=0,z=0}, use_hands=true}
+            function card.getGUID() return card.guid end
+            function card.getName() return 'Bear' end
+            function card.getButtons() return card.buttons end
+            function card.highlightOn() end
+            function card.highlightOff() end
+            function card.getPosition() return card.position end
+            function card.getRotation() return card.rotation end
+            function card.setPositionSmooth(position) card.position=position end
+            function card.setRotationSmooth(rotation) card.rotation=rotation end
+            function card.getVar() return nil end
+            function getObjectFromGUID(guid) if guid == 'blocker-guid' then return card end end
+            function getAllObjects() return {card} end
+            Player={White={}}
+            BRIDGE_SEATS['forge-player-1']={ttsColor='White', attackLaneZ=5, blockerLaneZ=7,
+                tableSideZ=-1, animateAuthoritativeEvents=false}
+            BridgeState.eventSessionId='blocker-session'
+            BridgeState.eventSessionGeneration=2
+            BridgeState.humanActionGeneration=3
+            BridgeState.physicalTransactionGeneration=1
+            BridgeState.lastAppliedEventSequence=10
+            BridgeState.snapshotReconcileLastAppliedCursor=10
+            BridgeState.setupStage='READY'
+            BridgeState.resyncStage='Idle'
+            BridgeState.humanActionReadiness={certified=true, globalCertified=true, decisionAccepted=true,
+                sessionId='blocker-session', decisionId='blocker-decision', sessionGeneration=2,
+                physicalTransactionGeneration=1, authoritativeCursor=10}
+            BridgeState.physicalByInstanceId={['forge:blocker:1']='blocker-guid'}
+            BridgeState.physicalInstanceIdByGuid={['blocker-guid']='forge:blocker:1'}
+            BridgeState.physicalSeatByGuid={['blocker-guid']='forge-player-1'}
+            BridgeState.physicalZoneByGuid={['blocker-guid']='battlefield'}
+            BridgeState.authoritativeObjectByInstanceId={
+                ['forge:blocker:1']={isVirtual=false, zone='battlefield', seatId='forge-player-1'}
+            }
+            local blocker={actionId='blocker-A', type='choose_blocker', cardInstanceId='forge:blocker:1',
+                sourceCardInstanceId='forge:blocker:1', sourceZone='battlefield', isSelected=false}
+            BridgeState.lastDecision={decisionId='blocker-decision', sessionId='blocker-session',
+                kind='blocker_selection', seatId='forge-player-1', eventCursor=10, actions={blocker}}
+            BridgeState.actionsByGuid={}
+            BridgeState.actionByGuid={}
+            BridgeState.gestureActionAmbiguousByGuid={}
+            BridgeState.highlightedGuids={}
+            BridgeHighlightPhysicalObjectOnce(card, 'blocker-guid', {0.2,0.5,1.0})
+            BridgeRegisterPhysicalAction('blocker-guid', blocker, BridgeState.lastDecision)
+            submissions={}
+            function BridgeSubmitChoice(decisionId, actionId, source)
+                lastSubmitDecision=decisionId
+                lastSubmitAction=actionId
+                lastSubmitSource=source
+                table.insert(submissions, {decisionId=decisionId, actionId=actionId, source=source})
+            end
+            onObjectPickUp('White', card)
+            bindingAfterPickup=BridgeFindPhysicalActionForGuid('blocker-guid', 'blocker-A') ~= nil
+            onObjectDrop('White', card)
+            submissionCount=#submissions
+            gestureStage=BridgeState.lastCombatGesture and BridgeState.lastCombatGesture.stage or 'nil'
+            submittedAction=lastSubmitAction or 'none'
+            submittedSource=lastSubmitSource or 'none'
+        ");
+
+        Assert.True(lua.Globals.Get("bindingAfterPickup").Boolean);
+        Assert.Equal("SUBMIT", lua.Globals.Get("gestureStage").String);
+        Assert.Equal(1, lua.Globals.Get("submissionCount").Number);
+        Assert.True(lua.Globals.Get("submittedSource").String == "blocker_drop",
+            $"last={lua.Globals.Get("lastSubmitDecision").String}/{lua.Globals.Get("lastSubmitAction").String}/{lua.Globals.Get("lastSubmitSource").String}");
+    }
+
+    [Fact]
     public void NewMatchRetiresOldPassBeforeCleanupAndNeverPostsIt()
     {
         var lua = NewProbe();

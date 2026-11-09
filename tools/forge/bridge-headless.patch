@@ -678,6 +678,10 @@ index 00000000..f3a53020
 +    private long randomResultSequence;
 +    private String lastPublicRevealFingerprint;
 +    private final List<PendingZoneTransition> pendingZoneTransitions = new java.util.ArrayList<>();
++    // This is the topology of the last frame actually published to the
++    // bridge. It is deliberately separate from mutationGeneration: the
++    // event callback can lag behind Forge's live zone mutation.
++    private final Map<Integer, String> lastPublishedZoneByCardId = new java.util.LinkedHashMap<>();
 +
 +    BridgeStateFeed(final Game game) {
 +        this.game = game;
@@ -963,8 +967,12 @@ index 00000000..f3a53020
 +        try {
 +            final long publishedGeneration = emitSnapshot(null);
 +            if (publishedGeneration < 0) {
-+                trace("snapshot candidate discarded currentGeneration=" + mutationGeneration.get()
-+                        + " reason=mutation_during_snapshot");
++                if (publishedGeneration == -2) {
++                    trace("SNAPSHOT_CANDIDATE_DEFERRED reason=zone_delta_awaiting_transition_provenance");
++                } else {
++                    trace("snapshot candidate discarded currentGeneration=" + mutationGeneration.get()
++                            + " reason=mutation_during_snapshot");
++                }
 +                ThreadUtil.delay(25, this::emitWhenStable);
 +                return;
 +            }
@@ -1012,6 +1020,7 @@ index 00000000..f3a53020
 +
 +        final StringBuilder json = new StringBuilder(32768);
 +        final Set<Integer> emittedCardIds = new HashSet<>();
++        final Map<Integer, String> candidateZones = new java.util.LinkedHashMap<>();
 +        json.append('{');
 +        property(json, "version", 1).append(',');
 +        property(json, "type", "snapshot").append(','); final long snapshotSequence = sequence + 1;
@@ -1025,7 +1034,7 @@ index 00000000..f3a53020
 +        for (Player player : game.getPlayers()) {
 +            if (!firstPlayer) json.append(',');
 +            firstPlayer = false;
-+            appendPlayer(json, player, emittedCardIds);
++            appendPlayer(json, player, emittedCardIds, candidateZones);
 +        }
 +
 +        json.append("],\"stack\":[");
@@ -1034,7 +1043,7 @@ index 00000000..f3a53020
 +        for (Card card : game.getStackZone().getCards()) {
 +            if (!firstCard) json.append(',');
 +            firstCard = false;
-+            appendCard(json, card, "stack", position++, emittedCardIds);
++            appendCard(json, card, "stack", position++, emittedCardIds, candidateZones);
 +        }
 +        json.append("],\"stackObjects\":[");
 +        boolean firstStackObject = true;
@@ -1068,11 +1077,18 @@ index 00000000..f3a53020
 +                        + " reason=mutation_during_snapshot");
 +                return -1;
 +            }
++            if (!validateZoneProvenance(candidateZones, includedTransitions, generation)) {
++                trace("SNAPSHOT_CANDIDATE_DEFERRED reason=zone_delta_awaiting_transition_provenance"
++                        + " capturedGeneration=" + generation);
++                return -2;
++            }
 +            synchronized (System.out) {
 +                System.out.println(SENTINEL + json);
 +                System.out.flush();
 +            }
 +            sequence = snapshotSequence;
++            lastPublishedZoneByCardId.clear();
++            lastPublishedZoneByCardId.putAll(candidateZones);
 +            synchronized (transitionJournalLock) {
 +                final java.util.Iterator<PendingZoneTransition> iterator = pendingZoneTransitions.iterator();
 +                while (iterator.hasNext()) {
@@ -1122,6 +1138,89 @@ index 00000000..f3a53020
 +            System.out.flush();
 +        }
 +        trace("decision_ready snapshotSequence=" + publishedSnapshotSequence + " mutationGeneration=" + mutationGeneration.get());
++    }
++
++    /**
++     * A live-zone read can overtake its GameEvent callback. The published
++     * topology is therefore the producer's second coherence fence: an
++     * existing card may change zones in a candidate only when the ordered
++     * event-time transition journal explains that movement.
++     */
++    private boolean validateZoneProvenance(final Map<Integer, String> candidateZones,
++            final List<PendingZoneTransition> includedTransitions, final long generation) {
++        final Map<Integer, List<PendingZoneTransition>> transitionsByCard = new java.util.LinkedHashMap<>();
++        for (PendingZoneTransition transition : includedTransitions) {
++            transitionsByCard.computeIfAbsent(transition.forgeCardId,
++                    ignored -> new java.util.ArrayList<>()).add(transition);
++        }
++        final Set<Integer> cardIds = new LinkedHashSet<>();
++        cardIds.addAll(lastPublishedZoneByCardId.keySet());
++        cardIds.addAll(candidateZones.keySet());
++        cardIds.addAll(transitionsByCard.keySet());
++
++        for (Integer forgeCardId : cardIds) {
++            final String previousZone = lastPublishedZoneByCardId.get(forgeCardId);
++            final String candidateZone = candidateZones.get(forgeCardId);
++            final List<PendingZoneTransition> transitions = transitionsByCard.getOrDefault(
++                    forgeCardId, java.util.Collections.emptyList());
++            final boolean zoneChanged = previousZone != null && !java.util.Objects.equals(previousZone, candidateZone);
++            final boolean needsCoverage = zoneChanged || (previousZone != null && candidateZone == null);
++            if (!needsCoverage && transitions.isEmpty()) continue;
++
++            final List<String> sources = new java.util.ArrayList<>();
++            final List<String> destinations = new java.util.ArrayList<>();
++            boolean tokenDisappearance = false;
++            for (PendingZoneTransition transition : transitions) {
++                sources.add(transition.sourceZone);
++                destinations.add(transition.destinationZone);
++                tokenDisappearance |= transition.token;
++            }
++            final boolean covered = zoneChainCovered(previousZone, candidateZone,
++                    sources, destinations, tokenDisappearance);
++
++            trace("SNAPSHOT_ZONE_PROVENANCE_CHECK forgeCardId=" + forgeCardId
++                    + " previousPublishedZone=" + String.valueOf(previousZone)
++                    + " candidateZone=" + String.valueOf(candidateZone)
++                    + " transitionCount=" + transitions.size()
++                    + " orderedChain=" + formatTransitionChain(transitions)
++                    + " covered=" + covered
++                    + " capturedGeneration=" + generation);
++            if (!covered) return false;
++        }
++        return true;
++    }
++
++    // Package-private for the deterministic Forge headless producer tests.
++    static boolean zoneChainCovered(final String previousZone, final String candidateZone,
++            final List<String> sources, final List<String> destinations, final boolean tokenDisappearance) {
++        final boolean needsCoverage = previousZone != null
++                && !java.util.Objects.equals(previousZone, candidateZone);
++        if (sources.size() != destinations.size()) return false;
++        if (sources.isEmpty()) {
++            return !needsCoverage && !(previousZone != null && candidateZone == null);
++        }
++        String chainZone = previousZone == null ? sources.get(0) : previousZone;
++        for (int index = 0; index < sources.size(); index++) {
++            if (!java.util.Objects.equals(chainZone, sources.get(index))) return false;
++            chainZone = destinations.get(index);
++        }
++        if (candidateZone != null) return java.util.Objects.equals(chainZone, candidateZone);
++        if (previousZone != null) return tokenDisappearance;
++        return true;
++    }
++
++    private static String formatTransitionChain(final List<PendingZoneTransition> transitions) {
++        if (transitions.isEmpty()) return "none";
++        final StringBuilder result = new StringBuilder();
++        final int limit = Math.min(transitions.size(), 8);
++        for (int index = 0; index < limit; index++) {
++            if (index > 0) result.append('|');
++            PendingZoneTransition transition = transitions.get(index);
++            result.append(String.valueOf(transition.sourceZone)).append("->")
++                    .append(String.valueOf(transition.destinationZone));
++        }
++        if (transitions.size() > limit) result.append("|...");
++        return result.toString();
 +    }
 +
 +    private void appendZoneTransition(final StringBuilder json, final PendingZoneTransition transition) {
@@ -1235,7 +1334,8 @@ index 00000000..f3a53020
 +        json.append("]}");
 +    }
 +
-+    private void appendPlayer(final StringBuilder json, final Player player, final Set<Integer> emittedCardIds) {
++    private void appendPlayer(final StringBuilder json, final Player player, final Set<Integer> emittedCardIds,
++            final Map<Integer, String> candidateZones) {
 +        json.append('{');
 +        property(json, "seatId", seatOf(player)).append(',');
 +        property(json, "forgePlayerId", player.getId()).append(',');
@@ -1268,17 +1368,19 @@ index 00000000..f3a53020
 +                if (card.getCurrentStateName() == CardStateName.PreparedSpell) continue;
 +                if (!firstCard) json.append(',');
 +                firstCard = false;
-+                appendCard(json, card, zoneName(zoneType), position++, emittedCardIds);
++                appendCard(json, card, zoneName(zoneType), position++, emittedCardIds, candidateZones);
 +            }
 +            json.append("]}");
 +        }
 +        json.append("]}");
 +    }
 +
-+    private void appendCard(final StringBuilder json, final Card card, final String zone, final int position, final Set<Integer> emittedCardIds) {
++    private void appendCard(final StringBuilder json, final Card card, final String zone, final int position,
++            final Set<Integer> emittedCardIds, final Map<Integer, String> candidateZones) {
 +        if (!emittedCardIds.add(card.getId())) {
 +            throw new DuplicateCardIdentityException(card, zone);
 +        }
++        candidateZones.put(card.getId(), zone);
 +        final String canonicalName = card.getPaperCard() == null ? card.getName() : card.getPaperCard().getName();
 +        final Card cloneOrigin = card.getCloneOrigin();
 +        // Forge keeps the creating effect and the copied permanent as
@@ -4260,4 +4362,75 @@ index 1a539118..baea8919 100644
              naturalRolls.add(roll);
          }
  
-         naturalRolls.sort(null);
+diff --git a/forge-headless/src/test/java/forge/headless/BridgeStateFeedZoneProvenanceTest.java b/forge-headless/src/test/java/forge/headless/BridgeStateFeedZoneProvenanceTest.java
+new file mode 100644
+index 00000000..00000000
+--- /dev/null
++++ b/forge-headless/src/test/java/forge/headless/BridgeStateFeedZoneProvenanceTest.java
+@@ -0,0 +1,66 @@
++package forge.headless;
++
++import org.junit.Test;
++
++import java.util.List;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++
++public class BridgeStateFeedZoneProvenanceTest {
++    @Test
++    public void exact1902ReadAheadFailsOldGenerationFenceButDefersWithoutTransition() {
++        long capturedMutationGeneration = 62;
++        long currentMutationGeneration = 62;
++        assertEquals(capturedMutationGeneration, currentMutationGeneration);
++        assertFalse(BridgeStateFeed.zoneChainCovered(
++                "hand", "battlefield", List.of(), List.of(), false));
++        assertTrue(BridgeStateFeed.zoneChainCovered(
++                "hand", "battlefield", List.of("hand"), List.of("battlefield"), false));
++    }
++
++    @Test
++    public void aiDrawAndImmediateLandRequiresMountainTransitionInSameOrEarlierFrame() {
++        assertFalse(BridgeStateFeed.zoneChainCovered(
++                "hand", "battlefield", List.of(), List.of(), false));
++        assertTrue(BridgeStateFeed.zoneChainCovered(
++                "hand", "battlefield", List.of("hand"), List.of("battlefield"), false));
++    }
++
++    @Test
++    public void openingHandReadAheadRequiresLibraryToHandProvenance() {
++        assertFalse(BridgeStateFeed.zoneChainCovered(
++                "library", "hand", List.of(), List.of(), false));
++        assertTrue(BridgeStateFeed.zoneChainCovered(
++                "library", "hand", List.of("library"), List.of("hand"), false));
++    }
++
++    @Test
++    public void multiHopZoneChainIsAcceptedWithoutNetTransitionCollapse() {
++        assertTrue(BridgeStateFeed.zoneChainCovered(
++                "library", "battlefield",
++                List.of("library", "hand"), List.of("hand", "battlefield"), false));
++    }
++
++    @Test
++    public void zeroNetReturnChainIsStillValidatedAndAccepted() {
++        assertTrue(BridgeStateFeed.zoneChainCovered(
++                "battlefield", "battlefield",
++                List.of("battlefield", "exile"), List.of("exile", "battlefield"), false));
++    }
++
++    @Test
++    public void vanishedTokenUsesExplicitTransitionEvenWhenAbsentFromCandidate() {
++        assertTrue(BridgeStateFeed.zoneChainCovered(
++                "battlefield", null, List.of("battlefield"), List.of("graveyard"), true));
++        assertFalse(BridgeStateFeed.zoneChainCovered(
++                "battlefield", null, List.of("hand"), List.of("graveyard"), false));
++    }
++
++    @Test
++    public void inconsistentChainRemainsRejected() {
++        assertFalse(BridgeStateFeed.zoneChainCovered(
++                "battlefield", "battlefield", List.of("hand"), List.of("battlefield"), false));
++    }
++}

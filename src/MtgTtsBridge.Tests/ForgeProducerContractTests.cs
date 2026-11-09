@@ -175,6 +175,39 @@ public sealed class ForgeProducerContractTests
     }
 
     [Fact]
+    public void Exact1902ReadAheadRaceUsesPublishedTopologyBeyondGenerationFence()
+    {
+        var feed = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/BridgeStateFeed.java");
+        Assert.Contains("lastPublishedZoneByCardId", feed);
+        Assert.Contains("candidateZones", feed);
+        Assert.Contains("validateZoneProvenance(candidateZones, includedTransitions, generation)", feed);
+        Assert.Contains("zone_delta_awaiting_transition_provenance", feed);
+        Assert.Contains("SNAPSHOT_ZONE_PROVENANCE_CHECK", feed);
+        Assert.Contains("return -2", feed);
+
+        var emitSnapshot = ExtractMethodBody(feed, "private long emitSnapshot(final String requestedReason)");
+        var generationFence = emitSnapshot.IndexOf("if (mutationGeneration.get() != generation)", StringComparison.Ordinal);
+        var provenanceFence = emitSnapshot.IndexOf("validateZoneProvenance", generationFence, StringComparison.Ordinal);
+        var publication = emitSnapshot.IndexOf("System.out.println(SENTINEL + json)", StringComparison.Ordinal);
+        Assert.True(generationFence >= 0);
+        Assert.True(provenanceFence > generationFence);
+        Assert.True(publication > provenanceFence);
+    }
+
+    [Fact]
+    public void ZoneProvenancePreservesMultiHopZeroNetAndVanishedTokenContracts()
+    {
+        var feed = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/BridgeStateFeed.java");
+        Assert.Contains("zoneChainCovered", feed);
+        Assert.Contains("List<String> sources", feed);
+        Assert.Contains("List<String> destinations", feed);
+        Assert.Contains("tokenDisappearance", feed);
+        Assert.Contains("formatTransitionChain", feed);
+        Assert.Contains("lastPublishedZoneByCardId.putAll(candidateZones)", feed);
+        Assert.Contains("iterator.remove()", feed);
+    }
+
+    [Fact]
     public void OpeningHandBatch_UsesOneCoherentMutationBoundaryForEveryObservedZoneTransition()
     {
         var feed = ExtractPatchedFile("forge-headless/src/main/java/forge/headless/BridgeStateFeed.java");
