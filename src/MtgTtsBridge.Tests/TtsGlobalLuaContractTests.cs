@@ -451,7 +451,8 @@ public sealed class TtsGlobalLuaContractTests
         Assert.DoesNotContain("BridgeResetSession()", confirmClickBody);
 
         Assert.Contains("setup-deferred:new-match", Script);
-        Assert.Contains("setup-confirm-spawned", Script);
+        Assert.Contains("NEW_MATCH_CONFIRMATION_EXPIRED", Script);
+        Assert.Contains("BridgeRefreshSetupControlPresentation()", Script);
         Assert.Contains("setup-deferred:confirm", Script);
         Assert.Contains("function BridgeDoPressStartMatch", Script);
         Assert.Contains("function BridgeDoPressResume", Script);
@@ -462,14 +463,14 @@ public sealed class TtsGlobalLuaContractTests
     {
         var newMatchStart = Script.IndexOf("function BridgeDoPressNewMatch", StringComparison.Ordinal);
         var confirmStart = Script.IndexOf("function BridgeDoPressConfirmNewMatch", StringComparison.Ordinal);
-        var resetStart = Script.IndexOf("function BridgeResetSession()", StringComparison.Ordinal);
+        var resetStart = Script.IndexOf("function BridgeResetSession(lifecycleToken)", StringComparison.Ordinal);
         Assert.True(newMatchStart >= 0 && confirmStart > newMatchStart && resetStart > confirmStart);
         var newMatchBody = Script[newMatchStart..confirmStart];
         var confirmBody = Script[confirmStart..resetStart];
         Assert.DoesNotContain("if BridgeState.setupBusy then", newMatchBody);
         Assert.DoesNotContain("if BridgeState.setupBusy then", confirmBody);
         Assert.Contains("[BRIDGE_LIFECYCLE_STARTING] = true", Script);
-        Assert.Contains("BridgeResetSession()", confirmBody);
+        Assert.Contains("BridgeResetSession(lifecycleToken)", confirmBody);
         Assert.Contains("BridgeBeginNewMatchCleanupTransaction", Script);
     }
 
@@ -722,7 +723,7 @@ public sealed class TtsGlobalLuaContractTests
     [Fact]
     public void Reset_ReportsForgeInventoryMismatchAsDeckValidationFailure()
     {
-        var start = Script.IndexOf("function BridgeResetSession()", StringComparison.Ordinal);
+        var start = Script.IndexOf("function BridgeResetSession(lifecycleToken)", StringComparison.Ordinal);
         var end = Script.IndexOf("function BridgeSmokeTest()", start, StringComparison.Ordinal);
         Assert.True(start >= 0 && end > start);
         var reset = Script[start..end];
@@ -1122,7 +1123,7 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("TTS Deck-on-Deck operations", Script);
         Assert.Contains("if not BridgeObjectIsUsable(object) or object.tag ~= \"Card\" then", Script);
         Assert.Contains("if not BridgeObjectIsUsable(object) or object.tag ~= \"Card\" then return end", Script);
-        var reset = Script.Substring(Script.IndexOf("function BridgeResetSession()", StringComparison.Ordinal));
+        var reset = Script.Substring(Script.IndexOf("function BridgeResetSession(lifecycleToken)", StringComparison.Ordinal));
         Assert.Contains("BridgeBeginNewMatchCleanupTransaction(function", reset);
         Assert.True(reset.IndexOf("BridgeBeginNewMatchCleanupTransaction", StringComparison.Ordinal)
             < reset.IndexOf("BridgeConfigureDecks", StringComparison.Ordinal));

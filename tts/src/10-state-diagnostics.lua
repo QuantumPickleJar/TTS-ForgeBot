@@ -2376,6 +2376,29 @@ function onUpdate()
     end
 end
 
+function onObjectDestroy(object)
+    -- Repair only a destroyed, registry-owned session control. This event is
+    -- infrequent and avoids a recurring whole-table scan during gameplay.
+    local guid = BridgeSafeObjectGuid(object)
+    if guid == nil then return end
+    for kind, registeredGuid in pairs(BridgeState.setupObjectGuidByKind or {}) do
+        if registeredGuid == guid then
+            BridgeState.setupObjectGuidByKind[kind] = nil
+            BridgeState.setupControlPresentationCache = BridgeState.setupControlPresentationCache or {}
+            BridgeState.setupControlPresentationCache[kind] = nil
+            BridgeState.setupControlSpawnInFlightByKind[kind] = nil
+            BridgeLog("[Bridge] setup control destroyed kind=" .. tostring(kind) .. " guid=" .. tostring(guid))
+            local runtimeEpoch = BRIDGE_RUNTIME_EPOCH_LOCAL
+            BridgeWaitFrames(function()
+                if BridgeRuntimeIsCurrent(runtimeEpoch) and BridgeEnsureSetupControls ~= nil then
+                    BridgeEnsureSetupControls()
+                end
+            end, 1)
+            return
+        end
+    end
+end
+
 function BridgeBeginLibraryBatch(event)
     if event == nil or event.seatId == nil or event.sourceZone ~= "library"
         or event.destinationZone == nil or event.destinationZone == "library" then return end
