@@ -1,7 +1,8 @@
 
 # TTS-ForgeBot Updated Development Roadmap
 
-**Revision: September 2, 2026**
+**Revision: November 9, 2026**  
+**Status: H0 active; November external-playtest findings are observations, not certified fixes.**
 
 ## Roadmap Objective
 
@@ -18,49 +19,33 @@ TTS should not independently determine game legality, costs, targets, characteri
 # Current Roadmap
 
 ```text
-FOUNDATIONAL WORK
-M2C / F2C / U0-U3
-        │
-        ▼
-H0 — Runtime Hardening & Build-Loop Cleanup       ← CURRENT
-        │
-        ▼
-U4 — Extended Combat Relationship Graph
-        │
-        ▼
-U5 — Generalized Designations / Persistent State
-        │
-        ▼
-PW0 — Planeswalker Systems Foundation
- ├─ PW0.5 — Generic Chosen Values
- └─ PW0.75 — Emblems
-        │
-        ▼
-R702 — §702 Keyword Ability Sweep
-        │
-        ▼
-R701 — §701 Actions + Special Game Operations
-        │
-        ▼
-PW1 — Exotic Planeswalker Systems
-        │
-        ▼
-CMD — Commander
-        │
-        ▼
-MP — Multiplayer
-        │
-        ▼
-PW2 — Full Planeswalker Certification
-        │
-        ▼
-SUP — Supplemental Product Coverage
-        │
-        ▼
-UNF — Unfinity / Acorn / Intentionally Weird Rules
-        │
-        ▼
-COMPLETENESS / RELEASE HARDENING
+FOUNDATION — M2C / F2C / U0-U3 (banked)
+  ↓
+H0 — Runtime correctness gate (CURRENT)
+  H0-R  Persistent lifecycle controls / safe cleanup (NEXT)
+  H0-FR Persistent match Flight Recorder (NEXT)
+  H0-C  Gameplay coherence (phase, equipment, tap/mana, land layout)
+  H0-S  Stack causality / response presentation
+  ↓
+T0 — Table adapter + Workshop migration certification
+  ↓
+U4 → U4.5 → U5 — Combat, merged permanents, designations
+  ↓
+PW0 (+ PW0.5 chosen values, PW0.75 emblems)
+  ↓
+R702 → R701 → PW1
+  ↓
+CMD — 1v1 Commander baseline
+  ↓
+MP0 — Multi-seat bot simulation
+  ↓
+MP1 — Human multiplayer + multiplayer Commander certification
+  ↓
+PW2 → SUP → UNF → completeness/release hardening
+
+Parallel (after H0-R/H0-FR): T0 discovery, U3 torture-test backlog,
+UX/presentation; CMD-F (Commander format/deck/command-zone
+foundation) may begin alongside U4/U5 once H0/T0 are stable.
 ```
 
 ---
@@ -150,13 +135,110 @@ A hardening build passes only when:
 9. Bug-report creation does not alter game state.
 10. Automated regression coverage exists for every critical failure discovered during this hardening cycle.
 
-**H0 is the current priority.**
+**H0 is the current priority.** H0-R and H0-FR are the immediate implementation tasks; H0-C and H0-S remain mandatory to exit H0.
+
+---
+
+
+# November 9, 2026 — External Playtest Intake and Near-Term Gates
+
+These are **unverified runtime observations** from a tester, not proof of where Forge, Bridge, or TTS failed. No diagnostic ZIP was captured. Do not mark an issue fixed without automated regression and, where needed, a live TTS canary.
+
+| Observation | Track | Evidence or leading hypothesis | Status |
+| --- | --- | --- | --- |
+| World-space START / RESUME / NEW MATCH controls disappear or become inaccessible; resetting requires Save & Play and manual card cleanup | H0-R | Setup buttons are spawned as TTS objects; HUD NEW MATCH is initially inactive and its handler currently refuses ordinary active-match resets | Reproduce; fix |
+| Apparent phase reversal or incorrect advance near Draw → Main 1, sometimes after cancelled actions | H0-C + H0-FR | Need correlated Forge phase/priority, event cursor, offered choices, action submission, and HUD projection | Unconfirmed |
+| Captain America, First Avenger Throw/Catch or multi-target/payment flow misbehaves | H0-C | Throw **unattaches**, not sacrifices, an Equipment; cost/target division and relationship state need exact decision capture | Unconfirmed |
+| Equipment logically attached but not physically arranged as attached | H0-C | Audit authoritative attachment identity and generic snapshot/event embodiment; do not derive rules from physical proximity | Unconfirmed |
+| ForgeBot/opponent lands fall outside intended battlefield | H0-C / T0 | Investigate seat-specific land anchor and table bounds before moving coordinates | Unconfirmed |
+| Manual tapping and mana accounting disagree with player expectation; physical collisions occur | H0-C | Separate TTS rotation/gesture intent from Forge tap legality, payment, and mana pool truth | Unconfirmed |
+| Context button displays `ACT 1`, confused with numeric card cost | UX | Existing Lua builds `ACT\\n` + count of contextual Forge actions; `1` is action count, not mana or damage | Meaning identified; UI polish pending |
+| Tester could not provide a capture | H0-FR | Current bounded diagnostics and on-demand ZIP capture do not guarantee durable full-match evidence | Address with recorder |
+
+**Non-negotiable authority boundary:** Forge owns Magic rules and authoritative phase/zone/attachment/cost state. The Bridge transports identities and observations. TTS owns interaction and physical presentation. A physical gesture is never automatically an accepted Forge action.
+
+---
+
+# H0-R — Recovery Controls and Safe New-Match Lifecycle
+
+**STATUS: NEXT IMPLEMENTATION; required before the next unsupervised playtest.**
+
+Design one always-discoverable lifecycle-control surface, with a **vertical world-space stack** and equivalent controls under the HUD Options menu. Keep controls available throughout a match and after recoverable faults, not only during initial setup. Match/session status must drive enabled/disabled state and helpful explanation, not removal of the control.
+
+- **START MATCH:** only creates a session when no active match exists; no duplicate sessions.
+- **RESUME:** resumes a compatible paused local session; an incoherent session needs explicit recovery/resync, never an unsafe implicit bootstrap.
+- **NEW MATCH:** always discoverable, including during an active match or nonterminal softlock. It is destructive; require confirmation, fence old callbacks, and use existing bridge session reset.
+- **RECOVER / RESYNC:** clearly distinguished from RESUME and NEW MATCH; cannot silently change Forge rules truth. Retain external capture/bridge recovery when TTS Lua is frozen.
+- Shared lifecycle handlers for the world controls and HUD controls. Do not implement competing reset paths or infer safety solely from whether a button is visible.
+- Durable idempotent setup control identity across Save & Play, stale GUIDs, TTS object destruction/recreation, and reset races. Do not overwrite game objects or rely solely on a one-time spawn.
+- New-match teardown must verify generated objects retire exactly once, old session/presentation IDs are invalidated, and deck inventories/physical zones are reconstructed from authoritative or validated inputs. Fail with actionable diagnostics if physical restoration cannot be proven; do not silently leave the user to rebuild piles.
+- World-space stack position must be seat/table-aware so it cannot obstruct play or go out of bounds on the existing table; T0 reconfigures the anchors for the Workshop table.
+- Host/admin permissions and confirmation remain enforced by handlers. Avoid making a destructive action broadly executable by UI refactoring.
+
+**H0-R exit:** tests for initial/active/paused/terminal/desync/recovery/loading states; repeated new matches without Save & Play; reconnect and Save & Play rehydration; stale/cancelled confirmation; mid-reset failure; no duplicate controls or orphaned physical cards. A genuine TTS hard freeze is not solved by TTS buttons.
+
+---
+
+# H0-FR — Persistent Match Flight Recorder
+
+**STATUS: NEXT IMPLEMENTATION; required before the next complex external playtest.**
+
+Extend the existing `DiagnosticTelemetryBuffer`, diagnostic bundle writer/collector, TTS execution breadcrumbs, bridge process identity, and Forge adapter history; do **not** replace the current emergency capture or watchdog. The current in-memory capacities are bounded and are not an entire-match record.
+
+Record a **versioned, replay-analyzable match journal**, where each entry includes timestamps and an ordered local sequence, session/runtime/process/build identity, Forge event/decision cursors and relevant causality IDs:
+
+1. Every **offered** human decision and its complete authorized legal-action set (including nonchosen actions, cost/target candidate metadata, and provenance), action chosen or cancelled, request/ack/response, rejection, automatic pass/yield policy, and stale-choice handling.
+2. Every authoritative Forge phase, turn, priority, stack, zone, tap, mana, triggered ability, and other state transition available from the producer, with event ordering.
+3. Physical TTS actions/observations at meaningful boundaries: source/target GUID ↔ exact CardInstanceId, zone, position/rotation, object creation/retirement, equip/attachment presentation where supported, and command/result/error. Separate **requested** vs **observed** vs **authoritatively committed**.
+4. Initial and periodic Forge snapshots plus physical-map checkpoints; correlate intervening events, and preserve enough state to find the **first divergence**.
+5. Reporter annotations/bookmarks and pre/post-trigger diagnostic windows; record reasons and counters for dropped, coalesced, unavailable or truncated data, instead of claiming a complete recording silently.
+6. Build/session/format/deck fingerprint metadata sufficient to correlate a capture with an exact test. Hidden cards, hands, libraries, and confidential choices require explicit privacy/visibility policy; never expose to unauthorized viewers or upload automatically to a public repository.
+
+**Performance and durability:** write asynchronously on the .NET Bridge side using a bounded queue, segmenting and compression, finite disk quota/retention, explicit backpressure/drop metrics, crash-tolerant segment recovery, opt-in recording configuration and capture-safe fallbacks. The Lua side must not synchronously write files or enumerate the table every frame. Capture-only high-cost physical snapshots; no per-frame full Forge state, full-table object scan, or synchronous third-party request. A local headless/export reader or CLI must inspect the journal without a browser; a web UI is deferred.
+
+**Recorder guarantees:** instrumentation is passive (must not advance Forge, mutate physical state or influence decision order); frozen TTS still permits external bridge-side capture of evidence already recorded; an incomplete/no-TTS-telemetry capture must be labeled honestly. Distinguish reconstructing a recorded history from deterministic re-execution, which additionally requires RNG/deck/build preconditions.
+
+**H0-FR exit:** focused tests prove offered-vs-chosen fidelity, ordered phase/decision/event correlation, snapshot/checkpoint recovery, bounded overhead and backpressure, disk rotation, crash recovery, secret-safe export, unchanged legacy diagnostic ZIPs and watchdog behavior, and usable external-playtester artifacts.
+
+---
+
+# H0-C — Gameplay/Physical Coherence Follow-Up
+
+**STATUS: queued after H0-R and H0-FR; fixes require evidence from the recorder or focused deterministic reproductions.**
+
+Investigate: Draw → Main 1/priority/decision regression; Captain America's Throw (unattach, mana/value, split damage/targets) and Catch attachment trigger; a generic Forge-authored attachment relationship and TTS physical embodiment; opponent land positioning; manual tap intent/rotation and mana-pool reconciliation; collisions and no-GUID-fallback failure handling. The `ACT N` label is an action count and should be clarified without conflating it with mana, damage, targets, or cost.
+
+Separate bridge contract/model deficiencies from Lua presentation defects and Forge rule defects. Preserve old U3 critical canaries (Mental Note/Stitcher's Supplier, Delve, generated tokens and copies, resync during materialization) and H0-S stack causality.
+
+**H0-C exit:** every corrected behavior has a focused automated regression, a reproducible test deck/sequence, and live TTS evidence where physical presentation matters.
+
+---
+
+# T0 — Workshop Table Migration and Layout Adapters
+
+**TARGET:** Steam Workshop `2296042369` (four-seat scripted Magic table); evaluate matching six-/eight-seat variants as related future adapters. **STATUS: read-only discovery may start now; adoption follows the H0 baseline.**
+
+- Obtain and inspect actual Workshop save JSON and object scripts before assuming compatibility based on the listing.
+- Audit Global/object Lua callbacks, HUD ownership, importer/Encoder reuse, scripting zones, deck/hand/graveyard/exile detection, board bounds, GUID stability, seat colors and visibility. Do not run a second source of Magic rules truth alongside Forge.
+- Introduce table-specific seat/layout/source config with stable named anchors; preserve the original table as a rollback baseline; do not rewrite Forge's state model just to adopt a table.
+- Keep the working two-seat game first. Configurability for more physical seats is **not** MP0/MP1 gameplay support.
+- Recertify H0-R/H0-FR, full H0 gate, per-seat physical placement, token/attachment reconciliation, priority and the U3 canaries after migration.
+
+**T0 exit:** repeatable install/configuration, verified lifecycle controls, no duplicate game automation, correct physical zones, preserved hidden information, resync convergence, and a documented rollback path.
+
+---
+
+# CMD-F — Early Commander Foundation (Parallel Preparation)
+
+After H0/T0 stability, this may proceed alongside U4/U5 as a **limited generic capability track**, not a premature multiplayer rollout: Commander deck/format metadata, singleton/size validation, color identity delegated to Forge, command-zone and designation contract research, and deterministic two-seat test fixtures.
+
+Full **CMD 1v1 certification** remains gated on U4/U5, Forge-supported Commander semantics, and other necessary general mechanics; **MP0** then validates multi-seat bots, **MP1** validates independent human multiplayer and multiplayer Commander. No Commander-specific legality or replacement effects in Lua.
 
 ---
 
 # U4 — Extended Combat Relationship Graph
 
-**PREREQUISITE: H0**
+**PREREQUISITES: H0 + T0 acceptance on the selected test table**
 
 Combat needs to stop assuming that every attacker simply attacks the opposing player.
 
@@ -206,57 +288,33 @@ No Lua logic should need to infer whether a creature may attack or block or what
 # TTS-ForgeBot Development Roadmap — Revised Ordering
 
 ```text
-FOUNDATIONAL WORK
-M2C / F2C / U0-U3
-        │
-        ▼
-H0 — Runtime Hardening & Build-Loop Cleanup          ← CURRENT
- │
- └─ H0-S — Stack Causality / Response Presentation
-        │
-        ▼
-U4 — Extended Combat Relationship Graph
-        │
-        ▼
-U4.5 — Composite / Merged Permanent Graph
-        │
-        ▼
-U5 — Generalized Designations / Persistent State
-        │
-        ▼
-PW0 — Planeswalker Systems Foundation
- ├─ PW0.5 — Generic Chosen Values
- └─ PW0.75 — Emblems
-        │
-        ▼
-R702 — §702 Keyword Ability Sweep
-        │
-        ▼
-R701 — §701 Actions + Special Game Operations
-        │
-        ▼
-PW1 — Exotic Planeswalker Systems
-        │
-        ▼
-MP0 — Multi-Seat Bot Simulation
-        │
-        ▼
-CMD — Commander
-        │
-        ▼
-MP1 — Human Multiplayer
-        │
-        ▼
-PW2 — Full Planeswalker Certification
-        │
-        ▼
-SUP — Supplemental Product Coverage
-        │
-        ▼
-UNF — Unfinity / Acorn / Intentionally Weird Rules
-        │
-        ▼
-COMPLETENESS / RELEASE HARDENING
+FOUNDATION — M2C / F2C / U0-U3 (banked)
+  ↓
+H0 — Runtime correctness gate (CURRENT)
+  H0-R  Persistent lifecycle controls / safe cleanup (NEXT)
+  H0-FR Persistent match Flight Recorder (NEXT)
+  H0-C  Gameplay coherence (phase, equipment, tap/mana, land layout)
+  H0-S  Stack causality / response presentation
+  ↓
+T0 — Table adapter + Workshop migration certification
+  ↓
+U4 → U4.5 → U5 — Combat, merged permanents, designations
+  ↓
+PW0 (+ PW0.5 chosen values, PW0.75 emblems)
+  ↓
+R702 → R701 → PW1
+  ↓
+CMD — 1v1 Commander baseline
+  ↓
+MP0 — Multi-seat bot simulation
+  ↓
+MP1 — Human multiplayer + multiplayer Commander certification
+  ↓
+PW2 → SUP → UNF → completeness/release hardening
+
+Parallel (after H0-R/H0-FR): T0 discovery, U3 torture-test backlog,
+UX/presentation; CMD-F (Commander format/deck/command-zone
+foundation) may begin alongside U4/U5 once H0/T0 are stable.
 ```
 
 ---
@@ -1056,9 +1114,9 @@ Karn/Sorin-class effects work without introducing code branches based on card na
 
 # CMD — Commander
 
-**PREREQUISITE: PW1**
+**PREREQUISITES: U4 + U5 + PW1 and sufficient generic format/zone support. CMD-F may run earlier in parallel.**
 
-Commander now occurs after ordinary black-border single-player mechanics are broadly expressible.
+This is the **1v1 Commander baseline**, prior to full multiplayer certification. Commander remains after ordinary black-border single-player mechanisms are broadly expressible.
 
 Required systems include:
 
@@ -1079,13 +1137,15 @@ It should not fork ForgeBot into a separate rules engine.
 
 ## Exit Gate — CMD
 
-A complete Commander game can be represented without Commander-only state hacks in Lua.
+A complete **1v1** Commander game can be represented without Commander-only state hacks in Lua. Multiplayer Commander requires MP0/MP1 certification as well.
 
 ---
 
-# MP — Multiplayer
+# MP — Multiplayer (MP0 / MP1)
 
-**PREREQUISITE: COMMANDER BASELINE**
+**PREREQUISITE: CMD 1v1 baseline for Commander-oriented multiplayer certification**
+
+**MP0** establishes multi-seat Forge-controlled bot simulation and topology/priority/hidden-information contracts before adding human clients. **MP1** adds independent human multiplayer, complete decision ownership, recovery across clients/seats, and multiplayer Commander certification.
 
 Multiplayer comes before final planeswalker certification because several ordinary planeswalker interactions cannot be genuinely validated with only two seats.
 
@@ -1220,10 +1280,12 @@ They are ordinary Magic capabilities and must already work.
 
 # Parallel Release / UX Track
 
-Core rules work should remain sequential, but several project-health tasks can proceed alongside it once H0 is stable:
+Core rules work should remain sequential. H0-R and H0-FR are priority hardening work; a read-only T0 audit may run in parallel, and other project-health tasks can resume after H0 stability:
 
 ```text
 Diagnostics
+    → persistent match Flight Recorder (H0-FR)
+    → bounded disk/retention and tester-safe exports
     → one-button in-game bug submission
     → authoritative snapshot/log/state bundle
     → reproducible intake package
@@ -1260,72 +1322,30 @@ These tracks should never create alternate game authority in TTS.
 # Final Phase Ordering
 
 ```text
-[Banked]
-M2C / F2C / U0-U3
+[Banked] M2C / F2C / U0-U3
+  ↓
+[CURRENT] H0-R → H0-FR → H0-C + H0-S → full H0 certification
+  ↓
+T0  Four-seat Workshop table migration / adapter certification
+  ↓
+U4 → U4.5 → U5
+  ↓
+PW0 (+ PW0.5 / PW0.75)
+  ↓
+R702 → R701 → PW1
+  ↓
+CMD  1v1 Commander baseline
+  ↓
+MP0  Multi-seat bot simulation
+  ↓
+MP1  Human multiplayer and multiplayer Commander
+  ↓
+PW2  Full planeswalker certification (hard pre-Unfinity gate)
+  ↓
+SUP → UNF → Completeness / Packaging / Closed beta / Release
 
-        ↓
-
-[CURRENT]
-H0  Runtime Hardening / Recovery / Build-Loop Cleanup
-
-        ↓
-
-U4  Extended Combat Relationship Graph
-
-        ↓
-
-U5  Generalized Designations / Persistent State
-
-        ↓
-
-PW0 Planeswalker Foundations
-    ├─ PW0.5 Generic Chosen Values
-    └─ PW0.75 Emblems
-
-        ↓
-
-R702  §702 Keyword Ability Sweep
-
-        ↓
-
-R701  §701 Actions + Special Game Operations
-
-        ↓
-
-PW1 Exotic Planeswalker Systems
-    ├─ External / outside-game card sources
-    ├─ Linked ability provenance
-    ├─ Controlled-turn decision authority
-    └─ Game epochs / Karn restart
-
-        ↓
-
-CMD Commander
-
-        ↓
-
-MP Multiplayer
-
-        ↓
-
-PW2 Full Planeswalker Certification
-        🔒 HARD PRE-UNFINITY GATE
-
-        ↓
-
-SUP Supplemental Product Coverage
-
-        ↓
-
-UNF Unfinity / Acorn / Intentional Weirdness
-
-        ↓
-
-Final completeness testing
-UX polish
-Packaging / installer
-Closed beta
-Release candidates
+Parallel: table read-only audit now; CMD-F after H0/T0 stable,
+alongside U4/U5, without bypassing later Commander gates.
 ```
 
 # Architectural North Star
