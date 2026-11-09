@@ -3473,6 +3473,7 @@ BridgeState = {
     retiredChoiceDecisionOrder = {},
     pendingIntent = nil,
     unboundPickupIntent = nil,
+    lastCombatGesture = nil,
     pendingIntentControlGuids = {},
     pendingDecision = nil,
     decisionAwaitingCausallyCurrent = false,
@@ -4139,6 +4140,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.retiredChoiceDecisionOrder = {}
     BridgeState.lastChoiceAttempt = nil
     BridgeState.lastInteractionProducer = nil
+    BridgeState.lastCombatGesture = nil
     BridgeState.eventQueue = {}
     BridgeState.lastReceivedEventSequence = 0
     BridgeState.lastAppliedEventSequence = 0

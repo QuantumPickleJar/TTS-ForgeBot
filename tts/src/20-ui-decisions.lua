@@ -2807,6 +2807,13 @@ function BridgeSubmitChoice(decisionId, actionId, source)
             .. " source=" .. tostring(source))
         return
     end
+    -- A HUD choice is an explicit alternative owner of the current decision.
+    -- If a combat card is still physically held, cancel that staged gesture
+    -- before posting the HUD action so its later drop/HTTP callback cannot
+    -- commit a different action through BridgeCommitPendingIntent.
+    if BridgeCancelPendingCombatGestureForAlternativeChoice ~= nil then
+        BridgeCancelPendingCombatGestureForAlternativeChoice(activeDecision, actionId, source)
+    end
     local exactSourceGuid = nil
     if BridgeActionExactPhysicalInstanceId ~= nil then
         local sourceInstanceId = BridgeActionExactPhysicalInstanceId(activeAction)
@@ -3063,7 +3070,7 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         if body ~= nil and body.committedEvent ~= nil then
             BridgeLog("[Bridge] committed: " .. tostring(body.committedEvent.summary))
         end
-        BridgeCommitPendingIntent()
+        BridgeCommitPendingIntent(decisionId, actionId)
         if body ~= nil and body.currentDecision ~= nil then
             BridgeStopDecisionPolling()
             BridgeMarkTransitionExpected(0)
@@ -5979,7 +5986,12 @@ function BridgeCardNameMatches(ttsName, forgeName)
     return string.sub(normalizedTts, 1, string.len(normalizedForge) + 1) == normalizedForge .. " "
 end
 
-function BridgeClearHighlights()
+-- Hide the visual affordances for the current presentation without deciding
+-- whether the authoritative physical action bindings are still usable.  A
+-- staged pickup (notably a combat toggle) owns the binding until its drop or
+-- cancellation completes, so visual cleanup and provenance retirement cannot
+-- be the same operation.
+function BridgeHideHighlightVisuals(reason)
     -- Clearing is itself a presentation invalidation. This keeps a later
     -- render from being skipped after an event or interaction removed the
     -- currently rendered highlight set.
@@ -6015,16 +6027,29 @@ function BridgeClearHighlights()
     end
 
     BridgeState.highlightedGuids = {}
-    BridgeState.actionsByGuid = {}
-    BridgeState.actionByGuid = {}
-    BridgeState.gestureActionAmbiguousByGuid = {}
-    BridgeState.targetButtonIndexByGuid = {}
     for _, guid in ipairs(BridgeState.playerTargetControlGuids or {}) do
         local object = BridgeGetLiveObjectByGuid(guid)
         if object ~= nil then BridgeSafeObjectCall(object, function(o) o.destruct() end) end
     end
     BridgeState.playerTargetControlGuids = {}
     BridgeState.discardPresentation = nil
+    if reason ~= nil then BridgeState.lastHighlightHideReason = tostring(reason) end
+end
+
+-- Retire the authoritative physical action/provenance indexes.  This is for
+-- a genuinely replaced/consumed decision, a session boundary, or recovery;
+-- it is deliberately not part of beginning a staged card gesture.
+function BridgeRetirePhysicalActionBindings(reason)
+    BridgeState.actionsByGuid = {}
+    BridgeState.actionByGuid = {}
+    BridgeState.gestureActionAmbiguousByGuid = {}
+    BridgeState.targetButtonIndexByGuid = {}
+    if reason ~= nil then BridgeState.lastActionBindingRetirementReason = tostring(reason) end
+end
+
+function BridgeClearHighlights()
+    BridgeHideHighlightVisuals("full-clear")
+    BridgeRetirePhysicalActionBindings("full-clear")
 end
 
 function BridgeApplyDiscardPresentation(decision)

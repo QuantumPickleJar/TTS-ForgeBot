@@ -1,5 +1,5 @@
--- GENERATED GLOBAL.LUA SOURCE SHA256: f982991e1308984b1279cc8875502176bfa1b3d297424efcf70613e845991fe0
-BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "f982991e1308984b1279cc8875502176bfa1b3d297424efcf70613e845991fe0"
+-- GENERATED GLOBAL.LUA SOURCE SHA256: 77c17ea994cddb21d9237bc34a93b7295e148ae50c624096647f8d420d079d9e
+BRIDGE_GENERATED_GLOBAL_LUA_SOURCE_SHA256 = "77c17ea994cddb21d9237bc34a93b7295e148ae50c624096647f8d420d079d9e"
 -- BEGIN GENERATED SOURCE: 00-config.lua
 BRIDGE_BASE_URL = "http://127.0.0.1:43110"
 BRIDGE_STACK_POSITION = {x = -5.5, y = 1.6, z = 0}
@@ -3476,6 +3476,7 @@ BridgeState = {
     retiredChoiceDecisionOrder = {},
     pendingIntent = nil,
     unboundPickupIntent = nil,
+    lastCombatGesture = nil,
     pendingIntentControlGuids = {},
     pendingDecision = nil,
     decisionAwaitingCausallyCurrent = false,
@@ -4142,6 +4143,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.retiredChoiceDecisionOrder = {}
     BridgeState.lastChoiceAttempt = nil
     BridgeState.lastInteractionProducer = nil
+    BridgeState.lastCombatGesture = nil
     BridgeState.eventQueue = {}
     BridgeState.lastReceivedEventSequence = 0
     BridgeState.lastAppliedEventSequence = 0
@@ -11281,6 +11283,13 @@ function BridgeSubmitChoice(decisionId, actionId, source)
             .. " source=" .. tostring(source))
         return
     end
+    -- A HUD choice is an explicit alternative owner of the current decision.
+    -- If a combat card is still physically held, cancel that staged gesture
+    -- before posting the HUD action so its later drop/HTTP callback cannot
+    -- commit a different action through BridgeCommitPendingIntent.
+    if BridgeCancelPendingCombatGestureForAlternativeChoice ~= nil then
+        BridgeCancelPendingCombatGestureForAlternativeChoice(activeDecision, actionId, source)
+    end
     local exactSourceGuid = nil
     if BridgeActionExactPhysicalInstanceId ~= nil then
         local sourceInstanceId = BridgeActionExactPhysicalInstanceId(activeAction)
@@ -11537,7 +11546,7 @@ function BridgeSubmitChoice(decisionId, actionId, source)
         if body ~= nil and body.committedEvent ~= nil then
             BridgeLog("[Bridge] committed: " .. tostring(body.committedEvent.summary))
         end
-        BridgeCommitPendingIntent()
+        BridgeCommitPendingIntent(decisionId, actionId)
         if body ~= nil and body.currentDecision ~= nil then
             BridgeStopDecisionPolling()
             BridgeMarkTransitionExpected(0)
@@ -14453,7 +14462,12 @@ function BridgeCardNameMatches(ttsName, forgeName)
     return string.sub(normalizedTts, 1, string.len(normalizedForge) + 1) == normalizedForge .. " "
 end
 
-function BridgeClearHighlights()
+-- Hide the visual affordances for the current presentation without deciding
+-- whether the authoritative physical action bindings are still usable.  A
+-- staged pickup (notably a combat toggle) owns the binding until its drop or
+-- cancellation completes, so visual cleanup and provenance retirement cannot
+-- be the same operation.
+function BridgeHideHighlightVisuals(reason)
     -- Clearing is itself a presentation invalidation. This keeps a later
     -- render from being skipped after an event or interaction removed the
     -- currently rendered highlight set.
@@ -14489,16 +14503,29 @@ function BridgeClearHighlights()
     end
 
     BridgeState.highlightedGuids = {}
-    BridgeState.actionsByGuid = {}
-    BridgeState.actionByGuid = {}
-    BridgeState.gestureActionAmbiguousByGuid = {}
-    BridgeState.targetButtonIndexByGuid = {}
     for _, guid in ipairs(BridgeState.playerTargetControlGuids or {}) do
         local object = BridgeGetLiveObjectByGuid(guid)
         if object ~= nil then BridgeSafeObjectCall(object, function(o) o.destruct() end) end
     end
     BridgeState.playerTargetControlGuids = {}
     BridgeState.discardPresentation = nil
+    if reason ~= nil then BridgeState.lastHighlightHideReason = tostring(reason) end
+end
+
+-- Retire the authoritative physical action/provenance indexes.  This is for
+-- a genuinely replaced/consumed decision, a session boundary, or recovery;
+-- it is deliberately not part of beginning a staged card gesture.
+function BridgeRetirePhysicalActionBindings(reason)
+    BridgeState.actionsByGuid = {}
+    BridgeState.actionByGuid = {}
+    BridgeState.gestureActionAmbiguousByGuid = {}
+    BridgeState.targetButtonIndexByGuid = {}
+    if reason ~= nil then BridgeState.lastActionBindingRetirementReason = tostring(reason) end
+end
+
+function BridgeClearHighlights()
+    BridgeHideHighlightVisuals("full-clear")
+    BridgeRetirePhysicalActionBindings("full-clear")
 end
 
 function BridgeApplyDiscardPresentation(decision)
@@ -16395,7 +16422,10 @@ function BridgeCancelSelection(object, playerColor, altClick)
         if not readiness.ready then BridgeShowHumanActionBlocked(readiness); return end
         BridgeRecordCancelAction("SUBMIT_STARTED", decision, cancelAction, "hud-cancel")
         BridgeClaimHumanTtsColor(decision.seatId, playerColor)
-        BridgeClearHighlights()
+        -- Discard is still a staged pickup/drop transaction. Hide its visual
+        -- affordances, but retain the exact source binding until drop-time
+        -- readiness has completed.
+        BridgeHideHighlightVisuals("discard-gesture-staged")
         BridgeResetSelectionState()
         BridgeSubmitChoice(decision.decisionId, cancelAction.actionId, "physical_cancel_cast")
         return
@@ -17802,6 +17832,97 @@ function BridgeRejectUnboundDropIfIllegal(object)
         or "illegal physical move rejected; use a highlighted Forge action")
 end
 
+local function BridgeIsCombatGestureAction(action)
+    return action ~= nil
+        and (action.type == "choose_attacker" or action.type == "choose_blocker")
+end
+
+function BridgeRecordCombatGesture(stage, intent, movedSq, laneHit, actionBindingPresent, reason)
+    local action = intent and intent.action or nil
+    local record = {
+        stage = tostring(stage or "UNKNOWN"),
+        decisionId = intent and intent.decisionId or (BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil),
+        actionId = action and action.actionId or nil,
+        actionType = action and action.type or nil,
+        instanceId = action and BridgeActionExactPhysicalInstanceId(action) or nil,
+        guid = intent and intent.guid or nil,
+        movedSq = movedSq,
+        laneHit = laneHit,
+        actionBindingPresent = actionBindingPresent,
+        reason = reason
+    }
+    BridgeState.lastCombatGesture = record
+    BridgeLog(string.format(
+        "[Bridge] COMBAT_GESTURE_%s decision=%s action=%s instance=%s guid=%s movedSq=%s laneHit=%s actionBindingPresent=%s reason=%s",
+        tostring(stage or "UNKNOWN"), tostring(record.decisionId), tostring(record.actionId),
+        tostring(record.instanceId), tostring(record.guid), tostring(movedSq), tostring(laneHit),
+        tostring(actionBindingPresent), tostring(reason)))
+end
+
+local function BridgeRerenderAfterCombatGestureFailure(intent, reason, readiness)
+    if intent == nil then return end
+    BridgeRecordCombatGesture("ROLLBACK", intent, nil, nil, false, reason
+        or (readiness and readiness.classification) or "readiness-blocked")
+    BridgeRollbackPendingIntent()
+
+    local current = BridgeState.lastDecision
+    if current ~= nil and current.sessionId == BridgeState.eventSessionId
+        and BridgeState.submitting ~= true then
+        -- The Forge decision is still authoritative; only its local surfaces
+        -- were lost or invalidated. Rebuild the current decision (which may
+        -- already have replaced the stale gesture) without changing Forge
+        -- state or entering resync/desync recovery.
+        BridgeInvalidateDecisionPresentation(current.decisionId == intent.decisionId
+            and "combat-gesture-retry" or "combat-gesture-stale-retry")
+        BridgeRenderDecision(current, true)
+        return
+    end
+
+    -- A replaced decision must remain rejected by the exact-source fence. Do
+    -- not render the old menu back; make the local presentation explain the
+    -- retry instead of presenting a synchronization failure.
+    if current ~= nil then
+        BridgeSetStatus("CHOICE UPDATED", "Forge replaced that combat choice; use the current highlighted decision.")
+    else
+        BridgeSetStatus("CHOICE EXPIRED", "Forge is waiting for a current decision.")
+    end
+end
+
+function BridgeCancelPendingCombatGestureForAlternativeChoice(decision, actionId, source)
+    local intent = BridgeState.pendingIntent
+    if intent == nil or not BridgeIsCombatGestureAction(intent.action) then return false end
+    if decision ~= nil and intent.decisionId == decision.decisionId
+        and intent.action ~= nil and intent.action.actionId == actionId then
+        return false
+    end
+    BridgeRecordCombatGesture("ROLLBACK", intent, nil, nil, true,
+        "alternative-" .. tostring(source or "choice"))
+    BridgeRollbackPendingIntent()
+    local current = BridgeState.lastDecision
+    if current ~= nil and current.sessionId == BridgeState.eventSessionId
+        and BridgeState.submitting ~= true then
+        BridgeInvalidateDecisionPresentation(current.decisionId == (decision and decision.decisionId)
+            and "alternative-choice-cancelled-combat-gesture" or "alternative-choice-stale-retry")
+        BridgeRenderDecision(current, true)
+    end
+    return true
+end
+
+function BridgeCombatDropMetrics(intent, object)
+    if intent == nil or object == nil or not BridgeIsCombatGestureAction(intent.action) then
+        return nil, false
+    end
+    local current = object.getPosition()
+    local origin = intent.position or current
+    local dx = current.x - origin.x
+    local dz = current.z - origin.z
+    local laneZ = intent.action.type == "choose_attacker"
+        and (BRIDGE_SEATS[intent.seatId] and BRIDGE_SEATS[intent.seatId].attackLaneZ or nil)
+        or (BRIDGE_SEATS[intent.seatId] and BRIDGE_SEATS[intent.seatId].blockerLaneZ or nil)
+    local droppedInLane = laneZ ~= nil and math.abs(current.z - laneZ) <= 1.35
+    return dx * dx + dz * dz, droppedInLane
+end
+
 function onObjectPickUp(playerColor, object)
     if object == nil or BridgeState.submitting then
         return
@@ -17930,7 +18051,10 @@ function onObjectPickUp(playerColor, object)
             interactionGeneration = BridgeState.humanActionGeneration,
             physicalTransactionGeneration = BridgeState.physicalTransactionGeneration
         }
-        BridgeClearHighlights()
+        -- Discard is still a staged pickup/drop transaction. Hide its visual
+        -- affordances, but retain the exact source binding until drop-time
+        -- readiness has completed.
+        BridgeHideHighlightVisuals("discard-gesture-staged")
         return
     end
 
@@ -17969,7 +18093,19 @@ function onObjectPickUp(playerColor, object)
         interactionGeneration = BridgeState.humanActionGeneration,
         physicalTransactionGeneration = BridgeState.physicalTransactionGeneration
     }
-    BridgeClearHighlights()
+    local combatGesture = BridgeIsCombatGestureAction(action)
+    if combatGesture then
+        -- Combat choices are Forge toggles and the pickup/drop pair is one
+        -- gesture. Keep the exact action binding and the other eligible
+        -- combat highlights alive until drop-time readiness/commit.
+        BridgeRecordCombatGesture("PICKUP", BridgeState.pendingIntent, nil, nil,
+            BridgeFindPhysicalActionForGuid(guid, action.actionId) ~= nil)
+    else
+        -- All staged card gestures retain their exact action provenance until
+        -- drop-time readiness/commit. Immediate one-shot choices above still
+        -- use full retirement because they submit at pickup.
+        BridgeHideHighlightVisuals("staged-card-gesture")
+    end
 
     if object.tag == "Card" and (BridgeDecisionNeedsConfirmation(decision)
         or (action.requiresSelection == true
@@ -18066,26 +18202,45 @@ function onObjectDrop(playerColor, object)
     end
     BridgeState.unboundPickupIntent = nil
 
+    local combatGesture = BridgeIsCombatGestureAction(intent.action)
+    local movedSq, droppedInLane = BridgeCombatDropMetrics(intent, object)
+    if combatGesture then
+        BridgeRecordCombatGesture("DROP", intent, movedSq, droppedInLane,
+            BridgeFindPhysicalActionForGuid(intent.guid, intent.action.actionId) ~= nil)
+    end
+
     if intent.sessionId ~= BridgeState.eventSessionId
         or intent.sessionGeneration ~= BridgeState.eventSessionGeneration
         or intent.interactionGeneration ~= BridgeState.humanActionGeneration
         or (intent.physicalTransactionGeneration ~= nil
             and intent.physicalTransactionGeneration ~= BridgeState.physicalTransactionGeneration) then
-        BridgeRollbackPendingIntent()
-        BridgeShowHumanActionBlocked({ready = false, reason = "physical interaction belongs to a retired session", classification = "STALE"})
+        if combatGesture then
+            BridgeRerenderAfterCombatGestureFailure(intent, "retired-session", {classification = "STALE"})
+        else
+            BridgeRollbackPendingIntent()
+            BridgeShowHumanActionBlocked({ready = false, reason = "physical interaction belongs to a retired session", classification = "STALE"})
+        end
         return
     end
 
     local decision = BridgeState.lastDecision
     if decision == nil or decision.decisionId ~= intent.decisionId then
-        BridgeRollbackPendingIntent()
-        BridgeShowError("staged intent became stale before drop")
+        if combatGesture then
+            BridgeRerenderAfterCombatGestureFailure(intent, "decision-replaced", {classification = "STALE"})
+        else
+            BridgeRollbackPendingIntent()
+            BridgeShowError("staged intent became stale before drop")
+        end
         return
     end
     local readiness = BridgeHumanActionReadiness(decision, intent.action, "physical_card_drop", intent.guid)
     if not readiness.ready then
-        BridgeRollbackPendingIntent()
-        BridgeShowHumanActionBlocked(readiness)
+        if combatGesture then
+            BridgeRerenderAfterCombatGestureFailure(intent, readiness.reason or readiness.classification, readiness)
+        else
+            BridgeRollbackPendingIntent()
+            BridgeShowHumanActionBlocked(readiness)
+        end
         return
     end
 
@@ -18146,14 +18301,7 @@ function onObjectDrop(playerColor, object)
     end
 
     if intent.action.type == "choose_attacker" or intent.action.type == "choose_blocker" then
-        local current = object.getPosition()
-        local dx = current.x - intent.position.x
-        local dz = current.z - intent.position.z
-        local movedEnough = (dx * dx + dz * dz) >= 1.0
-        local laneZ = intent.action.type == "choose_attacker"
-            and (BRIDGE_SEATS[intent.seatId] and BRIDGE_SEATS[intent.seatId].attackLaneZ or nil)
-            or (BRIDGE_SEATS[intent.seatId] and BRIDGE_SEATS[intent.seatId].blockerLaneZ or nil)
-        local droppedInLane = laneZ ~= nil and math.abs(current.z - laneZ) <= 1.35
+        local movedEnough = (movedSq or 0) >= 1.0
         -- A normal pickup/drop is a valid desktop and VR selection gesture.
         -- The bridge performs the lane preview after Forge accepts the exact
         -- offered action, so players need not drag a card to a narrow row.
@@ -18164,7 +18312,7 @@ function onObjectDrop(playerColor, object)
         end
         BridgeLog(string.format(
             "[Bridge] combat drop accepted for %s (guid=%s movedSq=%.3f laneHit=%s action=%s decision=%s)",
-            tostring(intent.action.type), tostring(intent.guid), dx * dx + dz * dz, tostring(droppedInLane),
+            tostring(intent.action.type), tostring(intent.guid), movedSq or 0, tostring(droppedInLane),
             tostring(intent.action.actionId), tostring(intent.decisionId)))
         object.use_hands = false
         if intent.action.type == "choose_attacker" then
@@ -18182,11 +18330,23 @@ function onObjectDrop(playerColor, object)
     elseif intent.action.type == "play_land" then
         submissionSource = "physical_land_drop"
     end
+    if combatGesture then
+        BridgeRecordCombatGesture("SUBMIT", intent, movedSq, droppedInLane, true)
+    end
     BridgeSubmitChoice(intent.decisionId, intent.action.actionId, submissionSource)
 end
 
-function BridgeCommitPendingIntent()
+function BridgeCommitPendingIntent(committedDecisionId, committedActionId)
     local intent = BridgeState.pendingIntent
+    if intent ~= nil and (committedDecisionId ~= nil
+        and (intent.decisionId ~= committedDecisionId
+            or intent.action == nil or intent.action.actionId ~= committedActionId)) then
+        if BridgeIsCombatGestureAction(intent.action) then
+            BridgeRecordCombatGesture("ROLLBACK", intent, nil, nil, true, "commit-action-mismatch")
+        end
+        BridgeRollbackPendingIntent()
+        return
+    end
     BridgeState.pendingIntent = nil
     BridgeClearPendingIntentControls()
     if intent == nil then return end
@@ -33082,11 +33242,32 @@ function BridgeTargetInteractionDiagnosticPayload()
     local actionRows = ui.actionRows or {}
     local lastProducer = BridgeState.lastInteractionProducer
     local lastAttempt = BridgeState.lastChoiceAttempt
+    local pendingIntent = BridgeState.pendingIntent
+    local pendingAction = pendingIntent and pendingIntent.action or nil
+    local combatGesture = BridgeState.lastCombatGesture
     return {
         decisionId = decision and decision.decisionId or nil,
         decisionKind = decision and decision.kind or nil,
         submitting = BridgeState.submitting == true,
         pendingIntentType = BridgeState.pendingIntent and "physical-selection" or nil,
+        pendingIntent = pendingIntent and {
+            decisionId = pendingIntent.decisionId,
+            actionId = pendingAction and pendingAction.actionId or nil,
+            actionType = pendingAction and pendingAction.type or nil,
+            guid = pendingIntent.guid
+        } or nil,
+        lastCombatGesture = combatGesture and {
+            stage = combatGesture.stage,
+            decisionId = combatGesture.decisionId,
+            actionId = combatGesture.actionId,
+            actionType = combatGesture.actionType,
+            instanceId = combatGesture.instanceId,
+            guid = combatGesture.guid,
+            movedSq = combatGesture.movedSq,
+            laneHit = combatGesture.laneHit,
+            actionBindingPresent = combatGesture.actionBindingPresent,
+            reason = combatGesture.reason
+        } or nil,
         actionByGuidCount = actionByGuidCount,
         actionByGuid = associations,
         actionsByGuidCount = actionsByGuidCount,

@@ -4436,11 +4436,32 @@ function BridgeTargetInteractionDiagnosticPayload()
     local actionRows = ui.actionRows or {}
     local lastProducer = BridgeState.lastInteractionProducer
     local lastAttempt = BridgeState.lastChoiceAttempt
+    local pendingIntent = BridgeState.pendingIntent
+    local pendingAction = pendingIntent and pendingIntent.action or nil
+    local combatGesture = BridgeState.lastCombatGesture
     return {
         decisionId = decision and decision.decisionId or nil,
         decisionKind = decision and decision.kind or nil,
         submitting = BridgeState.submitting == true,
         pendingIntentType = BridgeState.pendingIntent and "physical-selection" or nil,
+        pendingIntent = pendingIntent and {
+            decisionId = pendingIntent.decisionId,
+            actionId = pendingAction and pendingAction.actionId or nil,
+            actionType = pendingAction and pendingAction.type or nil,
+            guid = pendingIntent.guid
+        } or nil,
+        lastCombatGesture = combatGesture and {
+            stage = combatGesture.stage,
+            decisionId = combatGesture.decisionId,
+            actionId = combatGesture.actionId,
+            actionType = combatGesture.actionType,
+            instanceId = combatGesture.instanceId,
+            guid = combatGesture.guid,
+            movedSq = combatGesture.movedSq,
+            laneHit = combatGesture.laneHit,
+            actionBindingPresent = combatGesture.actionBindingPresent,
+            reason = combatGesture.reason
+        } or nil,
         actionByGuidCount = actionByGuidCount,
         actionByGuid = associations,
         actionsByGuidCount = actionsByGuidCount,
