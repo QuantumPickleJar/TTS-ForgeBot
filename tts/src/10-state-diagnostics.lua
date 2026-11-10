@@ -407,6 +407,30 @@ function BridgeFindNamedObject(name)
 end
 
 function BridgeTtsExecutionBreadcrumb(stage, operation, event, operationId)
+    local ttsGuid = nil
+    local position = nil
+    local rotation = nil
+    local cardInstanceId = event and event.cardInstanceId or nil
+    local registeredGuid = cardInstanceId ~= nil and BridgeState.objectGuidByCardInstanceId ~= nil
+        and BridgeState.objectGuidByCardInstanceId[tostring(cardInstanceId)] or nil
+    local physicalObject = registeredGuid ~= nil and BridgeGetLiveObjectByGuid(registeredGuid) or nil
+    local function captureVector(methodName)
+        if physicalObject == nil or type(physicalObject[methodName]) ~= "function" then return nil end
+        local ok, vector = pcall(function() return physicalObject[methodName]() end)
+        if not ok or vector == nil then return nil end
+        local readOk, values = pcall(function()
+            return {tonumber(vector.x or vector[1]), tonumber(vector.y or vector[2]), tonumber(vector.z or vector[3])}
+        end)
+        if not readOk or values[1] == nil or values[2] == nil or values[3] == nil then return nil end
+        return values
+    end
+    if physicalObject ~= nil then
+        ttsGuid = registeredGuid
+        position = captureVector("getPosition")
+        rotation = captureVector("getRotation")
+    end
+    local eventTapped = nil
+    if event ~= nil and event.tapped ~= nil then eventTapped = event.tapped end
     local payload = {
         clientRuntimeId = BRIDGE_CLIENT_RUNTIME_ID,
         sessionId = BridgeState.eventSessionId,
@@ -415,7 +439,11 @@ function BridgeTtsExecutionBreadcrumb(stage, operation, event, operationId)
         eventSequence = event and event.sequence or nil,
         eventKind = event and event.kind or nil,
         stage = tostring(stage), operation = tostring(operation), operationId = operationId,
-        cardInstanceId = event and event.cardInstanceId or nil,
+        cardInstanceId = cardInstanceId,
+        ttsGuid = ttsGuid,
+        position = position,
+        rotation = rotation,
+        tapped = eventTapped,
         sourceZone = event and event.sourceZone or nil,
         destinationZone = event and event.destinationZone or nil,
         luaTimestamp = os.clock()
@@ -423,6 +451,48 @@ function BridgeTtsExecutionBreadcrumb(stage, operation, event, operationId)
     pcall(function()
         BridgeHttp.requestJson("POST", "/api/v1/diagnostics/tts-breadcrumb", payload, function() end)
     end)
+end
+
+function BridgeRecordFlightRecorderTtsEvent(eventType, sessionId, decisionId, eventCursor, payload)
+    if eventType == nil or sessionId == nil or BRIDGE_CLIENT_RUNTIME_ID == nil then return end
+    pcall(function()
+        BridgeHttp.requestJson("POST", "/api/v1/recorder/tts-event", {
+            sessionId = sessionId,
+            clientRuntimeId = BRIDGE_CLIENT_RUNTIME_ID,
+            type = tostring(eventType),
+            decisionId = decisionId,
+            eventCursor = eventCursor,
+            payload = payload or {}
+        }, function() end)
+    end)
+end
+
+function BridgeRecordPhysicalInteraction(kind, playerColor, object)
+    if BridgeState.eventSessionId == nil or not BridgeObjectIsUsable(object) then return end
+    local cardInstanceId = BridgeReadPhysicalIdentity ~= nil and BridgeReadPhysicalIdentity(object) or nil
+    if cardInstanceId == nil then return end
+    local guid = BridgeSafeObjectGuid(object)
+    local function readVector(methodName)
+        if type(object[methodName]) ~= "function" then return nil end
+        local ok, vector = pcall(function() return object[methodName]() end)
+        if not ok or vector == nil then return nil end
+        local readOk, values = pcall(function()
+            return {tonumber(vector.x or vector[1]), tonumber(vector.y or vector[2]), tonumber(vector.z or vector[3])}
+        end)
+        if not readOk or values[1] == nil or values[2] == nil or values[3] == nil then return nil end
+        return values
+    end
+    BridgeRecordFlightRecorderTtsEvent("physical_" .. tostring(kind) .. "_observed",
+        BridgeState.eventSessionId, BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+        BridgeState.lastAppliedEventSequence, {
+            playerColor = tostring(playerColor or "unknown"),
+            cardInstanceId = cardInstanceId,
+            ttsGuid = guid,
+            position = readVector("getPosition"),
+            rotation = readVector("getRotation"),
+            intendedAction = kind == "pickup",
+            physicalObservation = true
+        })
 end
 
 function BridgeHttp.requestJson(method, path, payload, callback)
@@ -2380,6 +2450,18 @@ function onObjectDestroy(object)
     -- Repair only a destroyed, registry-owned session control. This event is
     -- infrequent and avoids a recurring whole-table scan during gameplay.
     local guid = BridgeSafeObjectGuid(object)
+    local instanceId = BridgeReadPhysicalIdentity ~= nil and BridgeReadPhysicalIdentity(object) or nil
+    if guid ~= nil and instanceId ~= nil and BridgeState.eventSessionId ~= nil
+        and BridgeRecordFlightRecorderTtsEvent ~= nil then
+        BridgeRecordFlightRecorderTtsEvent("physical_destroy_observed", BridgeState.eventSessionId,
+            BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+            BridgeState.lastAppliedEventSequence, {cardInstanceId = instanceId, ttsGuid = guid,
+                intendedAction = false, physicalObservation = true})
+    end
+    if guid ~= nil and instanceId ~= nil and BridgeState.objectGuidByCardInstanceId ~= nil
+        and BridgeState.objectGuidByCardInstanceId[instanceId] == guid then
+        BridgeState.objectGuidByCardInstanceId[instanceId] = nil
+    end
     if guid == nil then return end
     for kind, registeredGuid in pairs(BridgeState.setupObjectGuidByKind or {}) do
         if registeredGuid == guid then

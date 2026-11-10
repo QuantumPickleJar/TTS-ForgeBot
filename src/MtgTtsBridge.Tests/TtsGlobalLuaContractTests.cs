@@ -3826,4 +3826,23 @@ public sealed class TtsGlobalLuaContractTests
         Assert.Contains("cleanupOwner.aliasSettleAttemptsByGuid", body);
         Assert.DoesNotContain("local aliasSettleAttempts", body);
     }
+
+    [Fact]
+    public void FlightRecorder_ObservesDecisionAutomationCancellationAndLivePhysicalCallbacks()
+    {
+        var pickupStart = Script.IndexOf("function onObjectPickUp", StringComparison.Ordinal);
+        var dropStart = Script.IndexOf("function onObjectDrop", StringComparison.Ordinal);
+        var destroyStart = Script.IndexOf("function onObjectDestroy", StringComparison.Ordinal);
+        Assert.True(pickupStart >= 0 && dropStart >= 0 && destroyStart >= 0);
+        Assert.Contains("BridgeRecordPhysicalInteraction(\"pickup\", playerColor, object)",
+            Script[pickupStart..(pickupStart + 240)]);
+        Assert.Contains("BridgeRecordPhysicalInteraction(\"drop\", playerColor, object)",
+            Script[dropStart..(dropStart + 260)]);
+        Assert.Contains("BridgeRecordFlightRecorderTtsEvent(\"decision_automation\"", Script);
+        Assert.Contains("BridgeRecordFlightRecorderTtsEvent(\"cancellation\"", Script);
+        Assert.Contains("BridgeRecordFlightRecorderTtsEvent(\"physical_mapping_created\"", Script);
+        Assert.Contains("BridgeRecordFlightRecorderTtsEvent(\"physical_mapping_retired\"", Script);
+        Assert.Contains("BridgeRecordFlightRecorderTtsEvent(\"yield_policy_armed\"", Script);
+        Assert.Contains("BridgeRecordFlightRecorderTtsEvent(\"resync_completed\"", Script);
+    }
 }

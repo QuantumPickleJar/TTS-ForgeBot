@@ -210,6 +210,10 @@ function BridgeRecordDecisionLifecycle(decision, origin, disposition, reason, ac
             tostring(record.hasPassPriority), tostring(record.nonPassActionCount), tostring(origin),
             tostring(disposition), tostring(reason)))
     end
+    if BridgeRecordFlightRecorderTtsEvent ~= nil then
+        BridgeRecordFlightRecorderTtsEvent("decision_automation", BridgeState.eventSessionId or record.sessionId,
+            record.decisionId, record.eventCursor, record)
+    end
     return record
 end
 
@@ -1782,6 +1786,10 @@ function BridgeRecordCancelAction(stage, decision, action, reason)
     while #BridgeState.cancelActionJournal > 24 do table.remove(BridgeState.cancelActionJournal, 1) end
     BridgeLog(string.format("[Bridge] CANCEL_%s decision=%s action=%s reason=%s",
         tostring(stage), tostring(record.decisionId), tostring(record.cancelActionId), tostring(record.reason or "")))
+    if BridgeRecordFlightRecorderTtsEvent ~= nil then
+        BridgeRecordFlightRecorderTtsEvent("cancellation", record.sessionId, record.decisionId,
+            BridgeState.lastAppliedEventSequence, record)
+    end
 end
 
 function BridgeRetireTerminalRecoveryError(error, reason)
@@ -3433,6 +3441,7 @@ BridgeState = {
     endTurnObjectGuidBySeatId = {},
     passObjectGuidBySeatId = {},
     setupObjectGuidByKind = {},
+    objectGuidByCardInstanceId = {},
     setupControlSpawnInFlightByKind = {},
     setupControlReconcileGeneration = 0,
     -- Reuse named presentation objects between refreshes; each lookup still
@@ -4181,6 +4190,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     if BridgeDestroyTransientControls ~= nil then pcall(BridgeDestroyTransientControls) end
 
     BridgeState.eventSessionId = nil
+    BridgeState.objectGuidByCardInstanceId = {}
     BridgeState.lastDecision = nil
     BridgeState.pendingDecision = nil
     BridgeState.pendingIntent = nil
@@ -4548,6 +4558,16 @@ end
 function BridgeWritePhysicalIdentity(object, cardInstanceId)
     if not BridgeObjectIsUsable(object) or cardInstanceId == nil or type(object.setVar) ~= "function" then return end
     pcall(function() object.setVar(BRIDGE_PHYSICAL_ID_KEY, tostring(cardInstanceId)) end)
+    local guid = BridgeSafeObjectGuid(object)
+    if guid ~= nil then
+        BridgeState.objectGuidByCardInstanceId = BridgeState.objectGuidByCardInstanceId or {}
+        BridgeState.objectGuidByCardInstanceId[tostring(cardInstanceId)] = guid
+        if BridgeRecordFlightRecorderTtsEvent ~= nil and BridgeState.eventSessionId ~= nil then
+            BridgeRecordFlightRecorderTtsEvent("physical_mapping_created", BridgeState.eventSessionId,
+                BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+                BridgeState.lastAppliedEventSequence, {cardInstanceId = tostring(cardInstanceId), ttsGuid = guid})
+        end
+    end
 end
 
 function BridgeReadPhysicalSessionIdentity(object)
@@ -4577,6 +4597,15 @@ function BridgeRetirePhysicalIdentityForSession(object, retiredSessionId)
     if tostring(objectSessionId or "") ~= tostring(retiredSessionId)
         and not (instanceId ~= nil and BridgeCardInstanceBelongsToSession(instanceId, retiredSessionId)) then
         return false
+    end
+    local guid = BridgeSafeObjectGuid(object)
+    if instanceId ~= nil and BridgeState.objectGuidByCardInstanceId ~= nil
+        and BridgeState.objectGuidByCardInstanceId[instanceId] == guid then
+        BridgeState.objectGuidByCardInstanceId[instanceId] = nil
+    end
+    if BridgeRecordFlightRecorderTtsEvent ~= nil then
+        BridgeRecordFlightRecorderTtsEvent("physical_mapping_retired", tostring(retiredSessionId), nil, nil,
+            {cardInstanceId = instanceId, ttsGuid = guid, reason = "session-identity-retired"})
     end
     pcall(function() object.setVar(BRIDGE_PHYSICAL_ID_KEY, nil) end)
     pcall(function() object.setVar(BRIDGE_PHYSICAL_SESSION_KEY, nil) end)

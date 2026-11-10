@@ -1434,6 +1434,11 @@ function BridgeArmYieldPolicy(activeSeat, reason)
     BridgeLog("[Bridge] yield policy armed activeSeat=" .. tostring(activeSeat)
         .. " ownTurn=" .. tostring(BridgeState.yieldPolicyOwnTurn)
         .. " reason=" .. tostring(reason or "user"))
+    BridgeRecordFlightRecorderTtsEvent("yield_policy_armed", BridgeState.eventSessionId,
+        BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+        BridgeState.lastAppliedEventSequence, {activeSeatId = activeSeat,
+            turnNumber = BridgeState.yieldPolicyTurnNumber, ownTurn = BridgeState.yieldPolicyOwnTurn,
+            policy = "YIELD", reason = reason or "yield"})
 end
 
 function BridgeHudYield(player, value, id)
@@ -1466,6 +1471,9 @@ function BridgeDisarmYieldPolicy(reason)
             BridgeUiMarkDirty("yield-policy-stopped")
         end
         BridgeLog("[Bridge] yield policy stopped reason=" .. tostring(reason))
+        BridgeRecordFlightRecorderTtsEvent("yield_policy_stopped", BridgeState.eventSessionId,
+            BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+            BridgeState.lastAppliedEventSequence, {reason = reason or "unknown"})
     end
 end
 
@@ -2279,6 +2287,9 @@ function BridgeSetAutoPassEmpty(enabled, reason)
     BridgeSetStatus(ui.autoPassEmpty and "AUTO-PASS: EMPTY PRIORITY" or "NORMAL MODE",
         ui.autoPassEmpty and "Only pass-only human priority decisions will be submitted automatically." or "Every human Forge decision is presented normally.")
     BridgeUiMarkDirty("auto-pass-empty-" .. tostring(reason or "user"))
+    BridgeRecordFlightRecorderTtsEvent("auto_pass_empty_changed", BridgeState.eventSessionId,
+        BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+        BridgeState.lastAppliedEventSequence, {enabled = ui.autoPassEmpty, reason = reason or "user"})
 end
 
 function BridgeToggleYieldPhaseStop(scope, phaseKey)
@@ -2315,6 +2326,10 @@ function BridgeStartFastForward(reason)
     BridgeSetStatus("FAST-FORWARD ACTIVE", "Stops at configured phase gates or any required human choice.")
     BridgeUiMarkDirty("fast-forward-started")
     BridgeLog("[Bridge] fast_forward_started reason=" .. tostring(reason or "user"))
+    BridgeRecordFlightRecorderTtsEvent("fast_forward_started", BridgeState.eventSessionId,
+        BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+        BridgeState.lastAppliedEventSequence, {reason = reason or "user",
+            turnNumber = ui.fastForwardTurnNumber, activeSeatId = ui.fastForwardActiveSeatId})
     if BridgeState.eventSessionId ~= nil then
         if not BridgeState.eventPolling then BridgeStartEventPolling(BridgeState.eventSessionId, false) end
         if BridgeState.lastDecision == nil and not BridgeState.submitting then BridgeStartDecisionPolling() end
@@ -2333,6 +2348,9 @@ function BridgeCancelFastForward(reason)
     BridgeSetStatus("FAST-FORWARD CANCELLED", tostring(reason or "user"))
     BridgeUiMarkDirty("fast-forward-cancelled")
     BridgeLog("[Bridge] fast_forward_cancelled reason=" .. tostring(reason or "user"))
+    BridgeRecordFlightRecorderTtsEvent("fast_forward_stopped", BridgeState.eventSessionId,
+        BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+        BridgeState.lastAppliedEventSequence, {reason = reason or "user"})
 end
 
 function BridgeHudFastForward(player, value, id)
@@ -4995,11 +5013,18 @@ function BridgeRefreshSetupControlPresentation()
     BridgeState.setupControlPresentationCache = BridgeState.setupControlPresentationCache or {}
     for kind, definition in pairs(definitions) do
         local enabled, reason = BridgeLifecycleControlState(kind)
-        local label = definition.label
+        enabled = enabled == true
+        if reason == nil or tostring(reason) == "" then
+            reason = enabled and "Ready" or "This operation is currently unavailable"
+        else
+            reason = tostring(reason)
+        end
+        local label = tostring(definition.label or kind)
         if kind == "Reset" and BridgeState.resetConfirmationArmed == true then
             label = "CONFIRM NEW MATCH"
         end
-        table.insert(summary, enabled and (label .. ": READY") or (label .. ": " .. reason))
+        local summaryLine = enabled and (label .. ": READY") or (label .. ": " .. reason)
+        summary[#summary + 1] = tostring(summaryLine)
         local object = BridgeGetLiveObjectByGuid(BridgeState.setupObjectGuidByKind[kind])
         local presentationKey = tostring(enabled) .. "|" .. label .. "|" .. tostring(reason)
         if object ~= nil and BridgeState.setupControlPresentationCache[kind] ~= presentationKey then
@@ -5026,12 +5051,19 @@ function BridgeRefreshSetupControlPresentation()
     local sessionSummary = table.concat(summary, "\n")
     BridgeState.setupControlAvailabilitySummary = sessionSummary
     if BridgeUiSet ~= nil then
+        local resetEnabled, resetReason = BridgeLifecycleControlState("Reset")
+        resetEnabled = resetEnabled == true
+        if resetReason == nil or tostring(resetReason) == "" then
+            resetReason = resetEnabled and "Ready" or "This operation is currently unavailable"
+        else
+            resetReason = tostring(resetReason)
+        end
         BridgeUiSet("BridgeHudSessionStatus", "text", sessionSummary)
         BridgeUiSet("BridgeHudNewMatch", "active", "true")
         BridgeUiSet("BridgeHudNewMatch", "text", BridgeState.resetConfirmationArmed
             and "CONFIRM NEW MATCH" or "NEW MATCH")
-        BridgeUiSet("BridgeHudNewMatch", "interactable", BridgeLifecycleControlState("Reset") and "true" or "false")
-        BridgeUiSet("BridgeHudNewMatch", "tooltip", select(2, BridgeLifecycleControlState("Reset")))
+        BridgeUiSet("BridgeHudNewMatch", "interactable", resetEnabled and "true" or "false")
+        BridgeUiSet("BridgeHudNewMatch", "tooltip", resetReason)
     end
 end
 
@@ -6198,6 +6230,21 @@ function BridgeAcceptDecision(decision, origin, expectedSessionId, presentationG
     BridgeRenderDecision(decision)
     BridgeCertifyHumanActionReadiness(decision, "decision-presentation-verified")
     BridgeRecordDecisionLifecycle(decision, origin, "RENDERED", "decision-accepted")
+    local recorderDecisionKey = table.concat({tostring(decision.sessionId or BridgeState.eventSessionId),
+        tostring(decision.decisionId), tostring(decision.forgeSequence or ""), tostring(decision.eventCursor or "")}, "|")
+    if BridgeState.recorderLastPresentedDecisionGeneration ~= recorderDecisionKey then
+        BridgeState.recorderLastPresentedDecisionGeneration = recorderDecisionKey
+        BridgeRecordFlightRecorderTtsEvent("decision_presented", BridgeState.eventSessionId,
+            decision.decisionId, decision.eventCursor, {origin = origin, decision = decision,
+                automationState = {
+                    mode = BridgeYieldControllerMode ~= nil and BridgeYieldControllerMode() or "normal",
+                    autoPassEmpty = BridgeState.ui ~= nil and BridgeState.ui.autoPassEmpty == true,
+                    fastForwardActive = BridgeState.ui ~= nil and BridgeState.ui.fastForwardActive == true,
+                    yieldPolicyTurnNumber = BridgeState.yieldPolicyTurnNumber,
+                    yieldPolicyActiveSeatId = BridgeState.yieldPolicyActiveSeatId,
+                    yieldPolicyOwnTurn = BridgeState.yieldPolicyOwnTurn == true
+                }})
+    end
 
     BridgeLog("[Bridge] decision " .. tostring(decision.decisionId) .. " kind=" .. tostring(decision.kind))
 
