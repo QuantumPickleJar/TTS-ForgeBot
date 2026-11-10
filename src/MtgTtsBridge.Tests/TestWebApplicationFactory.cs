@@ -24,7 +24,9 @@ public sealed class TestWebApplicationFactory : WebApplicationFactory<Program>
             configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Bridge:Adapter"] = "Mock",
-                ["Diagnostics:ReportDirectory"] = _reportDirectory
+                ["Diagnostics:ReportDirectory"] = _reportDirectory,
+                ["FlightRecorder:Enabled"] = "false",
+                ["FlightRecorder:Directory"] = Path.Combine(_reportDirectory, "recordings")
             });
         });
         builder.ConfigureServices(services =>

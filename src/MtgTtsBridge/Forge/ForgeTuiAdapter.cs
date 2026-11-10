@@ -33,6 +33,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     private readonly ForgeStructuredStateReconciler _structuredState;
     private readonly ForgeStartupTracker _startupTracker;
     private readonly DiagnosticTelemetryBuffer? _telemetry;
+    private readonly FlightRecorderService? _flightRecorder;
     private readonly SemaphoreSlim _sessionStartGate = new(1, 1);
     // A TUI decision is a one-shot transaction. Keep the winning action after
     // it is consumed so duplicate HTTP delivery can be acknowledged without a
@@ -98,11 +99,13 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
     // delayed terminators without requiring the parser to know about decision boundaries.
     private const int DelayedTerminatorGracePeriodMs = 250;
 
-    public ForgeTuiAdapter(IOptions<ForgeTuiOptions> options, ILogger<ForgeTuiAdapter> logger, DiagnosticTelemetryBuffer? telemetry = null)
+    public ForgeTuiAdapter(IOptions<ForgeTuiOptions> options, ILogger<ForgeTuiAdapter> logger,
+        DiagnosticTelemetryBuffer? telemetry = null, FlightRecorderService? flightRecorder = null)
     {
         _options = options.Value;
         _logger = logger;
         _telemetry = telemetry;
+        _flightRecorder = flightRecorder;
         _startupTracker = new ForgeStartupTracker(logger);
         _opponentSeatId = _options.PlayerSeats.Values.FirstOrDefault(seatId => !string.Equals(seatId, _options.HumanSeatId, StringComparison.Ordinal));
         _parser = new ForgeTuiParser(_options.PlayerSeats, _opponentSeatId ?? "forge-player-2");
@@ -354,6 +357,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             initialDecision = NewDecisionWaiter();
         }
 
+        _flightRecorder?.BeginMatch(_sessionId);
         startInfo.Environment["FORGEBOT_BRIDGE_SESSION_ID"] = _sessionId;
 
         process.Exited += (_, _) => _ = HandleProcessExitAsync(process, processGeneration, process.ExitCode);
@@ -395,6 +399,8 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
         try
         {
             _ = await WaitForDecisionAsync(initialDecision, _options.StartupTimeoutSeconds, cancellationToken, "startup").ConfigureAwait(false);
+            if (_structuredState.Current is { } initialSnapshot)
+                _flightRecorder?.RecordSnapshot(initialSnapshot, "initial");
             return CreateState();
         }
         catch (ForgeUnsupportedPromptException)
@@ -1218,6 +1224,7 @@ public sealed class ForgeTuiAdapter : IForgeAdapter, IAsyncDisposable
             _latestCommittedMutationCursor,
             _latestDecisionEligibleCursor,
             _latestCommittedMutationForgeSequence ?? _latestObservedForgeSequence);
+        _flightRecorder?.RecordDecisionOffered(published);
         _nextDecision?.TrySetResult(_currentDecision);
     }
 

@@ -20,6 +20,9 @@ var diagnosticTelemetry = new DiagnosticTelemetryBuffer();
 builder.Services.AddSingleton(diagnosticTelemetry);
 builder.Services.Configure<DiagnosticOptions>(builder.Configuration.GetSection("Diagnostics"));
 builder.Services.AddSingleton(serviceProvider => serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<DiagnosticOptions>>().Value);
+builder.Services.Configure<FlightRecorderOptions>(builder.Configuration.GetSection("FlightRecorder"));
+builder.Services.AddSingleton<FlightRecorderService>();
+builder.Services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<FlightRecorderService>());
 builder.Services.Configure<TtsExternalEditorOptions>(builder.Configuration.GetSection("TtsEditor"));
 builder.Services.PostConfigure<TtsExternalEditorOptions>(options =>
 {
@@ -36,6 +39,7 @@ builder.Services.AddSingleton<DiagnosticBundleWriter>();
 builder.Services.AddSingleton<ProcessSampler>();
 builder.Services.AddSingleton<DiagnosticReportCollector>();
 builder.Services.AddHostedService<TtsExecutionWatchdogService>();
+builder.Services.AddHostedService<FlightRecorderCheckpointService>();
 builder.Logging.AddProvider(new DiagnosticLoggerProvider(diagnosticTelemetry));
 
 if (builder.Environment.IsEnvironment("Testing"))
@@ -72,6 +76,8 @@ else
 }
 
 var app = builder.Build();
+var flightRecorder = app.Services.GetRequiredService<FlightRecorderService>();
+diagnosticTelemetry.AttachFlightRecorder(flightRecorder);
 app.Logger.LogInformation("BRIDGE_RUNTIME_PROVENANCE gitSha={GitSha} dirty={Dirty} buildIdentity={BuildIdentity}",
 	BridgeProcessIdentity.Revision, BridgeProcessIdentity.IsDirty, BridgeProcessIdentity.BuildIdentity);
 var processSampler = app.Services.GetRequiredService<ProcessSampler>();
@@ -100,8 +106,9 @@ app.MapGet("/health", async (IForgeAdapter adapter, BridgeProcessIdentity identi
 
 // This is deliberately a separate, side-effect-free handshake. TTS must call
 // it before any operation that can start Forge or change physical embodiment.
-app.MapPost("/api/v1/runtime/compatibility", (RuntimeCompatibilityRequestDto request, BridgeProcessIdentity identity) =>
+app.MapPost("/api/v1/runtime/compatibility", (RuntimeCompatibilityRequestDto request, BridgeProcessIdentity identity, FlightRecorderService recorder) =>
 {
+	recorder.RegisterClientRuntime(request.ClientRuntimeId);
 	var compatible = RuntimeBuildContract.IsCompatible(request.ClientGeneratedGlobalLuaSha256);
 	var response = new RuntimeCompatibilityResponseDto(
 		compatible ? "MATCH" : "MISMATCH",
@@ -114,6 +121,65 @@ app.MapPost("/api/v1/runtime/compatibility", (RuntimeCompatibilityRequestDto req
 		RuntimeBuildContract.ExpectedGeneratedGlobalLuaSha256,
 		compatible ? null : "RUNTIME BUILD MISMATCH: reload TTS Save & Play and/or restart Start-ForgeBot.");
 	return compatible ? Results.Ok(response) : Results.Json(response, statusCode: StatusCodes.Status409Conflict);
+});
+
+app.MapGet("/api/v1/recorder/status", (FlightRecorderService recorder) => Results.Ok(recorder.GetStatus()));
+
+app.MapPost("/api/v1/recorder/start", async (IForgeAdapter adapter, FlightRecorderService recorder, CancellationToken cancellationToken) =>
+{
+	var state = await adapter.GetStateAsync(cancellationToken);
+	var sessionId = state.SessionId == "session-not-started" ? null : state.SessionId;
+	if (!recorder.StartRecording(sessionId))
+		return Results.Conflict(new { code = "recorder_unavailable", message = recorder.GetStatus().StorageError });
+	var snapshot = await adapter.GetSnapshotAsync(cancellationToken);
+	if (snapshot is not null) recorder.RecordSnapshot(snapshot, "recording_started");
+	return Results.Ok(recorder.GetStatus());
+});
+
+app.MapPost("/api/v1/recorder/stop", async (FlightRecorderService recorder, CancellationToken cancellationToken) =>
+{
+	await recorder.StopRecordingAsync(cancellationToken);
+	return Results.Ok(recorder.GetStatus());
+});
+
+app.MapGet("/api/v1/recorder/matches/{sessionId}/export", async (string sessionId,
+	FlightRecorderService recorder, CancellationToken cancellationToken) =>
+{
+	await recorder.FlushAsync(cancellationToken);
+	var excerpt = recorder.CaptureExcerpt(sessionId, maxRecords: 2000, maxBytes: 4 * 1024 * 1024);
+	if (excerpt.Missing) return Results.NotFound(new { code = "recording_not_found", excerpt.MissingReason });
+	var envelopes = new List<FlightRecorderEnvelope>();
+	foreach (var line in excerpt.RecentRecords)
+	{
+		try
+		{
+			var envelope = JsonSerializer.Deserialize<FlightRecorderEnvelope>(line, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+			if (envelope is null) continue;
+			envelopes.Add(FlightRecorderService.RedactForExternalExport(envelope));
+		}
+		catch (JsonException) { }
+	}
+	return Results.Ok(new
+	{
+		schemaVersion = FlightRecorderService.CurrentSchemaVersion,
+        sessionId = FlightRecorderService.RedactExternalIdentifier(sessionId),
+		privateExport = false,
+		redactedByDefault = true,
+		excerpt.Truncated,
+		excerpt.RecordsDropped,
+		missingData = excerpt.MissingReason,
+		records = envelopes
+	});
+});
+
+app.MapPost("/api/v1/recorder/tts-event", (FlightRecorderTtsEventRequest request, FlightRecorderService recorder) =>
+{
+	if (string.IsNullOrWhiteSpace(request.SessionId) || string.IsNullOrWhiteSpace(request.ClientRuntimeId)
+		|| string.IsNullOrWhiteSpace(request.Type)) return Results.BadRequest();
+	var accepted = recorder.RecordTtsEvent(request.SessionId, request.ClientRuntimeId, request.Type,
+		request.DecisionId, request.Payload, request.EventCursor);
+	return accepted || !recorder.GetStatus().Recording ? Results.NoContent()
+		: Results.Json(new { code = "recorder_write_unavailable", message = recorder.GetStatus().StorageError }, statusCode: StatusCodes.Status503ServiceUnavailable);
 });
 
 app.MapGet("/api/v1/tts-editor/status", (ITtsExternalEditorService service) => Results.Ok(service.GetStatus()));
@@ -272,7 +338,7 @@ app.MapPost("/api/v1/session/reset", async (IForgeAdapter adapter, CancellationT
 	}
 });
 
-app.MapGet("/api/v1/decision", async (IForgeAdapter adapter, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
+app.MapGet("/api/v1/decision", async (IForgeAdapter adapter, DiagnosticTelemetryBuffer telemetry, FlightRecorderService recorder, CancellationToken cancellationToken) =>
 {
 	telemetry.RecordProtocol("tts_to_bridge", "/api/v1/decision");
 	var state = await adapter.GetStateAsync(cancellationToken);
@@ -304,6 +370,7 @@ app.MapGet("/api/v1/decision", async (IForgeAdapter adapter, DiagnosticTelemetry
 		}, statusCode: StatusCodes.Status409Conflict);
 	}
 
+	recorder.ObserveDecisionDelivery(state.CurrentDecision);
 	telemetry.RecordProtocol("bridge_to_tts", "/api/v1/decision", 200, state.SessionId, state.CurrentDecision.DecisionId, payload: state.CurrentDecision);
 	return Results.Ok(state.CurrentDecision);
 });
@@ -398,7 +465,8 @@ app.MapPost("/api/v1/diagnostics/tts-breadcrumb", (TtsExecutionBreadcrumbRequest
 	telemetry.RecordTtsBreadcrumb(new TtsExecutionBreadcrumb(
 		request.ClientRuntimeId, request.SessionId, request.EventSessionGeneration, request.PresentationGeneration,
 		request.EventSequence, request.EventKind, request.Stage, request.Operation, request.OperationId,
-		request.CardInstanceId, request.SourceZone, request.DestinationZone, request.LuaTimestamp, DateTimeOffset.UtcNow));
+		request.CardInstanceId, request.SourceZone, request.DestinationZone, request.LuaTimestamp, DateTimeOffset.UtcNow,
+		request.TtsGuid, request.Position, request.Rotation, request.Tapped));
 	return Results.NoContent();
 });
 
@@ -478,9 +546,10 @@ app.MapGet("/api/v1/embodiment/stack", async (IForgeAdapter adapter, DiagnosticT
 		: Results.Ok(projection);
 });
 
-app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter adapter, HttpContext httpContext, ILogger<Program> logger, DiagnosticTelemetryBuffer telemetry, CancellationToken cancellationToken) =>
+app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter adapter, HttpContext httpContext, ILogger<Program> logger, DiagnosticTelemetryBuffer telemetry, FlightRecorderService recorder, CancellationToken cancellationToken) =>
 {
 	telemetry.RecordProtocol("tts_to_bridge", "/api/v1/choice", sessionId: request.SessionId, decisionId: request.DecisionId, requestId: request.RequestId, clientRuntimeId: request.ClientRuntimeId, clientRevision: request.ClientRevision, payload: request);
+	recorder.RecordChoiceRequested(request);
 	var missingFields = new List<string>();
 	if (string.IsNullOrWhiteSpace(request.DecisionId)) missingFields.Add("decisionId");
 	if (string.IsNullOrWhiteSpace(request.ActionId)) missingFields.Add("actionId");
@@ -492,6 +561,9 @@ app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter ada
 
 	if (missingFields.Count > 0)
 	{
+		var rejectionMessage = "Missing required fields: " + string.Join(", ", missingFields) + ".";
+		telemetry.RecordChoice(request, "rejected", "invalid_request", rejectionMessage,
+			new { missingFields });
 		logger.LogWarning(
 			"LEGACY_OR_MALFORMED_CHOICE missingFields={MissingFields} decisionId={DecisionId} actionId={ActionId} sessionId={SessionId} requestId={RequestId} clientRuntimeId={ClientRuntimeId} clientRevision={ClientRevision} source={Source} remote={Remote} bridgeProcessInstanceId={BridgeProcessInstanceId} bridgeRevision={BridgeRevision}",
 			string.Join(',', missingFields),
@@ -507,15 +579,39 @@ app.MapPost("/api/v1/choice", async (ChoiceRequestDto request, IForgeAdapter ada
 			BridgeProcessIdentity.Revision);
 		return Results.BadRequest(new ErrorResponseDto(
 			ErrorCode: "invalid_request",
-			Message: "Missing required fields: " + string.Join(", ", missingFields) + ".",
+			Message: rejectionMessage,
 			DecisionId: request.DecisionId,
 			ReceivedSessionId: request.SessionId,
 			RequestId: request.RequestId,
 			MissingFields: missingFields));
 	}
 
-	var outcome = await adapter.SubmitChoiceAsync(request, cancellationToken);
-	telemetry.RecordChoice(request, outcome.Accepted ? "accepted" : "rejected", outcome.ErrorCode, outcome.ErrorMessage);
+	ForgeChoiceResult outcome;
+	try
+	{
+		outcome = await adapter.SubmitChoiceAsync(request, cancellationToken);
+	}
+	catch (OperationCanceledException)
+	{
+		telemetry.RecordChoice(request, "cancelled", "submission_cancelled", "Choice submission was cancelled.");
+		throw;
+	}
+	catch (Exception exception)
+	{
+		telemetry.RecordChoice(request, "failed", "submission_exception", exception.GetType().Name);
+		throw;
+	}
+	var resultDetails = new
+	{
+		outcome.ErrorCode,
+		outcome.ErrorMessage,
+		outcome.ExpectedSessionId,
+		outcome.ReceivedSessionId,
+		currentDecision = outcome.State.CurrentDecision,
+		committedEvent = outcome.State.LastCommittedEvent
+	};
+	telemetry.RecordChoice(request, outcome.Accepted ? "accepted" : "rejected", outcome.ErrorCode,
+		outcome.ErrorMessage, resultDetails);
 
 	if (!outcome.Accepted)
 	{
