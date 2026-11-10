@@ -3811,6 +3811,12 @@ function BridgeHudResyncFromForge(player, value, id)
     BridgeRecordResyncClickIngress(player, value, id)
     local ui = BridgeState.ui
     local statusBeforeClick = BridgeState.statusHeadline or BridgeState.statusText
+    if BridgeState.lifecycleOperation ~= nil and BridgeState.lifecycleOperation.command == "NEW_MATCH" then
+        BridgeSetStatus("RESYNC UNAVAILABLE", "NEW MATCH cleanup is in progress.")
+        BridgeRecordResyncAction("RESYNC_CLICK_REJECTED", "new-match-in-progress", statusBeforeClick)
+        BridgeUiMarkDirty("resync-blocked-by-new-match")
+        return
+    end
     if ui == nil then
         BridgeRecordResyncAction("RESYNC_CLICK_REJECTED", "ui-unavailable", statusBeforeClick)
         BridgeLog("[Bridge] RESYNC_CLICK_IGNORED reason=ui-unavailable")
@@ -4086,6 +4092,7 @@ function BridgeUiFlush()
     BridgeUiFlushBase()
     local ui = BridgeState.ui
     if ui == nil or not ui.mounted then return end
+    if BridgeRefreshSetupControlPresentation ~= nil then BridgeRefreshSetupControlPresentation() end
 
     local mainPanelCollapsed = BridgeHudMainPanelCollapsed()
     local autoCollapsed = BridgeState.hudMainPanelAutoCollapseOwner ~= nil and mainPanelCollapsed
@@ -4105,7 +4112,7 @@ function BridgeUiFlush()
     if drawer ~= "options" and drawer ~= "report" then drawer = "closed" end
     local optionsVisible = drawer == "options"
     local reportVisible = drawer == "report" and ui.reportPanelVisible == true
-    local devHeight = optionsVisible and 230 or reportVisible and 212 or 92
+    local devHeight = optionsVisible and 365 or reportVisible and 212 or 92
     BridgeUiSet("BridgeHudDevToggle", "active", devEnabled and "true" or "false")
     BridgeUiSet("BridgeHudDevRoot", "active", devExpanded and "true" or "false")
     BridgeUiSet("BridgeHudDevRoot", "minHeight", tostring(devHeight))

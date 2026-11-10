@@ -2039,7 +2039,7 @@ public sealed class TtsEventQueueLivelockTests
     }
 
     [Fact]
-    public void ResumeOnActiveCoherentSessionUsesAuthoritativeSnapshotReconciliation()
+    public void ResumeOnActiveCoherentSessionContinuesAtItsExistingCursor()
     {
         var lua = NewQueueProbe();
         lua.DoString(@"
@@ -2047,6 +2047,7 @@ public sealed class TtsEventQueueLivelockTests
             BridgeState.lifecycleState = 'SESSION_ACTIVE'
             BridgeState.lastReceivedEventSequence = 213
             BridgeState.lastAppliedEventSequence = 213
+            BridgeState.eventPolling = false
             BridgeState.lastDecision = {
                 decisionId='forge-tui-10', sessionId='active-session', eventCursor=213,
                 kind='main_priority', seatId='forge-player-1',
@@ -2075,16 +2076,16 @@ public sealed class TtsEventQueueLivelockTests
 
         var state = lua.Globals.Get("BridgeState").Table;
         Assert.False(lua.Globals.Get("attached").Boolean);
-        Assert.False(lua.Globals.Get("rendered").Boolean);
-        Assert.False(lua.Globals.Get("eventStarted").Boolean);
-        Assert.Equal("resume", lua.Globals.Get("resyncOrigin").String);
+        Assert.True(lua.Globals.Get("rendered").Boolean);
+        Assert.True(lua.Globals.Get("eventStarted").Boolean);
+        Assert.Equal(DataType.Nil, lua.Globals.Get("resyncOrigin").Type);
         Assert.Equal("active-session", state.Get("eventSessionId").String);
         Assert.Equal(213, state.Get("lastAppliedEventSequence").Number);
         Assert.Equal("forge-tui-10", state.Get("lastDecision").Table.Get("decisionId").String);
     }
 
     [Fact]
-    public void ResumeWithCurrentCursorMappingDefectUsesTheSameSnapshotReconciler()
+    public void ResumeWithCurrentCursorMappingDefectRequiresExplicitRecovery()
     {
         var lua = NewQueueProbe();
         lua.DoString(@"
@@ -2102,13 +2103,15 @@ public sealed class TtsEventQueueLivelockTests
             resyncOrigin = nil
             function BridgeAttachToActiveSession(done) attached = true end
             function BridgeResyncFromAuthoritativeSnapshot(origin) resyncOrigin = origin; return true end
+            function BridgeShowError(message) resumeError = message end
             function BridgeSetStatus(headline, detail) end
             function BridgeUiMarkDirty(reason) end
             BridgeDoPressResume(nil, false)
         ");
 
         Assert.False(lua.Globals.Get("attached").Boolean);
-        Assert.Equal("resume", lua.Globals.Get("resyncOrigin").String);
+        Assert.Equal(DataType.Nil, lua.Globals.Get("resyncOrigin").Type);
+        Assert.Contains("RECOVER / RESYNC", lua.Globals.Get("resumeError").String);
         var state = lua.Globals.Get("BridgeState").Table;
         Assert.Equal(213, state.Get("lastAppliedEventSequence").Number);
         Assert.True(state.Get("desyncLatched").Boolean);

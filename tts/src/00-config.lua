@@ -210,6 +210,10 @@ function BridgeRecordDecisionLifecycle(decision, origin, disposition, reason, ac
             tostring(record.hasPassPriority), tostring(record.nonPassActionCount), tostring(origin),
             tostring(disposition), tostring(reason)))
     end
+    if BridgeRecordFlightRecorderTtsEvent ~= nil then
+        BridgeRecordFlightRecorderTtsEvent("decision_automation", BridgeState.eventSessionId or record.sessionId,
+            record.decisionId, record.eventCursor, record)
+    end
     return record
 end
 
@@ -1782,6 +1786,10 @@ function BridgeRecordCancelAction(stage, decision, action, reason)
     while #BridgeState.cancelActionJournal > 24 do table.remove(BridgeState.cancelActionJournal, 1) end
     BridgeLog(string.format("[Bridge] CANCEL_%s decision=%s action=%s reason=%s",
         tostring(stage), tostring(record.decisionId), tostring(record.cancelActionId), tostring(record.reason or "")))
+    if BridgeRecordFlightRecorderTtsEvent ~= nil then
+        BridgeRecordFlightRecorderTtsEvent("cancellation", record.sessionId, record.decisionId,
+            BridgeState.lastAppliedEventSequence, record)
+    end
 end
 
 function BridgeRetireTerminalRecoveryError(error, reason)
@@ -3433,6 +3441,9 @@ BridgeState = {
     endTurnObjectGuidBySeatId = {},
     passObjectGuidBySeatId = {},
     setupObjectGuidByKind = {},
+    objectGuidByCardInstanceId = {},
+    setupControlSpawnInFlightByKind = {},
+    setupControlReconcileGeneration = 0,
     -- Reuse named presentation objects between refreshes; each lookup still
     -- validates the GUID through BridgeGetLiveObjectByGuid before use.
     namedObjectGuidByName = {},
@@ -3445,6 +3456,12 @@ BridgeState = {
     turnCounterSessionId = nil,
     resetConfirmationArmed = false,
     resetConfirmationGuid = nil,
+    resetConfirmationToken = 0,
+    resetConfirmationExpiresAt = nil,
+    lifecycleOperationGeneration = 0,
+    lifecycleOperation = nil,
+    resumeCompatibilityPending = false,
+    resumeCompatibilityToken = 0,
     selectedActionIds = {},
     selectedGuidByActionId = {},
     selectionDecisionId = nil,
@@ -4075,6 +4092,47 @@ function BridgeGuardLifecycleCommand(command)
     return false
 end
 
+function BridgeBeginLifecycleOperation(command, supersedeExisting)
+    local current = BridgeState.lifecycleOperation
+    if current ~= nil and current.command == "NEW_MATCH" then
+        if BridgeShowError ~= nil then BridgeShowError("NEW MATCH cleanup is already in progress") end
+        return nil
+    end
+    if current ~= nil and supersedeExisting ~= true then
+        if BridgeShowError ~= nil then BridgeShowError(tostring(current.command) .. " is still in progress") end
+        return nil
+    end
+    BridgeState.lifecycleOperationGeneration = (BridgeState.lifecycleOperationGeneration or 0) + 1
+    BridgeState.resumeCompatibilityToken = (BridgeState.resumeCompatibilityToken or 0) + 1
+    BridgeState.resumeCompatibilityPending = false
+    local token = BridgeState.lifecycleOperationGeneration
+    BridgeState.lifecycleOperation = {
+        token = token,
+        command = tostring(command or "UNKNOWN"),
+        runtimeEpoch = BRIDGE_RUNTIME_EPOCH_LOCAL,
+        embodimentEpoch = BridgeState.embodimentEpoch
+    }
+    if BridgeRefreshSetupControlPresentation ~= nil then BridgeRefreshSetupControlPresentation() end
+    return token
+end
+
+function BridgeLifecycleOperationIsCurrent(token, command)
+    local current = BridgeState.lifecycleOperation
+    return current ~= nil and current.token == token
+        and (command == nil or current.command == command)
+        and current.runtimeEpoch == BRIDGE_RUNTIME_EPOCH_LOCAL
+        and BridgeRuntimeIsCurrent(BRIDGE_RUNTIME_EPOCH_LOCAL)
+end
+
+function BridgeFinishLifecycleOperation(token)
+    local current = BridgeState.lifecycleOperation
+    if current == nil or current.token ~= token then return false end
+    BridgeState.lifecycleOperation = nil
+    if BridgeRefreshSetupControlPresentation ~= nil then BridgeRefreshSetupControlPresentation() end
+    if BridgeUiMarkDirty ~= nil then BridgeUiMarkDirty("lifecycle-operation-finished") end
+    return true
+end
+
 function BridgeSetLifecycleState(state, reason)
     local previous = BridgeState.lifecycleState
     BridgeState.lifecycleState = state
@@ -4084,6 +4142,7 @@ function BridgeSetLifecycleState(state, reason)
             tostring(BridgeState.eventSessionId)))
     end
     if BridgeUiMarkDirty ~= nil then BridgeUiMarkDirty("lifecycle-" .. tostring(state)) end
+    if BridgeRefreshSetupControlPresentation ~= nil then BridgeRefreshSetupControlPresentation() end
 end
 
 -- One idempotent local transaction for crossing into setup.  It never calls
@@ -4131,6 +4190,7 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     if BridgeDestroyTransientControls ~= nil then pcall(BridgeDestroyTransientControls) end
 
     BridgeState.eventSessionId = nil
+    BridgeState.objectGuidByCardInstanceId = {}
     BridgeState.lastDecision = nil
     BridgeState.pendingDecision = nil
     BridgeState.pendingIntent = nil
@@ -4300,6 +4360,12 @@ function BridgeCleanupLocalSession(reason, lifecycleState)
     BridgeState.setupBusy = false
     BridgeState.resetConfirmationArmed = false
     BridgeState.resetConfirmationGuid = nil
+    BridgeState.resetConfirmationToken = (BridgeState.resetConfirmationToken or 0) + 1
+    BridgeState.resetConfirmationExpiresAt = nil
+    BridgeState.lifecycleOperationGeneration = (BridgeState.lifecycleOperationGeneration or 0) + 1
+    BridgeState.lifecycleOperation = nil
+    BridgeState.resumeCompatibilityToken = (BridgeState.resumeCompatibilityToken or 0) + 1
+    BridgeState.resumeCompatibilityPending = false
     BridgeSetLifecycleState(lifecycleState or BRIDGE_LIFECYCLE_READY_NO_SESSION, reason)
     if BridgeSetStatus ~= nil then BridgeSetStatus("COMPANION READY", "READY TO START A NEW MATCH") end
     if BridgeEnsureSetupControls ~= nil then BridgeEnsureSetupControls() end
@@ -4492,6 +4558,16 @@ end
 function BridgeWritePhysicalIdentity(object, cardInstanceId)
     if not BridgeObjectIsUsable(object) or cardInstanceId == nil or type(object.setVar) ~= "function" then return end
     pcall(function() object.setVar(BRIDGE_PHYSICAL_ID_KEY, tostring(cardInstanceId)) end)
+    local guid = BridgeSafeObjectGuid(object)
+    if guid ~= nil then
+        BridgeState.objectGuidByCardInstanceId = BridgeState.objectGuidByCardInstanceId or {}
+        BridgeState.objectGuidByCardInstanceId[tostring(cardInstanceId)] = guid
+        if BridgeRecordFlightRecorderTtsEvent ~= nil and BridgeState.eventSessionId ~= nil then
+            BridgeRecordFlightRecorderTtsEvent("physical_mapping_created", BridgeState.eventSessionId,
+                BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+                BridgeState.lastAppliedEventSequence, {cardInstanceId = tostring(cardInstanceId), ttsGuid = guid})
+        end
+    end
 end
 
 function BridgeReadPhysicalSessionIdentity(object)
@@ -4521,6 +4597,15 @@ function BridgeRetirePhysicalIdentityForSession(object, retiredSessionId)
     if tostring(objectSessionId or "") ~= tostring(retiredSessionId)
         and not (instanceId ~= nil and BridgeCardInstanceBelongsToSession(instanceId, retiredSessionId)) then
         return false
+    end
+    local guid = BridgeSafeObjectGuid(object)
+    if instanceId ~= nil and BridgeState.objectGuidByCardInstanceId ~= nil
+        and BridgeState.objectGuidByCardInstanceId[instanceId] == guid then
+        BridgeState.objectGuidByCardInstanceId[instanceId] = nil
+    end
+    if BridgeRecordFlightRecorderTtsEvent ~= nil then
+        BridgeRecordFlightRecorderTtsEvent("physical_mapping_retired", tostring(retiredSessionId), nil, nil,
+            {cardInstanceId = instanceId, ttsGuid = guid, reason = "session-identity-retired"})
     end
     pcall(function() object.setVar(BRIDGE_PHYSICAL_ID_KEY, nil) end)
     pcall(function() object.setVar(BRIDGE_PHYSICAL_SESSION_KEY, nil) end)

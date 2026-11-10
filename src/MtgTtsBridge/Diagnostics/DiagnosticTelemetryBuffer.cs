@@ -71,7 +71,11 @@ public sealed record TtsExecutionBreadcrumb(
     string? SourceZone,
     string? DestinationZone,
     double? LuaTimestamp,
-    DateTimeOffset ReceivedAtUtc);
+    DateTimeOffset ReceivedAtUtc,
+    string? TtsGuid = null,
+    IReadOnlyList<double>? Position = null,
+    IReadOnlyList<double>? Rotation = null,
+    bool? Tapped = null);
 
 public sealed record TtsExecutionBreadcrumbRequest(
     string ClientRuntimeId,
@@ -86,7 +90,11 @@ public sealed record TtsExecutionBreadcrumbRequest(
     string? CardInstanceId = null,
     string? SourceZone = null,
     string? DestinationZone = null,
-    double? LuaTimestamp = null);
+    double? LuaTimestamp = null,
+    string? TtsGuid = null,
+    IReadOnlyList<double>? Position = null,
+    IReadOnlyList<double>? Rotation = null,
+    bool? Tapped = null);
 
 public sealed record TtsExecutionWatchdogState(
     string? ActiveClientRuntimeId,
@@ -244,12 +252,16 @@ public sealed class DiagnosticTelemetryBuffer
     private readonly DiagnosticRollingBuffer<DiagnosticTelemetryRecord> _forgeEvents = new(ForgeEventCapacity);
     private readonly DiagnosticRollingBuffer<DiagnosticTelemetryRecord> _choices = new(ChoiceCapacity);
     private readonly DiagnosticRollingBuffer<TtsExecutionBreadcrumb> _ttsBreadcrumbs = new(TtsBreadcrumbCapacity);
+    private FlightRecorderService? _flightRecorder;
     public TtsExecutionWatchdog TtsWatchdog { get; } = new();
+
+    public void AttachFlightRecorder(FlightRecorderService recorder) => _flightRecorder = recorder;
 
     public void RecordTtsBreadcrumb(TtsExecutionBreadcrumb breadcrumb)
     {
         _ttsBreadcrumbs.Add(breadcrumb);
         TtsWatchdog.Record(breadcrumb, breadcrumb.ReceivedAtUtc, out _);
+        _flightRecorder?.RecordTtsBreadcrumb(breadcrumb);
     }
 
     public void RecordBridgeLog(string level, string category, string message, Exception? exception = null)
@@ -311,7 +323,8 @@ public sealed class DiagnosticTelemetryBuffer
             })));
     }
 
-    public void RecordChoice(ChoiceRequestDto request, string outcome, string? errorCode = null, string? message = null)
+    public void RecordChoice(ChoiceRequestDto request, string outcome, string? errorCode = null,
+        string? message = null, object? resultDetails = null)
     {
         _choices.Add(new DiagnosticTelemetryRecord(
             DateTimeOffset.UtcNow,
@@ -330,6 +343,7 @@ public sealed class DiagnosticTelemetryBuffer
                 ["outcome"] = outcome,
                 ["errorCode"] = errorCode
             })));
+        _flightRecorder?.RecordChoiceResult(request, outcome, resultDetails ?? new { errorCode, message });
     }
 
     public void RecordForgeEvent(AuthoritativeEventDto forgeEvent, string? sessionId = null)
@@ -345,6 +359,7 @@ public sealed class DiagnosticTelemetryBuffer
             {
                 ["event"] = forgeEvent
             })));
+        _flightRecorder?.RecordForgeEvent(forgeEvent, sessionId);
     }
 
     public DiagnosticTelemetrySnapshot Capture() => new(

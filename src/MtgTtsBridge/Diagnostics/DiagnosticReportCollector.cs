@@ -64,6 +64,7 @@ public sealed class DiagnosticReportCollector
     private readonly BridgeProcessIdentity _identity;
     private readonly ILogger<DiagnosticReportCollector> _logger;
     private readonly ProcessSampler _processSampler;
+    private readonly FlightRecorderService? _flightRecorder;
 
     public DiagnosticReportCollector(
         IForgeAdapter adapter,
@@ -73,7 +74,8 @@ public sealed class DiagnosticReportCollector
         DiagnosticOptions options,
         BridgeProcessIdentity identity,
         ILogger<DiagnosticReportCollector> logger,
-        ProcessSampler? processSampler = null)
+        ProcessSampler? processSampler = null,
+        FlightRecorderService? flightRecorder = null)
     {
         _adapter = adapter;
         _telemetry = telemetry;
@@ -83,6 +85,7 @@ public sealed class DiagnosticReportCollector
         _identity = identity;
         _logger = logger;
         _processSampler = processSampler ?? new ProcessSampler();
+        _flightRecorder = flightRecorder;
     }
 
     public async Task<DiagnosticCaptureResult> CaptureAsync(DiagnosticReportRequestDto request, CancellationToken cancellationToken)
@@ -107,6 +110,8 @@ public sealed class DiagnosticReportCollector
 
         var telemetry = _telemetry.Capture();
         var selfTest = _selfTests.Run(state, events, snapshot, request, _identity);
+        if (_options.IncludeFlightRecorderInCaptures && _flightRecorder is not null)
+            await _flightRecorder.FlushAsync(cancellationToken).ConfigureAwait(false);
         if (IsPerformanceCapture(request.Category))
             return await CapturePerformanceAsync(request, capturedAt, reportId, state, events, telemetry, selfTest, missing, cancellationToken).ConfigureAwait(false);
 
@@ -154,6 +159,39 @@ public sealed class DiagnosticReportCollector
             WriteOptionalText(staging, "logs/bridge.log", FormatBridgeLogs(telemetry.BridgeLogs), included, missing, "No bridge log entries were captured.");
             WriteOptionalText(staging, "logs/forge-stdout.log", FormatForgeOutput(telemetry.ForgeOutput, "forge_stdout"), included, missing, "No Forge stdout was captured.");
             WriteOptionalText(staging, "logs/forge-stderr.log", FormatForgeOutput(telemetry.ForgeOutput, "forge_stderr"), included, missing, "No Forge stderr was captured.");
+
+            if (_options.IncludeFlightRecorderInCaptures)
+            {
+                var excerpt = _flightRecorder?.CaptureExcerpt(request.SessionId ?? state?.SessionId);
+                if (excerpt is null || excerpt.Missing)
+                {
+                    missing["recorder/recent.jsonl"] = excerpt?.MissingReason ?? "Flight recorder is unavailable.";
+                    WriteRequiredJson(staging, "recorder/manifest.json", new
+                    {
+                        schemaVersion = FlightRecorderService.CurrentSchemaVersion,
+                        included = false,
+                        missing = missing["recorder/recent.jsonl"],
+                        truncated = false
+                    }, included, "recorder/manifest.json");
+                }
+                else
+                {
+                    WriteRequiredJson(staging, "recorder/manifest.json", new
+                    {
+                        schemaVersion = excerpt.SchemaVersion,
+                        excerpt.SessionId,
+                        excerpt.Truncated,
+                        excerpt.RecordsDropped,
+                        status = excerpt.Status,
+                        privacy = "Raw local diagnostic capture; may contain hidden information. Redact before external sharing."
+                    }, included, "recorder/manifest.json");
+                    WriteRequiredText(staging, "recorder/recent.jsonl", string.Join(Environment.NewLine, excerpt.RecentRecords), included, "recorder/recent.jsonl");
+                    WriteRequiredText(staging, "recorder/checkpoints.jsonl", string.Join(Environment.NewLine, excerpt.CheckpointRecords), included, "recorder/checkpoints.jsonl");
+                    if (excerpt.Truncated) missing["recorder/recent.jsonl"] = "Recorder excerpt was bounded by the diagnostic capture limit.";
+                    if (excerpt.RecordsDropped > 0)
+                        missing["recorder/recent.jsonl"] = $"Recorder dropped {excerpt.RecordsDropped} event(s); the excerpt is incomplete.";
+                }
+            }
 
             WriteRequiredJson(staging, "self-test/results.json", selfTest, included, "self-test/results.json");
             WriteRequiredText(staging, "self-test/results.txt", FormatSelfTests(selfTest), included, "self-test/results.txt");
@@ -244,6 +282,38 @@ public sealed class DiagnosticReportCollector
         var bridgeLog = FitText(FormatBridgeLogs(telemetry.BridgeLogs), entryBudget, ref dropped);
         var forgeStdout = FitText(FormatForgeOutput(telemetry.ForgeOutput, "forge_stdout") ?? string.Empty, entryBudget, ref dropped);
         var forgeStderr = FitText(FormatForgeOutput(telemetry.ForgeOutput, "forge_stderr") ?? string.Empty, entryBudget, ref dropped);
+        FlightRecorderCaptureExcerpt? recorderExcerpt = null;
+        string? recorderRecent = null;
+        string? recorderCheckpoints = null;
+        object? recorderManifest = null;
+        if (_options.IncludeFlightRecorderInCaptures)
+        {
+            var recorderBudget = Math.Max(2048, Math.Min(256 * 1024, _options.PerformanceReportMaxBytes / 16));
+            recorderExcerpt = _flightRecorder?.CaptureExcerpt(request.SessionId ?? state?.SessionId,
+                maxRecords: 1000, maxBytes: (int)recorderBudget);
+            if (recorderExcerpt is null || recorderExcerpt.Missing)
+            {
+                missing["recorder/recent.jsonl"] = recorderExcerpt?.MissingReason ?? "Flight recorder is unavailable.";
+                recorderManifest = new { schemaVersion = FlightRecorderService.CurrentSchemaVersion,
+                    included = false, missing = missing["recorder/recent.jsonl"], truncated = false };
+            }
+            else
+            {
+                recorderRecent = string.Join(Environment.NewLine, recorderExcerpt.RecentRecords);
+                recorderCheckpoints = string.Join(Environment.NewLine, recorderExcerpt.CheckpointRecords);
+                var recorderMissing = recorderExcerpt.Truncated || recorderExcerpt.RecordsDropped > 0
+                    || recorderExcerpt.Status.StorageFaulted;
+                if (recorderMissing)
+                    missing["recorder/recent.jsonl"] = "Recorder excerpt is incomplete; inspect truncation, dropped events, and storage status.";
+                recorderManifest = new { recorderExcerpt.SchemaVersion, recorderExcerpt.SessionId,
+                    recorderExcerpt.Truncated, recorderExcerpt.RecordsDropped, recorderExcerpt.Status,
+                    missingData = recorderMissing,
+                    privacy = "Raw local diagnostic capture; may contain hidden information. Redact before external sharing." };
+            }
+            included.Add("recorder/manifest.json");
+            included.Add("recorder/recent.jsonl");
+            included.Add("recorder/checkpoints.jsonl");
+        }
         var truncated = dropped > 0;
         var manifest = new DiagnosticReportManifest(
             reportId, capturedAt, CleanText(request.Summary), CleanText(request.Category),
@@ -298,6 +368,12 @@ public sealed class DiagnosticReportCollector
                 WriteJsonLinesBytes(archive, "protocol/recent-requests.jsonl", requests);
                 WriteJsonLinesBytes(archive, "diagnostics/tts-execution-breadcrumbs.jsonl", breadcrumbs);
                 DiagnosticBundleWriter.WriteJsonEntry(archive, "state/tts-execution-watchdog.json", telemetry.Watchdog);
+                if (_options.IncludeFlightRecorderInCaptures)
+                {
+                    DiagnosticBundleWriter.WriteJsonEntry(archive, "recorder/manifest.json", recorderManifest);
+                    DiagnosticBundleWriter.WriteTextEntry(archive, "recorder/recent.jsonl", recorderRecent ?? string.Empty);
+                    DiagnosticBundleWriter.WriteTextEntry(archive, "recorder/checkpoints.jsonl", recorderCheckpoints ?? string.Empty);
+                }
                 DiagnosticBundleWriter.WriteTextEntry(archive, "logs/recent-bridge.log", bridgeLog);
                 DiagnosticBundleWriter.WriteTextEntry(archive, "logs/recent-forge-stdout.log", forgeStdout);
                 DiagnosticBundleWriter.WriteTextEntry(archive, "logs/recent-forge-stderr.log", forgeStderr);
@@ -321,7 +397,8 @@ public sealed class DiagnosticReportCollector
         "state/tts-state.json",
         "protocol/recent-choices.jsonl", "protocol/recent-requests.jsonl", "logs/recent-bridge.log",
         "logs/recent-forge-stdout.log", "logs/recent-forge-stderr.log",
-        "diagnostics/tts-execution-breadcrumbs.jsonl", "state/tts-execution-watchdog.json"
+        "diagnostics/tts-execution-breadcrumbs.jsonl", "state/tts-execution-watchdog.json",
+        "recorder/manifest.json", "recorder/recent.jsonl", "recorder/checkpoints.jsonl"
     ];
 
     private static bool IsPerformanceCapture(string? category) =>

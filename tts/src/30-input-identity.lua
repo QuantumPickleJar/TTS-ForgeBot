@@ -2242,6 +2242,7 @@ function BridgeCombatDropMetrics(intent, object)
 end
 
 function onObjectPickUp(playerColor, object)
+    BridgeRecordPhysicalInteraction("pickup", playerColor, object)
     if object == nil or BridgeState.submitting then
         return
     end
@@ -2495,6 +2496,7 @@ function onObjectEnterContainer(container, enterObject)
 end
 
 function onObjectDrop(playerColor, object)
+    BridgeRecordPhysicalInteraction("drop", playerColor, object)
     if BridgeNativeSearchHandleDrop ~= nil and BridgeNativeSearchHandleDrop(playerColor, object) then
         return
     end
@@ -4068,6 +4070,10 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         .. " session=" .. tostring(sessionId) .. " token=" .. tostring(resyncToken))
     BridgeRecordResyncLifecycle("REQUESTED", origin, resyncToken, nil, nil, nil,
         checkpointReceived, checkpointApplied)
+    BridgeRecordFlightRecorderTtsEvent("resync_started", sessionId,
+        BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil, checkpointApplied,
+        {origin = origin, resyncToken = resyncToken, checkpointReceived = checkpointReceived,
+            checkpointApplied = checkpointApplied})
     BridgeSetResyncStage("FetchingSnapshot", "request-started", nil)
     BridgeBootstrapCurrentSnapshot(sessionId, function(ok, err)
         if BridgeState.resyncToken ~= resyncToken or BridgeState.eventSessionId ~= sessionId then
@@ -4112,6 +4118,9 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
             end
             BridgeUiMarkDirty("resync-failed")
             BridgeLog("[Bridge] RESYNC_FAILED reason=" .. tostring(err))
+            BridgeRecordFlightRecorderTtsEvent("resync_failed", sessionId,
+                BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+                BridgeState.lastAppliedEventSequence, {origin = origin, resyncToken = resyncToken, error = tostring(err)})
             return
         end
         BridgeCommitResyncMappingTransaction()
@@ -4135,6 +4144,10 @@ function BridgeResyncFromAuthoritativeSnapshot(origin)
         BridgeUiMarkDirty("resync-complete")
         BridgeLog("[Bridge] RESYNC_COMPLETE eventCursor="
             .. tostring(BridgeState.lastAppliedEventSequence))
+        BridgeRecordFlightRecorderTtsEvent("resync_completed", sessionId,
+            BridgeState.lastDecision and BridgeState.lastDecision.decisionId or nil,
+            BridgeState.lastAppliedEventSequence, {origin = origin, resyncToken = resyncToken,
+                eventCursor = BridgeState.lastAppliedEventSequence, forgeSequence = BridgeState.lastAppliedForgeSequence})
         -- Reattach exactly one authoritative decision after the checkpoint.
         -- Polling while resync is active was the captured infinite loop: the
         -- decision was valid, but it could not be accepted against cursor 0.

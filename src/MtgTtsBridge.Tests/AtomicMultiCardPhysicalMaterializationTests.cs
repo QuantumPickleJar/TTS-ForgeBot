@@ -395,13 +395,18 @@ public sealed class AtomicMultiCardPhysicalMaterializationTests
             BridgeState.desyncLatched = false
             BridgeState.submitting = false
             posted = 0
-            BridgeHttp.requestJson = function(...) posted = posted + 1 end
+            recorderEvents = 0
+            BridgeHttp.requestJson = function(method, path, payload, callback)
+                if path == '/api/v1/choice' then posted = posted + 1 end
+                if path == '/api/v1/recorder/tts-event' then recorderEvents = recorderEvents + 1 end
+            end
             BridgeSubmitChoice('decision-new', 'cast-old-trio', 'stale-test')
             stalePosted = posted
             staleTransaction = BridgeState.choiceTransactions['decision-new']
         ");
 
         Assert.Equal(0d, lua.Globals.Get("stalePosted").Number);
+        Assert.Equal(1d, lua.Globals.Get("recorderEvents").Number);
         Assert.True(lua.Globals.Get("staleTransaction").IsNil());
     }
 
