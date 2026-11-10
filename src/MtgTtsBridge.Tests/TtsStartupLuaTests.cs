@@ -331,6 +331,135 @@ public sealed class TtsStartupLuaTests
         Assert.Equal(DataType.Function, lua.Globals.Get("scheduledControlReconcile").Type);
     }
 
+    [Fact]
+    public void NewMatchCleanupFailsClosedAndRetiredCallbacksCannotStartAnotherMatch()
+    {
+        var lua = new Script();
+        Execute(lua, "new-match-cleanup-host.lua", @"
+            function log(message) end
+            function broadcastToAll(message, color) end
+            function printToAll(message, color) end
+            function getAllObjects() return {} end
+            function getObjectFromGUID(guid) return nil end
+            Wait = {time = function(callback, delay) end, frames = function(callback, frames) callback() end}
+            Time = {time = 0}
+            JSON = {encode = function(value) return '{}' end, decode = function(value) return {} end}
+            os = {time = function() return 1 end, clock = function() return 0 end}
+            math.random = function(minimum, maximum) return 123456 end
+            table.concat = function(values, separator) return 'cleanup-runtime' end
+        ");
+        Execute(lua, "Global.lua", GlobalScript);
+        Execute(lua, "new-match-cleanup-call.lua", @"
+            BridgeState.lifecycleState = BRIDGE_LIFECYCLE_ACTIVE
+            BridgeState.eventSessionId = 'session-old'
+            BridgeState.embodimentEpoch = 5
+            BridgeState.eventPolling = true
+            activeLifecycleToken = 100
+            BridgeLifecycleOperationIsCurrent = function(token, command) return token == activeLifecycleToken end
+            BridgeRuntimeIsCurrent = function(epoch) return true end
+            BridgeRetireHumanActionState = function() end
+            BridgeAdvanceEventSessionGeneration = function() end
+            BridgeStopDecisionPolling = function() end
+            BridgeStopEventPolling = function() end
+            BridgeRetireRandomResultPresentations = function() end
+            BridgeRetireOpponentSpellPresentations = function() end
+            BridgeRetireLocalPhysicalTransactions = function() end
+            BridgeClearHighlights = function() end
+            BridgeAdvanceEmbodimentEpoch = function(reason)
+                BridgeState.embodimentEpoch = BridgeState.embodimentEpoch + 1
+                return BridgeState.embodimentEpoch
+            end
+            BridgeSetSetupBusy = function() end
+            BridgeSetStatus = function() end
+            BridgeShowError = function(message) cleanupError = message end
+            BridgeFinishLifecycleOperation = function(token) end
+            BridgePumpEmbodimentTransaction = function() end
+            configureDeckCalls = 0
+            resetRequestCalls = 0
+            BridgeConfigureDecks = function(callback) configureDeckCalls = configureDeckCalls + 1 end
+            BridgeResetSessionRequest = function(callback) resetRequestCalls = resetRequestCalls + 1 end
+            failCleanup = true
+            BridgeBeginNewMatchCleanupTransaction = function(callback)
+                if failCleanup then callback(false, 'injected partial physical cleanup failure')
+                else cleanupContinuation = callback end
+                return {token = 1}, true
+            end
+            BridgeResetSession(100)
+            cleanupFailureSaved = BridgeState.lastNewMatchCleanupFailure.error
+            activeLifecycleToken = 200
+            failCleanup = false
+            BridgeResetSession(200)
+            BridgeState.embodimentEpoch = BridgeState.embodimentEpoch + 1
+            activeLifecycleToken = 201
+            cleanupContinuation(true, nil)
+        ");
+
+        Assert.Contains("injected partial physical cleanup failure", lua.Globals.Get("cleanupError").String);
+        Assert.Contains("injected partial physical cleanup failure", lua.Globals.Get("cleanupFailureSaved").String);
+        Assert.Equal(0, lua.Globals.Get("configureDeckCalls").Number);
+        Assert.Equal(0, lua.Globals.Get("resetRequestCalls").Number);
+    }
+
+    [Fact]
+    public void DuplicateSetupControlReconcileAndCallbackDoNotCreateDuplicateObjects()
+    {
+        var lua = new Script();
+        Execute(lua, "duplicate-setup-control-host.lua", @"
+            function log(message) end
+            function broadcastToAll(message, color) end
+            function printToAll(message, color) end
+            setupObjects = {}
+            function getAllObjects() return setupObjects end
+            function getObjectFromGUID(guid)
+                for _, object in ipairs(setupObjects) do if object.guid == guid then return object end end
+                return nil
+            end
+            Wait = {time = function(callback, delay) end, frames = function(callback, frames) callback() end}
+            Time = {time = 0}
+            JSON = {encode = function(value) return '{}' end, decode = function(value) return {} end}
+            os = {time = function() return 1 end, clock = function() return 0 end}
+            math.random = function(minimum, maximum) return 123456 end
+            table.concat = function(values, separator) return 'duplicate-control-runtime' end
+            spawnCalls = 0
+            function spawnObject(config)
+                spawnCalls = spawnCalls + 1
+                pendingSetupSpawnCallback = config.callback_function
+            end
+        ");
+        Execute(lua, "Global.lua", GlobalScript);
+        Execute(lua, "duplicate-setup-control-call.lua", @"
+            BridgeState.setupObjectGuidByKind = {}
+            BridgeState.setupControlSpawnInFlightByKind = {}
+            BridgeEnsureSetupControl('Reset', 'NEW MATCH', -7.0, {0.1, 0.2, 0.3},
+                'BridgePressNewMatch', 'New match')
+            BridgeEnsureSetupControl('Reset', 'NEW MATCH', -7.0, {0.1, 0.2, 0.3},
+                'BridgePressNewMatch', 'New match')
+            spawnCallsBeforeCallback = spawnCalls
+            local object = {guid='setup-1', tag='BlockSquare', name='', buttons={}}
+            object.getGUID = function() return object.guid end
+            object.getName = function() return object.name end
+            object.getButtons = function() return object.buttons end
+            object.setName = function(value) object.name = value end
+            object.setLock = function() end
+            object.setColorTint = function() end
+            object.setRotation = function() end
+            object.createButton = function(button) table.insert(object.buttons, button) end
+            table.insert(setupObjects, object)
+            pendingSetupSpawnCallback(object)
+            pendingSetupSpawnCallback(object)
+            setupObjectCount = #setupObjects
+            setupButtonCount = #object.buttons
+            setupObjectName = object.name
+            registeredGuid = BridgeState.setupObjectGuidByKind.Reset
+        ");
+
+        Assert.Equal(1, lua.Globals.Get("spawnCallsBeforeCallback").Number);
+        Assert.Equal(1, lua.Globals.Get("setupObjectCount").Number);
+        Assert.Equal(1, lua.Globals.Get("setupButtonCount").Number);
+        Assert.Equal("Forge Setup V2 Reset", lua.Globals.Get("setupObjectName").String);
+        Assert.Equal("setup-1", lua.Globals.Get("registeredGuid").String);
+    }
+
     private static void Execute(Script lua, string sourceName, string source)
     {
         try
